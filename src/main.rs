@@ -1,5 +1,6 @@
 mod analytics;
 mod analysis;
+mod auto_calibrate;
 mod cache;
 mod calibrator;
 mod cli;
@@ -145,7 +146,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Load feedback for calibration
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
-    let feedback_store = feedback::FeedbackStore::new(feedback_path);
+    let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
     if !feedback_entries.is_empty() {
         eprintln!("Loaded {} feedback entries for calibration", feedback_entries.len());
@@ -154,6 +155,8 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
+        auto_calibrate: opts.auto_calibrate,
+        feedback_store: if opts.auto_calibrate { Some(feedback_path.clone()) } else { None },
         ..Default::default()
     };
 

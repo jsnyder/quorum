@@ -63,6 +63,16 @@ impl Finding {
     pub fn is_valid(&self) -> bool {
         self.line_start >= 1 && self.line_start <= self.line_end
     }
+
+    pub fn severity_label(&self) -> &'static str {
+        match self.severity {
+            Severity::Critical => "critical",
+            Severity::High => "high",
+            Severity::Medium => "medium",
+            Severity::Low => "low",
+            Severity::Info => "info",
+        }
+    }
 }
 
 #[cfg(test)]

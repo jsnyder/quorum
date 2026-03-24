@@ -56,6 +56,10 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub provenance: bool,
 
+    /// Auto-calibrate: use a second LLM pass to triage findings and grow feedback corpus
+    #[arg(long)]
+    pub auto_calibrate: bool,
+
     /// Send review request to running daemon instead of parsing locally
     #[arg(long)]
     pub daemon: bool,

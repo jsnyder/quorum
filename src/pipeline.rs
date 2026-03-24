@@ -31,6 +31,8 @@ pub struct PipelineConfig {
     pub models: Vec<String>,
     pub feedback: Vec<FeedbackEntry>,
     pub calibrate: bool,
+    pub auto_calibrate: bool,
+    pub feedback_store: Option<std::path::PathBuf>,
 }
 
 impl Default for PipelineConfig {
@@ -41,6 +43,8 @@ impl Default for PipelineConfig {
             models: vec![],
             feedback: vec![],
             calibrate: true,
+            auto_calibrate: false,
+            feedback_store: None,
         }
     }
 }
@@ -124,6 +128,23 @@ pub fn review_file(
     } else {
         merged
     };
+
+    // Auto-calibration: use a second LLM pass to triage findings and record verdicts
+    if pipeline_config.auto_calibrate && !final_findings.is_empty() {
+        if let (Some(reviewer), Some(store_path)) = (llm, &pipeline_config.feedback_store) {
+            let model = pipeline_config.models.first().map(|s| s.as_str()).unwrap_or("gpt-5.4");
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            match crate::auto_calibrate::auto_calibrate(
+                &final_findings, source, &file_str, reviewer, model, &store,
+            ) {
+                Ok(result) if result.recorded > 0 => {
+                    eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);
+                }
+                Err(e) => eprintln!("Auto-calibrate warning: {}", e),
+                _ => {}
+            }
+        }
+    }
 
     Ok(FileReviewResult {
         file_path: file_str,
