@@ -2,6 +2,7 @@ mod analysis;
 mod cli;
 mod config;
 mod finding;
+mod hydration;
 mod linter;
 mod merge;
 mod output;
