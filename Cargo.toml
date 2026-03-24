@@ -2,5 +2,29 @@
 name = "quorum"
 version = "0.1.0"
 edition = "2024"
+description = "Multi-source code review: LLM ensemble + local AST analysis + linter orchestration"
+license = "MIT"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP + serialization
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Tree-sitter (core + language grammars added as needed)
+tree-sitter = "0.25"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
