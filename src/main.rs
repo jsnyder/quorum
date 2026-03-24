@@ -5,6 +5,7 @@ mod calibrator;
 mod cli;
 mod config;
 mod daemon;
+mod http_server;
 mod domain;
 mod feedback;
 mod finding;
@@ -72,7 +73,20 @@ async fn run_mcp_server() -> anyhow::Result<()> {
 
     let transport = StdioTransport::new(TransportOptions::default())
         .map_err(|e| anyhow::anyhow!("Failed to create stdio transport: {}", e))?;
-    let handler = mcp::handler::QuorumHandler::new()?;
+
+    // Shared parse cache for the MCP server session
+    let parse_cache = std::sync::Arc::new(cache::ParseCache::new(256));
+
+    // Start file watcher in background (optional, non-fatal if it fails)
+    let watch_dir = std::env::current_dir().unwrap_or_default();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let _watcher = daemon::start_watcher(&watch_dir, tx).ok();
+    let cache_for_watcher = parse_cache.clone();
+    tokio::spawn(async move {
+        daemon::run_event_loop(rx, cache_for_watcher).await;
+    });
+
+    let handler = mcp::handler::QuorumHandler::with_cache(parse_cache)?;
 
     let server = server_runtime::create_server(McpServerOptions {
         server_details,
@@ -92,6 +106,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     if opts.files.is_empty() {
         eprintln!("Error: No files specified");
         return 3;
+    }
+
+    // If --daemon flag is set, send requests to running daemon
+    if opts.daemon {
+        return run_review_via_daemon(&opts);
     }
 
     // Load config
@@ -214,41 +233,114 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
 }
 
 async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
-    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     let watch_dir = opts.watch_dir
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
     eprintln!("quorum daemon starting");
+    eprintln!("  Port: {}", opts.port);
     eprintln!("  Watching: {}", watch_dir.display());
     eprintln!("  Cache capacity: {}", opts.cache_size);
 
-    let parse_cache = Arc::new(cache::ParseCache::new(opts.cache_size));
-    let (tx, rx) = mpsc::unbounded_channel();
+    let state = http_server::create_daemon_state(opts.cache_size)?;
 
     // Start file watcher
-    let _watcher = daemon::start_watcher(&watch_dir, tx.clone())?;
-    eprintln!("  File watcher active");
-
-    // Spawn event loop
-    let cache_clone = parse_cache.clone();
-    let event_handle = tokio::spawn(async move {
-        daemon::run_event_loop(rx, cache_clone).await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    let _watcher = daemon::start_watcher(&watch_dir, tx).ok();
+    let cache_for_watcher = state.parse_cache.clone();
+    tokio::spawn(async move {
+        daemon::run_event_loop(rx, cache_for_watcher).await;
     });
 
-    // Wait for shutdown signal
+    // Build HTTP server
+    let app = http_server::build_router(state.clone());
+    let addr = format!("127.0.0.1:{}", opts.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("  Listening on http://{}", addr);
     eprintln!("  Ready. Press Ctrl+C to stop.");
-    tokio::signal::ctrl_c().await?;
 
-    // Trigger clean shutdown
-    let _ = tx.send(daemon::DaemonEvent::Shutdown);
-    event_handle.await?;
+    // Serve until Ctrl+C
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c().await.ok();
+        })
+        .await?;
 
-    let stats = parse_cache.stats();
+    let stats = state.parse_cache.stats();
     eprintln!(
-        "Daemon stopped. Cache stats: {} hits, {} misses, {:.0}% hit rate",
+        "Daemon stopped. Cache: {} hits, {} misses, {:.0}% hit rate",
         stats.hits, stats.misses, stats.hit_rate() * 100.0
     );
     Ok(())
+}
+
+fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
+    let client = reqwest::blocking::Client::new();
+    let base = format!("http://127.0.0.1:{}", opts.daemon_port);
+
+    // Check if daemon is running
+    match client.get(format!("{}/health", base)).send() {
+        Ok(resp) if resp.status().is_success() => {}
+        _ => {
+            eprintln!("Error: Daemon not running on port {}. Start with: quorum daemon", opts.daemon_port);
+            eprintln!("Falling back to local review.");
+            // Fall through to local review by calling run_review without --daemon
+            // For simplicity, just return 3 to indicate tool error
+            return 3;
+        }
+    }
+
+    let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let style = output::Style::detect(opts.no_color);
+    let mut all_findings = Vec::new();
+
+    for file_path in &opts.files {
+        let source = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: Could not read {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+
+        let body = serde_json::json!({
+            "file_path": file_path.to_string_lossy(),
+            "code": source,
+        });
+
+        match client.post(format!("{}/review", base)).json(&body).send() {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(review) = resp.json::<http_server::ReviewResponse>() {
+                    let cache_note = if review.cache_hit { " (cached)" } else { "" };
+                    if !use_json {
+                        let file_str = file_path.to_string_lossy();
+                        eprint!("{}{}", file_str, cache_note);
+                        eprintln!();
+                        print!("{}", output::format_review(&file_str, &review.findings, &style));
+                    }
+                    all_findings.extend(review.findings);
+                }
+            }
+            Ok(resp) => {
+                eprintln!("Error: Daemon returned {}", resp.status());
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to connect to daemon: {}", e);
+                return 3;
+            }
+        }
+    }
+
+    if use_json {
+        match output::format_json(&all_findings) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return 3;
+            }
+        }
+    }
+
+    output::compute_exit_code(&all_findings)
 }

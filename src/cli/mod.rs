@@ -29,6 +29,10 @@ pub struct DaemonOpts {
     /// Parse cache capacity
     #[arg(long, default_value = "256")]
     pub cache_size: usize,
+
+    /// Port to listen on
+    #[arg(long, default_value = "7842")]
+    pub port: u16,
 }
 
 #[derive(Parser)]
@@ -51,4 +55,12 @@ pub struct ReviewOpts {
     /// Show finding provenance
     #[arg(long)]
     pub provenance: bool,
+
+    /// Send review request to running daemon instead of parsing locally
+    #[arg(long)]
+    pub daemon: bool,
+
+    /// Daemon port (default: 7842)
+    #[arg(long, default_value = "7842")]
+    pub daemon_port: u16,
 }

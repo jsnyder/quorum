@@ -11,6 +11,7 @@ use rust_mcp_sdk::schema::{
     RpcError,
 };
 
+use crate::cache::ParseCache;
 use crate::config::{Config, EnvConfigSource};
 use crate::feedback::{FeedbackEntry, FeedbackStore, Verdict};
 use crate::llm_client::OpenAiClient;
@@ -23,10 +24,15 @@ pub struct QuorumHandler {
     config: Config,
     feedback_store: FeedbackStore,
     llm_reviewer: Option<Box<dyn LlmReviewer>>,
+    parse_cache: Arc<ParseCache>,
 }
 
 impl QuorumHandler {
     pub fn new() -> anyhow::Result<Self> {
+        Self::with_cache(Arc::new(ParseCache::new(256)))
+    }
+
+    pub fn with_cache(cache: Arc<ParseCache>) -> anyhow::Result<Self> {
         let config = Config::load(&EnvConfigSource)?;
         let feedback_path = dirs_path().join("feedback.jsonl");
         let feedback_store = FeedbackStore::new(feedback_path);
@@ -41,6 +47,7 @@ impl QuorumHandler {
             config,
             feedback_store,
             llm_reviewer,
+            parse_cache: cache,
         })
     }
 
@@ -48,21 +55,20 @@ impl QuorumHandler {
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
-        let tree = crate::parser::parse(&params.code, lang)
-            .map_err(|e| format!("Parse error: {}", e))?;
-
+        let feedback = self.feedback_store.load_all().unwrap_or_default();
         let pipeline_cfg = PipelineConfig {
             models: vec![self.config.model.clone()],
+            feedback,
             ..Default::default()
         };
 
-        let result = pipeline::review_file(
+        let result = pipeline::review_source(
             std::path::Path::new(&params.file_path),
             &params.code,
             lang,
-            &tree,
             self.llm_reviewer.as_deref(),
             &pipeline_cfg,
+            Some(&self.parse_cache),
         )
         .map_err(|e| format!("Review error: {}", e))?;
 
@@ -125,13 +131,22 @@ impl QuorumHandler {
                 result
             }
             "stats" => {
+                let mut report = String::new();
+                // Cache stats
+                let cs = self.parse_cache.stats();
+                report.push_str(&format!(
+                    "Parse cache: {}/{} entries, {} hits, {} misses, {:.0}% hit rate\n\n",
+                    cs.size, cs.capacity, cs.hits, cs.misses, cs.hit_rate() * 100.0
+                ));
+                // Feedback stats
                 match self.feedback_store.load_all() {
                     Ok(entries) => {
                         let stats = crate::analytics::compute_stats(&entries);
-                        crate::analytics::format_stats_report(&stats)
+                        report.push_str(&crate::analytics::format_stats_report(&stats));
                     }
-                    Err(e) => format!("Failed to load feedback: {}", e),
+                    Err(e) => report.push_str(&format!("Failed to load feedback: {}", e)),
                 }
+                report
             }
             other => format!("Unknown catalog query: {}. Use: models, languages, domains, or stats.", other),
         };
@@ -314,6 +329,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/quorum-test-feedback.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = ReviewTool {
@@ -337,6 +353,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/quorum-test-feedback2.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = ReviewTool {
@@ -364,6 +381,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(path.clone()),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = FeedbackTool {
@@ -393,6 +411,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(dir.path().join("fb.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = FeedbackTool {
@@ -416,6 +435,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = CatalogTool {
@@ -438,6 +458,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         };
 
         let params = ReviewTool {
@@ -460,6 +481,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler.jsonl")),
             llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
         }
     }
 
@@ -481,6 +503,7 @@ mod tests {
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler2.jsonl")),
             llm_reviewer: Some(Box::new(FakeLlm)),
+            parse_cache: Arc::new(ParseCache::new(10)),
         }
     }
 
@@ -562,5 +585,39 @@ mod tests {
             framework: None,
         };
         assert!(handler.handle_testgen(params).is_err());
+    }
+
+    // -- Cache integration --
+
+    #[test]
+    fn review_populates_parse_cache() {
+        let cache = Arc::new(ParseCache::new(10));
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-cache-test.jsonl")),
+            llm_reviewer: None,
+            parse_cache: cache.clone(),
+        };
+
+        let params = ReviewTool {
+            code: "fn main() {}".into(),
+            file_path: "test.rs".into(),
+            focus: None,
+        };
+        handler.handle_review(params).unwrap();
+        assert_eq!(cache.stats().misses, 1, "First review should be a cache miss");
+
+        // Second review with same code should hit cache
+        let params2 = ReviewTool {
+            code: "fn main() {}".into(),
+            file_path: "test.rs".into(),
+            focus: None,
+        };
+        handler.handle_review(params2).unwrap();
+        assert_eq!(cache.stats().hits, 1, "Second review should be a cache hit");
     }
 }
