@@ -1,10 +1,12 @@
-/// Review pipeline: parse -> hydrate -> parallel(LLM + local + linters) -> merge -> output
-/// Orchestrates all review sources and produces merged findings.
+/// Review pipeline: parse -> hydrate -> parallel(LLM + local + linters) -> merge -> calibrate -> output
+/// Orchestrates all review sources and produces merged, calibrated findings.
 
 use std::path::Path;
 
 use crate::analysis;
+use crate::calibrator::{self, CalibratorConfig};
 use crate::config::Config;
+use crate::feedback::FeedbackEntry;
 use crate::finding::Finding;
 use crate::hydration;
 use crate::merge;
@@ -27,6 +29,8 @@ pub struct PipelineConfig {
     pub complexity_threshold: u32,
     pub similarity_threshold: f64,
     pub models: Vec<String>,
+    pub feedback: Vec<FeedbackEntry>,
+    pub calibrate: bool,
 }
 
 impl Default for PipelineConfig {
@@ -35,6 +39,8 @@ impl Default for PipelineConfig {
             complexity_threshold: 5,
             similarity_threshold: 0.8,
             models: vec![],
+            feedback: vec![],
+            calibrate: true,
         }
     }
 }
@@ -101,9 +107,27 @@ pub fn review_file(
     // Merge all sources
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 
+    // Calibrate using feedback precedent
+    let final_findings = if pipeline_config.calibrate && !pipeline_config.feedback.is_empty() {
+        let cal_result = calibrator::calibrate(
+            merged,
+            &pipeline_config.feedback,
+            &CalibratorConfig::default(),
+        );
+        if cal_result.suppressed > 0 || cal_result.boosted > 0 {
+            eprintln!(
+                "Calibrator: {} suppressed, {} boosted (from {} feedback entries)",
+                cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
+            );
+        }
+        cal_result.findings
+    } else {
+        merged
+    };
+
     Ok(FileReviewResult {
         file_path: file_str,
-        findings: merged,
+        findings: final_findings,
     })
 }
 

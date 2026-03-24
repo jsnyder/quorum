@@ -34,7 +34,7 @@ impl OpenAiClient {
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 4096
+            "max_tokens": 16384
         });
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -58,6 +58,13 @@ impl OpenAiClient {
         }
 
         let json: serde_json::Value = resp.json().await?;
+
+        // Check for truncation
+        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("unknown");
+        if finish_reason == "length" {
+            anyhow::bail!("Response truncated (finish_reason=length). Model {} may need a higher max_tokens.", model);
+        }
+
         let content = json["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!(

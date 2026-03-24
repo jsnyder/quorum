@@ -171,6 +171,45 @@ fn scan_insecure_nodes(
     }
 }
 
+/// Check if a node is inside a test context: #[cfg(test)] module or #[test] function.
+fn is_in_test_context(node: &tree_sitter::Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        // Check for #[cfg(test)] on mod items
+        if parent.kind() == "mod_item" {
+            if has_attribute(&parent, source, "cfg(test)") {
+                return true;
+            }
+        }
+        // Check for #[test] on function items
+        if parent.kind() == "function_item" {
+            if has_attribute(&parent, source, "test") {
+                return true;
+            }
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn has_attribute(node: &tree_sitter::Node, source: &str, attr_name: &str) -> bool {
+    // Walk siblings before this node looking for attribute_item nodes
+    let mut sibling = node.prev_sibling();
+    while let Some(s) = sibling {
+        if s.kind() == "attribute_item" || s.kind() == "inner_attribute_item" {
+            let text = &source[s.byte_range()];
+            if text.contains(attr_name) {
+                return true;
+            }
+        } else {
+            // Stop looking once we hit a non-attribute node
+            break;
+        }
+        sibling = s.prev_sibling();
+    }
+    false
+}
+
 fn scan_insecure_rust(
     node: &tree_sitter::Node,
     source: &str,
@@ -193,7 +232,8 @@ fn scan_insecure_rust(
     }
 
     // .unwrap() calls — tree-sitter-rust: call_expression with function=field_expression
-    if node.kind() == "call_expression" {
+    // Skip unwrap in test code (#[cfg(test)] modules, #[test] functions)
+    if node.kind() == "call_expression" && !is_in_test_context(node, source) {
         if let Some(func) = node.child_by_field_name("function") {
             if func.kind() == "field_expression" {
                 if let Some(field) = func.child_by_field_name("field") {
@@ -492,5 +532,71 @@ mod tests {
         for f in &findings {
             assert_eq!(f.source, Source::LocalAst);
         }
+    }
+
+    // -- Test code filtering --
+
+    #[test]
+    fn unwrap_in_test_module_filtered() {
+        let source = r#"
+fn prod() -> i32 { 42 }
+
+#[cfg(test)]
+mod tests {
+    fn test_helper() {
+        let x: Option<i32> = Some(1);
+        x.unwrap();
+    }
+}
+"#;
+        let tree = parse(source, Language::Rust).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Rust);
+        // unwrap inside #[cfg(test)] module should be filtered
+        assert!(
+            !findings.iter().any(|f| f.title.contains("unwrap")),
+            "unwrap in test module should be filtered. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unwrap_in_test_function_filtered() {
+        let source = r#"
+#[test]
+fn my_test() {
+    let x: Option<i32> = Some(1);
+    x.unwrap();
+}
+"#;
+        let tree = parse(source, Language::Rust).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Rust);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("unwrap")),
+            "unwrap in #[test] function should be filtered"
+        );
+    }
+
+    #[test]
+    fn unwrap_in_prod_code_still_flagged() {
+        let source = "fn risky(x: Option<i32>) -> i32 { x.unwrap() }";
+        let tree = parse(source, Language::Rust).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Rust);
+        assert!(findings.iter().any(|f| f.title.contains("unwrap")));
+    }
+
+    #[test]
+    fn unsafe_in_test_module_still_flagged() {
+        // unsafe is always worth noting, even in tests
+        let source = r#"
+#[cfg(test)]
+mod tests {
+    fn test_unsafe() {
+        unsafe { std::ptr::null::<i32>().read() };
+    }
+}
+"#;
+        let tree = parse(source, Language::Rust).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Rust);
+        assert!(findings.iter().any(|f| f.title.contains("unsafe")));
     }
 }

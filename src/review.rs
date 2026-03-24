@@ -93,11 +93,51 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
 pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Vec<Finding>> {
     // Try to extract JSON array from the response (LLM may wrap in markdown fences)
     let cleaned = extract_json_array(json_str);
+
+    // Try parsing directly first
+    if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(&cleaned) {
+        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+    }
+
+    // If that fails, try sanitizing invalid JSON escapes (LLMs emit \d, \s, etc.)
+    let sanitized = sanitize_json_escapes(&cleaned);
+    if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(&sanitized) {
+        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+    }
+
+    // Last resort: try the original cleaned string for a better error message
     let llm_findings: Vec<LlmFinding> = serde_json::from_str(&cleaned)?;
-    Ok(llm_findings
-        .into_iter()
-        .map(|f| f.into_finding(model_name))
-        .collect())
+    Ok(llm_findings.into_iter().map(|f| f.into_finding(model_name)).collect())
+}
+
+/// Fix invalid JSON escape sequences that LLMs produce (e.g., \d, \s, \w from regex patterns).
+fn sanitize_json_escapes(json: &str) -> String {
+    let mut result = String::with_capacity(json.len());
+    let mut chars = json.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                match next {
+                    '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u' => {
+                        // Valid JSON escape — keep as-is
+                        result.push(c);
+                        result.push(chars.next().unwrap());
+                    }
+                    _ => {
+                        // Invalid escape (e.g., \d, \s, \w) — escape the backslash
+                        result.push('\\');
+                        result.push('\\');
+                        result.push(chars.next().unwrap());
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 fn extract_json_array(text: &str) -> String {
@@ -285,5 +325,58 @@ mod tests {
         let text = "Here are the findings:\n[{\"title\":\"X\",\"description\":\"Y\",\"severity\":\"low\",\"category\":\"c\",\"line_start\":1,\"line_end\":1}]\nDone.";
         let findings = parse_llm_response(text, "m").unwrap();
         assert_eq!(findings.len(), 1);
+    }
+
+    // -- Robustness edge cases --
+
+    #[test]
+    fn parse_wrapped_in_object() {
+        // Some models return {"findings": [...]} instead of bare [...]
+        let json = r#"{"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1}]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn parse_invalid_json_escapes() {
+        // LLMs sometimes emit invalid escapes like \x1b or unescaped backslashes in regex
+        let json = r#"[{"title":"Bad regex pattern \\d+ in code","description":"The pattern uses \d+ which is invalid","severity":"low","category":"c","line_start":1,"line_end":1}]"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn parse_truncated_json_returns_error() {
+        // Truncated response from max_tokens limit
+        let json = r#"[{"title":"Bug","description":"This is a very long desc"#;
+        assert!(parse_llm_response(json, "m").is_err());
+    }
+
+    #[test]
+    fn parse_json_with_extra_fields_succeeds() {
+        // Models may add extra fields we don't expect
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high","suggestion":"fix it"}]"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn parse_severity_aliases() {
+        let cases = vec![
+            ("warning", Severity::Medium),
+            ("error", Severity::High),
+            ("warn", Severity::Medium),
+            ("note", Severity::Low),
+            ("hint", Severity::Info),
+            ("suggestion", Severity::Info),
+        ];
+        for (sev_str, expected) in cases {
+            let json = format!(
+                r#"[{{"title":"T","description":"D","severity":"{}","category":"c","line_start":1,"line_end":1}}]"#,
+                sev_str
+            );
+            let findings = parse_llm_response(&json, "m").unwrap();
+            assert_eq!(findings[0].severity, expected, "Failed for severity: {}", sev_str);
+        }
     }
 }
