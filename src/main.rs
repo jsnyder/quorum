@@ -1,4 +1,6 @@
+mod analytics;
 mod analysis;
+mod cache;
 mod cli;
 mod config;
 mod domain;

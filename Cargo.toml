@@ -30,6 +30,11 @@ dspy-rs = "0.7"
 # Secret redaction
 regex = "1"
 
+# Caching
+lru = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 # MCP server
 rust-mcp-sdk = { version = "0.9", default-features = false, features = ["server", "macros", "stdio"] }
 async-trait = "0.1"

@@ -124,7 +124,16 @@ impl QuorumHandler {
                 }
                 result
             }
-            other => format!("Unknown catalog query: {}. Use: models, languages, or domains.", other),
+            "stats" => {
+                match self.feedback_store.load_all() {
+                    Ok(entries) => {
+                        let stats = crate::analytics::compute_stats(&entries);
+                        crate::analytics::format_stats_report(&stats)
+                    }
+                    Err(e) => format!("Failed to load feedback: {}", e),
+                }
+            }
+            other => format!("Unknown catalog query: {}. Use: models, languages, domains, or stats.", other),
         };
         Ok(CallToolResult::text_content(vec![result.into()]))
     }
