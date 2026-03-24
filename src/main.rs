@@ -4,6 +4,7 @@ mod config;
 mod finding;
 mod hydration;
 mod linter;
+mod llm_client;
 mod merge;
 mod output;
 mod parser;
@@ -12,6 +13,8 @@ mod redact;
 mod review;
 
 use clap::Parser;
+use config::{Config, EnvConfigSource};
+use pipeline::{PipelineConfig, LlmReviewer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,6 +36,40 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         eprintln!("Error: No files specified");
         return 3;
     }
+
+    // Load config
+    let cfg = match Config::load(&EnvConfigSource) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 3;
+        }
+    };
+
+    // Build LLM reviewer if API key is available
+    let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = cfg.require_api_key() {
+        Some(Box::new(llm_client::OpenAiClient::new(&cfg.base_url, api_key)))
+    } else {
+        None
+    };
+
+    // Build pipeline config
+    let models = if opts.ensemble {
+        // Ensemble: use QUORUM_ENSEMBLE_MODELS or default set
+        std::env::var("QUORUM_ENSEMBLE_MODELS")
+            .unwrap_or_else(|_| cfg.model.clone())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        vec![cfg.model.clone()]
+    };
+
+    let pipeline_cfg = PipelineConfig {
+        models,
+        ..Default::default()
+    };
 
     let style = output::Style::detect(opts.no_color);
     let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -72,18 +109,27 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         };
 
-        // Run local analysis
-        let mut file_findings = Vec::new();
-        file_findings.extend(analysis::analyze_complexity(&tree, &source, lang, 5));
-        file_findings.extend(analysis::analyze_insecure_patterns(&tree, &source, lang));
-
-        if use_json {
-            all_findings.extend(file_findings);
-        } else {
-            let merged = merge::merge_findings(vec![file_findings], 0.8);
-            let file_str = file_path.to_string_lossy();
-            print!("{}", output::format_review(&file_str, &merged, &style));
-            all_findings.extend(merged);
+        // Run the full pipeline
+        match pipeline::review_file(
+            file_path,
+            &source,
+            lang,
+            &tree,
+            llm_reviewer.as_deref(),
+            &pipeline_cfg,
+        ) {
+            Ok(result) => {
+                if use_json {
+                    all_findings.extend(result.findings);
+                } else {
+                    print!("{}", output::format_review(&result.file_path, &result.findings, &style));
+                    all_findings.extend(result.findings);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: Review failed for {}: {}", file_path.display(), e);
+                had_errors = true;
+            }
         }
     }
 
@@ -96,15 +142,13 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     if use_json {
-        let merged = merge::merge_findings(vec![all_findings], 0.8);
-        match output::format_json(&merged) {
+        match output::format_json(&all_findings) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error: JSON serialization failed: {}", e);
                 return 3;
             }
         }
-        return output::compute_exit_code(&merged);
     }
 
     output::compute_exit_code(&all_findings)
