@@ -109,7 +109,20 @@ impl QuorumHandler {
                 "Supported languages:\n- Rust (.rs)\n- Python (.py)\n- TypeScript (.ts)\n- TSX (.tsx)".to_string()
             }
             "domains" => {
-                "Domain detection not yet implemented. Coming in Phase 2.".to_string()
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let info = crate::domain::detect_domain(&cwd);
+                let mut result = String::new();
+                if info.languages.is_empty() && info.frameworks.is_empty() {
+                    result.push_str("No frameworks or languages detected in current directory.");
+                } else {
+                    if !info.languages.is_empty() {
+                        result.push_str(&format!("Languages: {}\n", info.languages.join(", ")));
+                    }
+                    if !info.frameworks.is_empty() {
+                        result.push_str(&format!("Frameworks: {}", info.frameworks.join(", ")));
+                    }
+                }
+                result
             }
             other => format!("Unknown catalog query: {}. Use: models, languages, or domains.", other),
         };

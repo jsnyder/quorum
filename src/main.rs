@@ -1,6 +1,7 @@
 mod analysis;
 mod cli;
 mod config;
+mod domain;
 mod feedback;
 mod finding;
 mod hydration;
