@@ -43,7 +43,7 @@ impl Default for PipelineConfig {
             models: vec![],
             feedback: vec![],
             calibrate: true,
-            auto_calibrate: false,
+            auto_calibrate: true,
             feedback_store: None,
         }
     }

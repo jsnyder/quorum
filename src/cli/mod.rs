@@ -56,9 +56,9 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub provenance: bool,
 
-    /// Auto-calibrate: use a second LLM pass to triage findings and grow feedback corpus
+    /// Disable auto-calibration (second LLM pass that triages findings)
     #[arg(long)]
-    pub auto_calibrate: bool,
+    pub no_auto_calibrate: bool,
 
     /// Send review request to running daemon instead of parsing locally
     #[arg(long)]
@@ -67,4 +67,10 @@ pub struct ReviewOpts {
     /// Daemon port (default: 7842)
     #[arg(long, default_value = "7842")]
     pub daemon_port: u16,
+}
+
+impl ReviewOpts {
+    pub fn no_auto_calibrate(&self) -> bool {
+        self.no_auto_calibrate
+    }
 }

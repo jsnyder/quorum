@@ -56,9 +56,11 @@ impl QuorumHandler {
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
         let feedback = self.feedback_store.load_all().unwrap_or_default();
+        let feedback_path = dirs_path().join("feedback.jsonl");
         let pipeline_cfg = PipelineConfig {
             models: vec![self.config.model.clone()],
             feedback,
+            feedback_store: Some(feedback_path),
             ..Default::default()
         };
 

@@ -155,8 +155,8 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
-        auto_calibrate: opts.auto_calibrate,
-        feedback_store: if opts.auto_calibrate { Some(feedback_path.clone()) } else { None },
+        auto_calibrate: !opts.no_auto_calibrate(),
+        feedback_store: Some(feedback_path.clone()),
         ..Default::default()
     };
 
