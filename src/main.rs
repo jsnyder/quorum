@@ -3,6 +3,7 @@ mod analysis;
 mod cache;
 mod cli;
 mod config;
+mod daemon;
 mod domain;
 mod feedback;
 mod finding;
@@ -31,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
         }
         cli::Command::Serve => {
             run_mcp_server().await?;
+        }
+        cli::Command::Daemon(opts) => {
+            run_daemon(opts).await?;
         }
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
@@ -125,6 +129,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     let style = output::Style::detect(opts.no_color);
     let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let parse_cache = cache::ParseCache::new(128);
     let mut all_findings = Vec::new();
     let mut had_errors = false;
 
@@ -152,23 +157,14 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         };
 
-        let tree = match parser::parse(&source, lang) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Error: Parse failed for {}: {}", file_path.display(), e);
-                had_errors = true;
-                continue;
-            }
-        };
-
-        // Run the full pipeline
-        match pipeline::review_file(
+        // Run the full pipeline with cache
+        match pipeline::review_source(
             file_path,
             &source,
             lang,
-            &tree,
             llm_reviewer.as_deref(),
             &pipeline_cfg,
+            Some(&parse_cache),
         ) {
             Ok(result) => {
                 if use_json {
@@ -204,4 +200,44 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     output::compute_exit_code(&all_findings)
+}
+
+async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let watch_dir = opts.watch_dir
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+
+    eprintln!("quorum daemon starting");
+    eprintln!("  Watching: {}", watch_dir.display());
+    eprintln!("  Cache capacity: {}", opts.cache_size);
+
+    let parse_cache = Arc::new(cache::ParseCache::new(opts.cache_size));
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    // Start file watcher
+    let _watcher = daemon::start_watcher(&watch_dir, tx.clone())?;
+    eprintln!("  File watcher active");
+
+    // Spawn event loop
+    let cache_clone = parse_cache.clone();
+    let event_handle = tokio::spawn(async move {
+        daemon::run_event_loop(rx, cache_clone).await;
+    });
+
+    // Wait for shutdown signal
+    eprintln!("  Ready. Press Ctrl+C to stop.");
+    tokio::signal::ctrl_c().await?;
+
+    // Trigger clean shutdown
+    let _ = tx.send(daemon::DaemonEvent::Shutdown);
+    event_handle.await?;
+
+    let stats = parse_cache.stats();
+    eprintln!(
+        "Daemon stopped. Cache stats: {} hits, {} misses, {:.0}% hit rate",
+        stats.hits, stats.misses, stats.hit_rate() * 100.0
+    );
+    Ok(())
 }

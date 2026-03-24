@@ -42,6 +42,9 @@ async-trait = "0.1"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# File watching
+notify = "7"
+
 # Tree-sitter (core + language grammars)
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"

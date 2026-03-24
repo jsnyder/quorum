@@ -14,8 +14,21 @@ pub enum Command {
     Review(ReviewOpts),
     /// Start MCP server (stdio transport)
     Serve,
+    /// Run as daemon with file watching and warm caches
+    Daemon(DaemonOpts),
     /// Print version
     Version,
+}
+
+#[derive(Parser)]
+pub struct DaemonOpts {
+    /// Directory to watch for file changes (default: current directory)
+    #[arg(long)]
+    pub watch_dir: Option<PathBuf>,
+
+    /// Parse cache capacity
+    #[arg(long, default_value = "256")]
+    pub cache_size: usize,
 }
 
 #[derive(Parser)]

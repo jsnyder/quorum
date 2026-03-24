@@ -107,6 +107,23 @@ pub fn review_file(
     })
 }
 
+/// Higher-level entry point: parses source (with optional cache) then runs review_file.
+pub fn review_source(
+    file_path: &Path,
+    source: &str,
+    lang: Language,
+    llm: Option<&dyn LlmReviewer>,
+    pipeline_config: &PipelineConfig,
+    cache: Option<&crate::cache::ParseCache>,
+) -> anyhow::Result<FileReviewResult> {
+    let tree = if let Some(c) = cache {
+        c.get_or_parse(source, lang)?
+    } else {
+        parser::parse(source, lang)?
+    };
+    review_file(file_path, source, lang, &tree, llm, pipeline_config)
+}
+
 fn lang_name(lang: Language) -> &'static str {
     match lang {
         Language::Rust => "rust",
@@ -288,5 +305,59 @@ mod tests {
         let source = "fn x() {}";
         let result = parse_and_review(source, Language::Rust, None, vec![]);
         assert_eq!(result.file_path, "test.rs");
+    }
+
+    // -- Cache integration --
+
+    #[test]
+    fn review_source_without_cache() {
+        let source = "fn simple() -> i32 { 42 }";
+        let config = PipelineConfig::default();
+        let result = review_source(
+            Path::new("test.rs"), source, Language::Rust,
+            None, &config, None,
+        ).unwrap();
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn review_source_with_cache_populates_cache() {
+        let cache = crate::cache::ParseCache::new(10);
+        let source = "fn simple() -> i32 { 42 }";
+        let config = PipelineConfig::default();
+
+        let _result = review_source(
+            Path::new("test.rs"), source, Language::Rust,
+            None, &config, Some(&cache),
+        ).unwrap();
+
+        assert_eq!(cache.stats().misses, 1);
+        assert_eq!(cache.stats().hits, 0);
+
+        // Second call with same content should hit cache
+        let _result2 = review_source(
+            Path::new("test.rs"), source, Language::Rust,
+            None, &config, Some(&cache),
+        ).unwrap();
+
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn review_source_cache_different_files() {
+        let cache = crate::cache::ParseCache::new(10);
+        let config = PipelineConfig::default();
+
+        review_source(
+            Path::new("a.rs"), "fn a() {}", Language::Rust,
+            None, &config, Some(&cache),
+        ).unwrap();
+        review_source(
+            Path::new("b.rs"), "fn b() {}", Language::Rust,
+            None, &config, Some(&cache),
+        ).unwrap();
+
+        assert_eq!(cache.stats().misses, 2);
+        assert_eq!(cache.stats().size, 2);
     }
 }
