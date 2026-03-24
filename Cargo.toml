@@ -30,6 +30,13 @@ dspy-rs = "0.7"
 # Secret redaction
 regex = "1"
 
+# MCP server
+rust-mcp-sdk = { version = "0.9", default-features = false, features = ["server", "macros", "stdio"] }
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
 # Tree-sitter (core + language grammars)
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"

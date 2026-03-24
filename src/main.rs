@@ -1,10 +1,12 @@
 mod analysis;
 mod cli;
 mod config;
+mod feedback;
 mod finding;
 mod hydration;
 mod linter;
 mod llm_client;
+mod mcp;
 mod merge;
 mod output;
 mod parser;
@@ -24,10 +26,57 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = run_review(opts);
             std::process::exit(exit_code);
         }
+        cli::Command::Serve => {
+            run_mcp_server().await?;
+        }
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
     }
+    Ok(())
+}
+
+async fn run_mcp_server() -> anyhow::Result<()> {
+    use rust_mcp_sdk::schema::{
+        Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
+        ServerCapabilitiesTools,
+    };
+    use rust_mcp_sdk::mcp_server::{server_runtime, McpServerOptions};
+    use rust_mcp_sdk::{McpServer, StdioTransport, ToMcpServerHandler, TransportOptions};
+
+    let server_details = InitializeResult {
+        server_info: Implementation {
+            name: "quorum".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            title: Some("Quorum Code Review".into()),
+            description: Some("Multi-source code review: LLM ensemble + local AST analysis".into()),
+            icons: vec![],
+            website_url: None,
+        },
+        capabilities: ServerCapabilities {
+            tools: Some(ServerCapabilitiesTools { list_changed: None }),
+            ..Default::default()
+        },
+        protocol_version: ProtocolVersion::V2025_11_25.into(),
+        instructions: None,
+        meta: None,
+    };
+
+    let transport = StdioTransport::new(TransportOptions::default())
+        .map_err(|e| anyhow::anyhow!("Failed to create stdio transport: {}", e))?;
+    let handler = mcp::handler::QuorumHandler::new()?;
+
+    let server = server_runtime::create_server(McpServerOptions {
+        server_details,
+        transport,
+        handler: handler.to_mcp_server_handler(),
+        task_store: None,
+        client_task_store: None,
+        message_observer: None,
+    });
+
+    server.start().await
+        .map_err(|e| anyhow::anyhow!("MCP server error: {}", e))?;
     Ok(())
 }
 

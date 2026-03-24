@@ -12,6 +12,8 @@ pub struct Args {
 pub enum Command {
     /// Review files for issues
     Review(ReviewOpts),
+    /// Start MCP server (stdio transport)
+    Serve,
     /// Print version
     Version,
 }
