@@ -60,7 +60,7 @@ pub fn hydrate(
     // find all callers of that function in the file
     for &(start, end) in changed_lines {
         for (name, _, fstart, fend) in &all_funcs {
-            if *fstart >= start && *fend <= end {
+            if *fstart <= end && *fend >= start {
                 // This function's signature is in the changed region
                 find_callers_of(&root, source, lang, &call_kinds, name, &all_funcs, &mut ctx.callers);
             }
@@ -177,6 +177,21 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
         }
     } else if text.starts_with("import ") {
+        // TS: import { X, Y } from './module'
+        if text.contains('{') && text.contains('}') {
+            if let Some(start) = text.find('{') {
+                if let Some(end) = text.find('}') {
+                    let inner = &text[start + 1..end];
+                    for part in inner.split(',') {
+                        let name = part.trim().split(" as ").next().unwrap_or("").trim();
+                        if !name.is_empty() {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            return names;
+        }
         // Python: import sys
         let module = text.trim_start_matches("import ").trim();
         let name = module.split('.').last().unwrap_or(module).trim();
