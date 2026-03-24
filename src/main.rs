@@ -1,6 +1,8 @@
+mod analysis;
 mod cli;
 mod config;
 mod finding;
+mod merge;
 mod output;
 mod parser;
 
