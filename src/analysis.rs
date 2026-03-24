@@ -396,6 +396,8 @@ fn scan_insecure_python(
                         && looks_like_secret
                         && !right_text.contains("os.environ")
                         && !right_text.contains("getenv")
+                        && !inner.starts_with("http://")
+                        && !inner.starts_with("https://")
                     {
                         findings.push(Finding {
                             title: format!("Hardcoded secret in `{}`", &source[left.byte_range()]),
