@@ -7,6 +7,7 @@ mod linter;
 mod merge;
 mod output;
 mod parser;
+mod pipeline;
 mod redact;
 mod review;
 
