@@ -34,21 +34,25 @@ impl FeedbackStore {
     }
 
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
+        use anyhow::Context;
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .with_context(|| format!("Failed to open feedback file: {}", self.path.display()))?;
         let line = serde_json::to_string(entry)?;
         writeln!(file, "{}", line)?;
         Ok(())
     }
 
     pub fn load_all(&self) -> anyhow::Result<Vec<FeedbackEntry>> {
+        use anyhow::Context;
         if !self.path.exists() {
             return Ok(vec![]);
         }
-        let content = std::fs::read_to_string(&self.path)?;
+        let content = std::fs::read_to_string(&self.path)
+            .with_context(|| format!("Failed to read feedback file: {}", self.path.display()))?;
         let mut entries = Vec::new();
         for line in content.lines() {
             if line.trim().is_empty() {

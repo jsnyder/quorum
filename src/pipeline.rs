@@ -57,20 +57,29 @@ pub fn review_file(
     local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
     all_sources.push(local_findings);
 
-    // Source 2: LLM review (if configured)
+    // Source 2: LLM review (if configured and models specified)
     if let Some(reviewer) = llm {
+        if pipeline_config.models.is_empty() {
+            // No models configured — skip LLM review
+        } else {
         // Hydrate context (using full file as changed range for now)
         let total_lines = source.lines().count() as u32;
         let ctx = hydration::hydrate(tree, source, lang, &[(1, total_lines.max(1))]);
 
-        // Redact secrets before sending to LLM
+        // Redact secrets in both code AND hydration context before LLM
         let redacted_code = redact::redact_secrets(source);
+        let redacted_ctx = crate::hydration::HydrationContext {
+            callee_signatures: ctx.callee_signatures.iter().map(|s| redact::redact_secrets(s)).collect(),
+            type_definitions: ctx.type_definitions.iter().map(|s| redact::redact_secrets(s)).collect(),
+            callers: ctx.callers.clone(),
+            import_targets: ctx.import_targets.iter().map(|s| redact::redact_secrets(s)).collect(),
+        };
 
         let req = ReviewRequest {
             file_path: file_str.clone(),
             language: lang_name(lang).to_string(),
             code: redacted_code,
-            hydration_context: Some(ctx),
+            hydration_context: Some(redacted_ctx),
         };
 
         let prompt = review::build_review_prompt(&req);
@@ -86,6 +95,7 @@ pub fn review_file(
                 Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
             }
         }
+        } // end if models not empty
     }
 
     // Merge all sources
@@ -269,7 +279,8 @@ mod tests {
             Some(&llm),
             vec!["gpt-5.4".into()],
         );
-        assert!(result.findings.is_empty() || !result.findings.is_empty()); // just verify no crash
+        // Pipeline completes without panic — redaction doesn't affect local analysis
+        assert!(result.file_path == "test.rs");
     }
 
     #[test]

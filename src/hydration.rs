@@ -159,9 +159,15 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     let text = import_text.trim().trim_end_matches(';');
 
     if text.starts_with("use ") {
-        // Rust: last segment after ::
+        // Rust: last segment after ::, handle `as` aliases
         if let Some(last) = text.rsplit("::").next() {
             let name = last.trim().trim_end_matches(';');
+            // Handle `use foo::bar as baz` -> "baz"
+            let name = if let Some(alias) = name.split(" as ").nth(1) {
+                alias.trim()
+            } else {
+                name
+            };
             if !name.is_empty() && name != "*" {
                 names.push(name.to_string());
             }

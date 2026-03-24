@@ -13,10 +13,8 @@ use rust_mcp_sdk::schema::{
 
 use crate::config::{Config, EnvConfigSource};
 use crate::feedback::{FeedbackEntry, FeedbackStore, Verdict};
-use crate::finding::Finding;
 use crate::llm_client::OpenAiClient;
 use crate::mcp::tools::{CatalogTool, FeedbackTool, ReviewTool};
-use crate::output;
 use crate::parser::Language;
 use crate::pipeline::{self, LlmReviewer, PipelineConfig};
 
@@ -130,8 +128,15 @@ impl FeedbackEntry {
 }
 
 fn dirs_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(home).join(".quorum");
+    // Prefer XDG_DATA_HOME, fall back to HOME/.quorum
+    let dir = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        PathBuf::from(xdg).join("quorum")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".quorum")
+    } else {
+        // Last resort: use current directory (not ideal, but don't crash)
+        PathBuf::from(".quorum")
+    };
     std::fs::create_dir_all(&dir).ok();
     dir
 }

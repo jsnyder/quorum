@@ -1,6 +1,5 @@
 /// OpenAI-compatible LLM client for code review.
 /// Uses reqwest directly for full control over base_url, API key, and parallel calls.
-/// DSRs Signature pattern used for structured output definition.
 
 use crate::pipeline::LlmReviewer;
 
@@ -14,14 +13,14 @@ impl OpenAiClient {
     pub fn new(base_url: &str, api_key: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
-            base_url: base_url.to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
         }
     }
 
     async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
         let system_msg = concat!(
-            "You are a code reviewer. Respond with a JSON array of findings. ",
+            "You are a code reviewer. Respond ONLY with a JSON array of findings. ",
             "Each finding must have: title (string), description (string), ",
             "severity (critical/high/medium/low/info), category (string), ",
             "line_start (number), line_end (number). ",
@@ -35,8 +34,7 @@ impl OpenAiClient {
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 4096,
-            "response_format": {"type": "json_object"}
+            "max_tokens": 4096
         });
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -51,24 +49,31 @@ impl OpenAiClient {
         let status = resp.status();
         if !status.is_success() {
             let error_text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API Error ({}): {}", status.as_u16(), error_text);
+            let truncated = if error_text.len() > 200 {
+                format!("{}...", &error_text[..200])
+            } else {
+                error_text
+            };
+            anyhow::bail!("API Error ({}): {}", status.as_u16(), truncated);
         }
 
         let json: serde_json::Value = resp.json().await?;
         let content = json["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No content in API response"))?;
+            .ok_or_else(|| anyhow::anyhow!(
+                "Unexpected API response structure: no choices[0].message.content"
+            ))?;
 
         Ok(content.to_string())
     }
 }
 
-/// Synchronous wrapper for the async client, using the tokio runtime.
+/// Uses block_in_place for safe sync-over-async in multi-threaded tokio runtime.
 impl LlmReviewer for OpenAiClient {
     fn review(&self, prompt: &str, model: &str) -> anyhow::Result<String> {
         let rt = tokio::runtime::Handle::try_current()
             .map_err(|_| anyhow::anyhow!("No tokio runtime available"))?;
-        rt.block_on(self.chat_completion(model, prompt))
+        tokio::task::block_in_place(|| rt.block_on(self.chat_completion(model, prompt)))
     }
 }
 
