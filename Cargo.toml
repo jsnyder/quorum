@@ -24,6 +24,12 @@ thiserror = "2"
 # URL parsing
 url = "2"
 
+# LLM structured output
+dspy-rs = "0.7"
+
+# Secret redaction
+regex = "1"
+
 # Tree-sitter (core + language grammars)
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"

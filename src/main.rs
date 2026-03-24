@@ -7,6 +7,8 @@ mod linter;
 mod merge;
 mod output;
 mod parser;
+mod redact;
+mod review;
 
 use clap::Parser;
 
