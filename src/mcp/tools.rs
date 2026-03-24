@@ -49,6 +49,53 @@ pub struct CatalogTool {
     pub query: String,
 }
 
+#[mcp_tool(
+    name = "chat",
+    description = "Ask questions about code. Provide a file for context and ask anything about its behavior, design, or potential issues."
+)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ChatTool {
+    /// The question to ask
+    pub question: String,
+    /// Code context for the question
+    #[serde(default)]
+    pub code: Option<String>,
+    /// File path for context
+    #[serde(rename = "filePath", default)]
+    pub file_path: Option<String>,
+}
+
+#[mcp_tool(
+    name = "debug",
+    description = "Analyze code with a specific error message for debugging help. Returns potential causes and fixes."
+)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DebugTool {
+    /// The error message or stack trace
+    pub error: String,
+    /// The code where the error occurs
+    pub code: String,
+    /// File path for context
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+}
+
+#[mcp_tool(
+    name = "testgen",
+    description = "Generate tests for a function or module. Returns test code in the appropriate framework."
+)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TestgenTool {
+    /// The code to generate tests for
+    pub code: String,
+    /// File path (used to detect language and framework)
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    /// Test framework preference (e.g., pytest, jest, cargo-test)
+    #[serde(default)]
+    pub framework: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +137,43 @@ mod tests {
         let json = r#"{"filePath":"src/auth.rs","finding":"SQL injection","verdict":"tp","reason":"Fixed"}"#;
         let tool: FeedbackTool = serde_json::from_str(json).unwrap();
         assert_eq!(tool.verdict, "tp");
+    }
+
+    #[test]
+    fn chat_tool_has_correct_name() {
+        assert_eq!(ChatTool::tool().name, "chat");
+    }
+
+    #[test]
+    fn debug_tool_has_correct_name() {
+        assert_eq!(DebugTool::tool().name, "debug");
+    }
+
+    #[test]
+    fn testgen_tool_has_correct_name() {
+        assert_eq!(TestgenTool::tool().name, "testgen");
+    }
+
+    #[test]
+    fn chat_tool_optional_fields() {
+        let json = r#"{"question":"What does this do?"}"#;
+        let tool: ChatTool = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.question, "What does this do?");
+        assert!(tool.code.is_none());
+        assert!(tool.file_path.is_none());
+    }
+
+    #[test]
+    fn debug_tool_deserializes() {
+        let json = r#"{"error":"NullPointerException","code":"x.foo()","filePath":"Main.java"}"#;
+        let tool: DebugTool = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.error, "NullPointerException");
+    }
+
+    #[test]
+    fn testgen_tool_optional_framework() {
+        let json = r#"{"code":"def add(a,b): return a+b","filePath":"math.py"}"#;
+        let tool: TestgenTool = serde_json::from_str(json).unwrap();
+        assert!(tool.framework.is_none());
     }
 }

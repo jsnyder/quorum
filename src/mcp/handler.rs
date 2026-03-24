@@ -14,7 +14,8 @@ use rust_mcp_sdk::schema::{
 use crate::config::{Config, EnvConfigSource};
 use crate::feedback::{FeedbackEntry, FeedbackStore, Verdict};
 use crate::llm_client::OpenAiClient;
-use crate::mcp::tools::{CatalogTool, FeedbackTool, ReviewTool};
+use crate::mcp::tools::{CatalogTool, ChatTool, DebugTool, FeedbackTool, ReviewTool, TestgenTool};
+use crate::redact;
 use crate::parser::Language;
 use crate::pipeline::{self, LlmReviewer, PipelineConfig};
 
@@ -114,6 +115,74 @@ impl QuorumHandler {
         };
         Ok(CallToolResult::text_content(vec![result.into()]))
     }
+
+    fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
+        let reviewer = self.llm_reviewer.as_ref()
+            .ok_or("Chat requires QUORUM_API_KEY to be set.")?;
+
+        let mut prompt = format!("Question: {}\n\n", params.question);
+        if let Some(code) = &params.code {
+            let redacted = redact::redact_secrets(code);
+            let lang = params.file_path.as_deref()
+                .and_then(|p| Language::from_path(std::path::Path::new(p)))
+                .map(|l| match l {
+                    Language::Rust => "rust",
+                    Language::Python => "python",
+                    Language::TypeScript => "typescript",
+                    Language::Tsx => "tsx",
+                })
+                .unwrap_or("text");
+            prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
+        }
+
+        let response = reviewer.review(&prompt, &self.config.model)
+            .map_err(|e| format!("LLM error: {}", e))?;
+
+        Ok(CallToolResult::text_content(vec![response.into()]))
+    }
+
+    fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
+        let reviewer = self.llm_reviewer.as_ref()
+            .ok_or("Debug requires QUORUM_API_KEY to be set.")?;
+
+        let redacted_code = redact::redact_secrets(&params.code);
+        let prompt = format!(
+            "Debug this error in `{}`.\n\nError:\n```\n{}\n```\n\nCode:\n```\n{}\n```\n\nProvide: 1) Root cause analysis, 2) Suggested fix, 3) Prevention advice.",
+            params.file_path, params.error, redacted_code
+        );
+
+        let response = reviewer.review(&prompt, &self.config.model)
+            .map_err(|e| format!("LLM error: {}", e))?;
+
+        Ok(CallToolResult::text_content(vec![response.into()]))
+    }
+
+    fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
+        let reviewer = self.llm_reviewer.as_ref()
+            .ok_or("Testgen requires QUORUM_API_KEY to be set.")?;
+
+        let lang = Language::from_path(std::path::Path::new(&params.file_path))
+            .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
+
+        let lang_name = match lang {
+            Language::Rust => "rust",
+            Language::Python => "python",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
+        };
+
+        let framework_hint = params.framework.as_deref().map(|f| format!(" using the {} framework", f)).unwrap_or_default();
+        let redacted_code = redact::redact_secrets(&params.code);
+        let prompt = format!(
+            "Generate comprehensive tests{} for this {} code from `{}`.\n\n```{}\n{}\n```\n\nInclude: happy path, edge cases, error cases. Return ONLY the test code.",
+            framework_hint, lang_name, params.file_path, lang_name, redacted_code
+        );
+
+        let response = reviewer.review(&prompt, &self.config.model)
+            .map_err(|e| format!("LLM error: {}", e))?;
+
+        Ok(CallToolResult::text_content(vec![response.into()]))
+    }
 }
 
 impl FeedbackEntry {
@@ -151,6 +220,9 @@ impl ServerHandler for QuorumHandler {
         Ok(ListToolsResult {
             tools: vec![
                 ReviewTool::tool(),
+                ChatTool::tool(),
+                DebugTool::tool(),
+                TestgenTool::tool(),
                 FeedbackTool::tool(),
                 CatalogTool::tool(),
             ],
@@ -182,6 +254,21 @@ impl ServerHandler for QuorumHandler {
                 let tool: CatalogTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
                 self.handle_catalog(tool)
+            }
+            "chat" => {
+                let tool: ChatTool = serde_json::from_value(args_value)
+                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                self.handle_chat(tool)
+            }
+            "debug" => {
+                let tool: DebugTool = serde_json::from_value(args_value)
+                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                self.handle_debug(tool)
+            }
+            "testgen" => {
+                let tool: TestgenTool = serde_json::from_value(args_value)
+                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                self.handle_testgen(tool)
             }
             _ => return Err(CallToolError::unknown_tool(params.name)),
         };
@@ -337,5 +424,120 @@ mod tests {
         };
 
         assert!(handler.handle_review(params).is_err());
+    }
+
+    // -- Chat, Debug, Testgen: require LLM --
+
+    fn handler_no_llm() -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler.jsonl")),
+            llm_reviewer: None,
+        }
+    }
+
+    fn handler_with_fake_llm() -> QuorumHandler {
+        use crate::pipeline::LlmReviewer;
+
+        struct FakeLlm;
+        impl LlmReviewer for FakeLlm {
+            fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<String> {
+                Ok("This is a helpful response about the code.".into())
+            }
+        }
+
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler2.jsonl")),
+            llm_reviewer: Some(Box::new(FakeLlm)),
+        }
+    }
+
+    #[test]
+    fn chat_requires_api_key() {
+        let handler = handler_no_llm();
+        let params = ChatTool {
+            question: "What does this do?".into(),
+            code: None,
+            file_path: None,
+        };
+        assert!(handler.handle_chat(params).is_err());
+    }
+
+    #[test]
+    fn chat_with_llm_returns_response() {
+        let handler = handler_with_fake_llm();
+        let params = ChatTool {
+            question: "What does this function do?".into(),
+            code: Some("fn add(a: i32, b: i32) -> i32 { a + b }".into()),
+            file_path: Some("math.rs".into()),
+        };
+        let result = handler.handle_chat(params).unwrap();
+        assert!(!result.content.is_empty());
+    }
+
+    #[test]
+    fn debug_requires_api_key() {
+        let handler = handler_no_llm();
+        let params = DebugTool {
+            error: "panic!".into(),
+            code: "fn main() {}".into(),
+            file_path: "main.rs".into(),
+        };
+        assert!(handler.handle_debug(params).is_err());
+    }
+
+    #[test]
+    fn debug_with_llm_returns_response() {
+        let handler = handler_with_fake_llm();
+        let params = DebugTool {
+            error: "index out of bounds".into(),
+            code: "fn get(v: &[i32]) -> i32 { v[10] }".into(),
+            file_path: "main.rs".into(),
+        };
+        let result = handler.handle_debug(params).unwrap();
+        assert!(!result.content.is_empty());
+    }
+
+    #[test]
+    fn testgen_requires_api_key() {
+        let handler = handler_no_llm();
+        let params = TestgenTool {
+            code: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
+            file_path: "math.rs".into(),
+            framework: None,
+        };
+        assert!(handler.handle_testgen(params).is_err());
+    }
+
+    #[test]
+    fn testgen_with_llm_returns_response() {
+        let handler = handler_with_fake_llm();
+        let params = TestgenTool {
+            code: "def add(a, b):\n    return a + b\n".into(),
+            file_path: "math.py".into(),
+            framework: Some("pytest".into()),
+        };
+        let result = handler.handle_testgen(params).unwrap();
+        assert!(!result.content.is_empty());
+    }
+
+    #[test]
+    fn testgen_rejects_unsupported_extension() {
+        let handler = handler_with_fake_llm();
+        let params = TestgenTool {
+            code: "code".into(),
+            file_path: "file.xyz".into(),
+            framework: None,
+        };
+        assert!(handler.handle_testgen(params).is_err());
     }
 }
