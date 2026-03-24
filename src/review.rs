@@ -28,9 +28,10 @@ impl LlmFinding {
     pub fn into_finding(self, model_name: &str) -> Finding {
         let severity = match self.severity.to_lowercase().as_str() {
             "critical" => Severity::Critical,
-            "high" => Severity::High,
-            "medium" => Severity::Medium,
-            "low" => Severity::Low,
+            "high" | "error" => Severity::High,
+            "medium" | "warning" | "warn" => Severity::Medium,
+            "low" | "note" => Severity::Low,
+            "info" | "suggestion" | "hint" => Severity::Info,
             _ => Severity::Info,
         };
         Finding {
@@ -39,8 +40,8 @@ impl LlmFinding {
             severity,
             category: self.category,
             source: Source::Llm(model_name.to_string()),
-            line_start: self.line_start,
-            line_end: self.line_end,
+            line_start: self.line_start.max(1),
+            line_end: self.line_end.max(self.line_start.max(1)),
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
@@ -110,10 +111,41 @@ fn extract_json_array(text: &str) -> String {
         text
     };
 
-    // Find the JSON array
-    if let Some(start) = text.find('[') {
-        if let Some(end) = text.rfind(']') {
-            return text[start..=end].to_string();
+    // Find the outermost JSON array using bracket depth tracking
+    let bytes = text.as_bytes();
+    let mut start = None;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if b == b'[' {
+            if depth == 0 {
+                start = Some(i);
+            }
+            depth += 1;
+        } else if b == b']' {
+            depth -= 1;
+            if depth == 0 {
+                if let Some(s) = start {
+                    return text[s..=i].to_string();
+                }
+            }
         }
     }
 

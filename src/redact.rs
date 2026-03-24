@@ -16,12 +16,13 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // Bearer tokens (JWT-like)
         (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
         // Generic secret assignments: KEY=value, PASSWORD=value, TOKEN=value, SECRET=value
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"?([^\s"'\n]{6,})"?"#).unwrap(),
+        // Handles double-quoted, single-quoted, and unquoted values
+        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)["']?([^\s"'\n]{6,})["']?"#).unwrap(),
          "$1[REDACTED]"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
         // URLs with passwords: protocol://user:password@host
-        (Regex::new(r"(://[^:]+:)([^@\s]{3,})(@)").unwrap(), "$1[REDACTED]$3"),
+        (Regex::new(r"(://[^:/@]+:)([^@\s]{3,})(@)").unwrap(), "${1}[REDACTED]${3}"),
     ]
 });
 

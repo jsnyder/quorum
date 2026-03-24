@@ -133,7 +133,7 @@ impl QuorumHandler {
         let reviewer = self.llm_reviewer.as_ref()
             .ok_or("Chat requires QUORUM_API_KEY to be set.")?;
 
-        let mut prompt = format!("Question: {}\n\n", params.question);
+        let mut prompt = format!("Question: {}\n\n", redact::redact_secrets(&params.question));
         if let Some(code) = &params.code {
             let redacted = redact::redact_secrets(code);
             let lang = params.file_path.as_deref()
@@ -159,9 +159,10 @@ impl QuorumHandler {
             .ok_or("Debug requires QUORUM_API_KEY to be set.")?;
 
         let redacted_code = redact::redact_secrets(&params.code);
+        let redacted_error = redact::redact_secrets(&params.error);
         let prompt = format!(
             "Debug this error in `{}`.\n\nError:\n```\n{}\n```\n\nCode:\n```\n{}\n```\n\nProvide: 1) Root cause analysis, 2) Suggested fix, 3) Prevention advice.",
-            params.file_path, params.error, redacted_code
+            params.file_path, redacted_error, redacted_code
         );
 
         let response = reviewer.review(&prompt, &self.config.model)

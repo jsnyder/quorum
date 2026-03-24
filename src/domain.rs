@@ -1,6 +1,7 @@
 /// Domain/framework detection: scan project for framework markers.
 /// Detected domains enrich review prompts with framework-specific context.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,47 +12,48 @@ pub struct DomainInfo {
 
 /// Detect frameworks and languages from project directory structure and config files.
 pub fn detect_domain(project_dir: &Path) -> DomainInfo {
-    let mut languages = Vec::new();
-    let mut frameworks = Vec::new();
+    let mut languages: HashSet<String> = HashSet::new();
+    let mut frameworks: HashSet<String> = HashSet::new();
 
     // Language detection
     if project_dir.join("Cargo.toml").exists() {
-        languages.push("rust".into());
+        languages.insert("rust".into());
     }
     if project_dir.join("pyproject.toml").exists()
         || project_dir.join("setup.py").exists()
         || project_dir.join("requirements.txt").exists()
     {
-        languages.push("python".into());
+        languages.insert("python".into());
     }
     if project_dir.join("tsconfig.json").exists() {
-        languages.push("typescript".into());
+        languages.insert("typescript".into());
     }
-    if project_dir.join("package.json").exists() && !languages.contains(&"typescript".to_string()) {
-        languages.push("javascript".into());
+    // JS only if package.json exists AND not already detected as TS
+    if project_dir.join("package.json").exists() && !languages.contains("typescript") {
+        languages.insert("javascript".into());
     }
     if project_dir.join("go.mod").exists() {
-        languages.push("go".into());
+        languages.insert("go".into());
     }
 
-    // Framework detection from package.json
+    // Framework detection from package.json — exact key matching
     if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json")) {
         if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-            let deps = merge_deps(&pkg);
+            let deps = collect_dep_keys(&pkg);
             if deps.contains("next") {
-                frameworks.push("nextjs".into());
+                frameworks.insert("nextjs".into());
             }
-            if deps.contains("react") && !frameworks.contains(&"nextjs".to_string()) {
-                frameworks.push("react".into());
+            if deps.contains("react") && !frameworks.contains("nextjs") {
+                frameworks.insert("react".into());
             }
             if deps.contains("vue") {
-                frameworks.push("vue".into());
+                frameworks.insert("vue".into());
             }
             if deps.contains("express") {
-                frameworks.push("express".into());
+                frameworks.insert("express".into());
             }
             if deps.contains("fastify") {
-                frameworks.push("fastify".into());
+                frameworks.insert("fastify".into());
             }
         }
     }
@@ -60,13 +62,13 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
     if let Ok(content) = std::fs::read_to_string(project_dir.join("pyproject.toml")) {
         let lower = content.to_lowercase();
         if lower.contains("fastapi") {
-            frameworks.push("fastapi".into());
+            frameworks.insert("fastapi".into());
         }
         if lower.contains("django") {
-            frameworks.push("django".into());
+            frameworks.insert("django".into());
         }
         if lower.contains("flask") {
-            frameworks.push("flask".into());
+            frameworks.insert("flask".into());
         }
     }
 
@@ -74,30 +76,33 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
     if project_dir.join("manage.py").exists() {
         if let Ok(content) = std::fs::read_to_string(project_dir.join("manage.py")) {
             if content.contains("django") {
-                if !frameworks.contains(&"django".to_string()) {
-                    frameworks.push("django".into());
-                }
+                frameworks.insert("django".into());
             }
         }
     }
 
+    let mut langs: Vec<String> = languages.into_iter().collect();
+    let mut fws: Vec<String> = frameworks.into_iter().collect();
+    langs.sort();
+    fws.sort();
+
     DomainInfo {
-        frameworks,
-        languages,
+        frameworks: fws,
+        languages: langs,
     }
 }
 
-fn merge_deps(pkg: &serde_json::Value) -> String {
-    let mut all = String::new();
-    for key in &["dependencies", "devDependencies", "peerDependencies"] {
-        if let Some(deps) = pkg[key].as_object() {
+/// Collect exact dependency key names from package.json
+fn collect_dep_keys(pkg: &serde_json::Value) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for section in &["dependencies", "devDependencies", "peerDependencies"] {
+        if let Some(deps) = pkg[section].as_object() {
             for k in deps.keys() {
-                all.push_str(k);
-                all.push(' ');
+                keys.insert(k.clone());
             }
         }
     }
-    all
+    keys
 }
 
 #[cfg(test)]
