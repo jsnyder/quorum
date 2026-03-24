@@ -263,7 +263,10 @@ fn scan_insecure_python(
     source: &str,
     findings: &mut Vec<Finding>,
 ) {
-    // eval() and exec() calls
+    let line = node.start_position().row as u32 + 1;
+    let end_line = node.end_position().row as u32 + 1;
+
+    // eval() and exec() calls (also covered by ruff S307, but we keep for standalone mode)
     if node.kind() == "call" {
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
@@ -277,9 +280,159 @@ fn scan_insecure_python(
                     severity: Severity::Critical,
                     category: "security".into(),
                     source: Source::LocalAst,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
-                    evidence: vec![],
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+        }
+
+        // debug=True or host="0.0.0.0" in function calls (Flask/FastAPI/uvicorn)
+        if let Some(args) = node.child_by_field_name("arguments") {
+            let args_text = &source[args.byte_range()];
+            if args_text.contains("debug=True") || args_text.contains("debug = True") {
+                findings.push(Finding {
+                    title: "Server running with debug=True".into(),
+                    description: "Debug mode exposes detailed error pages and may enable a debugger. Disable in production.".into(),
+                    severity: Severity::High,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+            if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
+                findings.push(Finding {
+                    title: "Server binding to 0.0.0.0 exposes all network interfaces".into(),
+                    description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
+                    severity: Severity::Medium,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+        }
+
+        // SQL injection: .execute() with f-string or .format() argument
+        if let Some(func) = node.child_by_field_name("function") {
+            let func_text = &source[func.byte_range()];
+            if func_text.ends_with(".execute") || func_text.ends_with(".executemany") {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    // Check first argument for f-string or .format()
+                    if let Some(first_arg) = args.named_child(0) {
+                        let arg_kind = first_arg.kind();
+                        let arg_text = &source[first_arg.byte_range()];
+                        if arg_kind == "string"
+                            && (arg_text.starts_with("f\"") || arg_text.starts_with("f'"))
+                        {
+                            findings.push(Finding {
+                                title: "Potential SQL injection via f-string in execute()".into(),
+                                description: "String interpolation in SQL queries allows injection. Use parameterized queries instead.".into(),
+                                severity: Severity::Critical,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                            });
+                        } else if arg_text.contains(".format(") {
+                            findings.push(Finding {
+                                title: "Potential SQL injection via .format() in execute()".into(),
+                                description: "String formatting in SQL queries allows injection. Use parameterized queries instead.".into(),
+                                severity: Severity::Critical,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Hardcoded secrets: SECRET_KEY = "...", PASSWORD = "...", API_KEY = "..."
+    if node.kind() == "assignment" {
+        if let Some(left) = node.child_by_field_name("left") {
+            let var_name = source[left.byte_range()].to_uppercase();
+            let secret_names = [
+                "SECRET_KEY", "SECRET", "PASSWORD", "PASSWD", "API_KEY",
+                "APIKEY", "AUTH_TOKEN", "TOKEN", "PRIVATE_KEY",
+            ];
+            if secret_names.iter().any(|s| var_name.contains(s)) {
+                if let Some(right) = node.child_by_field_name("right") {
+                    let right_kind = right.kind();
+                    let right_text = &source[right.byte_range()];
+                    // Only flag string literals that look like real secrets:
+                    // - Not empty, not None, not env lookups
+                    // - Longer than a typical key name (> 10 chars inside quotes)
+                    // - Contains mixed case, numbers, or special chars (not just lowercase words)
+                    let inner_len = if right_text.len() > 2 { right_text.len() - 2 } else { 0 };
+                    let inner = &right_text[1..right_text.len().saturating_sub(1)];
+                    let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
+                    let has_digit = inner.chars().any(|c| c.is_ascii_digit());
+                    let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
+                    // Real secrets have mixed character classes (upper+lower, digits, special chars)
+                    // Plain lowercase_words or dotted.names are key names, not secrets
+                    let looks_like_secret = (has_upper || has_digit || has_special)
+                        && inner_len > 8;
+                    if (right_kind == "string" || right_kind == "concatenated_string")
+                        && inner_len > 3
+                        && looks_like_secret
+                        && !right_text.contains("os.environ")
+                        && !right_text.contains("getenv")
+                    {
+                        findings.push(Finding {
+                            title: format!("Hardcoded secret in `{}`", &source[left.byte_range()]),
+                            description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
+                            severity: Severity::High,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![format!("{} = [REDACTED]", &source[left.byte_range()])],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Mutable default arguments: def foo(x=[], y={})
+    if node.kind() == "default_parameter" {
+        if let Some(value) = node.child_by_field_name("value") {
+            let val_kind = value.kind();
+            if val_kind == "list" || val_kind == "dictionary" || val_kind == "set" {
+                let param_name = node
+                    .child_by_field_name("name")
+                    .map(|n| &source[n.byte_range()])
+                    .unwrap_or("parameter");
+                findings.push(Finding {
+                    title: format!("Mutable default argument `{}`", param_name),
+                    description: "Mutable default arguments are shared across calls and cause subtle bugs. Use None and initialize inside the function.".into(),
+                    severity: Severity::Medium,
+                    category: "bug".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(100).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
                 });
@@ -598,5 +751,131 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Rust);
         assert!(findings.iter().any(|f| f.title.contains("unsafe")));
+    }
+
+    // -- Python-specific patterns (complement ruff, don't duplicate) --
+
+    #[test]
+    fn python_hardcoded_secret_assignment() {
+        let source = r#"
+SECRET_KEY = "hardcoded-secret-12345"
+API_KEY = "sk-proj-abcdef"
+PASSWORD = "hunter2"
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Hardcoded secret")),
+            "Should flag hardcoded secrets. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_hardcoded_secret_not_flagged_for_empty() {
+        let source = r#"
+SECRET_KEY = ""
+API_KEY = None
+PASSWORD = os.environ.get("PASSWORD")
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Hardcoded secret")),
+            "Empty/None/env-loaded values should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_flask_debug_true() {
+        let source = r#"
+app = Flask(__name__)
+app.run(debug=True, host="0.0.0.0")
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("debug")),
+            "Should flag debug=True. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_server_bind_all_interfaces() {
+        let source = r#"
+app.run(host="0.0.0.0", port=8080)
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("0.0.0.0")),
+            "Should flag host=0.0.0.0. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_sql_injection_fstring() {
+        let source = r#"
+def get_user(username):
+    cursor.execute(f"SELECT * FROM users WHERE name='{username}'")
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("SQL") || f.title.contains("sql")),
+            "Should flag f-string in SQL execute. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_sql_safe_parameterized() {
+        let source = r#"
+def get_user(username):
+    cursor.execute("SELECT * FROM users WHERE name=%s", (username,))
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("SQL")),
+            "Parameterized queries should NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn python_mutable_default_argument() {
+        let source = r#"
+def process(items=[]):
+    items.append(1)
+    return items
+
+def also_bad(config={}):
+    return config
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Mutable default")),
+            "Should flag mutable default args. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_safe_default_argument() {
+        let source = r#"
+def process(items=None):
+    if items is None:
+        items = []
+    return items
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Mutable default")),
+            "None default should NOT be flagged"
+        );
     }
 }

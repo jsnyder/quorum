@@ -2,7 +2,10 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 fn quorum() -> Command {
-    Command::cargo_bin("quorum").unwrap()
+    let mut cmd = Command::cargo_bin("quorum").unwrap();
+    // Isolate from user feedback store — use empty HOME so calibrator has no data
+    cmd.env("HOME", "/tmp/quorum-test-home");
+    cmd
 }
 
 #[test]
