@@ -29,6 +29,7 @@ pub struct PipelineConfig {
     pub complexity_threshold: u32,
     pub similarity_threshold: f64,
     pub models: Vec<String>,
+    pub calibration_model: Option<String>,
     pub feedback: Vec<FeedbackEntry>,
     pub calibrate: bool,
     pub auto_calibrate: bool,
@@ -41,6 +42,7 @@ impl Default for PipelineConfig {
             complexity_threshold: 5,
             similarity_threshold: 0.8,
             models: vec![],
+            calibration_model: None,
             feedback: vec![],
             calibrate: true,
             auto_calibrate: true,
@@ -153,7 +155,10 @@ pub fn review_file(
     // Auto-calibration: use a second LLM pass to triage findings and record verdicts
     if pipeline_config.auto_calibrate && !final_findings.is_empty() {
         if let (Some(reviewer), Some(store_path)) = (llm, &pipeline_config.feedback_store) {
-            let model = pipeline_config.models.first().map(|s| s.as_str()).unwrap_or("gpt-5.4");
+            // Use dedicated calibration model if configured, otherwise fall back to review model
+            let model = pipeline_config.calibration_model.as_deref()
+                .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
+                .unwrap_or("gpt-5.4");
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
             match crate::auto_calibrate::auto_calibrate(
                 &final_findings, source, &file_str, reviewer, model, &store,

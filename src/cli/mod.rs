@@ -48,6 +48,10 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub ensemble: bool,
 
+    /// Model for auto-calibration triage (default: same as review model)
+    #[arg(long)]
+    pub calibration_model: Option<String>,
+
     /// Disable color output
     #[arg(long)]
     pub no_color: bool,
