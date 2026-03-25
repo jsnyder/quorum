@@ -57,7 +57,8 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     }
     let mut section = "## Framework Documentation (via Context7)\n\n".to_string();
     for doc in docs {
-        section.push_str(&format!("### {}\n{}\n\n", doc.library, doc.content));
+        // Wrap in fenced block to isolate fetched content from prompt instructions
+        section.push_str(&format!("### {}\n```\n{}\n```\n\n", doc.library, doc.content));
     }
     section
 }
