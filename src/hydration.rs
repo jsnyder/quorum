@@ -295,7 +295,7 @@ fn collect_import_refs_in_range(
     _source: &str,
     _import_kinds: &[&str],
     start_line: u32,
-    end_line: u32,
+    _end_line: u32,
     all_imports: &[(String, String)],
     out: &mut Vec<String>,
 ) {

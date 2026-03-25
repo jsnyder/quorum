@@ -60,7 +60,7 @@ pub fn start_watcher(
 /// Process daemon events: invalidate cache on file changes.
 pub async fn run_event_loop(
     mut rx: mpsc::UnboundedReceiver<DaemonEvent>,
-    cache: Arc<ParseCache>,
+    _cache: Arc<ParseCache>,
 ) {
     while let Some(event) = rx.recv().await {
         match event {

@@ -153,7 +153,7 @@ fn word_jaccard(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{FindingBuilder, Source};
+    use crate::finding::FindingBuilder;
     use chrono::Utc;
 
     fn fb(title: &str, category: &str, verdict: Verdict) -> FeedbackEntry {

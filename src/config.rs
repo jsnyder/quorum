@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 pub trait ConfigSource {
     fn get(&self, key: &str) -> Option<String>;
 }
@@ -13,7 +11,7 @@ impl ConfigSource for EnvConfigSource {
 }
 
 #[cfg(test)]
-pub struct MapConfigSource(pub HashMap<String, String>);
+pub struct MapConfigSource(pub std::collections::HashMap<String, String>);
 
 #[cfg(test)]
 impl ConfigSource for MapConfigSource {

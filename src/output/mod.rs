@@ -153,7 +153,7 @@ pub fn compute_exit_code(findings: &[Finding]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{FindingBuilder, Source};
+    use crate::finding::FindingBuilder;
 
     // -- severity_icon --
 

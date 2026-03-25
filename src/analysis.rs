@@ -1,5 +1,5 @@
 use crate::finding::{Finding, Severity, Source};
-use crate::parser::{self, Language};
+use crate::parser::Language;
 
 pub fn analyze_complexity(
     tree: &tree_sitter::Tree,

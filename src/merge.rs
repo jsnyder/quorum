@@ -1,4 +1,4 @@
-use crate::finding::{Finding, Severity};
+use crate::finding::Finding;
 
 pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> Vec<Finding> {
     let all: Vec<Finding> = groups.into_iter().flatten().collect();
@@ -102,7 +102,7 @@ fn line_overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{FindingBuilder, Source};
+    use crate::finding::{FindingBuilder, Severity, Source};
 
     #[test]
     fn merge_identical_findings_deduped() {

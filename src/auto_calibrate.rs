@@ -118,7 +118,7 @@ fn parse_triage_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{FindingBuilder, Severity, Source};
+    use crate::finding::{FindingBuilder, Severity};
 
     #[test]
     fn build_triage_prompt_includes_findings() {

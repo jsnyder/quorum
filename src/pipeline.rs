@@ -5,7 +5,6 @@ use std::path::Path;
 
 use crate::analysis;
 use crate::calibrator::{self, CalibratorConfig};
-use crate::config::Config;
 use crate::feedback::FeedbackEntry;
 use crate::finding::Finding;
 use crate::hydration;
@@ -225,8 +224,7 @@ fn lang_name(lang: Language) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{Severity, Source};
-    use std::path::PathBuf;
+    use crate::finding::Source;
 
     struct FakeLlmReviewer {
         response: String,

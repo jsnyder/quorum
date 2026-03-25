@@ -4,6 +4,10 @@ version = "0.3.0"
 edition = "2024"
 description = "Multi-source code review: LLM ensemble + local AST analysis + linter orchestration"
 license = "MIT"
+repository = "https://github.com/jsnyder/quorum"
+homepage = "https://github.com/jsnyder/quorum"
+keywords = ["code-review", "ast", "llm", "linter", "mcp"]
+categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
 # Async runtime
