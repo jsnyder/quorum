@@ -9,16 +9,24 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // Private key blocks
         (Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----").unwrap(),
          "[REDACTED PRIVATE KEY]"),
-        // AWS access key IDs
-        (Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), "[REDACTED]"),
-        // GitHub tokens
-        (Regex::new(r"gh[pousr]_[A-Za-z0-9]{36,}").unwrap(), "[REDACTED]"),
+        // AWS access key IDs (covers AKIA, ASIA, ABIA, ACCA, A3T*)
+        (Regex::new(r"(?:A3T[A-Z0-9]|ABIA|ACCA|AKIA|ASIA)[0-9A-Z]{16}").unwrap(), "[REDACTED]"),
+        // GitHub tokens (official format with underscore in charset)
+        (Regex::new(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}").unwrap(), "[REDACTED]"),
+        // Slack tokens
+        (Regex::new(r"xox[abposr]-(?:\d+-)+[a-z0-9]+").unwrap(), "[REDACTED]"),
+        // Stripe keys
+        (Regex::new(r"[rs]k_live_[0-9a-zA-Z]{24,}").unwrap(), "[REDACTED]"),
+        // Twilio keys
+        (Regex::new(r"(?:AC|SK)[a-z0-9]{32}").unwrap(), "[REDACTED]"),
         // Bearer tokens (JWT-like)
         (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
-        // Generic secret assignments: KEY=value, PASSWORD=value, TOKEN=value, SECRET=value
-        // Handles double-quoted, single-quoted, and unquoted values
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)["']?([^\s"'\n]{6,})["']?"#).unwrap(),
-         "$1[REDACTED]"),
+        // Generic secret assignments: KEY="value", PASSWORD='value'
+        // Only matches quoted string literals — two patterns for double and single quotes
+        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
+         "$1\"[REDACTED]\""),
+        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
+         "$1'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
         // URLs with passwords: protocol://user:password@host
@@ -54,6 +62,27 @@ mod tests {
     }
 
     #[test]
+    fn redact_preserves_getenv_calls() {
+        let input = "api_key = os.getenv('API_KEY')";
+        let output = redact_secrets(input);
+        assert_eq!(input, output, "getenv calls should NOT be redacted");
+    }
+
+    #[test]
+    fn redact_preserves_bare_variable_assignment() {
+        let input = "api_key=openai_api_key";
+        let output = redact_secrets(input);
+        assert_eq!(input, output, "Bare variable references should NOT be redacted");
+    }
+
+    #[test]
+    fn redact_preserves_variable_references() {
+        let input = "api_key = os.getenv('OPENAI_API_KEY')\nopenai_api_key = config.api_key";
+        let output = redact_secrets(input);
+        assert_eq!(input, output, "Variable references and function calls should NOT be redacted");
+    }
+
+    #[test]
     fn redact_bearer_token() {
         let input = r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"#;
         let output = redact_secrets(input);
@@ -76,10 +105,10 @@ mod tests {
 
     #[test]
     fn redact_multiple_secrets_in_one_text() {
-        let input = "KEY=sk-test-123\nPASSWORD=hunter2\nfn safe() {}";
+        let input = "KEY=\"sk-test-123\"\nPASSWORD=\"hunter2-pass\"\nfn safe() {}";
         let output = redact_secrets(input);
         assert!(!output.contains("sk-test-123"));
-        assert!(!output.contains("hunter2"));
+        assert!(!output.contains("hunter2-pass"));
         assert!(output.contains("fn safe() {}"));
     }
 
@@ -96,5 +125,26 @@ mod tests {
         let input = r#"GITHUB_TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh""#;
         let output = redact_secrets(input);
         assert!(!output.contains("ghp_ABCDEF"));
+    }
+
+    #[test]
+    fn redact_aws_temporary_credentials() {
+        let input = "AWS_KEY=ASIAXXX1234567890123";
+        let output = redact_secrets(input);
+        assert!(!output.contains("ASIAXXX123456789"));
+    }
+
+    #[test]
+    fn redact_slack_token() {
+        let input = "SLACK_TOKEN=xoxb-123456-789012-abcdef123456";
+        let output = redact_secrets(input);
+        assert!(!output.contains("xoxb-"));
+    }
+
+    #[test]
+    fn redact_stripe_key() {
+        let input = "STRIPE_KEY=sk_live_abc123def456ghi789jkl012";
+        let output = redact_secrets(input);
+        assert!(!output.contains("sk_live_"));
     }
 }

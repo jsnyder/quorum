@@ -417,6 +417,104 @@ fn scan_insecure_python(
         }
     }
 
+    // Mutating collection while iterating
+    if node.kind() == "for_statement" {
+        // Get the iterable: `for x in ITERABLE:`
+        // In tree-sitter-python, for_statement has fields: left (pattern), right (iterable), body
+        if let Some(right) = node.child_by_field_name("right") {
+            // Only match when iterating directly over an identifier (not list(items) or other call)
+            if right.kind() == "identifier" {
+                let iterable_name = &source[right.byte_range()];
+                if let Some(body) = node.child_by_field_name("body") {
+                    if has_mutating_call(&body, source, iterable_name) {
+                        findings.push(Finding {
+                            title: format!("Mutating `{}` while iterating over it", iterable_name),
+                            description: "Modifying a collection while iterating over it leads to skipped elements or RuntimeError. Iterate over a copy instead.".into(),
+                            severity: Severity::High,
+                            category: "bug".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Exception details in API response
+    if node.kind() == "except_clause" {
+        // Find the exception variable name from `as_pattern` child
+        // Tree structure: except_clause > as_pattern > as_pattern_target > identifier
+        let mut exc_var: Option<&str> = None;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "as_pattern" {
+                    // Look for as_pattern_target child which contains the identifier
+                    for j in 0..child.child_count() {
+                        if let Some(target) = child.child(j) {
+                            if target.kind() == "as_pattern_target" {
+                                if let Some(ident) = target.child(0) {
+                                    if ident.kind() == "identifier" {
+                                        exc_var = Some(&source[ident.byte_range()]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(var_name) = exc_var {
+            // Look for return statements that expose the exception
+            if has_exception_in_return(node, source, var_name) {
+                findings.push(Finding {
+                    title: "Exception details disclosed in API response".into(),
+                    description: format!(
+                        "Returning `str({0})` or `repr({0})` in an API response leaks internal details to clients. Log the exception and return a generic error message.",
+                        var_name
+                    ),
+                    severity: Severity::Medium,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+        }
+    }
+
+    // Blocking .result() in async function
+    if node.kind() == "function_definition" {
+        // Check if this function is async by looking for the "async" keyword
+        // In tree-sitter-python, async functions have "async" as a preceding sibling or
+        // the node text starts with "async"
+        let func_text = &source[node.byte_range()];
+        if func_text.starts_with("async ") {
+            if has_result_call(node, source) {
+                findings.push(Finding {
+                    title: "Blocking `.result()` call in async function".into(),
+                    description: "Calling `.result()` on a future inside an async function blocks the event loop. Use `await` or run in an executor.".into(),
+                    severity: Severity::High,
+                    category: "concurrency".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+        }
+    }
+
     // Mutable default arguments: def foo(x=[], y={})
     if node.kind() == "default_parameter" {
         if let Some(value) = node.child_by_field_name("value") {
@@ -441,6 +539,84 @@ fn scan_insecure_python(
             }
         }
     }
+}
+
+/// Check if a node tree contains a mutating method call on the given identifier.
+fn has_mutating_call(node: &tree_sitter::Node, source: &str, target: &str) -> bool {
+    let mutating_methods = ["append", "remove", "pop", "insert", "extend", "clear"];
+
+    if node.kind() == "call" {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "attribute" {
+                if let Some(obj) = func.child_by_field_name("object") {
+                    if obj.kind() == "identifier" && &source[obj.byte_range()] == target {
+                        if let Some(attr) = func.child_by_field_name("attribute") {
+                            let method = &source[attr.byte_range()];
+                            if mutating_methods.contains(&method) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if has_mutating_call(&child, source, target) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if an except_clause contains a return statement that exposes the exception variable.
+fn has_exception_in_return(node: &tree_sitter::Node, source: &str, var_name: &str) -> bool {
+    if node.kind() == "return_statement" {
+        let text = &source[node.byte_range()];
+        let str_pattern = format!("str({})", var_name);
+        let repr_pattern = format!("repr({})", var_name);
+        // Also check for f-string interpolation like {e} or {e!r}
+        let fstring_pattern = format!("{{{}}}", var_name);
+        if text.contains(&str_pattern) || text.contains(&repr_pattern) || text.contains(&fstring_pattern) {
+            return true;
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if has_exception_in_return(&child, source, var_name) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a function body contains a .result() call.
+fn has_result_call(node: &tree_sitter::Node, source: &str) -> bool {
+    if node.kind() == "call" {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "attribute" {
+                if let Some(attr) = func.child_by_field_name("attribute") {
+                    if &source[attr.byte_range()] == "result" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if has_result_call(&child, source) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn scan_insecure_typescript(
@@ -1081,6 +1257,53 @@ def process(items=None):
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(findings.iter().any(|f| f.title.contains("non-null assertion")),
             "Should flag non-null assertions. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    // -- New Python patterns --
+
+    #[test]
+    fn python_mutate_while_iterating() {
+        let source = "for item in items:\n    if item.bad:\n        items.remove(item)\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(findings.iter().any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
+            "Should flag mutating while iterating. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn python_iterate_copy_ok() {
+        let source = "for item in list(items):\n    items.remove(item)\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(!findings.iter().any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
+            "Iterating over a copy should NOT be flagged");
+    }
+
+    #[test]
+    fn python_exception_disclosure() {
+        let source = "try:\n    process()\nexcept Exception as e:\n    return jsonify({\"error\": str(e)}), 500\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(findings.iter().any(|f| f.title.contains("exception") || f.title.contains("Exception")),
+            "Should flag exception disclosure. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn python_exception_logged_ok() {
+        let source = "try:\n    process()\nexcept Exception as e:\n    logger.error(str(e))\n    return jsonify({\"error\": \"Internal error\"}), 500\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(!findings.iter().any(|f| f.title.contains("exception") || f.title.contains("Exception")),
+            "Logging exception without returning it should NOT be flagged");
+    }
+
+    #[test]
+    fn python_blocking_result_in_async() {
+        let source = "async def process():\n    future = executor.submit(work)\n    return future.result()\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(findings.iter().any(|f| f.title.contains("result()") || f.title.contains("blocking")),
+            "Should flag blocking .result() in async. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
     }
 
 }
