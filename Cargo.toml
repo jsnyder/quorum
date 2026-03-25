@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Multi-source code review: LLM ensemble + local AST analysis + linter orchestration"
 license = "MIT"
