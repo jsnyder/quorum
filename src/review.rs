@@ -11,6 +11,7 @@ pub struct ReviewRequest {
     pub language: String,
     pub code: String,
     pub hydration_context: Option<HydrationContext>,
+    pub framework_docs: Option<Vec<String>>,
 }
 
 /// A single finding as returned by the LLM (before normalization).
@@ -77,6 +78,16 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
                 prompt.push_str(&format!("- {}\n", c));
             }
             prompt.push('\n');
+        }
+    }
+
+    if let Some(docs) = &req.framework_docs {
+        if !docs.is_empty() {
+            prompt.push_str("## Framework Documentation (via Context7)\n\n");
+            for doc in docs {
+                prompt.push_str(doc);
+                prompt.push_str("\n\n");
+            }
         }
     }
 
@@ -254,6 +265,7 @@ mod tests {
             language: "rust".into(),
             code: "fn login() {}".into(),
             hydration_context: None,
+            framework_docs: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("src/auth.rs"));
@@ -274,11 +286,26 @@ mod tests {
             language: "rust".into(),
             code: "fn process() {}".into(),
             hydration_context: Some(ctx),
+            framework_docs: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("validate"));
         assert!(prompt.contains("Request"));
         assert!(prompt.contains("handle_request"));
+    }
+
+    #[test]
+    fn build_prompt_includes_framework_docs() {
+        let req = ReviewRequest {
+            file_path: "app.tsx".into(),
+            language: "typescript".into(),
+            code: "function App() {}".into(),
+            hydration_context: None,
+            framework_docs: Some(vec!["### React\nuseEffect requires dependency array".into()]),
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("useEffect"));
+        assert!(prompt.contains("Framework Documentation"));
     }
 
     #[test]
@@ -289,6 +316,7 @@ mod tests {
             language: "rust".into(),
             code: "fn x() {}".into(),
             hydration_context: Some(ctx),
+            framework_docs: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Called function signatures"));
