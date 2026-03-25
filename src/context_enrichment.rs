@@ -72,7 +72,8 @@ pub struct Context7HttpFetcher {
 
 impl Context7HttpFetcher {
     pub fn new() -> Self {
-        let api_key = std::env::var("CONTEXT7_API_KEY").ok()
+        let api_key = std::env::var("CONTEXT7_API_KEY")
+            .ok()
             .filter(|k| !k.trim().is_empty())
             .or_else(|| {
                 // Fallback: read from ~/.context7_key file
@@ -95,62 +96,105 @@ impl ContextFetcher for Context7HttpFetcher {
     fn resolve_library(&self, name: &str) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
 
-        let resp = self.http
-            .get("https://context7.com/api/v1/search")
-            .query(&[("libraryName", name), ("query", name)])
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .ok()?;
+        // reqwest::blocking can't run inside tokio async runtime directly — use block_in_place
+        let resp = match tokio::task::block_in_place(|| {
+            self.http
+                .get("https://context7.com/api/v1/search")
+                .query(&[("libraryName", name), ("query", name)])
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Context7 resolve_library error: {}", e);
+                return None;
+            }
+        };
 
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            eprintln!("Context7 resolve_library: HTTP {}", status);
             return None;
         }
 
-        let json: serde_json::Value = resp.json().ok()?;
-        // Pick the first result with highest benchmark score
-        json["results"]
-            .as_array()?
-            .first()?
-            .get("id")?
-            .as_str()
-            .map(|s| s.to_string())
+        let json: serde_json::Value = match resp.json() {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("Context7 resolve_library: JSON parse error: {}", e);
+                return None;
+            }
+        };
+        let id = json["results"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        id
     }
 
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
 
-        let resp = self.http
-            .get(format!("https://context7.com/api/v1{}", library_id))
-            .query(&[("query", query), ("tokens", &max_tokens.to_string())])
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .ok()?;
+        let lib_id = library_id.to_string();
+        let q = query.to_string();
+        let tok = max_tokens.to_string();
+        let key = api_key.clone();
+        let resp = match tokio::task::block_in_place(|| {
+            self.http
+                .get(format!("https://context7.com/api/v1{}", lib_id))
+                .query(&[("query", &q), ("tokens", &tok)])
+                .header("Authorization", format!("Bearer {}", key))
+                .send()
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Context7 query_docs error: {}", e);
+                return None;
+            }
+        };
 
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            eprintln!("Context7 query_docs: HTTP {} - {}", status, &body[..200.min(body.len())]);
             return None;
         }
 
-        let json: serde_json::Value = resp.json().ok()?;
+        let body_text = match resp.text() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Context7 query_docs: read body error: {}", e);
+                return None;
+            }
+        };
 
-        // Try direct content field first
-        if let Some(content) = json["content"].as_str() {
-            if !content.is_empty() {
-                return Some(content.to_string());
+        if body_text.trim().is_empty() {
+            return None;
+        }
+
+        // Context7 API may return plain text/markdown or JSON
+        // Try JSON first, fall back to plain text
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
+            if let Some(content) = json["content"].as_str() {
+                if !content.is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+            if let Some(snippets) = json["snippets"].as_array() {
+                let combined: String = snippets.iter()
+                    .filter_map(|s| s["content"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n");
+                if !combined.is_empty() {
+                    return Some(combined);
+                }
             }
         }
 
-        // Fallback: concatenate snippet contents
-        if let Some(snippets) = json["snippets"].as_array() {
-            let combined: String = snippets.iter()
-                .filter_map(|s| s["content"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n");
-            if !combined.is_empty() {
-                return Some(combined);
-            }
-        }
-
-        None
+        // Plain text/markdown response — use directly, truncate to max_tokens chars
+        let truncated: String = body_text.chars().take(max_tokens * 4).collect();
+        Some(truncated)
     }
 }
 

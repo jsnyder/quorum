@@ -87,13 +87,17 @@ pub fn review_file(
 
         // Fetch Context7 framework docs if frameworks are detected
         let framework_docs = {
-            let domain = crate::domain::detect_domain(file_path.parent().unwrap_or(std::path::Path::new(".")));
+            let project_root = find_project_root(file_path);
+            let domain = crate::domain::detect_domain(&project_root);
             if !domain.frameworks.is_empty() {
+                eprintln!("Detected frameworks: {:?}", domain.frameworks);
                 let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
                 let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher);
                 if !docs.is_empty() {
+                    eprintln!("Context7: injected {} framework doc(s) into prompt", docs.len());
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
                 } else {
+                    eprintln!("Context7: no docs fetched (key missing or API unavailable)");
                     None
                 }
             } else {
@@ -167,6 +171,24 @@ pub fn review_file(
         file_path: file_str,
         findings: final_findings,
     })
+}
+
+/// Walk up from file path to find the project root (directory containing pyproject.toml, package.json, Cargo.toml, etc.)
+fn find_project_root(file_path: &Path) -> std::path::PathBuf {
+    let markers = ["pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py"];
+    let mut dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    for _ in 0..10 {
+        for marker in &markers {
+            if dir.join(marker).exists() {
+                return dir;
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    // Fallback to cwd
+    std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf())
 }
 
 /// Higher-level entry point: parses source (with optional cache) then runs review_file.
