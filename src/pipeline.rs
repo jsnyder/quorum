@@ -89,7 +89,7 @@ pub fn review_file(
         let framework_docs = {
             let domain = crate::domain::detect_domain(file_path.parent().unwrap_or(std::path::Path::new(".")));
             if !domain.frameworks.is_empty() {
-                let fetcher = crate::context_enrichment::Context7SubprocessFetcher;
+                let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
                 let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher);
                 if !docs.is_empty() {
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())

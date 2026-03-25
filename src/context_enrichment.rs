@@ -63,21 +63,93 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     section
 }
 
-/// Real Context7 fetcher - calls Context7 MCP tools via subprocess.
-/// In quorum's MCP server mode, Context7 is a sibling MCP server.
-/// For CLI mode, we call it via subprocess.
-pub struct Context7SubprocessFetcher;
+/// Real Context7 fetcher — calls Context7 HTTP API directly.
+/// Requires CONTEXT7_API_KEY env var. Gracefully degrades if not set.
+pub struct Context7HttpFetcher {
+    http: reqwest::blocking::Client,
+    api_key: Option<String>,
+}
 
-impl ContextFetcher for Context7SubprocessFetcher {
-    fn resolve_library(&self, _name: &str) -> Option<String> {
-        // Shell out to: context7 resolve-library-id --name <name>
-        // Or use the MCP protocol directly
-        // For now, return None (graceful degradation)
-        // Real implementation will come when we wire MCP-to-MCP
-        None
+impl Context7HttpFetcher {
+    pub fn new() -> Self {
+        let api_key = std::env::var("CONTEXT7_API_KEY").ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| {
+                // Fallback: read from ~/.context7_key file
+                let home = std::env::var("HOME").ok()?;
+                std::fs::read_to_string(format!("{}/.context7_key", home)).ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|k| !k.is_empty())
+            });
+        Self {
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+            api_key,
+        }
+    }
+}
+
+impl ContextFetcher for Context7HttpFetcher {
+    fn resolve_library(&self, name: &str) -> Option<String> {
+        let api_key = self.api_key.as_ref()?;
+
+        let resp = self.http
+            .get("https://context7.com/api/v1/search")
+            .query(&[("libraryName", name), ("query", name)])
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let json: serde_json::Value = resp.json().ok()?;
+        // Pick the first result with highest benchmark score
+        json["results"]
+            .as_array()?
+            .first()?
+            .get("id")?
+            .as_str()
+            .map(|s| s.to_string())
     }
 
-    fn query_docs(&self, _library_id: &str, _query: &str, _max_tokens: usize) -> Option<String> {
+    fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
+        let api_key = self.api_key.as_ref()?;
+
+        let resp = self.http
+            .get(format!("https://context7.com/api/v1{}", library_id))
+            .query(&[("query", query), ("tokens", &max_tokens.to_string())])
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let json: serde_json::Value = resp.json().ok()?;
+
+        // Try direct content field first
+        if let Some(content) = json["content"].as_str() {
+            if !content.is_empty() {
+                return Some(content.to_string());
+            }
+        }
+
+        // Fallback: concatenate snippet contents
+        if let Some(snippets) = json["snippets"].as_array() {
+            let combined: String = snippets.iter()
+                .filter_map(|s| s["content"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            if !combined.is_empty() {
+                return Some(combined);
+            }
+        }
+
         None
     }
 }
