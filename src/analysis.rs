@@ -448,7 +448,10 @@ fn scan_insecure_typescript(
     source: &str,
     findings: &mut Vec<Finding>,
 ) {
-    // eval() calls
+    let line = node.start_position().row as u32 + 1;
+    let end_line = node.end_position().row as u32 + 1;
+
+    // eval(), document.write(), console.log/debug calls
     if node.kind() == "call_expression" {
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
@@ -459,14 +462,145 @@ fn scan_insecure_typescript(
                     severity: Severity::Critical,
                     category: "security".into(),
                     source: Source::LocalAst,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
+                    line_start: line,
+                    line_end: end_line,
                     evidence: vec![],
                     calibrator_action: None,
                     similar_precedent: vec![],
                 });
             }
+
+            // document.write XSS
+            if func_name == "document.write" {
+                findings.push(Finding {
+                    title: "Use of `document.write()` is an XSS risk".into(),
+                    description: "`document.write()` injects raw HTML into the page. Use DOM APIs or a framework's safe rendering instead.".into(),
+                    severity: Severity::Critical,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+
+            // console.log / console.debug debug artifacts
+            if func_name == "console.log" || func_name == "console.debug" {
+                findings.push(Finding {
+                    title: format!("`{}` debug artifact left in code", func_name),
+                    description: "Debug logging should be removed or replaced with a proper logging framework before production.".into(),
+                    severity: Severity::Info,
+                    category: "quality".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
         }
+    }
+
+    // Hardcoded secrets in variable declarations
+    if node.kind() == "variable_declarator" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let var_name = source[name_node.byte_range()].to_uppercase();
+            let secret_names = [
+                "SECRET_KEY", "SECRET", "PASSWORD", "PASSWD", "API_KEY",
+                "APIKEY", "AUTH_TOKEN", "TOKEN", "PRIVATE_KEY",
+            ];
+            if secret_names.iter().any(|s| var_name.contains(s)) {
+                if let Some(value) = node.child_by_field_name("value") {
+                    let val_kind = value.kind();
+                    let val_text = &source[value.byte_range()];
+                    // Only flag string literals that look like real secrets
+                    if val_kind == "string" && val_text.len() > 2 {
+                        let inner_len = val_text.len() - 2;
+                        let inner = &val_text[1..val_text.len() - 1];
+                        let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
+                        let has_digit = inner.chars().any(|c| c.is_ascii_digit());
+                        let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
+                        let looks_like_secret = (has_upper || has_digit || has_special) && inner_len > 8;
+                        if looks_like_secret
+                            && !val_text.contains("process.env")
+                        {
+                            findings.push(Finding {
+                                title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
+                                description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
+                                severity: Severity::High,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![format!("{} = [REDACTED]", &source[name_node.byte_range()])],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // innerHTML / outerHTML XSS
+    if node.kind() == "assignment_expression" {
+        if let Some(left) = node.child_by_field_name("left") {
+            let left_text = &source[left.byte_range()];
+            if left_text.ends_with(".innerHTML") || left_text.ends_with(".outerHTML") {
+                let prop = if left_text.ends_with(".innerHTML") { "innerHTML" } else { "outerHTML" };
+                findings.push(Finding {
+                    title: format!("Direct `{}` assignment is an XSS risk", prop),
+                    description: format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop),
+                    severity: Severity::High,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                });
+            }
+        }
+    }
+
+    // `any` type annotation
+    if node.kind() == "type_annotation" {
+        let text = &source[node.byte_range()];
+        if text.contains(": any") {
+            findings.push(Finding {
+                title: "Use of `any` type defeats TypeScript's type safety".into(),
+                description: "Prefer `unknown`, generics, or a specific type instead of `any`.".into(),
+                severity: Severity::Info,
+                category: "quality".into(),
+                source: Source::LocalAst,
+                line_start: line,
+                line_end: end_line,
+                evidence: vec![source[node.byte_range()].chars().take(100).collect()],
+                calibrator_action: None,
+                similar_precedent: vec![],
+            });
+        }
+    }
+
+    // Non-null assertion operator (!)
+    if node.kind() == "non_null_expression" {
+        findings.push(Finding {
+            title: "Use of non-null assertion operator `!` bypasses type safety".into(),
+            description: "The non-null assertion operator tells TypeScript to ignore possible null/undefined. Use proper null checks instead.".into(),
+            severity: Severity::Info,
+            category: "quality".into(),
+            source: Source::LocalAst,
+            line_start: line,
+            line_end: end_line,
+            evidence: vec![source[node.byte_range()].chars().take(100).collect()],
+            calibrator_action: None,
+            similar_precedent: vec![],
+        });
     }
 }
 
@@ -880,4 +1014,73 @@ def process(items=None):
             "None default should NOT be flagged"
         );
     }
+
+    // -- TypeScript patterns --
+
+    #[test]
+    fn typescript_hardcoded_secret() {
+        let source = "const API_KEY = \"sk-proj-abc123def456\";\nconst SECRET = \"my-secret-key-2024\";";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("Hardcoded secret")),
+            "Should flag hardcoded secrets in TS. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn typescript_secret_not_flagged_for_env() {
+        let source = "const API_KEY = process.env.API_KEY;\nconst SECRET = \"\";";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(!findings.iter().any(|f| f.title.contains("Hardcoded secret")));
+    }
+
+    #[test]
+    fn typescript_innerhtml_xss() {
+        let source = "element.innerHTML = userInput;";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("innerHTML")));
+    }
+
+    #[test]
+    fn typescript_document_write_xss() {
+        let source = "document.write(data);";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("document.write")));
+    }
+
+    #[test]
+    fn typescript_console_log_flagged() {
+        let source = "function process() { console.log(\"debug\"); return 1; }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("console.log")));
+    }
+
+    #[test]
+    fn typescript_console_error_not_flagged() {
+        let source = "function handle() { console.error(\"failed\"); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(!findings.iter().any(|f| f.title.contains("console")));
+    }
+
+    #[test]
+    fn typescript_any_type_annotation() {
+        let source = "function process(data: any) { return data; }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("any")));
+    }
+
+    #[test]
+    fn typescript_non_null_assertion() {
+        let source = "const value = getData()!;\nconst name = user!.name;";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(findings.iter().any(|f| f.title.contains("non-null assertion")),
+            "Should flag non-null assertions. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
 }

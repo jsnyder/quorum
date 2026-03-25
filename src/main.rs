@@ -5,6 +5,7 @@ mod cache;
 mod calibrator;
 mod cli;
 mod config;
+mod context_enrichment;
 mod daemon;
 mod http_server;
 mod domain;

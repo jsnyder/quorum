@@ -85,11 +85,28 @@ pub fn review_file(
             import_targets: ctx.import_targets.iter().map(|s| redact::redact_secrets(s)).collect(),
         };
 
+        // Fetch Context7 framework docs if frameworks are detected
+        let framework_docs = {
+            let domain = crate::domain::detect_domain(file_path.parent().unwrap_or(std::path::Path::new(".")));
+            if !domain.frameworks.is_empty() {
+                let fetcher = crate::context_enrichment::Context7SubprocessFetcher;
+                let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher);
+                if !docs.is_empty() {
+                    Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         let req = ReviewRequest {
             file_path: file_str.clone(),
             language: lang_name(lang).to_string(),
             code: redacted_code,
             hydration_context: Some(redacted_ctx),
+            framework_docs,
         };
 
         let prompt = review::build_review_prompt(&req);
