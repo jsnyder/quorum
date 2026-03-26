@@ -75,6 +75,10 @@ pub struct ReviewOpts {
     /// Daemon port (default: 7842)
     #[arg(long, default_value = "7842")]
     pub daemon_port: u16,
+
+    /// Enable deep review with tool calling (reads additional files for context)
+    #[arg(long)]
+    pub deep: bool,
 }
 
 impl ReviewOpts {

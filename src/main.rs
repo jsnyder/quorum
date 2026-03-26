@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod agent;
 mod analytics;
 mod analysis;
 mod auto_calibrate;
@@ -203,6 +204,42 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 continue;
             }
         };
+
+        // Deep review: agent loop with tool calling
+        if opts.deep {
+            if let Some(reviewer) = llm_reviewer.as_deref() {
+                let project_root = file_path.parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let tool_reg = tools::ToolRegistry::new(&project_root);
+                let agent_cfg = agent::AgentConfig::default();
+                let model = pipeline_cfg.models.first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("gpt-5.4");
+                match agent::agent_review(
+                    &source,
+                    &file_path.to_string_lossy(),
+                    reviewer,
+                    model,
+                    &tool_reg,
+                    &agent_cfg,
+                ) {
+                    Ok(findings) => {
+                        if use_json {
+                            all_findings.extend(findings);
+                        } else {
+                            let file_str = file_path.to_string_lossy().to_string();
+                            print!("{}", output::format_review(&file_str, &findings, &style));
+                            all_findings.extend(findings);
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
+                    }
+                }
+            }
+        }
 
         // Run the full pipeline with cache
         match pipeline::review_source(
