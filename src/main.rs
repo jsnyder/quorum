@@ -26,6 +26,7 @@ mod patterns;
 mod pipeline;
 mod redact;
 mod review;
+mod tools;
 
 use clap::Parser;
 use config::{Config, EnvConfigSource};
