@@ -41,6 +41,9 @@ pub mod fakes {
         fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<String> {
             self.captured_prompts.lock().unwrap().push(prompt.to_string());
             let mut q = self.responses.lock().unwrap();
+            if q.is_empty() {
+                anyhow::bail!("FakeReviewer: no responses configured");
+            }
             let resp = if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap() };
             resp.map_err(|e| anyhow::anyhow!(e))
         }
@@ -54,6 +57,20 @@ pub mod fakes {
     impl FakeAgentReviewer {
         pub fn new(turns: Vec<LlmTurnResult>) -> Self {
             Self { turns: Mutex::new(turns.into()) }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn fake_reviewer_empty_sequence_does_not_panic() {
+            let reviewer = FakeReviewer::sequence(vec![]);
+            // Calling review on empty sequence should not panic
+            let result = reviewer.review("prompt", "model");
+            // Should either return an error or a sensible default, not panic
+            assert!(result.is_err() || result.is_ok());
         }
     }
 

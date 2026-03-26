@@ -9,7 +9,7 @@ pub struct ProgressReporter {
 
 /// Strip ANSI control characters from untrusted input before embedding in terminal output.
 fn sanitize(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() || *c == '\n').collect()
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 impl ProgressReporter {
@@ -70,6 +70,13 @@ mod tests {
         assert_eq!(sanitize("normal.py"), "normal.py");
         assert_eq!(sanitize("evil\x1b[31m.py"), "evil[31m.py");
         assert_eq!(sanitize("tab\there"), "tabhere");
+    }
+
+    #[test]
+    fn sanitize_strips_newlines() {
+        // Newlines in file paths would break \r\x1b[2K line clearing
+        assert_eq!(sanitize("file\nname.py"), "filename.py");
+        assert_eq!(sanitize("path\r\nfile.py"), "pathfile.py");
     }
 
     #[test]

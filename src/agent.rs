@@ -59,10 +59,9 @@ pub fn agent_review(
         .unwrap_or_else(|_| "Unable to list files.".into());
 
     let truncated_listing = if file_listing.len() > config.max_bytes_read / 2 {
-        format!(
-            "{}\n... (truncated)",
-            &file_listing[..config.max_bytes_read / 2]
-        )
+        let limit = config.max_bytes_read / 2;
+        let safe_end = file_listing.floor_char_boundary(limit);
+        format!("{}\n... (truncated)", &file_listing[..safe_end])
     } else {
         file_listing
     };
@@ -142,12 +141,15 @@ fn force_final_turn(
     prompt: &str,
 ) -> anyhow::Result<Vec<Finding>> {
     messages.push(serde_json::json!({"role": "user", "content": prompt}));
-    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
-        reviewer.chat_turn(messages, &serde_json::json!([]), model)
-    {
-        return crate::review::parse_llm_response(&text, model);
+    match reviewer.chat_turn(messages, &serde_json::json!([]), model)? {
+        crate::llm_client::LlmTurnResult::FinalContent(text) => {
+            crate::review::parse_llm_response(&text, model)
+        }
+        crate::llm_client::LlmTurnResult::ToolCalls(_) => {
+            // Model returned tool calls when asked for final findings — return empty
+            Ok(vec![])
+        }
     }
-    Ok(vec![])
 }
 
 fn append_assistant_tool_calls(messages: &mut Vec<serde_json::Value>, calls: &[crate::llm_client::ToolCall]) {
@@ -483,5 +485,56 @@ mod tests {
 
         let result = agent_loop("x", "test.py", &reviewer, "m", &tools, &config).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn agent_review_truncates_multibyte_file_listing_safely() {
+        let dir = TempDir::new().unwrap();
+        // Create file with multibyte chars so list_files has UTF-8 boundaries
+        // "café.py" = c(1) a(2) f(3) 0xC3(4) 0xA9(5) .(6) p(7) y(8)
+        // max_bytes_read=8 => /2=4 => slices at byte 4 (mid-UTF-8 of é)
+        std::fs::write(dir.path().join("café.py"), "x = 1").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig { max_iterations: 3, max_tool_calls: 10, max_bytes_read: 8 };
+        let reviewer = FakeReviewer::always("[]");
+        // Should not panic on truncation at mid-multibyte boundary
+        let result = agent_review("x = 1", "test.py", &reviewer, "m", &tools, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn force_final_turn_propagates_reviewer_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("t.py"), "x").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        // Config with max_iterations=1 to force the final turn path
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000 };
+
+        struct FailingAgentReviewer {
+            call_count: Mutex<usize>,
+        }
+        impl AgentReviewer for FailingAgentReviewer {
+            fn chat_turn(&self, _messages: &[serde_json::Value], _tools: &serde_json::Value, _model: &str)
+                -> anyhow::Result<LlmTurnResult>
+            {
+                let mut count = self.call_count.lock().unwrap();
+                *count += 1;
+                if *count == 1 {
+                    // First call: request a tool call to consume the iteration
+                    Ok(LlmTurnResult::ToolCalls(vec![ToolCall {
+                        id: "c1".into(), name: "read_file".into(),
+                        arguments: r#"{"path":"t.py"}"#.into(),
+                    }]))
+                } else {
+                    // Second call (force_final_turn): fail
+                    anyhow::bail!("API connection refused")
+                }
+            }
+        }
+
+        let reviewer = FailingAgentReviewer { call_count: Mutex::new(0) };
+        let result = agent_loop("x", "t.py", &reviewer, "m", &tools, &config);
+        // Should propagate the error, not silently return empty
+        assert!(result.is_err(), "API error should propagate, not be swallowed");
     }
 }
