@@ -319,6 +319,47 @@ fn collect_import_refs_in_range(
     }
 }
 
+/// Parse a unified diff to extract changed line ranges per file.
+/// Returns Vec<(file_path, Vec<(start_line, end_line)>)>
+pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
+    let mut results = Vec::new();
+    let mut current_file: Option<String> = None;
+    let mut current_ranges: Vec<(u32, u32)> = Vec::new();
+
+    for line in diff.lines() {
+        if line.starts_with("+++ b/") {
+            // Save previous file
+            if let Some(file) = current_file.take() {
+                if !current_ranges.is_empty() {
+                    results.push((file, std::mem::take(&mut current_ranges)));
+                }
+            }
+            current_file = Some(line[6..].to_string());
+        } else if line.starts_with("@@ ") {
+            // Parse @@ -old,count +new,count @@ format
+            if let Some(plus_part) = line.split('+').nth(1) {
+                let nums: Vec<&str> = plus_part
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if let (Some(start), Some(count)) = (nums.first(), nums.get(1)) {
+                    if let (Ok(s), Ok(c)) = (start.parse::<u32>(), count.parse::<u32>()) {
+                        current_ranges.push((s, s + c.saturating_sub(1).max(0)));
+                    }
+                }
+            }
+        }
+    }
+    // Save last file
+    if let Some(file) = current_file {
+        if !current_ranges.is_empty() {
+            results.push((file, current_ranges));
+        }
+    }
+
+    results
+}
+
 fn find_callers_of(
     node: &tree_sitter::Node,
     source: &str,
@@ -605,5 +646,84 @@ fn process() {
         assert!(ctx.type_definitions.is_empty());
         assert!(ctx.callers.is_empty());
         assert!(ctx.import_targets.is_empty());
+    }
+
+    // -- Diff-aware hydration tests --
+
+    #[test]
+    fn hydrate_diff_range_smaller_than_full_file() {
+        let source = "\
+fn unrelated() -> i32 { 42 }
+
+fn validate(input: &str) -> bool { !input.is_empty() }
+
+fn process(data: &str) {
+    if validate(data) {
+        println!(\"ok\");
+    }
+}
+
+fn another_unrelated() -> i32 { 99 }
+";
+        let tree = parse(source, Language::Rust).unwrap();
+
+        // Full file hydration
+        let total_lines = source.lines().count() as u32;
+        let full = hydrate(&tree, source, Language::Rust, &[(1, total_lines)]);
+
+        // Diff-aware: only lines 5-9 changed (the process function)
+        let diff = hydrate(&tree, source, Language::Rust, &[(5, 9)]);
+
+        // Diff hydration should find callee (validate) but NOT unrelated functions
+        assert!(diff.callee_signatures.iter().any(|s| s.contains("validate")));
+        // Full hydration gets everything
+        assert!(full.callee_signatures.len() >= diff.callee_signatures.len());
+    }
+
+    // -- Diff parser tests --
+
+    #[test]
+    fn parse_diff_extracts_ranges() {
+        let diff = "\
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -10,5 +10,8 @@ def login():
++    validate(user)
++    check_token(token)
++    return True
+--- a/src/db.py
++++ b/src/db.py
+@@ -20,3 +20,5 @@ def query():
++    cursor.execute(sql)
+";
+        let parsed = parse_unified_diff(diff);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].0, "src/auth.py");
+        assert_eq!(parsed[0].1[0], (10, 17)); // +10,8
+        assert_eq!(parsed[1].0, "src/db.py");
+        assert_eq!(parsed[1].1[0], (20, 24)); // +20,5
+    }
+
+    #[test]
+    fn parse_diff_empty() {
+        assert!(parse_unified_diff("").is_empty());
+    }
+
+    #[test]
+    fn parse_diff_multiple_hunks_same_file() {
+        let diff = "\
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -5,3 +5,4 @@ fn foo():
++    bar()
+@@ -20,2 +21,5 @@ fn baz():
++    qux()
+";
+        let parsed = parse_unified_diff(diff);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "src/main.rs");
+        assert_eq!(parsed[0].1.len(), 2);
+        assert_eq!(parsed[0].1[0], (5, 8));   // +5,4
+        assert_eq!(parsed[0].1[1], (21, 25));  // +21,5
     }
 }

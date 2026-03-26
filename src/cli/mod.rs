@@ -79,6 +79,10 @@ pub struct ReviewOpts {
     /// Enable deep review with tool calling (reads additional files for context)
     #[arg(long)]
     pub deep: bool,
+
+    /// Unified diff file for change-scoped review
+    #[arg(long)]
+    pub diff_file: Option<PathBuf>,
 }
 
 impl ReviewOpts {

@@ -166,12 +166,34 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         eprintln!("Loaded {} feedback entries for calibration", feedback_entries.len());
     }
 
+    // Parse diff file if provided for change-scoped review
+    let diff_ranges = if let Some(ref diff_path) = opts.diff_file {
+        match std::fs::read_to_string(diff_path) {
+            Ok(diff_content) => {
+                let ranges = hydration::parse_unified_diff(&diff_content);
+                if !ranges.is_empty() {
+                    eprintln!("Diff-aware: scoping hydration to {} changed file(s)", ranges.len());
+                    Some(ranges)
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not read diff file {}: {}", diff_path.display(), e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let pipeline_cfg = PipelineConfig {
         models,
         calibration_model: opts.calibration_model.clone(),
         feedback: feedback_entries,
         auto_calibrate: !opts.no_auto_calibrate(),
         feedback_store: Some(feedback_path.clone()),
+        diff_ranges,
         ..Default::default()
     };
 

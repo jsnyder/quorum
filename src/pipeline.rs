@@ -33,6 +33,8 @@ pub struct PipelineConfig {
     pub calibrate: bool,
     pub auto_calibrate: bool,
     pub feedback_store: Option<std::path::PathBuf>,
+    /// Per-file changed line ranges from a unified diff (overrides full-file hydration)
+    pub diff_ranges: Option<Vec<(String, Vec<(u32, u32)>)>>,
 }
 
 impl Default for PipelineConfig {
@@ -46,6 +48,7 @@ impl Default for PipelineConfig {
             calibrate: true,
             auto_calibrate: true,
             feedback_store: None,
+            diff_ranges: None,
         }
     }
 }
@@ -73,9 +76,23 @@ pub fn review_file(
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review
         } else {
-        // Hydrate context (using full file as changed range for now)
-        let total_lines = source.lines().count() as u32;
-        let ctx = hydration::hydrate(tree, source, lang, &[(1, total_lines.max(1))]);
+        // Hydrate context: use diff ranges if available, else full file
+        let changed_lines: Vec<(u32, u32)> = if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+            diff_ranges
+                .iter()
+                .filter(|(path, _)| file_str.ends_with(path.as_str()) || path.ends_with(&file_str))
+                .flat_map(|(_, ranges)| ranges.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let hydration_ranges = if changed_lines.is_empty() {
+            let total_lines = source.lines().count() as u32;
+            vec![(1, total_lines.max(1))]
+        } else {
+            changed_lines
+        };
+        let ctx = hydration::hydrate(tree, source, lang, &hydration_ranges);
 
         // Redact secrets in both code AND hydration context before LLM
         let redacted_code = redact::redact_secrets(source);
