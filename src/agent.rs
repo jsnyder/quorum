@@ -226,12 +226,18 @@ pub fn agent_loop(
 
 fn agent_system_prompt(file_path: &str) -> String {
     format!(
-        "You are a code reviewer performing deep analysis of `{}`. \
-         You have tools to investigate the codebase. Use them to understand context \
-         before producing findings. When done investigating, respond with a JSON array \
-         of findings. Each finding: title, description, severity, category, line_start, line_end. \
-         If no issues: []",
-        file_path
+        "You are a code reviewer performing deep analysis of `{path}`. \
+         You MUST use the provided tools to investigate before producing findings. \
+         \n\nWorkflow:\
+         \n1. First, call list_files to see the project structure.\
+         \n2. Use read_file to examine files that `{path}` imports, calls, or depends on.\
+         \n3. Use grep to search for callers, related patterns, or configuration.\
+         \n4. Only after investigating context, produce your final response.\
+         \n\nYour final response must be a JSON array of findings. \
+         Each finding: title, description, severity (critical/high/medium/low/info), \
+         category, line_start, line_end. If no issues: []\
+         \n\nDo NOT produce findings without first using at least one tool to gather context.",
+        path = file_path
     )
 }
 

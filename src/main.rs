@@ -231,9 +231,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         // Deep review: agent loop with tool calling
         if opts.deep {
             if let Some(client) = llm_client.as_ref() {
-                let project_root = file_path.parent()
-                    .and_then(|p| p.canonicalize().ok())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let project_root = std::env::current_dir().unwrap_or_default();
                 let tool_reg = tools::ToolRegistry::new(&project_root);
                 let agent_cfg = agent::AgentConfig::default();
                 let model = pipeline_cfg.models.first()
