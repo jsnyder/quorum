@@ -132,18 +132,19 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
-    // Build LLM reviewer if API key is available
-    let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = cfg.require_api_key() {
+    // Build LLM client if API key is available (implements both LlmReviewer and AgentReviewer)
+    let llm_client: Option<llm_client::OpenAiClient> = if let Ok(api_key) = cfg.require_api_key() {
         let effort = opts.reasoning_effort.clone()
             .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()))
             .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
-        Some(Box::new(
+        Some(
             llm_client::OpenAiClient::new(&cfg.base_url, api_key)
                 .with_reasoning_effort(effort)
-        ))
+        )
     } else {
         None
     };
+    let llm_reviewer: Option<&dyn LlmReviewer> = llm_client.as_ref().map(|c| c as &dyn LlmReviewer);
 
     // Build pipeline config
     let models = if opts.ensemble {
@@ -224,7 +225,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
 
         // Deep review: agent loop with tool calling
         if opts.deep {
-            if let Some(reviewer) = llm_reviewer.as_deref() {
+            if let Some(client) = llm_client.as_ref() {
                 let project_root = file_path.parent()
                     .and_then(|p| p.canonicalize().ok())
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
@@ -233,10 +234,10 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let model = pipeline_cfg.models.first()
                     .map(|s| s.as_str())
                     .unwrap_or("gpt-5.4");
-                match agent::agent_review(
+                match agent::agent_loop(
                     &source,
                     &file_path.to_string_lossy(),
-                    reviewer,
+                    client as &dyn agent::AgentReviewer,
                     model,
                     &tool_reg,
                     &agent_cfg,
@@ -264,7 +265,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 file_path,
                 &source,
                 l,
-                llm_reviewer.as_deref(),
+                llm_reviewer,
                 &pipeline_cfg,
                 Some(&parse_cache),
             )
@@ -273,7 +274,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             pipeline::review_file_llm_only(
                 file_path,
                 &source,
-                llm_reviewer.as_deref(),
+                llm_reviewer,
                 &pipeline_cfg,
             )
         };
