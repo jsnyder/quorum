@@ -115,21 +115,23 @@ pub fn calibrate(
             ));
         }
 
-        // Suppress if FP weight >= 1.5 and FP dominates
-        if fp_weight >= 1.5 && fp_weight > tp_weight * 1.5 {
+        // Suppress: FP clearly dominates TP
+        if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue; // don't add to output
         }
 
-        // Boost if TP weight >= 1.5 and TP dominates
-        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 1.5 {
+        // Boost: TP clearly dominates FP
+        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
             finding.severity = boost_severity(&finding.severity);
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
             boosted += 1;
-        } else if tp_weight > 0.0 {
+        } else if tp_weight > fp_weight * 1.5 {
+            // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         }
+        // Mixed signal (TP ~ FP): leave calibrator_action as None
 
         output.push(finding);
     }
@@ -195,19 +197,23 @@ pub fn calibrate_with_index(
             ));
         }
 
-        if fp_weight >= 1.5 && fp_weight > tp_weight * 1.5 {
+        // Suppress: FP clearly dominates TP
+        if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue;
         }
 
-        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 1.5 {
+        // Boost: TP clearly dominates FP
+        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
             finding.severity = boost_severity(&finding.severity);
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
             boosted += 1;
-        } else if tp_weight > 0.0 {
+        } else if tp_weight > fp_weight * 1.5 {
+            // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         }
+        // Mixed signal (TP ~ FP): leave calibrator_action as None
 
         output.push(finding);
     }
