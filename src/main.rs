@@ -25,6 +25,7 @@ mod output;
 mod parser;
 mod patterns;
 mod pipeline;
+mod progress;
 mod redact;
 mod review;
 mod tools;
@@ -202,6 +203,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let style = output::Style::detect(opts.no_color);
     let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
     let parse_cache = cache::ParseCache::new(128);
+    let progress = progress::ProgressReporter::detect();
     let mut all_findings = Vec::new();
     let mut had_errors = false;
 
@@ -223,6 +225,9 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         };
 
+        let file_display = file_path.to_string_lossy().to_string();
+        progress.start_file(&file_display);
+
         // Deep review: agent loop with tool calling
         if opts.deep {
             if let Some(client) = llm_client.as_ref() {
@@ -243,16 +248,17 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     &agent_cfg,
                 ) {
                     Ok(findings) => {
+                        progress.finish_file(findings.len());
                         if use_json {
                             all_findings.extend(findings);
                         } else {
-                            let file_str = file_path.to_string_lossy().to_string();
-                            print!("{}", output::format_review(&file_str, &findings, &style));
+                            print!("{}", output::format_review(&file_display, &findings, &style));
                             all_findings.extend(findings);
                         }
                         continue;
                     }
                     Err(e) => {
+                        progress.clear_line();
                         eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
                     }
                 }
@@ -280,6 +286,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         };
         match review_result {
             Ok(result) => {
+                progress.finish_file(result.findings.len());
                 if use_json {
                     all_findings.extend(result.findings);
                 } else {
@@ -288,6 +295,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 }
             }
             Err(e) => {
+                progress.clear_line();
                 eprintln!("Error: Review failed for {}: {}", file_path.display(), e);
                 had_errors = true;
             }
