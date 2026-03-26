@@ -141,6 +141,80 @@ pub fn calibrate(
     }
 }
 
+/// Calibrate findings using a FeedbackIndex for similarity matching.
+/// Uses semantic embeddings when available, falls back to Jaccard.
+/// This is the preferred path when a FeedbackIndex has been built.
+pub fn calibrate_with_index(
+    findings: Vec<Finding>,
+    index: &mut crate::feedback_index::FeedbackIndex,
+    config: &CalibratorConfig,
+) -> CalibrationResult {
+    if index.is_empty() {
+        return CalibrationResult { findings, suppressed: 0, boosted: 0 };
+    }
+
+    let mut output = Vec::new();
+    let mut suppressed = 0;
+    let mut boosted = 0;
+
+    for mut finding in findings {
+        let similar_entries = index.find_similar(&finding.title, &finding.category, 10);
+
+        // Filter by similarity threshold and provenance
+        let similar: Vec<&crate::feedback_index::SimilarEntry> = similar_entries.iter()
+            .filter(|s| s.similarity >= config.similarity_threshold as f32)
+            .filter(|s| {
+                if config.use_auto_feedback { true }
+                else { !matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) }
+            })
+            .collect();
+
+        if similar.is_empty() {
+            output.push(finding);
+            continue;
+        }
+
+        let tp_weight: f64 = similar.iter()
+            .filter(|s| s.entry.verdict == Verdict::Tp || s.entry.verdict == Verdict::Partial)
+            .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
+            .sum();
+        let fp_weight: f64 = similar.iter()
+            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
+            .sum();
+
+        // Annotate with precedent info
+        for s in &similar {
+            finding.similar_precedent.push(format!(
+                "{}: {} ({}) [sim={:.2}]",
+                match s.entry.verdict {
+                    Verdict::Tp => "TP", Verdict::Fp => "FP",
+                    Verdict::Partial => "Partial", Verdict::Wontfix => "Wontfix",
+                },
+                s.entry.finding_title, s.entry.reason, s.similarity
+            ));
+        }
+
+        if fp_weight >= 1.5 && fp_weight > tp_weight * 1.5 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed += 1;
+            continue;
+        }
+
+        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 1.5 {
+            finding.severity = boost_severity(&finding.severity);
+            finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            boosted += 1;
+        } else if tp_weight > 0.0 {
+            finding.calibrator_action = Some(CalibratorAction::Confirmed);
+        }
+
+        output.push(finding);
+    }
+
+    CalibrationResult { findings: output, suppressed, boosted }
+}
+
 fn boost_severity(severity: &Severity) -> Severity {
     match severity {
         Severity::Info => Severity::Low,

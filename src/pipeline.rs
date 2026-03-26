@@ -150,13 +150,23 @@ pub fn review_file(
     // Merge all sources
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 
-    // Calibrate using feedback precedent
+    // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let final_findings = if pipeline_config.calibrate && !pipeline_config.feedback.is_empty() {
-        let cal_result = calibrator::calibrate(
-            merged,
-            &pipeline_config.feedback,
-            &CalibratorConfig::default(),
-        );
+        let config = CalibratorConfig::default();
+
+        // Try to build a FeedbackIndex from the feedback store for semantic retrieval
+        let cal_result = if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            match crate::feedback_index::FeedbackIndex::build(&store) {
+                Ok(mut index) if !index.is_empty() => {
+                    calibrator::calibrate_with_index(merged, &mut index, &config)
+                }
+                _ => calibrator::calibrate(merged, &pipeline_config.feedback, &config),
+            }
+        } else {
+            calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+        };
+
         if cal_result.suppressed > 0 || cal_result.boosted > 0 {
             eprintln!(
                 "Calibrator: {} suppressed, {} boosted (from {} feedback entries)",

@@ -56,6 +56,10 @@ impl FeedbackIndex {
         })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn find_similar(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
         #[cfg(feature = "embeddings")]
         if self.embedder.is_some() && !self.vectors.is_empty() {
