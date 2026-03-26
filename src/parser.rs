@@ -13,8 +13,8 @@ impl Language {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Some(Language::Rust),
             "py" => Some(Language::Python),
-            "ts" => Some(Language::TypeScript),
-            "tsx" => Some(Language::Tsx),
+            "ts" | "js" | "mjs" | "cjs" => Some(Language::TypeScript),
+            "tsx" | "jsx" => Some(Language::Tsx),
             _ => None,
         }
     }
