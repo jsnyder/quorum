@@ -9,7 +9,14 @@ homepage = "https://github.com/jsnyder/quorum"
 keywords = ["code-review", "ast", "llm", "linter", "mcp"]
 categories = ["development-tools", "command-line-utilities"]
 
+[features]
+default = []
+embeddings = ["fastembed"]
+
 [dependencies]
+# Local embeddings (optional)
+fastembed = { version = "5", optional = true }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
