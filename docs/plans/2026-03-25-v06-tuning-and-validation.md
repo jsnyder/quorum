@@ -1,30 +1,24 @@
 # Quorum TODO — Post v0.5.1
 
-## Tuning & Validation (built but untested)
+## Tuning & Validation
 
-### 1. Wire FeedbackIndex into calibrator
-- `feedback_index.rs` can retrieve similar entries but calibrator still uses inline Jaccard
-- Replace `finding_feedback_similarity()` in `calibrator.rs` with `FeedbackIndex::find_similar()`
-- Effort: Small | Impact: High
+### ~~1. Wire FeedbackIndex into calibrator~~ DONE
+- Pipeline builds FeedbackIndex from feedback store, uses `calibrate_with_index()`
+- Semantic similarity (embeddings) with Jaccard fallback
 
-### 2. Build and test with `--features embeddings`
-- fastembed + bge-small-en-v1.5 is wired but never run in production
-- `cargo build --release --features embeddings` then review real files
-- Compare calibrator precision with/without embeddings on same files
-- Effort: Small | Impact: High
+### ~~2. Build and test with `--features embeddings`~~ DONE
+- Embeddings now default feature — bge-small-en-v1.5 on by default
+- A/B showed 0.94 sim for exact precedents vs 0.70 Jaccard plateau, 8 correct boosts
 
-### 3. Test `--diff-file` on real git diffs
-- Diff parser and pipeline wiring done, never tested on actual `git diff` output
-- Run: `git diff HEAD~1 > /tmp/diff.patch && quorum review src/*.rs --diff-file /tmp/diff.patch`
-- Measure prompt size reduction, verify finding quality maintained
-- Effort: Small | Impact: Medium
+### ~~3. Test `--diff-file` on real git diffs~~ DONE
+- Works correctly — "Diff-aware: scoping hydration to N changed file(s)"
+- Same finding count, LLM focuses on changed lines
 
-### 4. Tune calibrator weights
-- Provenance weights (human=1.0, auto=0.5, unknown=0.3) are initial guesses
-- Recency half-life (~42 days) is a guess
-- FP suppress threshold (1.5 weighted) is a guess
-- Run calibrator on known files, review what gets suppressed/boosted, adjust
-- Effort: Medium | Impact: Medium
+### ~~4. Tune calibrator weights~~ DONE
+- TP must dominate FP by 1.5x to confirm, 2x to boost/suppress
+- Wontfix counts on FP side (not-worth-fixing ~ FP for calibration)
+- Added PostFix provenance (1.5x weight) for post-fix feedback
+- Weights: PostFix=1.5, Human=1.0, Auto=0.5, Unknown=0.3
 
 ### 5. Real multi-turn agent loop (v0.6)
 - Current `--deep` is single-pass MVP — tools described in prompt but never called
@@ -33,25 +27,19 @@
 - Use `chat_with_tools()` method already in llm_client.rs
 - Effort: Large | Impact: High
 
-### 6. Embedding vs Jaccard A/B benchmark
-- Take 20 finding titles as queries against 932 feedback entries
-- Compare retrieval precision: raw Jaccard vs embedding vs embedding+pattern normalization
-- Determines if embeddings are worth the 70MB model download + latency
-- Effort: Medium | Impact: Medium
+### ~~6. Embedding vs Jaccard A/B benchmark~~ DONE
+- Embeddings clearly superior: richer precedent matching, precise sim scores
+- Worth the 70MB download — made default feature
 
-### 7. Backfill legacy provenance
-- 900+ legacy entries have `provenance: Unknown`
-- New entries correctly tagged as Human or AutoCalibrate
-- Option A: backfill based on `model` field (if starts with "auto-calibrate:" → AutoCalibrate)
-- Option B: let new data accumulate, Unknown decays via recency weighting
-- Effort: Small | Impact: Low
+### ~~7. Backfill legacy provenance~~ DONE
+- Backfilled 637 entries: 479 human, 158 auto_calibrate, 291 remain unknown
+- Calibrator now correctly suppresses 4 previously over-confirmed findings
 
 ## Feature Gaps
 
-### 8. LLM-only fallback for unsupported languages
-- Files with unknown extensions (.go, .java, .rb, .c) are skipped entirely
-- Could still send to LLM for review without local AST analysis
-- Effort: Small | Impact: Medium
+### ~~8. LLM-only fallback for unsupported languages~~ DONE
+- Unknown extensions (.go, .java, .rb, .c) now get LLM-only review
+- No AST, but still gets LLM + Context7 + calibration + auto-calibration
 
 ### 9. Update skills to v0.5
 - `~/.claude/skills/quorum-cli/skill.md` doesn't mention --deep, --diff-file, --reasoning-effort, --calibration-model
