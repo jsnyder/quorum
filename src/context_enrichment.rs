@@ -64,9 +64,10 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
 }
 
 /// Real Context7 fetcher — calls Context7 HTTP API directly.
+/// Uses async reqwest::Client internally, bridged to sync via block_in_place.
 /// Requires CONTEXT7_API_KEY env var. Gracefully degrades if not set.
 pub struct Context7HttpFetcher {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
     api_key: Option<String>,
 }
 
@@ -76,19 +77,22 @@ impl Context7HttpFetcher {
             .ok()
             .filter(|k| !k.trim().is_empty())
             .or_else(|| {
-                // Fallback: read from ~/.context7_key file
                 let home = std::env::var("HOME").ok()?;
                 std::fs::read_to_string(format!("{}/.context7_key", home)).ok()
                     .map(|s| s.trim().to_string())
                     .filter(|k| !k.is_empty())
             });
         Self {
-            http: reqwest::blocking::Client::builder()
+            http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),
             api_key,
         }
+    }
+
+    fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+        crate::llm_client::block_on_async(f)
     }
 }
 
@@ -96,14 +100,13 @@ impl ContextFetcher for Context7HttpFetcher {
     fn resolve_library(&self, name: &str) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
 
-        // reqwest::blocking can't run inside tokio async runtime directly — use block_in_place
-        let resp = match tokio::task::block_in_place(|| {
+        let resp = match self.block_on(
             self.http
                 .get("https://context7.com/api/v1/search")
                 .query(&[("libraryName", name), ("query", name)])
                 .header("Authorization", format!("Bearer {}", api_key))
                 .send()
-        }) {
+        ) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Context7 resolve_library error: {}", e);
@@ -117,36 +120,31 @@ impl ContextFetcher for Context7HttpFetcher {
             return None;
         }
 
-        let json: serde_json::Value = match resp.json() {
+        let json: serde_json::Value = match self.block_on(resp.json()) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("Context7 resolve_library: JSON parse error: {}", e);
                 return None;
             }
         };
-        let id = json["results"]
+        json["results"]
             .as_array()
             .and_then(|a| a.first())
             .and_then(|r| r.get("id"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        id
+            .map(|s| s.to_string())
     }
 
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
 
-        let lib_id = library_id.to_string();
-        let q = query.to_string();
-        let tok = max_tokens.to_string();
-        let key = api_key.clone();
-        let resp = match tokio::task::block_in_place(|| {
+        let resp = match self.block_on(
             self.http
-                .get(format!("https://context7.com/api/v1{}", lib_id))
-                .query(&[("query", &q), ("tokens", &tok)])
-                .header("Authorization", format!("Bearer {}", key))
+                .get(format!("https://context7.com/api/v1{}", library_id))
+                .query(&[("query", query), ("tokens", &max_tokens.to_string())])
+                .header("Authorization", format!("Bearer {}", api_key))
                 .send()
-        }) {
+        ) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Context7 query_docs error: {}", e);
@@ -156,12 +154,12 @@ impl ContextFetcher for Context7HttpFetcher {
 
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
+            let body = self.block_on(resp.text()).unwrap_or_default();
             eprintln!("Context7 query_docs: HTTP {} - {}", status, &body[..200.min(body.len())]);
             return None;
         }
 
-        let body_text = match resp.text() {
+        let body_text = match self.block_on(resp.text()) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("Context7 query_docs: read body error: {}", e);
@@ -174,7 +172,6 @@ impl ContextFetcher for Context7HttpFetcher {
         }
 
         // Context7 API may return plain text/markdown or JSON
-        // Try JSON first, fall back to plain text
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
             if let Some(content) = json["content"].as_str() {
                 if !content.is_empty() {
@@ -192,7 +189,6 @@ impl ContextFetcher for Context7HttpFetcher {
             }
         }
 
-        // Plain text/markdown response — use directly, truncate to max_tokens chars
         let truncated: String = body_text.chars().take(max_tokens * 4).collect();
         Some(truncated)
     }
@@ -225,6 +221,22 @@ mod tests {
     fn framework_queries_unknown_framework_skipped() {
         let queries = framework_queries(&["unknown-framework".into()]);
         assert!(queries.is_empty());
+    }
+
+    #[test]
+    fn async_fetcher_resolves_library() {
+        struct FakeAsyncFetcher;
+        impl ContextFetcher for FakeAsyncFetcher {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                Some(format!("/ctx/{}", name))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                Some("async docs content".into())
+            }
+        }
+        let docs = fetch_framework_docs(&["react".into()], &FakeAsyncFetcher);
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].content.contains("async"));
     }
 
     #[test]

@@ -239,7 +239,7 @@ impl OpenAiClient {
 /// Uses block_in_place on multi-thread runtime, spawns a new runtime otherwise.
 /// Note: block_in_place requires multi-thread runtime. Quorum's #[tokio::main]
 /// guarantees this; the Err branch handles the no-runtime case (e.g. plain tests).
-fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
+pub fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         Ok(rt) => tokio::task::block_in_place(|| rt.block_on(f)),
         Err(_) => {
