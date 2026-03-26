@@ -7,6 +7,11 @@ pub struct ProgressReporter {
     is_tty: bool,
 }
 
+/// Strip ANSI control characters from untrusted input before embedding in terminal output.
+fn sanitize(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() || *c == '\n').collect()
+}
+
 impl ProgressReporter {
     pub fn new(is_tty: bool) -> Self {
         Self { is_tty }
@@ -18,25 +23,25 @@ impl ProgressReporter {
 
     pub fn start_file(&self, file_path: &str) {
         if !self.is_tty { return; }
-        eprint!("\x1b[2m{}\x1b[0m ", file_path);
+        eprint!("\x1b[2m{}\x1b[0m ", sanitize(file_path));
         let _ = io::stderr().flush();
     }
 
     pub fn update(&self, status: &str) {
         if !self.is_tty { return; }
-        eprint!("\r\x1b[2K\x1b[2m  {} \x1b[0m", status);
+        eprint!("\r\x1b[2K\x1b[2m  {} \x1b[0m", sanitize(status));
         let _ = io::stderr().flush();
     }
 
     pub fn model_call(&self, file_path: &str, model: &str) {
         if !self.is_tty { return; }
-        eprint!("\r\x1b[2K\x1b[2m  {} reviewing with {}...\x1b[0m", file_path, model);
+        eprint!("\r\x1b[2K\x1b[2m  {} reviewing with {}...\x1b[0m", sanitize(file_path), sanitize(model));
         let _ = io::stderr().flush();
     }
 
     pub fn agent_tool_call(&self, file_path: &str, tool_name: &str, iteration: usize) {
         if !self.is_tty { return; }
-        eprint!("\r\x1b[2K\x1b[2m  {} [iter {}] calling {}...\x1b[0m", file_path, iteration, tool_name);
+        eprint!("\r\x1b[2K\x1b[2m  {} [iter {}] calling {}...\x1b[0m", sanitize(file_path), iteration, sanitize(tool_name));
         let _ = io::stderr().flush();
     }
 
@@ -56,19 +61,15 @@ impl ProgressReporter {
     }
 }
 
-pub fn format_status(file_path: &str, status: &str) -> String {
-    format!("  {} {}", file_path, status)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn progress_formats_status_message() {
-        let msg = format_status("src/auth.py", "reviewing with gpt-5.4...");
-        assert!(msg.contains("src/auth.py"));
-        assert!(msg.contains("gpt-5.4"));
+    fn sanitize_strips_control_chars() {
+        assert_eq!(sanitize("normal.py"), "normal.py");
+        assert_eq!(sanitize("evil\x1b[31m.py"), "evil[31m.py");
+        assert_eq!(sanitize("tab\there"), "tabhere");
     }
 
     #[test]
@@ -77,6 +78,5 @@ mod tests {
         reporter.start_file("test.py");
         reporter.update("reviewing...");
         reporter.finish_file(3);
-        // No panic, no output — just validates the code path
     }
 }
