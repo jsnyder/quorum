@@ -52,6 +52,10 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub calibration_model: Option<String>,
 
+    /// Reasoning effort: none, minimal, low, medium, high, xhigh
+    #[arg(long)]
+    pub reasoning_effort: Option<String>,
+
     /// Disable color output
     #[arg(long)]
     pub no_color: bool,

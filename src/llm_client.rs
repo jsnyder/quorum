@@ -16,6 +16,7 @@ pub struct OpenAiClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAiClient {
@@ -24,7 +25,13 @@ impl OpenAiClient {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
+            reasoning_effort: None,
         }
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
+        self
     }
 
     fn needs_responses_api(model: &str) -> bool {
@@ -42,7 +49,7 @@ impl OpenAiClient {
     async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
         let system_msg = Self::system_prompt();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [
                 {"role": "system", "content": system_msg},
@@ -51,6 +58,9 @@ impl OpenAiClient {
             "temperature": 0.3,
             "max_tokens": 16384
         });
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::Value::String(effort.clone());
+        }
 
         let url = format!("{}/chat/completions", self.base_url);
         let resp = self.http
@@ -86,7 +96,7 @@ impl OpenAiClient {
 
     /// OpenAI Responses API (/v1/responses) for codex and other responses-only models.
     async fn responses_api(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "instructions": Self::system_prompt(),
             "input": prompt,
@@ -94,6 +104,10 @@ impl OpenAiClient {
             "temperature": 0.3,
             "store": false
         });
+        if let Some(effort) = &self.reasoning_effort {
+            // Responses API uses nested reasoning.effort format
+            body["reasoning"] = serde_json::json!({ "effort": effort });
+        }
 
         // Codex models may need to go direct to OpenAI, not through LiteLLM
         let base = if self.base_url.contains("openai.com") {
