@@ -17,7 +17,8 @@ pub enum Verdict {
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
     Human,
-    AutoCalibrate(String), // model name used for auto-calibration
+    PostFix,                // verdict recorded after applying a fix (strongest signal)
+    AutoCalibrate(String),  // model name used for auto-calibration
     Unknown,
 }
 
@@ -198,8 +199,8 @@ mod tests {
 
     #[test]
     fn provenance_serializes_correctly() {
-        let json = serde_json::to_value(&Provenance::Human).unwrap();
-        assert_eq!(json, "human");
+        assert_eq!(serde_json::to_value(&Provenance::Human).unwrap(), "human");
+        assert_eq!(serde_json::to_value(&Provenance::PostFix).unwrap(), "post_fix");
     }
 
     #[test]

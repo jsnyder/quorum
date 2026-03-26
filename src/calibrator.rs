@@ -37,6 +37,7 @@ impl Default for CalibratorConfig {
 /// Compute the weight of a single feedback entry based on provenance and recency.
 fn verdict_weight(entry: &FeedbackEntry) -> f64 {
     let provenance_weight = match &entry.provenance {
+        crate::feedback::Provenance::PostFix => 1.5,
         crate::feedback::Provenance::Human => 1.0,
         crate::feedback::Provenance::AutoCalibrate(_) => 0.5,
         crate::feedback::Provenance::Unknown => 0.3,
@@ -614,5 +615,45 @@ mod tests {
         let result = calibrate(findings, &vec![tp], &config);
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
+    }
+
+    #[test]
+    fn postfix_provenance_has_highest_weight() {
+        // A single PostFix TP (weight 1.5) should be enough to confirm
+        let findings = vec![FindingBuilder::new().title("SQL injection").category("security").build()];
+        let postfix_tp = FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "fixed with parameterized queries".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::PostFix,
+        };
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &vec![postfix_tp], &config);
+        assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
+    }
+
+    #[test]
+    fn postfix_fp_suppresses_with_single_entry() {
+        // A single PostFix FP (weight 1.5) meets the 1.5 threshold alone
+        let findings = vec![FindingBuilder::new().title("Unused import").category("style").build()];
+        let postfix_fp = FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "Unused import".into(),
+            finding_category: "style".into(),
+            verdict: Verdict::Fp,
+            reason: "import is used dynamically".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::PostFix,
+        };
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &vec![postfix_fp], &config);
+        assert_eq!(result.suppressed, 1, "Single PostFix FP should suppress (weight 1.5 >= threshold)");
     }
 }
