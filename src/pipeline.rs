@@ -248,6 +248,125 @@ fn lang_name(lang: Language) -> &'static str {
     }
 }
 
+/// Infer a language name from file extension for LLM-only review.
+fn lang_name_from_path(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("unknown")
+        .to_lowercase()
+}
+
+/// LLM-only review for files without tree-sitter support.
+/// Skips local AST analysis but still does LLM review, calibration, and auto-calibration.
+pub fn review_file_llm_only(
+    file_path: &Path,
+    source: &str,
+    llm: Option<&dyn LlmReviewer>,
+    pipeline_config: &PipelineConfig,
+) -> anyhow::Result<FileReviewResult> {
+    let file_str = file_path.to_string_lossy().to_string();
+    let mut all_sources: Vec<Vec<Finding>> = Vec::new();
+
+    // No local AST analysis — unsupported language
+
+    // LLM review (if configured)
+    if let Some(reviewer) = llm {
+        if !pipeline_config.models.is_empty() {
+            let redacted_code = redact::redact_secrets(source);
+            let language = lang_name_from_path(file_path);
+
+            // Context7 framework docs
+            let framework_docs = {
+                let project_root = find_project_root(file_path);
+                let domain = crate::domain::detect_domain(&project_root);
+                if !domain.frameworks.is_empty() {
+                    let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
+                    let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher);
+                    if !docs.is_empty() {
+                        Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            let req = ReviewRequest {
+                file_path: file_str.clone(),
+                language,
+                code: redacted_code,
+                hydration_context: None,
+                framework_docs,
+            };
+
+            let prompt = review::build_review_prompt(&req);
+            for model in &pipeline_config.models {
+                match reviewer.review(&prompt, model) {
+                    Ok(response) => {
+                        match review::parse_llm_response(&response, model) {
+                            Ok(findings) => all_sources.push(findings),
+                            Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
+                        }
+                    }
+                    Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
+                }
+            }
+        }
+    }
+
+    let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
+
+    // Calibrate
+    let final_findings = if pipeline_config.calibrate && !pipeline_config.feedback.is_empty() {
+        let config = CalibratorConfig::default();
+        let cal_result = if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            match crate::feedback_index::FeedbackIndex::build(&store) {
+                Ok(mut index) if !index.is_empty() => {
+                    calibrator::calibrate_with_index(merged, &mut index, &config)
+                }
+                _ => calibrator::calibrate(merged, &pipeline_config.feedback, &config),
+            }
+        } else {
+            calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+        };
+        if cal_result.suppressed > 0 || cal_result.boosted > 0 {
+            eprintln!(
+                "Calibrator: {} suppressed, {} boosted (from {} feedback entries)",
+                cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
+            );
+        }
+        cal_result.findings
+    } else {
+        merged
+    };
+
+    // Auto-calibration
+    if pipeline_config.auto_calibrate && !final_findings.is_empty() {
+        if let (Some(reviewer), Some(store_path)) = (llm, &pipeline_config.feedback_store) {
+            let model = pipeline_config.calibration_model.as_deref()
+                .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
+                .unwrap_or("gpt-5.4");
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            match crate::auto_calibrate::auto_calibrate(
+                &final_findings, source, &file_str, reviewer, model, &store,
+            ) {
+                Ok(result) if result.recorded > 0 => {
+                    eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);
+                }
+                Err(e) => eprintln!("Auto-calibrate warning: {}", e),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(FileReviewResult {
+        file_path: file_str,
+        findings: final_findings,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

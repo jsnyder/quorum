@@ -210,13 +210,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             continue;
         }
 
-        let lang = match parser::Language::from_path(file_path) {
-            Some(l) => l,
-            None => {
-                eprintln!("Warning: Unsupported file type, skipping: {}", file_path.display());
-                continue;
-            }
-        };
+        let lang = parser::Language::from_path(file_path);
 
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
@@ -263,15 +257,26 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         }
 
-        // Run the full pipeline with cache
-        match pipeline::review_source(
-            file_path,
-            &source,
-            lang,
-            llm_reviewer.as_deref(),
-            &pipeline_cfg,
-            Some(&parse_cache),
-        ) {
+        // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
+        let review_result = if let Some(l) = lang {
+            pipeline::review_source(
+                file_path,
+                &source,
+                l,
+                llm_reviewer.as_deref(),
+                &pipeline_cfg,
+                Some(&parse_cache),
+            )
+        } else {
+            eprintln!("Note: No AST support for {}, using LLM-only review", file_path.display());
+            pipeline::review_file_llm_only(
+                file_path,
+                &source,
+                llm_reviewer.as_deref(),
+                &pipeline_cfg,
+            )
+        };
+        match review_result {
             Ok(result) => {
                 if use_json {
                     all_findings.extend(result.findings);

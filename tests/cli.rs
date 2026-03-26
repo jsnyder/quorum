@@ -84,12 +84,16 @@ fn review_nonexistent_file_exits_three() {
 }
 
 #[test]
-fn review_unknown_extension_exits_three() {
+fn review_unknown_extension_llm_only_fallback() {
+    // Unknown extensions use LLM-only review; without LLM configured, returns 0 findings
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("example.go");
+    std::fs::write(&file, "package main\nfunc main() { fmt.Println(\"hello\") }\n").unwrap();
     quorum()
         .arg("review")
-        .arg("tests/cli.rs") // .rs is known, use a truly unknown ext
+        .arg(file.to_str().unwrap())
         .assert()
-        .code(predicate::in_iter([0, 1, 2])); // should still work for .rs
+        .code(0);
 }
 
 #[test]
