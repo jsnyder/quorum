@@ -22,7 +22,11 @@ pub struct OpenAiClient {
 impl OpenAiClient {
     pub fn new(base_url: &str, api_key: &str) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .unwrap_or_default(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             reasoning_effort: None,
@@ -35,7 +39,7 @@ impl OpenAiClient {
     }
 
     fn needs_responses_api(model: &str) -> bool {
-        RESPONSES_API_MODELS.iter().any(|m| model.contains(m))
+        RESPONSES_API_MODELS.iter().any(|m| *m == model)
     }
 
     async fn call_model(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
@@ -112,15 +116,7 @@ impl OpenAiClient {
             body["reasoning"] = serde_json::json!({ "effort": effort });
         }
 
-        // Codex models may need to go direct to OpenAI, not through LiteLLM
-        let base = if self.base_url.contains("openai.com") {
-            self.base_url.clone()
-        } else {
-            // Try the configured proxy first; if it fails, caller handles error
-            self.base_url.clone()
-        };
-
-        let url = format!("{}/responses", base);
+        let url = format!("{}/responses", self.base_url);
         let resp = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -143,17 +139,18 @@ impl OpenAiClient {
             anyhow::bail!("Response incomplete: {}", reason);
         }
 
-        // Extract text from output[].content[].text
+        // Extract and concatenate all text from output[].content[].text
         let output = json["output"].as_array()
             .ok_or_else(|| anyhow::anyhow!("No output in Responses API response"))?;
 
+        let mut texts = Vec::new();
         for item in output {
             if item["type"].as_str() == Some("message") {
                 if let Some(content) = item["content"].as_array() {
                     for block in content {
                         if block["type"].as_str() == Some("output_text") {
                             if let Some(text) = block["text"].as_str() {
-                                return Ok(text.to_string());
+                                texts.push(text.to_string());
                             }
                         }
                     }
@@ -161,7 +158,10 @@ impl OpenAiClient {
             }
         }
 
-        anyhow::bail!("No text content in Responses API output")
+        if texts.is_empty() {
+            anyhow::bail!("No text content in Responses API output");
+        }
+        Ok(texts.join("\n"))
     }
 
     fn system_prompt() -> &'static str {
@@ -175,12 +175,22 @@ impl OpenAiClient {
     }
 }
 
-/// Uses block_in_place for safe sync-over-async in multi-threaded tokio runtime.
+/// Bridges sync LlmReviewer trait to async HTTP calls.
+/// Uses block_in_place on multi-thread runtime, spawns a new runtime on current-thread.
 impl LlmReviewer for OpenAiClient {
     fn review(&self, prompt: &str, model: &str) -> anyhow::Result<String> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| anyhow::anyhow!("No tokio runtime available"))?;
-        tokio::task::block_in_place(|| rt.block_on(self.call_model(model, prompt)))
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                // Inside a tokio runtime — use block_in_place (safe on multi-thread)
+                tokio::task::block_in_place(|| rt.block_on(self.call_model(model, prompt)))
+            }
+            Err(_) => {
+                // No runtime — create a temporary one
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
+                rt.block_on(self.call_model(model, prompt))
+            }
+        }
     }
 }
 
