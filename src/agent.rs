@@ -84,6 +84,87 @@ pub fn agent_review(
     crate::review::parse_llm_response(&response, model)
 }
 
+struct AgentState {
+    total_bytes_read: usize,
+    total_tool_calls: usize,
+}
+
+impl AgentState {
+    fn execute_tool_call(
+        &mut self,
+        tc: &crate::llm_client::ToolCall,
+        tools: &ToolRegistry,
+        config: &AgentConfig,
+    ) -> Option<String> {
+        self.total_tool_calls += 1;
+        if self.total_tool_calls > config.max_tool_calls {
+            eprintln!("Agent: tool call limit ({}) reached", config.max_tool_calls);
+            return None;
+        }
+
+        let result = match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+            Ok(args) => {
+                match tools.execute(&tc.name, &args) {
+                    Ok(output) => {
+                        // Truncate output to remaining byte budget before accumulating
+                        let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
+                        let output = if output.len() > remaining {
+                            // Floor to char boundary to avoid splitting multi-byte chars
+                            let safe_end = output.floor_char_boundary(remaining);
+                            let mut truncated = output[..safe_end].to_string();
+                            truncated.push_str("\n... (truncated: byte limit reached)");
+                            eprintln!("Agent: byte limit ({}) reached", config.max_bytes_read);
+                            truncated
+                        } else {
+                            output
+                        };
+                        self.total_bytes_read += output.len();
+                        output
+                    }
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            Err(e) => format!("Error: malformed arguments: {}", e),
+        };
+        Some(result)
+    }
+
+    fn limit_reached(&self, config: &AgentConfig) -> bool {
+        self.total_tool_calls > config.max_tool_calls
+            || self.total_bytes_read >= config.max_bytes_read
+    }
+}
+
+fn force_final_turn(
+    reviewer: &dyn AgentReviewer,
+    messages: &mut Vec<serde_json::Value>,
+    model: &str,
+    prompt: &str,
+) -> anyhow::Result<Vec<Finding>> {
+    messages.push(serde_json::json!({"role": "user", "content": prompt}));
+    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
+        reviewer.chat_turn(messages, &serde_json::json!([]), model)
+    {
+        return crate::review::parse_llm_response(&text, model);
+    }
+    Ok(vec![])
+}
+
+fn append_assistant_tool_calls(messages: &mut Vec<serde_json::Value>, calls: &[crate::llm_client::ToolCall]) {
+    let tc_json: Vec<serde_json::Value> = calls.iter().map(|tc| {
+        serde_json::json!({
+            "id": tc.id,
+            "type": "function",
+            "function": {"name": tc.name, "arguments": tc.arguments}
+        })
+    }).collect();
+    messages.push(serde_json::json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": tc_json
+    }));
+}
+
 /// Run a multi-turn agent loop for deep code review.
 pub fn agent_loop(
     code: &str,
@@ -102,8 +183,7 @@ pub fn agent_loop(
         )}),
     ];
 
-    let mut total_bytes_read: usize = 0;
-    let mut total_tool_calls: usize = 0;
+    let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
 
     for _iteration in 0..config.max_iterations {
         let result = reviewer.chat_turn(&messages, &tool_defs, model)?;
@@ -113,46 +193,13 @@ pub fn agent_loop(
                 return crate::review::parse_llm_response(&text, model);
             }
             crate::llm_client::LlmTurnResult::ToolCalls(calls) => {
-                // Build assistant message with tool_calls
-                let tc_json: Vec<serde_json::Value> = calls.iter().map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": tc.arguments}
-                    })
-                }).collect();
-                messages.push(serde_json::json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": tc_json
-                }));
+                append_assistant_tool_calls(&mut messages, &calls);
 
-                // Execute each tool call
                 for tc in &calls {
-                    total_tool_calls += 1;
-                    if total_tool_calls > config.max_tool_calls {
-                        eprintln!("Agent: tool call limit ({}) reached", config.max_tool_calls);
-                        break;
-                    }
-
-                    let tool_result = match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
-                        Ok(args) => {
-                            match tools.execute(&tc.name, &args) {
-                                Ok(output) => {
-                                    total_bytes_read += output.len();
-                                    if total_bytes_read > config.max_bytes_read {
-                                        eprintln!("Agent: byte limit ({}) reached", config.max_bytes_read);
-                                        format!("Error: byte read limit exceeded ({}/{})", total_bytes_read, config.max_bytes_read)
-                                    } else {
-                                        output
-                                    }
-                                }
-                                Err(e) => format!("Error: {}", e),
-                            }
-                        }
-                        Err(e) => format!("Error: malformed arguments: {}", e),
+                    let tool_result = match state.execute_tool_call(tc, tools, config) {
+                        Some(r) => r,
+                        None => break,
                     };
-
                     messages.push(serde_json::json!({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -160,35 +207,21 @@ pub fn agent_loop(
                     }));
                 }
 
-                // Check limits
-                if total_tool_calls > config.max_tool_calls || total_bytes_read > config.max_bytes_read {
-                    messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": "Limit reached. Produce your findings JSON array now based on what you have seen so far."
-                    }));
-                    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
-                        reviewer.chat_turn(&messages, &serde_json::json!([]), model)
-                    {
-                        return crate::review::parse_llm_response(&text, model);
-                    }
-                    return Ok(vec![]);
+                if state.limit_reached(config) {
+                    return force_final_turn(
+                        reviewer, &mut messages, model,
+                        "Limit reached. Produce your findings JSON array now based on what you have seen so far.",
+                    );
                 }
             }
         }
     }
 
-    // Max iterations reached
     eprintln!("Agent: iteration limit ({}) reached", config.max_iterations);
-    messages.push(serde_json::json!({
-        "role": "user",
-        "content": "You've reached the investigation limit. Produce your findings JSON array now."
-    }));
-    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
-        reviewer.chat_turn(&messages, &serde_json::json!([]), model)
-    {
-        return crate::review::parse_llm_response(&text, model);
-    }
-    Ok(vec![])
+    force_final_turn(
+        reviewer, &mut messages, model,
+        "You've reached the investigation limit. Produce your findings JSON array now.",
+    )
 }
 
 fn agent_system_prompt(file_path: &str) -> String {

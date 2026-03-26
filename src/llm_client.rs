@@ -235,22 +235,24 @@ impl OpenAiClient {
     }
 }
 
-/// Bridges sync LlmReviewer trait to async HTTP calls.
-/// Uses block_in_place on multi-thread runtime, spawns a new runtime on current-thread.
+/// Bridge async future to sync context.
+/// Uses block_in_place on multi-thread runtime, spawns a new runtime otherwise.
+/// Note: block_in_place requires multi-thread runtime. Quorum's #[tokio::main]
+/// guarantees this; the Err branch handles the no-runtime case (e.g. plain tests).
+fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(rt) => tokio::task::block_in_place(|| rt.block_on(f)),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime");
+            rt.block_on(f)
+        }
+    }
+}
+
 impl LlmReviewer for OpenAiClient {
     fn review(&self, prompt: &str, model: &str) -> anyhow::Result<String> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(rt) => {
-                // Inside a tokio runtime — use block_in_place (safe on multi-thread)
-                tokio::task::block_in_place(|| rt.block_on(self.call_model(model, prompt)))
-            }
-            Err(_) => {
-                // No runtime — create a temporary one
-                let rt = tokio::runtime::Runtime::new()
-                    .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
-                rt.block_on(self.call_model(model, prompt))
-            }
-        }
+        block_on_async(self.call_model(model, prompt))
     }
 }
 
@@ -261,15 +263,7 @@ impl crate::agent::AgentReviewer for OpenAiClient {
         tools: &serde_json::Value,
         model: &str,
     ) -> anyhow::Result<LlmTurnResult> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(rt) => tokio::task::block_in_place(|| {
-                rt.block_on(self.chat_with_tools(messages, tools, model))
-            }),
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(self.chat_with_tools(messages, tools, model))
-            }
-        }
+        block_on_async(self.chat_with_tools(messages, tools, model))
     }
 }
 
