@@ -158,11 +158,13 @@ impl ToolRegistry {
                 self.grep_recursive(&path, pattern, glob, results, max)?;
             } else if path.is_file() {
                 if let Some(g) = glob {
-                    let ext_match = g.trim_start_matches("*.");
-                    if let Some(ext) = path.extension() {
-                        if ext.to_string_lossy() != ext_match { continue; }
-                    } else {
-                        continue;
+                    if g != "*" {
+                        let ext_match = g.trim_start_matches("*.");
+                        if let Some(ext) = path.extension() {
+                            if ext.to_string_lossy() != ext_match { continue; }
+                        } else {
+                            continue;
+                        }
                     }
                 }
                 if let Ok(content) = std::fs::read_to_string(&path) {
@@ -224,11 +226,13 @@ impl ToolRegistry {
             } else {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                 if let Some(g) = glob {
-                    let ext = g.trim_start_matches("*.");
-                    if let Some(file_ext) = path.extension() {
-                        if file_ext.to_string_lossy() != ext { continue; }
-                    } else {
-                        continue;
+                    if g != "*" {
+                        let ext = g.trim_start_matches("*.");
+                        if let Some(file_ext) = path.extension() {
+                            if file_ext.to_string_lossy() != ext { continue; }
+                        } else {
+                            continue;
+                        }
                     }
                 }
                 files.push(rel.display().to_string());
@@ -386,6 +390,28 @@ mod tests {
             .execute("list_files", &serde_json::json!({"pattern": "*.py"}))
             .unwrap();
         assert!(result.contains("main.py"));
+    }
+
+    #[test]
+    fn list_files_with_star_glob_returns_all() {
+        let dir = setup_repo();
+        let reg = ToolRegistry::new(dir.path());
+        // Model sends "*" meaning "all files" — should not filter everything out
+        let result = reg
+            .execute("list_files", &serde_json::json!({"path": "src", "pattern": "*"}))
+            .unwrap();
+        assert!(result.contains("auth.py"), "Star glob should match all files, got: {}", result);
+    }
+
+    #[test]
+    fn list_files_subdir_returns_files() {
+        let dir = setup_repo();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("list_files", &serde_json::json!({"path": "src"}))
+            .unwrap();
+        assert!(result.contains("auth.py"));
+        assert!(result.contains("db.py"));
     }
 
     #[test]
