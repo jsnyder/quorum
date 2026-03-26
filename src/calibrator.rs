@@ -94,9 +94,10 @@ pub fn calibrate(
             .filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial)
             .map(|e| verdict_weight(e))
             .sum();
+        // FP + Wontfix both count against confirmation (wontfix = "not worth acting on")
         let fp_weight: f64 = similar
             .iter()
-            .filter(|e| e.verdict == Verdict::Fp)
+            .filter(|e| e.verdict == Verdict::Fp || e.verdict == Verdict::Wontfix)
             .map(|e| verdict_weight(e))
             .sum();
 
@@ -181,7 +182,7 @@ pub fn calibrate_with_index(
             .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
             .sum();
         let fp_weight: f64 = similar.iter()
-            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .filter(|s| s.entry.verdict == Verdict::Fp || s.entry.verdict == Verdict::Wontfix)
             .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
             .sum();
 
