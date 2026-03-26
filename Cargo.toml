@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "Multi-source code review: LLM ensemble + local AST analysis + linter orchestration"
 license = "MIT"
@@ -10,7 +10,7 @@ keywords = ["code-review", "ast", "llm", "linter", "mcp"]
 categories = ["development-tools", "command-line-utilities"]
 
 [features]
-default = []
+default = ["embeddings"]
 embeddings = ["fastembed"]
 
 [dependencies]
