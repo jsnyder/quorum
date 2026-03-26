@@ -165,6 +165,7 @@ mod tests {
             reason: "test".into(),
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Unknown,
         }
     }
 

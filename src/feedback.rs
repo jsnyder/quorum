@@ -13,6 +13,20 @@ pub enum Verdict {
     Wontfix,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    Human,
+    AutoCalibrate(String), // model name used for auto-calibration
+    Unknown,
+}
+
+impl Default for Provenance {
+    fn default() -> Self {
+        Provenance::Unknown
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEntry {
     pub file_path: String,
@@ -22,6 +36,8 @@ pub struct FeedbackEntry {
     pub reason: String,
     pub model: Option<String>,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub provenance: Provenance,
 }
 
 pub struct FeedbackStore {
@@ -96,6 +112,7 @@ mod tests {
             reason: "Fixed with parameterized query".into(),
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
+            provenance: Provenance::Unknown,
         }
     }
 
@@ -155,6 +172,34 @@ mod tests {
 
         let store2 = FeedbackStore::new(path);
         assert_eq!(store2.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn feedback_entry_has_provenance_field() {
+        let entry = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "Real bug".into(),
+            model: Some("gpt-5.4".into()),
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+        };
+        assert_eq!(entry.provenance, Provenance::Human);
+    }
+
+    #[test]
+    fn legacy_entries_without_provenance_default_to_unknown() {
+        let json = r#"{"file_path":"test.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"test","model":"gpt-5.4","timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.provenance, Provenance::Unknown);
+    }
+
+    #[test]
+    fn provenance_serializes_correctly() {
+        let json = serde_json::to_value(&Provenance::Human).unwrap();
+        assert_eq!(json, "human");
     }
 
     #[test]
