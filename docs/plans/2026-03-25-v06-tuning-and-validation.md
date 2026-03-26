@@ -20,12 +20,11 @@
 - Added PostFix provenance (1.5x weight) for post-fix feedback
 - Weights: PostFix=1.5, Human=1.0, Auto=0.5, Unknown=0.3
 
-### 5. Real multi-turn agent loop (v0.6)
-- Current `--deep` is single-pass MVP — tools described in prompt but never called
-- AgentConfig limits (max_iterations=3, max_tool_calls=10, max_bytes=50K) not enforced
-- Implement: send tool defs → parse tool_calls → execute → append results → iterate
-- Use `chat_with_tools()` method already in llm_client.rs
-- Effort: Large | Impact: High
+### ~~5. Real multi-turn agent loop (v0.6)~~ DONE
+- Implemented AgentReviewer trait + agent_loop with full tool execution
+- State machine: send → parse tool_calls → execute via ToolRegistry → accumulate → iterate
+- Bounded by max_iterations, max_tool_calls, max_bytes_read (all enforced)
+- Unicode-safe truncation, ANSI injection prevention in progress output
 
 ### ~~6. Embedding vs Jaccard A/B benchmark~~ DONE
 - Embeddings clearly superior: richer precedent matching, precise sim scores
@@ -41,15 +40,13 @@
 - Unknown extensions (.go, .java, .rb, .c) now get LLM-only review
 - No AST, but still gets LLM + Context7 + calibration + auto-calibration
 
-### 9. Update skills to v0.5
-- `~/.claude/skills/quorum-cli/skill.md` doesn't mention --deep, --diff-file, --reasoning-effort, --calibration-model
-- Model recommendation table not in skill
-- Effort: Small | Impact: Low
+### ~~9. Update skills to v0.5/v0.6~~ DONE
+- Added --deep, --diff-file, --reasoning-effort, --calibration-model docs
+- Model recommendation table, feedback provenance weights
 
-### 10. Context7 fetcher is synchronous and slow
-- `Context7HttpFetcher` uses `block_in_place` + `reqwest::blocking`
-- Could be made async or cached per-project
-- Effort: Medium | Impact: Low
+### ~~10. Context7 fetcher async conversion~~ DONE
+- Replaced reqwest::blocking::Client with reqwest::Client
+- Uses shared block_on_async helper, eliminates separate blocking thread pool
 
 ## Model & Benchmark Notes
 
