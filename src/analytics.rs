@@ -86,6 +86,7 @@ mod tests {
             reason: "test".into(),
             model: Some(model.into()),
             timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Unknown,
         }
     }
 

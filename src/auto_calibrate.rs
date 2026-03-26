@@ -39,6 +39,7 @@ pub fn auto_calibrate(
             reason: reason.clone(),
             model: Some(format!("auto-calibrate:{}", model)),
             timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate(model.to_string()),
         };
         if feedback_store.record(&entry).is_ok() {
             recorded += 1;

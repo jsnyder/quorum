@@ -19,6 +19,8 @@ pub struct CalibratorConfig {
     pub fp_suppress_count: usize,
     /// Whether to boost severity when strong TP precedent exists
     pub boost_tp: bool,
+    /// Whether to include auto-calibrate feedback in precedent matching
+    pub use_auto_feedback: bool,
 }
 
 impl Default for CalibratorConfig {
@@ -27,8 +29,23 @@ impl Default for CalibratorConfig {
             similarity_threshold: 0.5,
             fp_suppress_count: 2,
             boost_tp: true,
+            use_auto_feedback: true,
         }
     }
+}
+
+/// Compute the weight of a single feedback entry based on provenance and recency.
+fn verdict_weight(entry: &FeedbackEntry) -> f64 {
+    let provenance_weight = match &entry.provenance {
+        crate::feedback::Provenance::Human => 1.0,
+        crate::feedback::Provenance::AutoCalibrate(_) => 0.5,
+        crate::feedback::Provenance::Unknown => 0.3,
+    };
+
+    let age_days = (chrono::Utc::now() - entry.timestamp).num_days().max(0) as f64;
+    let recency_weight = (-age_days / 60.0).exp(); // half-life ~42 days
+
+    provenance_weight * recency_weight
 }
 
 /// Calibrate findings using feedback precedent.
@@ -37,7 +54,17 @@ pub fn calibrate(
     feedback: &[FeedbackEntry],
     config: &CalibratorConfig,
 ) -> CalibrationResult {
-    if feedback.is_empty() {
+    // Filter out auto-calibrate feedback if configured
+    let filtered: Vec<&FeedbackEntry> = if config.use_auto_feedback {
+        feedback.iter().collect()
+    } else {
+        feedback
+            .iter()
+            .filter(|e| !matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)))
+            .collect()
+    };
+
+    if filtered.is_empty() {
         return CalibrationResult {
             findings,
             suppressed: 0,
@@ -51,7 +78,7 @@ pub fn calibrate(
 
     for mut finding in findings {
         // Find similar feedback entries
-        let similar: Vec<&FeedbackEntry> = feedback
+        let similar: Vec<&&FeedbackEntry> = filtered
             .iter()
             .filter(|e| finding_feedback_similarity(&finding, e) >= config.similarity_threshold)
             .collect();
@@ -61,9 +88,17 @@ pub fn calibrate(
             continue;
         }
 
-        // Count verdicts
-        let tp_count = similar.iter().filter(|e| e.verdict == Verdict::Tp).count();
-        let fp_count = similar.iter().filter(|e| e.verdict == Verdict::Fp).count();
+        // Compute weighted verdict scores
+        let tp_weight: f64 = similar
+            .iter()
+            .filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial)
+            .map(|e| verdict_weight(e))
+            .sum();
+        let fp_weight: f64 = similar
+            .iter()
+            .filter(|e| e.verdict == Verdict::Fp)
+            .map(|e| verdict_weight(e))
+            .sum();
 
         // Annotate with precedent info
         for entry in &similar {
@@ -80,19 +115,19 @@ pub fn calibrate(
             ));
         }
 
-        // Suppress if enough FP precedent and FP is majority
-        if fp_count >= config.fp_suppress_count && fp_count > tp_count {
+        // Suppress if FP weight >= 1.5 and FP dominates
+        if fp_weight >= 1.5 && fp_weight > tp_weight * 1.5 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue; // don't add to output
         }
 
-        // Boost if TP precedent exists and boosting enabled
-        if config.boost_tp && tp_count >= 2 && tp_count > fp_count {
+        // Boost if TP weight >= 1.5 and TP dominates
+        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 1.5 {
             finding.severity = boost_severity(&finding.severity);
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
             boosted += 1;
-        } else if tp_count > 0 {
+        } else if tp_weight > 0.0 {
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         }
 
@@ -165,6 +200,7 @@ mod tests {
             reason: "test".into(),
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
         }
     }
 
@@ -351,6 +387,49 @@ mod tests {
     }
 
     #[test]
+    fn calibrator_excludes_auto_feedback_when_configured() {
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        let feedback = vec![auto_fb.clone(), auto_fb];
+        let config = CalibratorConfig {
+            fp_suppress_count: 2,
+            use_auto_feedback: false,
+            ..Default::default()
+        };
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 0, "Auto feedback excluded, should not suppress");
+    }
+
+    #[test]
+    fn calibrator_includes_auto_feedback_by_default() {
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        // 3 auto FPs: 3 * 0.5 = 1.5 weight, meets threshold
+        let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb];
+        let config = CalibratorConfig::default(); // use_auto_feedback defaults to true
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 1, "Auto feedback included by default, 3 auto FPs should suppress");
+    }
+
+    #[test]
     fn calibrate_confirmed_action_on_tp_match() {
         let findings = vec![
             FindingBuilder::new()
@@ -362,6 +441,97 @@ mod tests {
             fb("Null pointer", "safety", Verdict::Tp),
         ];
         let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
+    }
+
+    // -- Weighted scoring tests --
+
+    #[test]
+    fn weighted_calibrator_human_feedback_counts_more() {
+        let findings = vec![FindingBuilder::new().title("SQL injection").category("security").build()];
+
+        let human_fp = FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: "handled upstream".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+        };
+        let auto_fp = FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+
+        // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
+        let config = CalibratorConfig::default();
+        let result1 = calibrate(findings.clone(), &vec![human_fp.clone(), auto_fp.clone()], &config);
+        assert_eq!(result1.suppressed, 1, "Human+auto FP should suppress");
+
+        // 2 auto only: 0.5 + 0.5 = 1.0 < 1.5 threshold -> NOT suppress
+        let result2 = calibrate(findings.clone(), &vec![auto_fp.clone(), auto_fp], &config);
+        assert_eq!(result2.suppressed, 0, "2 auto FPs alone should not suppress (insufficient weight)");
+    }
+
+    #[test]
+    fn weighted_calibrator_recency_matters() {
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let old_fp = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "old".into(),
+            model: None,
+            timestamp: Utc::now() - chrono::Duration::days(90),
+            provenance: crate::feedback::Provenance::Human,
+        };
+        let recent_fp = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "recent".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+        };
+
+        let config = CalibratorConfig::default();
+        // 2 recent human FPs: 1.0 + 1.0 = 2.0 >= 1.5 -> suppress
+        let result1 = calibrate(findings.clone(), &vec![recent_fp.clone(), recent_fp], &config);
+        assert_eq!(result1.suppressed, 1);
+
+        // 2 old FPs: exp(-90/60) ~= 0.22 each, total ~0.44 < 1.5 -> NOT suppress
+        let result2 = calibrate(findings.clone(), &vec![old_fp.clone(), old_fp], &config);
+        assert!(result2.suppressed <= 1);
+    }
+
+    #[test]
+    fn weighted_calibrator_produces_confidence() {
+        let findings = vec![FindingBuilder::new().title("SQL injection").category("security").build()];
+        let tp = FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+        };
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &vec![tp], &config);
+        assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
     }
 }

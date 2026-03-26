@@ -164,6 +164,66 @@ impl OpenAiClient {
         Ok(texts.join("\n"))
     }
 
+    /// Send a chat completion request with tool definitions.
+    /// Returns either final text content or a list of tool calls the model wants to make.
+    pub async fn chat_with_tools(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+        model: &str,
+    ) -> anyhow::Result<LlmTurnResult> {
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 16384,
+            "tools": tools
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::Value::String(effort.clone());
+        }
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let resp = self.http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_text = resp.text().await.unwrap_or_default();
+            let truncated: String = error_text.chars().take(200).collect();
+            anyhow::bail!("API Error ({}): {}", status.as_u16(), truncated);
+        }
+
+        let json: serde_json::Value = resp.json().await?;
+        let message = &json["choices"][0]["message"];
+        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("stop");
+
+        // Check for tool calls
+        if let Some(tool_calls) = message["tool_calls"].as_array() {
+            if !tool_calls.is_empty() {
+                let calls = tool_calls.iter().filter_map(|tc| {
+                    let id = tc["id"].as_str()?.to_string();
+                    let name = tc["function"]["name"].as_str()?.to_string();
+                    let arguments = tc["function"]["arguments"].as_str()?.to_string();
+                    Some(ToolCall { id, name, arguments })
+                }).collect();
+                return Ok(LlmTurnResult::ToolCalls(calls));
+            }
+        }
+
+        // Otherwise, return final content
+        let content = message["content"].as_str().unwrap_or("");
+        if finish_reason == "length" {
+            anyhow::bail!("Response truncated (finish_reason=length)");
+        }
+        Ok(LlmTurnResult::FinalContent(content.to_string()))
+    }
+
     fn system_prompt() -> &'static str {
         concat!(
             "You are a code reviewer. Respond ONLY with a JSON array of findings. ",
@@ -194,6 +254,42 @@ impl LlmReviewer for OpenAiClient {
     }
 }
 
+/// Format tool definitions for OpenAI function calling API.
+pub fn format_tools_for_api(tools: &[crate::tools::ToolDefinition]) -> serde_json::Value {
+    serde_json::Value::Array(
+        tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": &t.name,
+                        "description": &t.description,
+                        "parameters": &t.parameters,
+                    }
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Response from a tool-calling LLM turn.
+#[derive(Debug)]
+pub enum LlmTurnResult {
+    /// Model produced final text content.
+    FinalContent(String),
+    /// Model wants to call tools.
+    ToolCalls(Vec<ToolCall>),
+}
+
+/// A single tool call requested by the model.
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +299,22 @@ mod tests {
         let client = OpenAiClient::new("https://api.example.com/v1", "sk-test");
         assert_eq!(client.base_url, "https://api.example.com/v1");
         assert_eq!(client.api_key, "sk-test");
+    }
+
+    #[test]
+    fn tool_definitions_format_for_openai() {
+        use crate::tools::ToolDefinition;
+        let tools = vec![ToolDefinition {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        }];
+        let formatted = format_tools_for_api(&tools);
+        let arr = formatted.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "function");
+        assert_eq!(arr[0]["function"]["name"], "read_file");
+        assert_eq!(arr[0]["function"]["description"], "Read a file");
+        assert!(arr[0]["function"]["parameters"]["properties"]["path"].is_object());
     }
 
     // Integration tests requiring a real API endpoint are in tests/llm_integration.rs

@@ -49,6 +49,7 @@ pub fn analyze_complexity(
                     evidence: vec![format!("cyclomatic_complexity={}", cc)],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -228,6 +229,7 @@ fn scan_insecure_rust(
             evidence: vec![source[node.byte_range()].chars().take(200).collect()],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         });
     }
 
@@ -250,6 +252,7 @@ fn scan_insecure_rust(
                             evidence: vec![],
                             calibrator_action: None,
                             similar_precedent: vec![],
+                            canonical_pattern: None,
                         });
                     }
                 }
@@ -285,6 +288,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -304,6 +308,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -318,6 +323,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -345,6 +351,7 @@ fn scan_insecure_python(
                                 evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
+                                canonical_pattern: None,
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
@@ -358,6 +365,7 @@ fn scan_insecure_python(
                                 evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
+                                canonical_pattern: None,
                             });
                         }
                     }
@@ -410,6 +418,7 @@ fn scan_insecure_python(
                             evidence: vec![format!("{} = [REDACTED]", &source[left.byte_range()])],
                             calibrator_action: None,
                             similar_precedent: vec![],
+                            canonical_pattern: None,
                         });
                     }
                 }
@@ -438,6 +447,7 @@ fn scan_insecure_python(
                             evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                             calibrator_action: None,
                             similar_precedent: vec![],
+                            canonical_pattern: None,
                         });
                     }
                 }
@@ -486,6 +496,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -510,6 +521,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -535,6 +547,7 @@ fn scan_insecure_python(
                     evidence: vec![source[node.byte_range()].chars().take(100).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -643,6 +656,7 @@ fn scan_insecure_typescript(
                     evidence: vec![],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
 
@@ -659,6 +673,7 @@ fn scan_insecure_typescript(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
 
@@ -675,6 +690,7 @@ fn scan_insecure_typescript(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -714,6 +730,7 @@ fn scan_insecure_typescript(
                                 evidence: vec![format!("{} = [REDACTED]", &source[name_node.byte_range()])],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
+                                canonical_pattern: None,
                             });
                         }
                     }
@@ -739,6 +756,7 @@ fn scan_insecure_typescript(
                     evidence: vec![source[node.byte_range()].chars().take(200).collect()],
                     calibrator_action: None,
                     similar_precedent: vec![],
+                    canonical_pattern: None,
                 });
             }
         }
@@ -759,6 +777,7 @@ fn scan_insecure_typescript(
                 evidence: vec![source[node.byte_range()].chars().take(100).collect()],
                 calibrator_action: None,
                 similar_precedent: vec![],
+                canonical_pattern: None,
             });
         }
     }
@@ -776,6 +795,7 @@ fn scan_insecure_typescript(
             evidence: vec![source[node.byte_range()].chars().take(100).collect()],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         });
     }
 }

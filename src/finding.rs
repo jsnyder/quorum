@@ -57,6 +57,8 @@ pub struct Finding {
     pub evidence: Vec<String>,
     pub calibrator_action: Option<CalibratorAction>,
     pub similar_precedent: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_pattern: Option<String>,
 }
 
 impl Finding {
@@ -95,6 +97,7 @@ impl FindingBuilder {
                 evidence: vec![],
                 calibrator_action: None,
                 similar_precedent: vec![],
+                canonical_pattern: None,
             },
         }
     }
@@ -137,6 +140,11 @@ impl FindingBuilder {
 
     pub fn calibrator_action(mut self, a: CalibratorAction) -> Self {
         self.inner.calibrator_action = Some(a);
+        self
+    }
+
+    pub fn canonical_pattern(mut self, p: &str) -> Self {
+        self.inner.canonical_pattern = Some(p.into());
         self
     }
 
@@ -219,6 +227,7 @@ mod tests {
             evidence: vec!["dataflow: req.query -> db.execute()".into()],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -245,6 +254,7 @@ mod tests {
             evidence: vec!["evidence1".into(), "evidence2".into()],
             calibrator_action: Some(CalibratorAction::Confirmed),
             similar_precedent: vec!["similar TP in auth.py".into()],
+            canonical_pattern: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -264,6 +274,7 @@ mod tests {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -285,6 +296,7 @@ mod tests {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         assert!(f.is_valid());
     }
@@ -302,6 +314,7 @@ mod tests {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         assert!(f.is_valid());
     }
@@ -319,6 +332,7 @@ mod tests {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         assert!(!f.is_valid());
     }
@@ -336,6 +350,7 @@ mod tests {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         };
         assert!(!f.is_valid());
     }

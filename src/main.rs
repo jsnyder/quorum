@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod agent;
 mod analytics;
 mod analysis;
 mod auto_calibrate;
@@ -11,7 +12,9 @@ mod context_enrichment;
 mod daemon;
 mod http_server;
 mod domain;
+mod embeddings;
 mod feedback;
+mod feedback_index;
 mod finding;
 mod hydration;
 mod linter;
@@ -20,9 +23,11 @@ mod mcp;
 mod merge;
 mod output;
 mod parser;
+mod patterns;
 mod pipeline;
 mod redact;
 mod review;
+mod tools;
 
 use clap::Parser;
 use config::{Config, EnvConfigSource};
@@ -161,12 +166,34 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         eprintln!("Loaded {} feedback entries for calibration", feedback_entries.len());
     }
 
+    // Parse diff file if provided for change-scoped review
+    let diff_ranges = if let Some(ref diff_path) = opts.diff_file {
+        match std::fs::read_to_string(diff_path) {
+            Ok(diff_content) => {
+                let ranges = hydration::parse_unified_diff(&diff_content);
+                if !ranges.is_empty() {
+                    eprintln!("Diff-aware: scoping hydration to {} changed file(s)", ranges.len());
+                    Some(ranges)
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not read diff file {}: {}", diff_path.display(), e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let pipeline_cfg = PipelineConfig {
         models,
         calibration_model: opts.calibration_model.clone(),
         feedback: feedback_entries,
         auto_calibrate: !opts.no_auto_calibrate(),
         feedback_store: Some(feedback_path.clone()),
+        diff_ranges,
         ..Default::default()
     };
 
@@ -199,6 +226,42 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 continue;
             }
         };
+
+        // Deep review: agent loop with tool calling
+        if opts.deep {
+            if let Some(reviewer) = llm_reviewer.as_deref() {
+                let project_root = file_path.parent()
+                    .and_then(|p| p.canonicalize().ok())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let tool_reg = tools::ToolRegistry::new(&project_root);
+                let agent_cfg = agent::AgentConfig::default();
+                let model = pipeline_cfg.models.first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("gpt-5.4");
+                match agent::agent_review(
+                    &source,
+                    &file_path.to_string_lossy(),
+                    reviewer,
+                    model,
+                    &tool_reg,
+                    &agent_cfg,
+                ) {
+                    Ok(findings) => {
+                        if use_json {
+                            all_findings.extend(findings);
+                        } else {
+                            let file_str = file_path.to_string_lossy().to_string();
+                            print!("{}", output::format_review(&file_str, &findings, &style));
+                            all_findings.extend(findings);
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
+                    }
+                }
+            }
+        }
 
         // Run the full pipeline with cache
         match pipeline::review_source(

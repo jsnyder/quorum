@@ -1,4 +1,4 @@
-/// LLM-powered code review using DSRs (dspy-rs).
+/// LLM-powered code review with structured output parsing.
 /// Defines the review signature and handles structured output parsing.
 
 use crate::finding::{Finding, Severity, Source};
@@ -46,6 +46,7 @@ impl LlmFinding {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         }
     }
 }

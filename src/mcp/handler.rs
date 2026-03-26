@@ -97,6 +97,7 @@ impl QuorumHandler {
             reason: params.reason,
             model: params.model,
             timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
         };
 
         self.feedback_store
