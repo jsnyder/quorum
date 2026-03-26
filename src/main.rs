@@ -20,6 +20,7 @@ mod mcp;
 mod merge;
 mod output;
 mod parser;
+mod patterns;
 mod pipeline;
 mod redact;
 mod review;

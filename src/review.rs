@@ -46,6 +46,7 @@ impl LlmFinding {
             evidence: vec![],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         }
     }
 }

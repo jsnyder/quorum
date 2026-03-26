@@ -125,6 +125,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             evidence: vec![format!("ruff {}", code)],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         });
     }
 
@@ -177,6 +178,7 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             evidence: vec![format!("clippy {}", code)],
             calibrator_action: None,
             similar_precedent: vec![],
+            canonical_pattern: None,
         });
     }
 
@@ -217,6 +219,7 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 evidence: vec![format!("eslint {}", rule_id)],
                 calibrator_action: None,
                 similar_precedent: vec![],
+                canonical_pattern: None,
             });
         }
     }
