@@ -99,8 +99,8 @@ impl ToolRegistry {
         let end = args["end_line"].as_u64().map(|n| n as usize);
 
         let lines: Vec<&str> = content.lines().collect();
-        let start_idx = start.saturating_sub(1);
-        let end_idx = end.unwrap_or(lines.len()).min(lines.len());
+        let start_idx = start.saturating_sub(1).min(lines.len());
+        let end_idx = end.unwrap_or(lines.len()).min(lines.len()).max(start_idx);
 
         let selected: String = lines[start_idx..end_idx]
             .iter()
@@ -148,6 +148,10 @@ impl ToolRegistry {
                 || name == "__pycache__"
                 || name == "venv"
             {
+                continue;
+            }
+            // Skip symlinks to prevent escaping repo root
+            if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
                 continue;
             }
             if path.is_dir() {
@@ -209,6 +213,10 @@ impl ToolRegistry {
                 || name == "__pycache__"
                 || name == "venv"
             {
+                continue;
+            }
+            // Skip symlinks to prevent escaping repo root
+            if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
                 continue;
             }
             if path.is_dir() {
