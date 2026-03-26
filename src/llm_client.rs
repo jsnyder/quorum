@@ -254,6 +254,25 @@ impl LlmReviewer for OpenAiClient {
     }
 }
 
+impl crate::agent::AgentReviewer for OpenAiClient {
+    fn chat_turn(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+        model: &str,
+    ) -> anyhow::Result<LlmTurnResult> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => tokio::task::block_in_place(|| {
+                rt.block_on(self.chat_with_tools(messages, tools, model))
+            }),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(self.chat_with_tools(messages, tools, model))
+            }
+        }
+    }
+}
+
 /// Format tool definitions for OpenAI function calling API.
 pub fn format_tools_for_api(tools: &[crate::tools::ToolDefinition]) -> serde_json::Value {
     serde_json::Value::Array(

@@ -56,4 +56,20 @@ pub mod fakes {
             Self { turns: Mutex::new(turns.into()) }
         }
     }
+
+    impl crate::agent::AgentReviewer for FakeAgentReviewer {
+        fn chat_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &serde_json::Value,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmTurnResult> {
+            let mut q = self.turns.lock().unwrap();
+            if let Some(turn) = q.pop_front() {
+                Ok(turn)
+            } else {
+                Ok(crate::llm_client::LlmTurnResult::FinalContent("[]".into()))
+            }
+        }
+    }
 }

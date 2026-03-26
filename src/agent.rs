@@ -6,6 +6,16 @@ use crate::finding::Finding;
 use crate::pipeline::LlmReviewer;
 use crate::tools::ToolRegistry;
 
+/// Trait for multi-turn LLM interaction with tool calling.
+pub trait AgentReviewer: Send + Sync {
+    fn chat_turn(
+        &self,
+        messages: &[serde_json::Value],
+        tools: &serde_json::Value,
+        model: &str,
+    ) -> anyhow::Result<crate::llm_client::LlmTurnResult>;
+}
+
 pub struct AgentConfig {
     pub max_iterations: usize,
     pub max_tool_calls: usize,
@@ -74,12 +84,67 @@ pub fn agent_review(
     crate::review::parse_llm_response(&response, model)
 }
 
+/// Run a multi-turn agent loop for deep code review.
+pub fn agent_loop(
+    code: &str,
+    file_path: &str,
+    reviewer: &dyn AgentReviewer,
+    model: &str,
+    tools: &ToolRegistry,
+    _config: &AgentConfig,
+) -> anyhow::Result<Vec<Finding>> {
+    let system_msg = serde_json::json!({"role": "system", "content": agent_system_prompt(file_path)});
+    let user_msg = serde_json::json!({"role": "user", "content": format!("Review this code thoroughly:\n```\n{}\n```", code)});
+    let messages = vec![system_msg, user_msg];
+    let tool_defs = crate::llm_client::format_tools_for_api(&tools.tool_definitions());
+
+    match reviewer.chat_turn(&messages, &tool_defs, model)? {
+        crate::llm_client::LlmTurnResult::FinalContent(text) => {
+            crate::review::parse_llm_response(&text, model)
+        }
+        crate::llm_client::LlmTurnResult::ToolCalls(_) => {
+            // Will implement iteration in Task 3
+            Ok(vec![])
+        }
+    }
+}
+
+fn agent_system_prompt(file_path: &str) -> String {
+    format!(
+        "You are a code reviewer performing deep analysis of `{}`. \
+         You have tools to investigate the codebase. Use them to understand context \
+         before producing findings. When done investigating, respond with a JSON array \
+         of findings. Each finding: title, description, severity, category, line_start, line_end. \
+         If no issues: []",
+        file_path
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::test_support::fakes::FakeReviewer;
+    use crate::test_support::fakes::{FakeReviewer, FakeAgentReviewer};
+    use crate::llm_client::LlmTurnResult;
+
+    #[test]
+    fn agent_loop_no_tool_calls_returns_findings() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.py"), "eval(input())").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig::default();
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            LlmTurnResult::FinalContent(
+                r#"[{"title":"Dangerous eval","description":"eval on user input","severity":"critical","category":"security","line_start":1,"line_end":1}]"#.into()
+            ),
+        ]);
+
+        let result = agent_loop("eval(input())", "test.py", &reviewer, "gpt-5.4", &tools, &config).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "Dangerous eval");
+    }
 
     #[test]
     fn agent_returns_findings_without_tool_calls() {
