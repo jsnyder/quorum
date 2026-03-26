@@ -106,17 +106,31 @@ Add to your Claude Code MCP config:
 Every LLM review automatically triages its own findings using a second model pass:
 
 ```bash
-# Default: gpt-5.4 review + gpt-5.4 self-triage
+# Default: gpt-5.4 review (reasoning=low) + codex calibration
 quorum review file.py
 
-# Better: gpt-5.4 review + o3 precision triage
+# With o3 calibration (more nuanced triage, slower)
 quorum review file.py --calibration-model o3
 
 # Disable for speed
 quorum review file.py --no-auto-calibrate
+
+# Control reasoning depth
+quorum review file.py --reasoning-effort high  # deep analysis, slower
+quorum review file.py --reasoning-effort none  # fastest, no reasoning
 ```
 
 Verdicts (tp/fp/partial/wontfix) accumulate in `~/.quorum/feedback.jsonl`. The calibrator uses them to suppress known FPs and boost known TPs on future reviews.
+
+## Model Recommendations
+
+| Scenario | Review Model | Calibrator | Reasoning | Speed |
+|----------|-------------|-----------|-----------|-------|
+| **Default (recommended)** | gpt-5.4 | gpt-5.3-codex | low | ~2s |
+| Fast CI gate | gpt-5.3-codex | none | - | ~1s |
+| Deep audit | gpt-5.2 | o3 | high | ~100s |
+| Max coverage | claude-sonnet-4-6 | o3 | - | ~100s |
+| No gpt-5.4 available | gpt-5.2 | gpt-5.3-codex | low | ~26s |
 
 ## Configuration
 
@@ -124,6 +138,7 @@ Verdicts (tp/fp/partial/wontfix) accumulate in `~/.quorum/feedback.jsonl`. The c
 QUORUM_BASE_URL=https://api.openai.com/v1  # any OpenAI-compatible endpoint
 QUORUM_API_KEY=sk-...                       # enables LLM review
 QUORUM_MODEL=gpt-5.4                        # default review model
+QUORUM_REASONING_EFFORT=low                 # default reasoning depth
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,claude       # for --ensemble mode
 CONTEXT7_API_KEY=...                         # enables framework doc injection
 ```

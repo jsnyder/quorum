@@ -101,9 +101,12 @@ impl OpenAiClient {
             "instructions": Self::system_prompt(),
             "input": prompt,
             "max_output_tokens": 16384,
-            "temperature": 0.3,
             "store": false
         });
+        // Codex models don't support temperature; only add for non-codex responses API models
+        if !model.contains("codex") {
+            body["temperature"] = serde_json::json!(0.3);
+        }
         if let Some(effort) = &self.reasoning_effort {
             // Responses API uses nested reasoning.effort format
             body["reasoning"] = serde_json::json!({ "effort": effort });

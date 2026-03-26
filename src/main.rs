@@ -129,7 +129,8 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Build LLM reviewer if API key is available
     let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = cfg.require_api_key() {
         let effort = opts.reasoning_effort.clone()
-            .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()));
+            .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()))
+            .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
         Some(Box::new(
             llm_client::OpenAiClient::new(&cfg.base_url, api_key)
                 .with_reasoning_effort(effort)
