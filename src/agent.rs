@@ -400,4 +400,82 @@ mod tests {
         assert!(captured.contains("main.py"), "Prompt should contain file listing");
         assert!(captured.contains("deep code review"), "Prompt should mention deep review");
     }
+
+    #[test]
+    fn agent_loop_max_iterations_stops() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000 };
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            LlmTurnResult::ToolCalls(vec![ToolCall {
+                id: "c1".into(), name: "read_file".into(),
+                arguments: r#"{"path":"test.py"}"#.into(),
+            }]),
+            // This turn is the forced "produce findings" turn after limit
+            LlmTurnResult::FinalContent("[]".into()),
+        ]);
+
+        let result = agent_loop("x = 1", "test.py", &reviewer, "m", &tools, &config).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn agent_loop_max_tool_calls_stops() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig { max_iterations: 5, max_tool_calls: 2, max_bytes_read: 50_000 };
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            // 3 tool calls in one turn — exceeds limit of 2
+            LlmTurnResult::ToolCalls(vec![
+                ToolCall { id: "c1".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
+                ToolCall { id: "c2".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
+                ToolCall { id: "c3".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
+            ]),
+            LlmTurnResult::FinalContent("[]".into()),
+        ]);
+
+        let result = agent_loop("x", "a.py", &reviewer, "m", &tools, &config).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn agent_loop_malformed_tool_arguments() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig::default();
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            LlmTurnResult::ToolCalls(vec![ToolCall {
+                id: "c1".into(), name: "read_file".into(),
+                arguments: "not valid json{{{".into(),
+            }]),
+            LlmTurnResult::FinalContent("[]".into()),
+        ]);
+
+        let result = agent_loop("x = 1", "test.py", &reviewer, "m", &tools, &config).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn agent_loop_tool_execution_error_continues() {
+        let dir = TempDir::new().unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig::default();
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            LlmTurnResult::ToolCalls(vec![ToolCall {
+                id: "c1".into(), name: "read_file".into(),
+                arguments: r#"{"path":"nonexistent.py"}"#.into(),
+            }]),
+            LlmTurnResult::FinalContent("[]".into()),
+        ]);
+
+        let result = agent_loop("x", "test.py", &reviewer, "m", &tools, &config).unwrap();
+        assert!(result.is_empty());
+    }
 }
