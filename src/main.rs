@@ -28,6 +28,7 @@ mod pipeline;
 mod redact;
 mod review;
 mod tools;
+#[cfg(test)] mod test_support;
 
 use clap::Parser;
 use config::{Config, EnvConfigSource};

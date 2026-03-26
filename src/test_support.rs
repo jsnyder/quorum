@@ -1,0 +1,59 @@
+//! Shared test doubles for LLM reviewer interfaces.
+
+#[cfg(test)]
+pub mod fakes {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use crate::pipeline::LlmReviewer;
+    use crate::llm_client::LlmTurnResult;
+
+    /// Fake reviewer that returns responses in sequence.
+    /// Falls back to last response if sequence exhausted.
+    pub struct FakeReviewer {
+        responses: Mutex<VecDeque<Result<String, String>>>,
+        pub captured_prompts: Mutex<Vec<String>>,
+    }
+
+    impl FakeReviewer {
+        pub fn always(response: &str) -> Self {
+            Self {
+                responses: Mutex::new(VecDeque::from([Ok(response.to_string())])),
+                captured_prompts: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn sequence(responses: Vec<&str>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().map(|r| Ok(r.to_string())).collect()),
+                captured_prompts: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn failing(msg: &str) -> Self {
+            Self {
+                responses: Mutex::new(VecDeque::from([Err(msg.to_string())])),
+                captured_prompts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl LlmReviewer for FakeReviewer {
+        fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<String> {
+            self.captured_prompts.lock().unwrap().push(prompt.to_string());
+            let mut q = self.responses.lock().unwrap();
+            let resp = if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap() };
+            resp.map_err(|e| anyhow::anyhow!(e))
+        }
+    }
+
+    /// Fake for multi-turn agent loop that returns LlmTurnResult in sequence.
+    pub struct FakeAgentReviewer {
+        turns: Mutex<VecDeque<LlmTurnResult>>,
+    }
+
+    impl FakeAgentReviewer {
+        pub fn new(turns: Vec<LlmTurnResult>) -> Self {
+            Self { turns: Mutex::new(turns.into()) }
+        }
+    }
+}

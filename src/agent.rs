@@ -79,19 +79,14 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    struct FakeDirectReviewer(String);
-    impl crate::pipeline::LlmReviewer for FakeDirectReviewer {
-        fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<String> {
-            Ok(self.0.clone())
-        }
-    }
+    use crate::test_support::fakes::FakeReviewer;
 
     #[test]
     fn agent_returns_findings_without_tool_calls() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let reviewer = FakeDirectReviewer("[]".into());
+        let reviewer = FakeReviewer::always("[]");
         let config = AgentConfig::default();
         let result =
             agent_review("x = 1", "test.py", &reviewer, "gpt-5.4", &tools, &config).unwrap();
@@ -104,7 +99,7 @@ mod tests {
         std::fs::write(dir.path().join("test.py"), "eval(input())").unwrap();
         let tools = ToolRegistry::new(dir.path());
         let response = r#"[{"title":"Dangerous eval","description":"eval on user input","severity":"critical","category":"security","line_start":1,"line_end":1}]"#;
-        let reviewer = FakeDirectReviewer(response.into());
+        let reviewer = FakeReviewer::always(response);
         let config = AgentConfig::default();
         let result = agent_review(
             "eval(input())",

@@ -372,36 +372,7 @@ mod tests {
     use super::*;
     use crate::finding::Source;
 
-    struct FakeLlmReviewer {
-        response: String,
-    }
-
-    impl FakeLlmReviewer {
-        fn with_findings(findings_json: &str) -> Self {
-            Self { response: findings_json.into() }
-        }
-
-        fn empty() -> Self {
-            Self { response: "[]".into() }
-        }
-
-        fn failing() -> Self {
-            Self { response: "not valid json".into() }
-        }
-    }
-
-    impl LlmReviewer for FakeLlmReviewer {
-        fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<String> {
-            Ok(self.response.clone())
-        }
-    }
-
-    struct FailingLlmReviewer;
-    impl LlmReviewer for FailingLlmReviewer {
-        fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<String> {
-            anyhow::bail!("network error")
-        }
-    }
+    use crate::test_support::fakes::FakeReviewer;
 
     fn parse_and_review(source: &str, lang: Language, llm: Option<&dyn LlmReviewer>, models: Vec<String>) -> FileReviewResult {
         let tree = parser::parse(source, lang).unwrap();
@@ -443,7 +414,7 @@ mod tests {
     fn pipeline_llm_findings_merged_with_local() {
         let source = "def run(code):\n    eval(code)\n";
         let llm_response = r#"[{"title":"Dangerous eval","description":"eval is dangerous","severity":"critical","category":"security","line_start":2,"line_end":2}]"#;
-        let llm = FakeLlmReviewer::with_findings(llm_response);
+        let llm = FakeReviewer::always(llm_response);
         let result = parse_and_review(
             source, Language::Python,
             Some(&llm),
@@ -457,7 +428,7 @@ mod tests {
     #[test]
     fn pipeline_llm_empty_response() {
         let source = "fn safe() -> i32 { 42 }";
-        let llm = FakeLlmReviewer::empty();
+        let llm = FakeReviewer::always("[]");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
@@ -469,7 +440,7 @@ mod tests {
     #[test]
     fn pipeline_llm_failure_degrades_gracefully() {
         let source = "fn safe() -> i32 { 42 }";
-        let llm = FailingLlmReviewer;
+        let llm = FakeReviewer::failing("network error");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
@@ -482,7 +453,7 @@ mod tests {
     #[test]
     fn pipeline_llm_malformed_response_degrades_gracefully() {
         let source = "fn safe() -> i32 { 42 }";
-        let llm = FakeLlmReviewer::failing();
+        let llm = FakeReviewer::always("not valid json");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
@@ -497,7 +468,7 @@ mod tests {
     fn pipeline_ensemble_multiple_models() {
         let source = "fn x() -> i32 { 42 }";
         let llm_response = r#"[{"title":"Style issue","description":"Consider naming","severity":"info","category":"style","line_start":1,"line_end":1}]"#;
-        let llm = FakeLlmReviewer::with_findings(llm_response);
+        let llm = FakeReviewer::always(llm_response);
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
@@ -517,7 +488,7 @@ mod tests {
     #[test]
     fn pipeline_redacts_secrets_before_llm() {
         let source = "API_KEY = \"sk-proj-secret123456\"\nfn main() {}";
-        let llm = FakeLlmReviewer::empty();
+        let llm = FakeReviewer::always("[]");
         // We can't directly verify the prompt content through the FakeLlmReviewer,
         // but we verify redaction works on the source
         let redacted = redact::redact_secrets(source);
