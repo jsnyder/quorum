@@ -11,6 +11,7 @@ mod context_enrichment;
 mod daemon;
 mod http_server;
 mod domain;
+mod embeddings;
 mod feedback;
 mod finding;
 mod hydration;
