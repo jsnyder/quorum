@@ -91,22 +91,104 @@ pub fn agent_loop(
     reviewer: &dyn AgentReviewer,
     model: &str,
     tools: &ToolRegistry,
-    _config: &AgentConfig,
+    config: &AgentConfig,
 ) -> anyhow::Result<Vec<Finding>> {
-    let system_msg = serde_json::json!({"role": "system", "content": agent_system_prompt(file_path)});
-    let user_msg = serde_json::json!({"role": "user", "content": format!("Review this code thoroughly:\n```\n{}\n```", code)});
-    let messages = vec![system_msg, user_msg];
     let tool_defs = crate::llm_client::format_tools_for_api(&tools.tool_definitions());
 
-    match reviewer.chat_turn(&messages, &tool_defs, model)? {
-        crate::llm_client::LlmTurnResult::FinalContent(text) => {
-            crate::review::parse_llm_response(&text, model)
-        }
-        crate::llm_client::LlmTurnResult::ToolCalls(_) => {
-            // Will implement iteration in Task 3
-            Ok(vec![])
+    let mut messages = vec![
+        serde_json::json!({"role": "system", "content": agent_system_prompt(file_path)}),
+        serde_json::json!({"role": "user", "content": format!(
+            "Review this code thoroughly:\n```\n{}\n```", code
+        )}),
+    ];
+
+    let mut total_bytes_read: usize = 0;
+    let mut total_tool_calls: usize = 0;
+
+    for _iteration in 0..config.max_iterations {
+        let result = reviewer.chat_turn(&messages, &tool_defs, model)?;
+
+        match result {
+            crate::llm_client::LlmTurnResult::FinalContent(text) => {
+                return crate::review::parse_llm_response(&text, model);
+            }
+            crate::llm_client::LlmTurnResult::ToolCalls(calls) => {
+                // Build assistant message with tool_calls
+                let tc_json: Vec<serde_json::Value> = calls.iter().map(|tc| {
+                    serde_json::json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.arguments}
+                    })
+                }).collect();
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": tc_json
+                }));
+
+                // Execute each tool call
+                for tc in &calls {
+                    total_tool_calls += 1;
+                    if total_tool_calls > config.max_tool_calls {
+                        eprintln!("Agent: tool call limit ({}) reached", config.max_tool_calls);
+                        break;
+                    }
+
+                    let tool_result = match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+                        Ok(args) => {
+                            match tools.execute(&tc.name, &args) {
+                                Ok(output) => {
+                                    total_bytes_read += output.len();
+                                    if total_bytes_read > config.max_bytes_read {
+                                        eprintln!("Agent: byte limit ({}) reached", config.max_bytes_read);
+                                        format!("Error: byte read limit exceeded ({}/{})", total_bytes_read, config.max_bytes_read)
+                                    } else {
+                                        output
+                                    }
+                                }
+                                Err(e) => format!("Error: {}", e),
+                            }
+                        }
+                        Err(e) => format!("Error: malformed arguments: {}", e),
+                    };
+
+                    messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result
+                    }));
+                }
+
+                // Check limits
+                if total_tool_calls > config.max_tool_calls || total_bytes_read > config.max_bytes_read {
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": "Limit reached. Produce your findings JSON array now based on what you have seen so far."
+                    }));
+                    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
+                        reviewer.chat_turn(&messages, &serde_json::json!([]), model)
+                    {
+                        return crate::review::parse_llm_response(&text, model);
+                    }
+                    return Ok(vec![]);
+                }
+            }
         }
     }
+
+    // Max iterations reached
+    eprintln!("Agent: iteration limit ({}) reached", config.max_iterations);
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": "You've reached the investigation limit. Produce your findings JSON array now."
+    }));
+    if let Ok(crate::llm_client::LlmTurnResult::FinalContent(text)) =
+        reviewer.chat_turn(&messages, &serde_json::json!([]), model)
+    {
+        return crate::review::parse_llm_response(&text, model);
+    }
+    Ok(vec![])
 }
 
 fn agent_system_prompt(file_path: &str) -> String {
@@ -126,7 +208,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::test_support::fakes::{FakeReviewer, FakeAgentReviewer};
-    use crate::llm_client::LlmTurnResult;
+    use crate::llm_client::{LlmTurnResult, ToolCall};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     #[test]
     fn agent_loop_no_tool_calls_returns_findings() {
@@ -144,6 +228,78 @@ mod tests {
         let result = agent_loop("eval(input())", "test.py", &reviewer, "gpt-5.4", &tools, &config).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Dangerous eval");
+    }
+
+    #[test]
+    fn agent_loop_single_tool_round() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("auth.py"), "SECRET = 'hunter2'\ndef login(): pass\n").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig::default();
+
+        let reviewer = FakeAgentReviewer::new(vec![
+            LlmTurnResult::ToolCalls(vec![ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path": "auth.py"}"#.into(),
+            }]),
+            LlmTurnResult::FinalContent(
+                r#"[{"title":"Hardcoded secret","description":"SECRET contains plaintext password","severity":"high","category":"security","line_start":1,"line_end":1}]"#.into()
+            ),
+        ]);
+
+        let result = agent_loop(
+            "SECRET = 'hunter2'\ndef login(): pass\n",
+            "auth.py", &reviewer, "gpt-5.4", &tools, &config,
+        ).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].title.contains("secret") || result[0].title.contains("Secret"));
+    }
+
+    #[test]
+    fn agent_loop_message_history_correct() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig::default();
+
+        struct CapturingReviewer {
+            turns: Mutex<VecDeque<LlmTurnResult>>,
+            captured_messages: Mutex<Vec<Vec<serde_json::Value>>>,
+        }
+        impl AgentReviewer for CapturingReviewer {
+            fn chat_turn(&self, messages: &[serde_json::Value], _tools: &serde_json::Value, _model: &str)
+                -> anyhow::Result<LlmTurnResult>
+            {
+                self.captured_messages.lock().unwrap().push(messages.to_vec());
+                let mut q = self.turns.lock().unwrap();
+                Ok(q.pop_front().unwrap_or(LlmTurnResult::FinalContent("[]".into())))
+            }
+        }
+
+        let reviewer = CapturingReviewer {
+            turns: Mutex::new(VecDeque::from([
+                LlmTurnResult::ToolCalls(vec![ToolCall {
+                    id: "call_1".into(), name: "read_file".into(),
+                    arguments: r#"{"path": "test.py"}"#.into(),
+                }]),
+                LlmTurnResult::FinalContent("[]".into()),
+            ])),
+            captured_messages: Mutex::new(Vec::new()),
+        };
+
+        agent_loop("x = 1", "test.py", &reviewer, "m", &tools, &config).unwrap();
+
+        let captures = reviewer.captured_messages.lock().unwrap();
+        assert_eq!(captures.len(), 2, "Should have 2 turns");
+
+        // Second turn should have: system, user, assistant(tool_calls), tool(result)
+        let turn2 = &captures[1];
+        assert!(turn2.len() >= 4, "Turn 2 should have system + user + assistant + tool messages");
+
+        let tool_msg = turn2.iter().find(|m| m["role"] == "tool").expect("Should have tool role message");
+        assert_eq!(tool_msg["tool_call_id"], "call_1");
+        assert!(tool_msg["content"].as_str().unwrap().contains("x = 1"));
     }
 
     #[test]
