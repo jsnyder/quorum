@@ -102,8 +102,11 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
 
 /// Parse LLM JSON response into findings.
 pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Vec<Finding>> {
+    // Strip control characters that reasoning models sometimes emit
+    let stripped = strip_control_chars(json_str);
+
     // Try to extract JSON array from the response (LLM may wrap in markdown fences)
-    let cleaned = extract_json_array(json_str);
+    let cleaned = extract_json_array(&stripped);
 
     // Try parsing directly first
     if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(&cleaned) {
@@ -116,16 +119,46 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
         return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
     }
 
-    // Last resort: try the original cleaned string for a better error message
-    let llm_findings: Vec<LlmFinding> = serde_json::from_str(&cleaned)?;
+    // Last resort: try the sanitized string for a better error message
+    let llm_findings: Vec<LlmFinding> = serde_json::from_str(&sanitized)?;
     Ok(llm_findings.into_iter().map(|f| f.into_finding(model_name)).collect())
 }
 
-/// Fix invalid JSON escape sequences that LLMs produce (e.g., \d, \s, \w from regex patterns).
+/// Strip raw control characters from LLM output while preserving JSON structure.
+fn strip_control_chars(s: &str) -> String {
+    s.chars().map(|c| {
+        if c.is_control() && c != '\n' && c != '\r' && c != '\t' {
+            ' '
+        } else {
+            c
+        }
+    }).collect()
+}
+
+/// Fix invalid JSON: escape sequences (\d, \s) and raw control characters (tabs, etc.)
 fn sanitize_json_escapes(json: &str) -> String {
     let mut result = String::with_capacity(json.len());
     let mut chars = json.chars().peekable();
+    let mut in_string = false;
     while let Some(c) = chars.next() {
+        // Track whether we're inside a JSON string
+        if c == '"' && result.chars().last() != Some('\\') {
+            in_string = !in_string;
+            result.push(c);
+            continue;
+        }
+        // Strip raw control characters inside strings (except valid ones)
+        if in_string && c.is_control() && c != '\n' && c != '\r' && c != '\t' {
+            // Replace with space to preserve structure
+            result.push(' ');
+            continue;
+        }
+        // Escape raw tabs/newlines inside strings that aren't already escaped
+        if in_string && (c == '\t' || c == '\n' || c == '\r') {
+            result.push('\\');
+            result.push(match c { '\t' => 't', '\n' => 'n', '\r' => 'r', _ => ' ' });
+            continue;
+        }
         if c == '\\' {
             if let Some(&next) = chars.peek() {
                 match next {
