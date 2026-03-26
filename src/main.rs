@@ -13,6 +13,7 @@ mod http_server;
 mod domain;
 mod embeddings;
 mod feedback;
+mod feedback_index;
 mod finding;
 mod hydration;
 mod linter;
