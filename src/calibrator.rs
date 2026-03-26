@@ -19,6 +19,8 @@ pub struct CalibratorConfig {
     pub fp_suppress_count: usize,
     /// Whether to boost severity when strong TP precedent exists
     pub boost_tp: bool,
+    /// Whether to include auto-calibrate feedback in precedent matching
+    pub use_auto_feedback: bool,
 }
 
 impl Default for CalibratorConfig {
@@ -27,6 +29,7 @@ impl Default for CalibratorConfig {
             similarity_threshold: 0.5,
             fp_suppress_count: 2,
             boost_tp: true,
+            use_auto_feedback: true,
         }
     }
 }
@@ -37,7 +40,17 @@ pub fn calibrate(
     feedback: &[FeedbackEntry],
     config: &CalibratorConfig,
 ) -> CalibrationResult {
-    if feedback.is_empty() {
+    // Filter out auto-calibrate feedback if configured
+    let filtered: Vec<&FeedbackEntry> = if config.use_auto_feedback {
+        feedback.iter().collect()
+    } else {
+        feedback
+            .iter()
+            .filter(|e| !matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)))
+            .collect()
+    };
+
+    if filtered.is_empty() {
         return CalibrationResult {
             findings,
             suppressed: 0,
@@ -51,7 +64,7 @@ pub fn calibrate(
 
     for mut finding in findings {
         // Find similar feedback entries
-        let similar: Vec<&FeedbackEntry> = feedback
+        let similar: Vec<&&FeedbackEntry> = filtered
             .iter()
             .filter(|e| finding_feedback_similarity(&finding, e) >= config.similarity_threshold)
             .collect();
@@ -349,6 +362,48 @@ mod tests {
         let result = calibrate(findings, &feedback, &CalibratorConfig::default());
         assert!(!result.findings[0].similar_precedent.is_empty(),
             "Finding should have precedent annotation");
+    }
+
+    #[test]
+    fn calibrator_excludes_auto_feedback_when_configured() {
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        let feedback = vec![auto_fb.clone(), auto_fb];
+        let config = CalibratorConfig {
+            fp_suppress_count: 2,
+            use_auto_feedback: false,
+            ..Default::default()
+        };
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 0, "Auto feedback excluded, should not suppress");
+    }
+
+    #[test]
+    fn calibrator_includes_auto_feedback_by_default() {
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        let feedback = vec![auto_fb.clone(), auto_fb];
+        let config = CalibratorConfig::default(); // use_auto_feedback defaults to true
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 1, "Auto feedback included by default");
     }
 
     #[test]
