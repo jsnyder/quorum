@@ -121,7 +121,7 @@ Honest assessment: 3-6 months of part-time work for core feature parity. During 
 ## Recommended Phased Approach
 
 ### Phase 0: Rust Core Library (standalone crate)
-- tree-sitter multi-language parsing
+- tree-sitter multi-language parsing (Rust, Python, TypeScript/TSX, YAML)
 - AST context hydration: callee sigs, type defs, caller blast radius
 - AST analysis as reviewer: complexity, dead code, insecure patterns
 - Linter orchestration: detect + run available linters, normalize output
@@ -158,7 +158,8 @@ Honest assessment: 3-6 months of part-time work for core feature parity. During 
 | Async runtime | `tokio` | Production |
 | HTTP client | `reqwest` | Production |
 | JSON | `serde` / `serde_json` | Production |
-| Tree-sitter | `tree-sitter` | Production (it IS Rust) |
+| Tree-sitter core | `tree-sitter` | Production (it IS Rust) |
+| Tree-sitter YAML | `tree-sitter-yaml` | Production (v0.7) |
 | CLI args | `clap` | Production |
 | YAML parsing | `serde_yaml` | Production |
 | TOML parsing | `toml` | Production |

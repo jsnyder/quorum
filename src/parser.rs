@@ -6,6 +6,7 @@ pub enum Language {
     Python,
     TypeScript,
     Tsx,
+    Yaml,
 }
 
 impl Language {
@@ -15,6 +16,7 @@ impl Language {
             "py" => Some(Language::Python),
             "ts" | "js" | "mjs" | "cjs" => Some(Language::TypeScript),
             "tsx" | "jsx" => Some(Language::Tsx),
+            "yaml" | "yml" => Some(Language::Yaml),
             _ => None,
         }
     }
@@ -31,6 +33,7 @@ impl Language {
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Language::Yaml => tree_sitter_yaml::LANGUAGE.into(),
         }
     }
 
@@ -42,6 +45,7 @@ impl Language {
                 "function_declaration",
                 "method_definition",
             ],
+            Language::Yaml => &[],
         }
     }
 }
@@ -294,5 +298,41 @@ mod tests {
         assert_eq!(Language::from_extension("Py"), Some(Language::Python));
         assert_eq!(Language::from_extension("TS"), Some(Language::TypeScript));
         assert_eq!(Language::from_extension("TSX"), Some(Language::Tsx));
+    }
+
+    // -- YAML support --
+
+    #[test]
+    fn detect_language_yaml() {
+        assert_eq!(Language::from_extension("yaml"), Some(Language::Yaml));
+        assert_eq!(Language::from_extension("yml"), Some(Language::Yaml));
+        assert_eq!(Language::from_extension("YAML"), Some(Language::Yaml));
+    }
+
+    #[test]
+    fn detect_language_yaml_from_path() {
+        assert_eq!(
+            Language::from_path(std::path::Path::new("automations.yaml")),
+            Some(Language::Yaml)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("configuration.yml")),
+            Some(Language::Yaml)
+        );
+    }
+
+    #[test]
+    fn parse_valid_yaml() {
+        let source = "key: value\nlist:\n  - item1\n  - item2\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        assert_eq!(tree.root_node().kind(), "stream");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn parse_yaml_automation() {
+        let source = "automation:\n  - alias: Turn on lights\n    trigger:\n      - platform: state\n        entity_id: binary_sensor.motion\n    action:\n      - service: light.turn_on\n        target:\n          entity_id: light.living_room\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        assert!(!tree.root_node().has_error());
     }
 }

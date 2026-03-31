@@ -170,6 +170,7 @@ impl QuorumHandler {
                     Language::Python => "python",
                     Language::TypeScript => "typescript",
                     Language::Tsx => "tsx",
+                    Language::Yaml => "yaml",
                 })
                 .unwrap_or("text");
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
@@ -210,6 +211,7 @@ impl QuorumHandler {
             Language::Python => "python",
             Language::TypeScript => "typescript",
             Language::Tsx => "tsx",
+            Language::Yaml => "yaml",
         };
 
         let framework_hint = params.framework.as_deref().map(|f| format!(" using the {} framework", f)).unwrap_or_default();

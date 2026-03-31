@@ -14,6 +14,7 @@ pub fn analyze_complexity(
         Language::Rust => &["function_item"][..],
         Language::Python => &["function_definition"][..],
         Language::TypeScript | Language::Tsx => &["function_declaration", "method_definition"][..],
+        Language::Yaml => &[][..],
     };
 
     let mut func_nodes = Vec::new();
@@ -163,6 +164,7 @@ fn scan_insecure_nodes(
         Language::Rust => scan_insecure_rust(node, source, findings),
         Language::Python => scan_insecure_python(node, source, findings),
         Language::TypeScript | Language::Tsx => scan_insecure_typescript(node, source, findings),
+        Language::Yaml => scan_insecure_yaml(node, source, findings),
     }
 
     for i in 0..node.child_count() {
@@ -630,6 +632,387 @@ fn has_result_call(node: &tree_sitter::Node, source: &str) -> bool {
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// YAML / Home Assistant patterns
+// ---------------------------------------------------------------------------
+
+/// Secret-like key name patterns for YAML hardcoded secret detection.
+const YAML_SECRET_KEY_PATTERNS: &[&str] = &[
+    "password", "passwd", "secret", "api_key", "apikey", "auth_token",
+    "token", "private_key", "access_key", "secret_key",
+];
+
+/// Check whether the value side of a block_mapping_pair uses a safe tag
+/// (!secret, !include, !env_var).
+fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool {
+    let text = &source[value_node.byte_range()];
+    if text.starts_with("!secret") || text.starts_with("!include") || text.starts_with("!env_var") {
+        return true;
+    }
+    // The value might be wrapped in a flow_node or block_node that contains a tag child.
+    for i in 0..value_node.child_count() {
+        if let Some(child) = value_node.child(i) {
+            if child.kind() == "tag" {
+                let tag_text = &source[child.byte_range()];
+                if tag_text.starts_with("!secret") || tag_text.starts_with("!include") || tag_text.starts_with("!env_var") {
+                    return true;
+                }
+            }
+            // Recurse one more level (flow_node may contain tag)
+            for j in 0..child.child_count() {
+                if let Some(gc) = child.child(j) {
+                    if gc.kind() == "tag" {
+                        let tag_text = &source[gc.byte_range()];
+                        if tag_text.starts_with("!secret") || tag_text.starts_with("!include") || tag_text.starts_with("!env_var") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a `block_mapping` node is the *direct* mapping of an automation
+/// list item (i.e. the immediate child of a block_sequence_item under an
+/// `automation:` key). Nested mappings inside that item return false.
+fn is_in_automation_context(node: &tree_sitter::Node, source: &str) -> bool {
+    // Expect: block_mapping -> (block_node?) -> block_sequence_item -> block_sequence -> (block_node?) -> block_mapping_pair[key="automation"]
+    let mut parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    // Skip optional block_node wrapper
+    if parent.kind() == "block_node" {
+        parent = match parent.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+    }
+    if parent.kind() != "block_sequence_item" {
+        return false;
+    }
+    let seq = match parent.parent() {
+        Some(p) if p.kind() == "block_sequence" => p,
+        _ => return false,
+    };
+    let mut candidate = seq.parent();
+    // Skip through block_node wrappers
+    while let Some(c) = candidate {
+        if c.kind() == "block_node" {
+            candidate = c.parent();
+            continue;
+        }
+        if c.kind() == "block_mapping_pair" {
+            if let Some(key) = c.child_by_field_name("key") {
+                let key_text = source[key.byte_range()].trim();
+                return key_text == "automation" || key_text == "automation!";
+            }
+        }
+        break;
+    }
+    false
+}
+
+/// Collect the set of keys present in a block_mapping node.
+fn collect_mapping_keys<'a>(node: &tree_sitter::Node, source: &'a str) -> Vec<&'a str> {
+    let mut keys = Vec::new();
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "block_mapping_pair" {
+                if let Some(key) = child.child_by_field_name("key") {
+                    keys.push(source[key.byte_range()].trim());
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Check if a block_mapping_pair's value is empty (no meaningful children).
+fn yaml_value_is_empty(pair_node: &tree_sitter::Node, source: &str) -> bool {
+    if let Some(value) = pair_node.child_by_field_name("value") {
+        let text = source[value.byte_range()].trim();
+        if text.is_empty() {
+            return true;
+        }
+        // Check if value has a block_sequence child with items
+        for i in 0..value.child_count() {
+            if let Some(child) = value.child(i) {
+                if child.kind() == "block_sequence" {
+                    let mut has_items = false;
+                    for j in 0..child.child_count() {
+                        if let Some(item) = child.child(j) {
+                            if item.kind() == "block_sequence_item" {
+                                has_items = true;
+                                break;
+                            }
+                        }
+                    }
+                    return !has_items;
+                }
+            }
+        }
+        false
+    } else {
+        true
+    }
+}
+
+fn scan_insecure_yaml(
+    node: &tree_sitter::Node,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let line = node.start_position().row as u32 + 1;
+    let end_line = node.end_position().row as u32 + 1;
+
+    // --- Tier 1: Duplicate keys in a block_mapping ---
+    if node.kind() == "block_mapping" {
+        let mut seen_keys: Vec<(&str, u32)> = Vec::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "block_mapping_pair" {
+                    if let Some(key) = child.child_by_field_name("key") {
+                        let key_text = source[key.byte_range()].trim();
+                        let key_line = key.start_position().row as u32 + 1;
+                        if let Some((_, first_line)) = seen_keys.iter().find(|(k, _)| *k == key_text) {
+                            findings.push(Finding {
+                                title: format!("Duplicate key `{}` in mapping", key_text),
+                                description: format!(
+                                    "Key `{}` appears multiple times in the same mapping (first at line {}). The last value silently wins.",
+                                    key_text, first_line
+                                ),
+                                severity: Severity::High,
+                                category: "bug".into(),
+                                source: Source::LocalAst,
+                                line_start: key_line,
+                                line_end: key_line,
+                                evidence: vec![],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                        } else {
+                            seen_keys.push((key_text, key_line));
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Tier 2: Automation-level checks ---
+        if is_in_automation_context(node, source) {
+            let keys = collect_mapping_keys(node, source);
+
+            // 3. Missing id
+            if !keys.contains(&"id") {
+                findings.push(Finding {
+                    title: "Automation missing `id` -- UI management and debug traces are disabled".into(),
+                    description: "Automation missing `id` -- UI management and debug traces are disabled".into(),
+                    severity: Severity::Medium,
+                    category: "quality".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+
+            // 4. Missing mode
+            if !keys.contains(&"mode") {
+                findings.push(Finding {
+                    title: "Automation has no explicit `mode` (defaults to `single`)".into(),
+                    description: "Automation has no explicit `mode` (defaults to `single`)".into(),
+                    severity: Severity::Info,
+                    category: "quality".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+
+            // 5. Deprecated singular trigger/action/condition
+            let deprecated = [
+                ("trigger", "triggers"),
+                ("action", "actions"),
+                ("condition", "conditions"),
+            ];
+            for (singular, plural) in &deprecated {
+                if keys.contains(singular) && !keys.contains(plural) {
+                    findings.push(Finding {
+                        title: format!("Deprecated singular `{}:` -- use `{}:` instead", singular, plural),
+                        description: format!(
+                            "Home Assistant deprecated the singular `{}:` key. Use `{}:` (plural) for forward compatibility.",
+                            singular, plural
+                        ),
+                        severity: Severity::Medium,
+                        category: "quality".into(),
+                        source: Source::LocalAst,
+                        line_start: line,
+                        line_end: end_line,
+                        evidence: vec![],
+                        calibrator_action: None,
+                        similar_precedent: vec![],
+                        canonical_pattern: None,
+                    });
+                }
+            }
+
+            // 6. Empty triggers or actions
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "block_mapping_pair" {
+                        if let Some(key) = child.child_by_field_name("key") {
+                            let key_text = source[key.byte_range()].trim();
+                            if (key_text == "triggers" || key_text == "actions") && yaml_value_is_empty(&child, source) {
+                                findings.push(Finding {
+                                    title: format!("Empty `{}:` in automation", key_text),
+                                    description: format!(
+                                        "The `{}:` key has no items. This automation will not function correctly.",
+                                        key_text
+                                    ),
+                                    severity: Severity::High,
+                                    category: "bug".into(),
+                                    source: Source::LocalAst,
+                                    line_start: child.start_position().row as u32 + 1,
+                                    line_end: child.end_position().row as u32 + 1,
+                                    evidence: vec![],
+                                    calibrator_action: None,
+                                    similar_precedent: vec![],
+                                    canonical_pattern: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Tier 1: Hardcoded secrets (on block_mapping_pair nodes) ---
+    if node.kind() == "block_mapping_pair" {
+        if let Some(key) = node.child_by_field_name("key") {
+            let key_text = source[key.byte_range()].trim().to_lowercase();
+
+            if YAML_SECRET_KEY_PATTERNS.iter().any(|p| key_text.contains(p)) {
+                if let Some(value) = node.child_by_field_name("value") {
+                    if !yaml_value_has_safe_tag(&value, source) {
+                        let val_text = source[value.byte_range()].trim();
+                        if !val_text.is_empty() {
+                            findings.push(Finding {
+                                title: format!("Hardcoded secret in `{}`", source[key.byte_range()].trim()),
+                                description: "Secrets should use `!secret` references, not hardcoded values.".into(),
+                                severity: Severity::High,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // --- Tier 3: entity_id without domain ---
+            if key_text == "entity_id" {
+                if let Some(value) = node.child_by_field_name("value") {
+                    let val_text = source[value.byte_range()].trim();
+                    let mut is_list = false;
+                    for i in 0..value.child_count() {
+                        if let Some(child) = value.child(i) {
+                            if child.kind() == "block_sequence" {
+                                is_list = true;
+                                for j in 0..child.child_count() {
+                                    if let Some(item) = child.child(j) {
+                                        if item.kind() == "block_sequence_item" {
+                                            let item_text = source[item.byte_range()].trim().trim_start_matches("- ").trim();
+                                            if !item_text.is_empty() && !item_text.contains('.') {
+                                                findings.push(Finding {
+                                                    title: "entity_id without domain prefix".into(),
+                                                    description: format!(
+                                                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                                                        item_text, item_text
+                                                    ),
+                                                    severity: Severity::High,
+                                                    category: "bug".into(),
+                                                    source: Source::LocalAst,
+                                                    line_start: item.start_position().row as u32 + 1,
+                                                    line_end: item.end_position().row as u32 + 1,
+                                                    evidence: vec![],
+                                                    calibrator_action: None,
+                                                    similar_precedent: vec![],
+                                                    canonical_pattern: None,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if !is_list && !val_text.is_empty() && !val_text.contains('.') {
+                        findings.push(Finding {
+                            title: "entity_id without domain prefix".into(),
+                            description: format!(
+                                "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                                val_text, val_text
+                            ),
+                            severity: Severity::High,
+                            category: "bug".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+
+            // --- Tier 3: service without domain ---
+            if key_text == "service" {
+                if let Some(value) = node.child_by_field_name("value") {
+                    let val_text = source[value.byte_range()].trim();
+                    if !val_text.is_empty() && !val_text.contains('.') {
+                        findings.push(Finding {
+                            title: "service without domain prefix".into(),
+                            description: format!(
+                                "`{}` is missing a domain prefix (e.g. `light.{}`)",
+                                val_text, val_text
+                            ),
+                            severity: Severity::Medium,
+                            category: "bug".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn scan_insecure_typescript(
@@ -1324,6 +1707,184 @@ def process(items=None):
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(findings.iter().any(|f| f.title.contains("result()") || f.title.contains("blocking")),
             "Should flag blocking .result() in async. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    // -- YAML patterns --
+
+    #[test]
+    fn yaml_duplicate_keys() {
+        let source = "automation:\n  alias: First\nautomation:\n  alias: Second\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Duplicate") || f.title.contains("duplicate")),
+            "Should flag duplicate top-level keys. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_hardcoded_secret() {
+        let source = "api_key: sk-proj-abc123def456ghi\npassword: SuperSecret123!\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.category == "security"),
+            "Should flag hardcoded secrets in YAML. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_secret_tag_not_flagged() {
+        let source = "api_key: !secret api_key\npassword: !secret db_password\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.category == "security"),
+            "!secret references should NOT be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_include_not_flagged() {
+        let source = "api_key: !include secret_file.yaml\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.category == "security"),
+            "!include should NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn yaml_automation_missing_id() {
+        let source = "automation:\n  - alias: Test Automation\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    actions:\n      - service: light.turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("missing") && f.title.contains("id")),
+            "Should flag automation missing id. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_automation_with_id_not_flagged() {
+        let source = "automation:\n  - id: auto_001\n    alias: Test\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    actions:\n      - service: light.turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("missing") && f.title.contains("id")),
+            "Automation with id should NOT be flagged for missing id"
+        );
+    }
+
+    #[test]
+    fn yaml_automation_missing_mode() {
+        let source = "automation:\n  - id: auto_001\n    alias: Test\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    actions:\n      - service: light.turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("mode")),
+            "Should flag automation missing mode. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_automation_deprecated_singular() {
+        let source = "automation:\n  - id: auto_001\n    alias: Test\n    mode: single\n    trigger:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    action:\n      - service: light.turn_on\n    condition:\n      - condition: state\n        entity_id: binary_sensor.home\n        state: 'on'\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        let deprecated_findings: Vec<_> = findings.iter().filter(|f| f.title.contains("Deprecated") || f.title.contains("deprecated")).collect();
+        assert!(
+            deprecated_findings.len() >= 3,
+            "Should flag trigger, action, and condition as deprecated. Got: {:?}",
+            deprecated_findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_automation_plural_forms_not_flagged() {
+        let source = "automation:\n  - id: auto_001\n    alias: Test\n    mode: single\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    actions:\n      - service: light.turn_on\n    conditions:\n      - condition: state\n        entity_id: binary_sensor.home\n        state: 'on'\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Deprecated") || f.title.contains("deprecated")),
+            "Plural forms should NOT be flagged as deprecated"
+        );
+    }
+
+    #[test]
+    fn yaml_entity_id_without_domain() {
+        let source = "automation:\n  - id: test\n    alias: Test\n    mode: single\n    triggers:\n      - trigger: state\n        entity_id: motion_sensor\n    actions:\n      - service: light.turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
+            "Should flag entity_id without domain prefix. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_entity_id_with_domain_ok() {
+        let source = "entity_id: binary_sensor.motion\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
+            "entity_id with domain should NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn yaml_service_without_domain() {
+        let source = "service: turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("service") && f.title.contains("domain")),
+            "Should flag service without domain. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_service_with_domain_ok() {
+        let source = "service: light.turn_on\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("service") && f.title.contains("domain")),
+            "service with domain should NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn yaml_empty_actions() {
+        let source = "automation:\n  - id: test\n    alias: Test\n    mode: single\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    actions:\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("empty") || f.title.contains("Empty")),
+            "Should flag empty actions. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_no_false_positives_clean_automation() {
+        let source = "automation:\n  - id: auto_001\n    alias: Good Automation\n    mode: restart\n    triggers:\n      - trigger: state\n        entity_id: binary_sensor.motion\n        to: 'on'\n    actions:\n      - service: light.turn_on\n        target:\n          entity_id: light.living_room\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.is_empty(),
+            "Clean automation should have no findings. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
 }

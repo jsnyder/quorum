@@ -17,6 +17,7 @@ pub enum LinterKind {
     Ruff,
     Clippy,
     Eslint,
+    Yamllint,
 }
 
 impl LinterKind {
@@ -25,6 +26,7 @@ impl LinterKind {
             LinterKind::Ruff => "ruff",
             LinterKind::Clippy => "clippy",
             LinterKind::Eslint => "eslint",
+            LinterKind::Yamllint => "yamllint",
         }
     }
 }
@@ -63,6 +65,15 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         }
     }
 
+    // Yamllint: .yamllint, .yamllint.yaml, .yamllint.yml
+    let yamllint_configs = [".yamllint", ".yamllint.yaml", ".yamllint.yml"];
+    for config in &yamllint_configs {
+        if project_dir.join(config).exists() {
+            linters.push(LinterKind::Yamllint);
+            break;
+        }
+    }
+
     linters
 }
 
@@ -81,6 +92,7 @@ pub fn run_linter(
             cwd,
         )?,
         LinterKind::Eslint => runner.run("eslint", &["--format=json", &file_str], cwd)?,
+        LinterKind::Yamllint => runner.run("yamllint", &["-f", "parsable", &file_str], cwd)?,
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
@@ -98,6 +110,7 @@ pub fn run_linter(
         LinterKind::Ruff => normalize_ruff_output(&output.stdout),
         LinterKind::Clippy => normalize_clippy_output(&output.stdout),
         LinterKind::Eslint => normalize_eslint_output(&output.stdout),
+        LinterKind::Yamllint => normalize_yamllint_output(&output.stdout),
     }
 }
 
@@ -224,6 +237,42 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
         }
     }
 
+    Ok(findings)
+}
+
+pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    // yamllint parsable format: file:line:col: [level] message (rule)
+    for line in output.lines() {
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let line_num = parts[1].trim().parse::<u32>().unwrap_or(1);
+        let rest = parts[3].trim();
+
+        let (severity, message) = if rest.starts_with("[error]") {
+            (Severity::High, rest.trim_start_matches("[error]").trim())
+        } else if rest.starts_with("[warning]") {
+            (Severity::Medium, rest.trim_start_matches("[warning]").trim())
+        } else {
+            (Severity::Low, rest)
+        };
+
+        findings.push(Finding {
+            title: format!("yamllint: {}", message),
+            description: message.to_string(),
+            severity,
+            category: "lint".into(),
+            source: Source::Linter("yamllint".into()),
+            line_start: line_num,
+            line_end: line_num,
+            evidence: vec!["yamllint".into()],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
     Ok(findings)
 }
 
@@ -469,5 +518,43 @@ mod tests {
         let ruff_json = r#"[{"code":"E501","message":"Line too long","filename":"t.py","location":{"row":1,"column":1},"end_location":{"row":1,"column":100}}]"#;
         let findings = normalize_ruff_output(ruff_json).unwrap();
         assert_eq!(findings[0].source, Source::Linter("ruff".into()));
+    }
+
+    // -- Yamllint detection --
+
+    #[test]
+    fn detect_yamllint_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".yamllint"), "extends: default\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Yamllint));
+    }
+
+    #[test]
+    fn detect_yamllint_from_yaml_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".yamllint.yaml"), "extends: default\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Yamllint));
+    }
+
+    // -- Yamllint output normalization --
+
+    #[test]
+    fn normalize_yamllint_valid_output() {
+        let output = "config.yaml:3:1: [error] duplication of key \"api_key\" in mapping (key-duplicates)\nconfig.yaml:5:1: [warning] line too long (120 > 80 characters) (line-length)\n";
+        let findings = normalize_yamllint_output(output).unwrap();
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].line_start, 3);
+        assert_eq!(findings[1].severity, Severity::Medium);
+        assert_eq!(findings[1].line_start, 5);
+        assert_eq!(findings[0].source, Source::Linter("yamllint".into()));
+    }
+
+    #[test]
+    fn normalize_yamllint_empty_output() {
+        let findings = normalize_yamllint_output("").unwrap();
+        assert!(findings.is_empty());
     }
 }
