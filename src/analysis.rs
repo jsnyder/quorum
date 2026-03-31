@@ -767,6 +767,84 @@ fn yaml_value_is_empty(pair_node: &tree_sitter::Node, source: &str) -> bool {
     }
 }
 
+/// Check if a URL string contains embedded credentials (e.g. `://user:pass@`).
+fn yaml_url_has_credentials(url: &str) -> bool {
+    // Find the `://` marker, then check the authority section before the next `/`
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        // The authority section ends at the first `/` (or end of string)
+        let authority = if let Some(slash) = after_scheme.find('/') {
+            &after_scheme[..slash]
+        } else {
+            after_scheme
+        };
+        // Credentials pattern: something@host, where the part before @ contains `:`
+        if let Some(at_pos) = authority.find('@') {
+            let userinfo = &authority[..at_pos];
+            return userinfo.contains(':');
+        }
+    }
+    false
+}
+
+/// Check if a block_mapping is at the document root level.
+fn is_root_mapping(node: &tree_sitter::Node) -> bool {
+    // Expected: block_mapping -> block_node -> document (or stream -> document)
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "block_node" => { current = parent.parent(); continue; }
+            "document" | "stream" => return true,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Find a block_mapping_pair by key name in a block_mapping, and return
+/// the value node's child block_mapping (if it has one).
+fn find_value_mapping<'a>(
+    mapping_node: &'a tree_sitter::Node<'a>,
+    source: &str,
+    key_name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    for i in 0..mapping_node.child_count() {
+        if let Some(child) = mapping_node.child(i) {
+            if child.kind() == "block_mapping_pair" {
+                if let Some(key) = child.child_by_field_name("key") {
+                    if source[key.byte_range()].trim() == key_name {
+                        if let Some(value) = child.child_by_field_name("value") {
+                            // Walk through block_node wrappers to find block_mapping
+                            return find_block_mapping_in(&value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Recursively find a block_mapping inside a value node (through block_node wrappers).
+fn find_block_mapping_in<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    if node.kind() == "block_mapping" {
+        return Some(*node);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "block_mapping" {
+                return Some(child);
+            }
+            if child.kind() == "block_node" {
+                if let Some(found) = find_block_mapping_in(&child) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn scan_insecure_yaml(
     node: &tree_sitter::Node,
     source: &str,
@@ -903,6 +981,63 @@ fn scan_insecure_yaml(
                 }
             }
         }
+
+        // --- Tier 5: ESPHome-specific checks (root-level mapping only) ---
+        if is_root_mapping(node) {
+            let keys = collect_mapping_keys(node, source);
+
+            if keys.contains(&"esphome") {
+                // Pattern 17: ESPHome OTA without password
+                if keys.contains(&"ota") {
+                    let has_password = if let Some(ota_mapping) = find_value_mapping(node, source, "ota") {
+                        let ota_keys = collect_mapping_keys(&ota_mapping, source);
+                        ota_keys.contains(&"password")
+                    } else {
+                        false
+                    };
+                    if !has_password {
+                        findings.push(Finding {
+                            title: "ESPHome OTA section has no password -- firmware updates are unprotected".into(),
+                            description: "ESPHome OTA section has no password -- firmware updates are unprotected. Add a password to prevent unauthorized firmware uploads.".into(),
+                            severity: Severity::Medium,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+
+                // Pattern 19: ESPHome API without encryption
+                if keys.contains(&"api") {
+                    let has_encryption = if let Some(api_mapping) = find_value_mapping(node, source, "api") {
+                        let api_keys = collect_mapping_keys(&api_mapping, source);
+                        api_keys.contains(&"encryption")
+                    } else {
+                        false
+                    };
+                    if !has_encryption {
+                        findings.push(Finding {
+                            title: "ESPHome API has no encryption configured".into(),
+                            description: "ESPHome API has no encryption configured. Add an encryption key to secure communication.".into(),
+                            severity: Severity::Medium,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // --- Tier 1: Hardcoded secrets (on block_mapping_pair nodes) ---
@@ -1015,6 +1150,107 @@ fn scan_insecure_yaml(
                         });
                     }
                 }
+            }
+
+            // --- Tier 4: Exposed 0.0.0.0 binding ---
+            if key_text == "host" || key_text == "server_host" || key_text == "server" {
+                if let Some(value) = node.child_by_field_name("value") {
+                    let val_text = source[value.byte_range()].trim();
+                    if val_text.contains("0.0.0.0") {
+                        findings.push(Finding {
+                            title: "Server binding to 0.0.0.0 exposes all interfaces".into(),
+                            description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
+                            severity: Severity::Medium,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+
+            // --- Tier 4: URL with embedded credentials ---
+            if let Some(value) = node.child_by_field_name("value") {
+                let val_text = source[value.byte_range()].trim();
+                if !val_text.starts_with("!secret") && !val_text.starts_with("!include") {
+                    if val_text.contains("://") && yaml_url_has_credentials(val_text) {
+                        findings.push(Finding {
+                            title: "URL contains embedded credentials".into(),
+                            description: "URLs with embedded user:password credentials are a security risk. Use environment variables or secret references.".into(),
+                            severity: Severity::High,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Tier 6: Jinja2 template patterns (on scalar values) ---
+    if node.kind() == "plain_scalar" || node.kind() == "double_quote_scalar" || node.kind() == "single_quote_scalar" {
+        let val_text = &source[node.byte_range()];
+
+        // Only check values that contain Jinja2 templates
+        if val_text.contains("{{") {
+            // Pattern 20: states() without availability check
+            if val_text.contains("states(") {
+                let has_availability = val_text.contains("unavailable") || val_text.contains("unknown");
+                if !has_availability {
+                    findings.push(Finding {
+                        title: "Template uses `states()` without availability check".into(),
+                        description: "Templates using states() should check for 'unavailable' and 'unknown' to avoid errors when entities are offline".into(),
+                        severity: Severity::Info,
+                        category: "quality".into(),
+                        source: Source::LocalAst,
+                        line_start: line,
+                        line_end: end_line,
+                        evidence: vec![val_text.chars().take(200).collect()],
+                        calibrator_action: None,
+                        similar_precedent: vec![],
+                        canonical_pattern: None,
+                    });
+                }
+            }
+
+            // Pattern 21: Deprecated dot-notation state access
+            let dot_domains = [
+                "states.sensor.", "states.binary_sensor.", "states.switch.",
+                "states.light.", "states.climate.", "states.cover.",
+                "states.fan.", "states.lock.", "states.media_player.",
+                "states.automation.", "states.input_boolean.", "states.input_number.",
+                "states.input_select.", "states.input_text.", "states.person.",
+                "states.device_tracker.", "states.weather.", "states.zone.",
+                "states.script.", "states.scene.", "states.group.",
+                "states.timer.", "states.counter.", "states.number.",
+                "states.select.", "states.button.", "states.vacuum.",
+                "states.water_heater.", "states.humidifier.", "states.alarm_control_panel.",
+            ];
+            if dot_domains.iter().any(|d| val_text.contains(d)) {
+                findings.push(Finding {
+                    title: "Deprecated dot-notation state access".into(),
+                    description: "Use states('sensor.xxx') instead of states.sensor.xxx.state".into(),
+                    severity: Severity::Medium,
+                    category: "quality".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![val_text.chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
             }
         }
     }
@@ -1889,6 +2125,143 @@ def process(items=None):
             findings.is_empty(),
             "Clean automation should have no findings. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    // -- Tier 4: URL with credentials --
+
+    #[test]
+    fn yaml_url_with_credentials() {
+        let source = "database_url: postgres://admin:secret123@db.example.com/mydb\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
+            "Should flag URL with embedded credentials. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_url_without_credentials_ok() {
+        let source = "database_url: postgres://db.example.com/mydb\nwebhook: https://hooks.slack.com/services/xxx\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
+            "URL without credentials should NOT be flagged"
+        );
+    }
+
+    // -- Tier 4: Exposed 0.0.0.0 binding --
+
+    #[test]
+    fn yaml_exposed_host_binding() {
+        let source = "http:\n  server_host: 0.0.0.0\n  server_port: 8123\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("0.0.0.0")),
+            "Should flag 0.0.0.0 binding. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    // -- Tier 5: ESPHome OTA --
+
+    #[test]
+    fn yaml_esphome_ota_no_password() {
+        let source = "esphome:\n  name: test-device\n\nota:\n  platform: esphome\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("OTA") || f.title.contains("ota")),
+            "Should flag ESPHome OTA without password. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_esphome_ota_with_password_ok() {
+        let source = "esphome:\n  name: test-device\n\nota:\n  platform: esphome\n  password: !secret ota_password\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("OTA") || f.title.contains("ota")),
+            "ESPHome OTA with password should NOT be flagged"
+        );
+    }
+
+    // -- Tier 5: ESPHome API --
+
+    #[test]
+    fn yaml_esphome_api_no_encryption() {
+        let source = "esphome:\n  name: test-device\n\napi:\n  services: []\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("API") || f.title.contains("encryption")),
+            "Should flag ESPHome API without encryption. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_esphome_api_with_encryption_ok() {
+        let source = "esphome:\n  name: test-device\n\napi:\n  encryption:\n    key: !secret api_encryption_key\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("API") || f.title.contains("encryption")),
+            "ESPHome API with encryption should NOT be flagged"
+        );
+    }
+
+    // -- Tier 6: Jinja2 template patterns --
+
+    #[test]
+    fn yaml_jinja2_states_without_availability() {
+        let source = "value_template: \"{{ states('sensor.temperature') | float }}\"\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("states()") || f.title.contains("availability")),
+            "Should flag states() without availability check. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_jinja2_states_with_availability_ok() {
+        let source = "value_template: \"{{ states('sensor.temperature') if states('sensor.temperature') not in ['unavailable', 'unknown'] else 0 }}\"\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("states()") && f.title.contains("availability")),
+            "states() with availability check should NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn yaml_jinja2_deprecated_dot_notation() {
+        let source = "value_template: \"{{ states.sensor.temperature.state }}\"\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("dot-notation") || f.title.contains("Deprecated")),
+            "Should flag deprecated dot-notation. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_jinja2_proper_states_call_ok() {
+        let source = "value_template: \"{{ states('sensor.temperature') }}\"\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("dot-notation")),
+            "Proper states() call should NOT be flagged for dot-notation"
         );
     }
 
