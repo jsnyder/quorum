@@ -243,13 +243,25 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
 pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
     let mut findings = Vec::new();
     // yamllint parsable format: file:line:col: [level] message (rule)
+    // Find the level marker to reliably split, then extract line number
     for line in output.lines() {
-        let parts: Vec<&str> = line.splitn(4, ':').collect();
-        if parts.len() < 4 {
-            continue;
-        }
-        let line_num = parts[1].trim().parse::<u32>().unwrap_or(1);
-        let rest = parts[3].trim();
+        let level_idx = line.find(" [error]")
+            .or_else(|| line.find(" [warning]"));
+        let (line_num, rest) = if let Some(idx) = level_idx {
+            // Everything before marker is "file:line:col"
+            let prefix = &line[..idx];
+            // Split prefix by ':' and take the second-to-last as line number
+            let colon_parts: Vec<&str> = prefix.split(':').collect();
+            // Parts: [file, line, col] -- line is second-to-last before col
+            let line_n = if colon_parts.len() >= 3 {
+                colon_parts[colon_parts.len() - 3].trim().parse::<u32>().unwrap_or(1)
+            } else {
+                1
+            };
+            (line_n, line[idx + 1..].trim()) // skip the space before [level]
+        } else {
+            continue; // skip lines without a recognized level marker
+        };
 
         let (severity, message) = if rest.starts_with("[error]") {
             (Severity::High, rest.trim_start_matches("[error]").trim())

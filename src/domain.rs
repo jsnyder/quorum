@@ -90,12 +90,13 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
             frameworks.insert("home-assistant".into());
         }
     }
-    // HA marker files: automations, scripts, scenes
-    for ha_file in &["automations.yaml", "scripts.yaml", "scenes.yaml"] {
-        if project_dir.join(ha_file).exists() {
-            frameworks.insert("home-assistant".into());
-            break;
-        }
+    // HA marker files: only count if multiple exist (single file is too generic)
+    let ha_marker_count = ["automations.yaml", "scripts.yaml", "scenes.yaml"]
+        .iter()
+        .filter(|f| project_dir.join(f).exists())
+        .count();
+    if ha_marker_count >= 2 {
+        frameworks.insert("home-assistant".into());
     }
 
     // ESPHome detection: any .yaml file with top-level `esphome:` key
@@ -243,11 +244,17 @@ mod tests {
     }
 
     #[test]
-    fn detect_ha_from_automations_yaml() {
+    fn detect_ha_from_marker_files() {
         let dir = tempfile::tempdir().unwrap();
+        // Need 2+ marker files to trigger detection (avoids false positives)
         std::fs::write(
             dir.path().join("automations.yaml"),
             "- id: test\n  alias: Test\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("scripts.yaml"),
+            "- id: script1\n  alias: Script\n",
         )
         .unwrap();
         let domain = detect_domain(dir.path());

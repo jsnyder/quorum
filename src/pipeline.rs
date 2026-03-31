@@ -151,7 +151,8 @@ pub fn review_file(
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
-    let final_findings = if pipeline_config.calibrate && !pipeline_config.feedback.is_empty() {
+    let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
+    let final_findings = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
 
         // Try to build a FeedbackIndex from the feedback store for semantic retrieval
@@ -186,8 +187,10 @@ pub fn review_file(
                 .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
                 .unwrap_or("gpt-5.4");
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            // Redact secrets before sending to auto-calibration LLM
+            let redacted_source = redact::redact_secrets(source);
             match crate::auto_calibrate::auto_calibrate(
-                &final_findings, source, &file_str, reviewer, model, &store,
+                &final_findings, &redacted_source, &file_str, reviewer, model, &store,
             ) {
                 Ok(result) if result.recorded > 0 => {
                     eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);
@@ -319,7 +322,8 @@ pub fn review_file_llm_only(
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 
     // Calibrate
-    let final_findings = if pipeline_config.calibrate && !pipeline_config.feedback.is_empty() {
+    let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
+    let final_findings = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
         let cal_result = if let Some(store_path) = &pipeline_config.feedback_store {
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
@@ -350,8 +354,10 @@ pub fn review_file_llm_only(
                 .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
                 .unwrap_or("gpt-5.4");
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            // Redact secrets before sending to auto-calibration LLM
+            let redacted_source = redact::redact_secrets(source);
             match crate::auto_calibrate::auto_calibrate(
-                &final_findings, source, &file_str, reviewer, model, &store,
+                &final_findings, &redacted_source, &file_str, reviewer, model, &store,
             ) {
                 Ok(result) if result.recorded > 0 => {
                     eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);

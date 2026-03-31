@@ -392,8 +392,13 @@ fn scan_insecure_python(
                     // - Not empty, not None, not env lookups
                     // - Longer than a typical key name (> 10 chars inside quotes)
                     // - Contains mixed case, numbers, or special chars (not just lowercase words)
+                    // Guard: only slice into string content if it's actually a quoted string
                     let inner_len = if right_text.len() > 2 { right_text.len() - 2 } else { 0 };
-                    let inner = &right_text[1..right_text.len().saturating_sub(1)];
+                    let inner = if right_text.len() > 2 {
+                        &right_text[1..right_text.len() - 1]
+                    } else {
+                        ""
+                    };
                     let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
                     let has_digit = inner.chars().any(|c| c.is_ascii_digit());
                     let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
