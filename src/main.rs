@@ -205,6 +205,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let parse_cache = cache::ParseCache::new(128);
     let progress = progress::ProgressReporter::detect();
     let mut all_findings = Vec::new();
+    let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
 
     for file_path in &opts.files {
@@ -285,12 +286,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         match review_result {
             Ok(result) => {
                 progress.finish_file(result.findings.len());
-                if use_json {
-                    all_findings.extend(result.findings);
-                } else {
+                if !use_json {
                     print!("{}", output::format_review(&result.file_path, &result.findings, &style));
-                    all_findings.extend(result.findings);
                 }
+                all_findings.extend(result.findings.clone());
+                file_results.push(result);
             }
             Err(e) => {
                 progress.clear_line();
@@ -309,7 +309,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     if use_json {
-        match output::format_json(&all_findings) {
+        match output::format_json_grouped(&file_results) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error: JSON serialization failed: {}", e);

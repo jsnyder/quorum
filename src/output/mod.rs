@@ -140,6 +140,24 @@ pub fn format_json(findings: &[Finding]) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(findings)?)
 }
 
+/// JSON output grouped by file -- includes file_path so findings can be traced back.
+pub fn format_json_grouped(results: &[crate::pipeline::FileReviewResult]) -> anyhow::Result<String> {
+    #[derive(serde::Serialize)]
+    struct FileFindings<'a> {
+        file: &'a str,
+        findings: &'a [Finding],
+    }
+    let grouped: Vec<FileFindings> = results
+        .iter()
+        .filter(|r| !r.findings.is_empty())
+        .map(|r| FileFindings {
+            file: &r.file_path,
+            findings: &r.findings,
+        })
+        .collect();
+    Ok(serde_json::to_string_pretty(&grouped)?)
+}
+
 pub fn compute_exit_code(findings: &[Finding]) -> i32 {
     if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
         2
