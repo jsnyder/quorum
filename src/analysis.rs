@@ -153,6 +153,9 @@ pub fn analyze_insecure_patterns(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     scan_insecure_nodes(&tree.root_node(), source, lang, &mut findings);
+    if matches!(lang, Language::Dockerfile) {
+        findings.extend(analyze_dockerfile_structure(tree, source));
+    }
     findings
 }
 
@@ -1429,19 +1432,400 @@ fn scan_insecure_typescript(
 }
 
 fn scan_insecure_bash(
-    _node: &tree_sitter::Node,
-    _source: &str,
-    _findings: &mut Vec<Finding>,
+    node: &tree_sitter::Node,
+    source: &str,
+    findings: &mut Vec<Finding>,
 ) {
-    // Stub: bash-specific insecure pattern detection will be added in Task 3
+    let kind = node.kind();
+    let line = node.start_position().row as u32 + 1;
+    let end_line = node.end_position().row as u32 + 1;
+
+    // B11: Missing shebang (root program node only)
+    if kind == "program" {
+        if !source.starts_with("#!") {
+            findings.push(Finding {
+                title: "Script has no shebang line".into(),
+                description: "Add a shebang (e.g. #!/usr/bin/env bash) so the script runs with the intended interpreter.".into(),
+                severity: Severity::Low,
+                category: "quality".into(),
+                source: Source::LocalAst,
+                line_start: 1,
+                line_end: 1,
+                evidence: vec![],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+            });
+        }
+    }
+
+    // B4: Missing set -e (root program node only)
+    if kind == "program" {
+        let mut found_set_e = false;
+        let limit = node.child_count().min(10);
+        for i in 0..limit {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "command" {
+                    let text = &source[child.byte_range()];
+                    if text.contains("set") && (text.contains("-e") || text.contains("errexit")) {
+                        found_set_e = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !found_set_e {
+            findings.push(Finding {
+                title: "Script has no `set -e` -- errors will be silently ignored".into(),
+                description: "Add `set -euo pipefail` near the top of the script to fail on errors.".into(),
+                severity: Severity::Medium,
+                category: "reliability".into(),
+                source: Source::LocalAst,
+                line_start: 1,
+                line_end: 1,
+                evidence: vec![],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+            });
+        }
+    }
+
+    // B2: eval usage
+    if kind == "command" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let name = &source[name_node.byte_range()];
+            if name == "eval" {
+                findings.push(Finding {
+                    title: "Use of `eval` is a code injection risk".into(),
+                    description: "Avoid `eval` -- use arrays, printf, or parameter expansion instead.".into(),
+                    severity: Severity::High,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+
+            // B9: chmod 777
+            if name == "chmod" {
+                for i in 0..node.child_count() {
+                    if let Some(arg) = node.child(i) {
+                        let text = &source[arg.byte_range()];
+                        if text == "777" {
+                            findings.push(Finding {
+                                title: "`chmod 777` grants world-writable permissions".into(),
+                                description: "Use more restrictive permissions (e.g. 755 or 700).".into(),
+                                severity: Severity::Medium,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // B3: curl|bash piping
+    if kind == "pipeline" {
+        let mut saw_curl = false;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "command" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let name = &source[name_node.byte_range()];
+                        if name == "curl" || name == "wget" {
+                            saw_curl = true;
+                        } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
+                            findings.push(Finding {
+                                title: "Piping curl/wget to shell executes untrusted remote code".into(),
+                                description: "Download to a file first, inspect it, then execute.".into(),
+                                severity: Severity::Critical,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // B5: Hardcoded secrets
+    if kind == "variable_assignment" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let var_name = &source[name_node.byte_range()];
+            let upper = var_name.to_uppercase();
+            let is_secret_name = upper.contains("PASSWORD")
+                || upper.contains("API_KEY")
+                || upper.contains("SECRET")
+                || upper.contains("TOKEN")
+                || upper.contains("APIKEY")
+                || upper.contains("PRIVATE_KEY");
+            if is_secret_name {
+                if let Some(value_node) = node.child_by_field_name("value") {
+                    let vkind = value_node.kind();
+                    // Skip command substitutions and expansions
+                    if vkind != "command_substitution" && vkind != "simple_expansion" && vkind != "expansion" {
+                        let val_text = &source[value_node.byte_range()];
+                        // Skip if value contains $ (env var reference)
+                        if !val_text.contains('$') {
+                            findings.push(Finding {
+                                title: format!("Hardcoded secret in shell variable `{}`", var_name),
+                                description: "Use environment variables or a secrets manager instead of hardcoded values.".into(),
+                                severity: Severity::High,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn scan_insecure_dockerfile(
-    _node: &tree_sitter::Node,
-    _source: &str,
-    _findings: &mut Vec<Finding>,
+    node: &tree_sitter::Node,
+    source: &str,
+    findings: &mut Vec<Finding>,
 ) {
-    // Stub: dockerfile-specific insecure pattern detection will be added in Task 4
+    let kind = node.kind();
+
+    match kind {
+        // D5: ADD instead of COPY for local files
+        "add_instruction" => {
+            let text = &source[node.byte_range()];
+            if !text.contains("http://") && !text.contains("https://") {
+                findings.push(Finding {
+                    title: "Use COPY instead of ADD for local files".into(),
+                    description: "ADD has extra functionality (tar extraction, remote URLs) that can be surprising. Use COPY for simple file copies.".into(),
+                    severity: Severity::Medium,
+                    category: "quality".into(),
+                    source: Source::LocalAst,
+                    line_start: node.start_position().row as u32 + 1,
+                    line_end: node.end_position().row as u32 + 1,
+                    evidence: vec![text.trim().to_string()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+        }
+
+        // D9: Secrets in ENV/ARG
+        "env_instruction" | "arg_instruction" => {
+            let text = &source[node.byte_range()];
+            let secret_patterns = [
+                "PASSWORD", "API_KEY", "SECRET", "TOKEN", "PRIVATE_KEY",
+                "ACCESS_KEY", "CREDENTIAL", "AUTH_KEY",
+            ];
+            // Check if any key name matches a secret pattern and has a hardcoded value
+            for line in text.lines() {
+                let upper = line.to_uppercase();
+                let has_secret_key = secret_patterns.iter().any(|p| upper.contains(p));
+                if has_secret_key {
+                    // Make sure it has a value that doesn't look like a variable reference
+                    if let Some(eq_pos) = line.find('=') {
+                        let value = line[eq_pos + 1..].trim().trim_matches('"');
+                        if !value.is_empty() && !value.starts_with('$') {
+                            findings.push(Finding {
+                                title: "Secret hardcoded in Dockerfile ENV/ARG".into(),
+                                description: "Secrets should not be hardcoded in Dockerfiles. Use build secrets (--mount=type=secret) or runtime environment variables instead.".into(),
+                                severity: Severity::High,
+                                category: "security".into(),
+                                source: Source::LocalAst,
+                                line_start: node.start_position().row as u32 + 1,
+                                line_end: node.end_position().row as u32 + 1,
+                                evidence: vec![],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // D12: curl|bash in RUN
+        "run_instruction" => {
+            let text = &source[node.byte_range()];
+            let has_downloader = text.contains("curl") || text.contains("wget");
+            let has_pipe = text.contains('|');
+            let has_shell = text.contains("bash") || text.contains("/sh") || text.contains("| sh");
+            if has_downloader && has_pipe && has_shell {
+                findings.push(Finding {
+                    title: "RUN pipes curl/wget to shell -- executes untrusted remote code".into(),
+                    description: "Piping downloaded scripts directly to a shell is dangerous. Download the script first, verify its checksum, then execute.".into(),
+                    severity: Severity::Critical,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: node.start_position().row as u32 + 1,
+                    line_end: node.end_position().row as u32 + 1,
+                    evidence: vec![text.trim().to_string()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn analyze_dockerfile_structure(
+    tree: &tree_sitter::Tree,
+    source: &str,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let root = tree.root_node();
+
+    let mut has_user = false;
+    let mut has_healthcheck = false;
+    let mut cmd_count = 0u32;
+    let mut entrypoint_count = 0u32;
+
+    for i in 0..root.child_count() {
+        let Some(child) = root.child(i) else { continue };
+        match child.kind() {
+            // D1: FROM with latest or no tag
+            "from_instruction" => {
+                let text = &source[child.byte_range()];
+                // Extract the image reference (after FROM, before AS)
+                let image_part = text
+                    .strip_prefix("FROM")
+                    .or_else(|| text.strip_prefix("from"))
+                    .unwrap_or(text)
+                    .trim();
+                // Handle "FROM image AS alias" -- take only the image part
+                let image_ref = image_part
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(image_part);
+                if image_ref != "scratch" {
+                    let has_tag = image_ref.contains(':');
+                    let uses_latest = image_ref.ends_with(":latest");
+                    if !has_tag || uses_latest {
+                        findings.push(Finding {
+                            title: "FROM uses `latest` or untagged image -- builds are not reproducible".into(),
+                            description: format!("Pin the image to a specific tag or digest: {}", image_ref),
+                            severity: Severity::Medium,
+                            category: "reliability".into(),
+                            source: Source::LocalAst,
+                            line_start: child.start_position().row as u32 + 1,
+                            line_end: child.end_position().row as u32 + 1,
+                            evidence: vec![image_ref.to_string()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+
+            "user_instruction" => has_user = true,
+            "healthcheck_instruction" => has_healthcheck = true,
+            "cmd_instruction" => cmd_count += 1,
+            "entrypoint_instruction" => entrypoint_count += 1,
+            _ => {}
+        }
+    }
+
+    // D6: No USER instruction
+    if !has_user {
+        findings.push(Finding {
+            title: "No USER instruction -- container runs as root".into(),
+            description: "Add a USER instruction to run the container as a non-root user.".into(),
+            severity: Severity::Medium,
+            category: "security".into(),
+            source: Source::LocalAst,
+            line_start: 1,
+            line_end: 1,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+
+    // D8: No HEALTHCHECK
+    if !has_healthcheck {
+        findings.push(Finding {
+            title: "No HEALTHCHECK instruction".into(),
+            description: "Add a HEALTHCHECK instruction so the container runtime can detect unhealthy containers.".into(),
+            severity: Severity::Low,
+            category: "reliability".into(),
+            source: Source::LocalAst,
+            line_start: 1,
+            line_end: 1,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+
+    // D11: Multiple CMD/ENTRYPOINT
+    if cmd_count > 1 {
+        findings.push(Finding {
+            title: "Multiple CMD instructions -- only the last one takes effect".into(),
+            description: format!("Found {} CMD instructions; only the last one will be used.", cmd_count),
+            severity: Severity::Medium,
+            category: "bug".into(),
+            source: Source::LocalAst,
+            line_start: 1,
+            line_end: 1,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+    if entrypoint_count > 1 {
+        findings.push(Finding {
+            title: "Multiple ENTRYPOINT instructions -- only the last one takes effect".into(),
+            description: format!("Found {} ENTRYPOINT instructions; only the last one will be used.", entrypoint_count),
+            severity: Severity::Medium,
+            category: "bug".into(),
+            source: Source::LocalAst,
+            line_start: 1,
+            line_end: 1,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+
+    findings
 }
 
 #[cfg(test)]
@@ -2283,6 +2667,219 @@ def process(items=None):
             !findings.iter().any(|f| f.title.contains("dot-notation")),
             "Proper states() call should NOT be flagged for dot-notation"
         );
+    }
+
+    // -- Bash patterns --
+
+    #[test]
+    fn bash_eval_usage() {
+        let source = "#!/bin/bash\neval \"$user_input\"\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.title.contains("eval")),
+            "Should flag eval usage. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_curl_pipe_bash() {
+        let source = "#!/bin/bash\ncurl -sL https://example.com/install.sh | bash\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag curl|bash as critical. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_wget_pipe_sh() {
+        let source = "#!/bin/bash\nwget -qO- https://example.com/setup | sh\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag wget|sh as critical. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_missing_set_e() {
+        let source = "#!/bin/bash\necho hello\nrm -rf /tmp/stuff\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.title.contains("set -e")),
+            "Should flag missing set -e. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_set_euo_pipefail_ok() {
+        let source = "#!/bin/bash\nset -euo pipefail\necho hello\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(!findings.iter().any(|f| f.title.contains("set -e")),
+            "Script with set -e should NOT be flagged");
+    }
+
+    #[test]
+    fn bash_hardcoded_secret() {
+        let source = "#!/bin/bash\nset -e\nAPI_KEY=\"sk-proj-abc123def456\"\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.category == "security" && f.title.contains("secret")),
+            "Should flag hardcoded secrets. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_secret_from_command_ok() {
+        let source = "#!/bin/bash\nset -e\nAPI_KEY=$(vault get api-key)\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(!findings.iter().any(|f| f.title.contains("secret")),
+            "Secrets from command substitution should NOT be flagged");
+    }
+
+    #[test]
+    fn bash_chmod_777() {
+        let source = "#!/bin/bash\nset -e\nchmod 777 /var/www/app\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.title.contains("chmod") && f.title.contains("777")),
+            "Should flag chmod 777. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_missing_shebang() {
+        let source = "echo hello\nrm -rf /tmp/stuff\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(findings.iter().any(|f| f.title.contains("shebang")),
+            "Should flag missing shebang. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bash_shebang_present_ok() {
+        let source = "#!/usr/bin/env bash\nset -e\necho hello\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        assert!(!findings.iter().any(|f| f.title.contains("shebang")),
+            "Script with shebang should NOT be flagged");
+    }
+
+    #[test]
+    fn bash_clean_script_no_serious_findings() {
+        let source = "#!/usr/bin/env bash\nset -euo pipefail\n\nmain() {\n  echo \"deploying\"\n}\n\nmain \"$@\"\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
+        let serious = findings.iter().filter(|f| f.severity >= Severity::Medium).count();
+        assert_eq!(serious, 0, "Clean script should have no serious findings. Got: {:?}",
+            findings.iter().map(|f| (&f.severity, &f.title)).collect::<Vec<_>>());
+    }
+
+    // -- Dockerfile patterns --
+
+    #[test]
+    fn dockerfile_from_latest() {
+        let source = "FROM node:latest\nRUN npm install\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("latest")),
+            "Should flag FROM :latest. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_from_no_tag() {
+        let source = "FROM node\nRUN npm install\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("latest") || f.title.contains("untagged")),
+            "Should flag untagged FROM. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_from_pinned_ok() {
+        let source = "FROM node:18-alpine\nRUN npm install\nUSER node\nHEALTHCHECK CMD curl -f http://localhost:3000/ || exit 1\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(!findings.iter().any(|f| f.title.contains("latest") || f.title.contains("untagged")),
+            "Pinned image should NOT be flagged");
+    }
+
+    #[test]
+    fn dockerfile_no_user() {
+        let source = "FROM node:18\nRUN npm install\nCOPY . /app\nCMD [\"node\", \"app.js\"]\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("USER") || f.title.contains("root")),
+            "Should flag missing USER. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_has_user_ok() {
+        let source = "FROM node:18\nRUN npm install\nUSER node\nHEALTHCHECK CMD curl -f http://localhost/ || exit 1\nCMD [\"node\", \"app.js\"]\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(!findings.iter().any(|f| f.title.contains("USER") && f.title.contains("missing")),
+            "Dockerfile with USER should NOT be flagged");
+    }
+
+    #[test]
+    fn dockerfile_add_instead_of_copy() {
+        let source = "FROM node:18\nADD . /app\nUSER node\nHEALTHCHECK CMD true\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("ADD") || f.title.contains("COPY")),
+            "Should flag ADD for local files. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_add_url_ok() {
+        let source = "FROM node:18\nADD https://example.com/file.tar.gz /tmp/\nUSER node\nHEALTHCHECK CMD true\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(!findings.iter().any(|f| f.title.contains("ADD") && f.title.contains("COPY")),
+            "ADD with URL should NOT suggest COPY");
+    }
+
+    #[test]
+    fn dockerfile_no_healthcheck() {
+        let source = "FROM node:18\nRUN npm install\nUSER node\nCMD [\"node\", \"app.js\"]\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("HEALTHCHECK")),
+            "Should flag missing HEALTHCHECK. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_secrets_in_env() {
+        let source = "FROM node:18\nENV API_KEY=sk-proj-abc123def456\nUSER node\nHEALTHCHECK CMD true\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.category == "security" && (f.title.contains("secret") || f.title.contains("Secret"))),
+            "Should flag secrets in ENV. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_curl_pipe_bash_in_run() {
+        let source = "FROM ubuntu:22.04\nRUN curl -sL https://deb.nodesource.com/setup | bash -\nUSER node\nHEALTHCHECK CMD true\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag curl|bash in RUN. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_multiple_cmd() {
+        let source = "FROM node:18\nCMD [\"echo\", \"first\"]\nCMD [\"echo\", \"second\"]\nUSER node\nHEALTHCHECK CMD true\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        assert!(findings.iter().any(|f| f.title.contains("Multiple CMD") || f.title.contains("multiple")),
+            "Should flag multiple CMD. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dockerfile_clean_no_serious_findings() {
+        let source = "FROM node:18-alpine AS build\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\nCOPY . .\nFROM node:18-alpine\nWORKDIR /app\nCOPY --from=build /app .\nUSER node\nHEALTHCHECK CMD curl -f http://localhost:3000/ || exit 1\nCMD [\"node\", \"server.js\"]\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
+        let serious = findings.iter().filter(|f| f.severity >= Severity::Medium).count();
+        assert_eq!(serious, 0, "Clean Dockerfile should have no serious findings. Got: {:?}",
+            findings.iter().filter(|f| f.severity >= Severity::Medium).map(|f| (&f.severity, &f.title)).collect::<Vec<_>>());
     }
 
 }
