@@ -249,6 +249,8 @@ fn lang_name(lang: Language) -> &'static str {
         Language::TypeScript => "typescript",
         Language::Tsx => "tsx",
         Language::Yaml => "yaml",
+        Language::Bash => "bash",
+        Language::Dockerfile => "dockerfile",
     }
 }
 

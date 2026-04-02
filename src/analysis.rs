@@ -15,6 +15,8 @@ pub fn analyze_complexity(
         Language::Python => &["function_definition"][..],
         Language::TypeScript | Language::Tsx => &["function_declaration", "method_definition"][..],
         Language::Yaml => &[][..],
+        Language::Bash => &[][..],
+        Language::Dockerfile => &[][..],
     };
 
     let mut func_nodes = Vec::new();
@@ -165,6 +167,8 @@ fn scan_insecure_nodes(
         Language::Python => scan_insecure_python(node, source, findings),
         Language::TypeScript | Language::Tsx => scan_insecure_typescript(node, source, findings),
         Language::Yaml => scan_insecure_yaml(node, source, findings),
+        Language::Bash => scan_insecure_bash(node, source, findings),
+        Language::Dockerfile => scan_insecure_dockerfile(node, source, findings),
     }
 
     for i in 0..node.child_count() {
@@ -1422,6 +1426,22 @@ fn scan_insecure_typescript(
             canonical_pattern: None,
         });
     }
+}
+
+fn scan_insecure_bash(
+    _node: &tree_sitter::Node,
+    _source: &str,
+    _findings: &mut Vec<Finding>,
+) {
+    // Stub: bash-specific insecure pattern detection will be added in Task 3
+}
+
+fn scan_insecure_dockerfile(
+    _node: &tree_sitter::Node,
+    _source: &str,
+    _findings: &mut Vec<Finding>,
+) {
+    // Stub: dockerfile-specific insecure pattern detection will be added in Task 4
 }
 
 #[cfg(test)]

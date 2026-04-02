@@ -76,6 +76,8 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["function_definition"],
         Language::TypeScript | Language::Tsx => vec!["function_declaration", "method_definition"],
         Language::Yaml => vec![],
+        Language::Bash => vec![],
+        Language::Dockerfile => vec![],
     }
 }
 
@@ -85,6 +87,8 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["class_definition"],
         Language::TypeScript | Language::Tsx => vec!["interface_declaration", "type_alias_declaration", "class_declaration"],
         Language::Yaml => vec![],
+        Language::Bash => vec![],
+        Language::Dockerfile => vec![],
     }
 }
 
@@ -94,6 +98,8 @@ fn call_expr_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["call"],
         Language::TypeScript | Language::Tsx => vec!["call_expression"],
         Language::Yaml => vec![],
+        Language::Bash => vec![],
+        Language::Dockerfile => vec![],
     }
 }
 
@@ -103,6 +109,8 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["import_statement", "import_from_statement"],
         Language::TypeScript | Language::Tsx => vec!["import_statement"],
         Language::Yaml => vec![],
+        Language::Bash => vec![],
+        Language::Dockerfile => vec![],
     }
 }
 

@@ -7,6 +7,8 @@ pub enum Language {
     TypeScript,
     Tsx,
     Yaml,
+    Bash,
+    Dockerfile,
 }
 
 impl Language {
@@ -17,11 +19,19 @@ impl Language {
             "ts" | "js" | "mjs" | "cjs" => Some(Language::TypeScript),
             "tsx" | "jsx" => Some(Language::Tsx),
             "yaml" | "yml" => Some(Language::Yaml),
+            "sh" | "bash" | "zsh" | "bats" => Some(Language::Bash),
+            "dockerfile" => Some(Language::Dockerfile),
             _ => None,
         }
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
+        // Check filename first for extensionless files (Dockerfile, Dockerfile.prod, etc.)
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.to_lowercase().starts_with("dockerfile") {
+                return Some(Language::Dockerfile);
+            }
+        }
         path.extension()
             .and_then(|ext| ext.to_str())
             .and_then(Self::from_extension)
@@ -34,6 +44,16 @@ impl Language {
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Language::Dockerfile => {
+                // Grammar is vendored and compiled via build.rs to avoid
+                // linking tree-sitter 0.20 (which the crate depends on).
+                unsafe extern "C" { fn tree_sitter_dockerfile() -> *const (); }
+                let lang_fn = unsafe {
+                    tree_sitter_language::LanguageFn::from_raw(tree_sitter_dockerfile)
+                };
+                lang_fn.into()
+            }
         }
     }
 
@@ -46,6 +66,8 @@ impl Language {
                 "method_definition",
             ],
             Language::Yaml => &[],
+            Language::Bash => &["function_definition"],
+            Language::Dockerfile => &[],
         }
     }
 }
@@ -298,6 +320,74 @@ mod tests {
         assert_eq!(Language::from_extension("Py"), Some(Language::Python));
         assert_eq!(Language::from_extension("TS"), Some(Language::TypeScript));
         assert_eq!(Language::from_extension("TSX"), Some(Language::Tsx));
+    }
+
+    // -- Bash support --
+
+    #[test]
+    fn detect_language_bash() {
+        assert_eq!(Language::from_extension("sh"), Some(Language::Bash));
+        assert_eq!(Language::from_extension("bash"), Some(Language::Bash));
+        assert_eq!(Language::from_extension("zsh"), Some(Language::Bash));
+    }
+
+    #[test]
+    fn detect_language_bash_from_path() {
+        assert_eq!(Language::from_path(std::path::Path::new("deploy.sh")), Some(Language::Bash));
+    }
+
+    #[test]
+    fn parse_valid_bash() {
+        let source = "#!/bin/bash\nset -euo pipefail\necho \"hello\"\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        assert_eq!(tree.root_node().kind(), "program");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn parse_bash_function() {
+        let source = "#!/bin/bash\nmy_func() {\n  echo \"hello\"\n  return 0\n}\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn extract_functions_bash() {
+        let source = "#!/bin/bash\nmy_func() {\n  echo \"inside\"\n}\n\nanother() {\n  return 1\n}\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let fns = extract_functions(&tree, source, Language::Bash);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["my_func", "another"]);
+    }
+
+    // -- Dockerfile support --
+
+    #[test]
+    fn detect_language_dockerfile_from_path() {
+        assert_eq!(Language::from_path(std::path::Path::new("Dockerfile")), Some(Language::Dockerfile));
+        assert_eq!(Language::from_path(std::path::Path::new("Dockerfile.prod")), Some(Language::Dockerfile));
+        assert_eq!(Language::from_path(std::path::Path::new("dockerfile")), Some(Language::Dockerfile));
+    }
+
+    #[test]
+    fn detect_language_dockerfile_extension() {
+        assert_eq!(Language::from_extension("dockerfile"), Some(Language::Dockerfile));
+    }
+
+    #[test]
+    fn parse_valid_dockerfile() {
+        let source = "FROM node:18-alpine\nRUN npm install\nCOPY . /app\nCMD [\"node\", \"server.js\"]\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        assert_eq!(tree.root_node().kind(), "source_file");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn dockerfile_no_functions() {
+        let source = "FROM node:18\nRUN echo hello\n";
+        let tree = parse(source, Language::Dockerfile).unwrap();
+        let fns = extract_functions(&tree, source, Language::Dockerfile);
+        assert!(fns.is_empty());
     }
 
     // -- YAML support --

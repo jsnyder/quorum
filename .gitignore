@@ -2,3 +2,4 @@
 .worktrees/
 *.swp
 .DS_Store
+.fastembed_cache/

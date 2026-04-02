@@ -115,7 +115,7 @@ impl QuorumHandler {
                 format!("Configured model: {}\nSet QUORUM_MODEL to change.", self.config.model)
             }
             "languages" => {
-                "Supported languages:\n- Rust (.rs)\n- Python (.py)\n- TypeScript (.ts)\n- TSX (.tsx)".to_string()
+                "Supported languages:\n- Rust (.rs)\n- Python (.py)\n- TypeScript (.ts)\n- TSX (.tsx)\n- Bash (.sh, .bash, .zsh)\n- Dockerfile (Dockerfile*)".to_string()
             }
             "domains" => {
                 let cwd = std::env::current_dir().unwrap_or_default();
@@ -171,6 +171,8 @@ impl QuorumHandler {
                     Language::TypeScript => "typescript",
                     Language::Tsx => "tsx",
                     Language::Yaml => "yaml",
+                    Language::Bash => "bash",
+                    Language::Dockerfile => "dockerfile",
                 })
                 .unwrap_or("text");
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
@@ -212,6 +214,8 @@ impl QuorumHandler {
             Language::TypeScript => "typescript",
             Language::Tsx => "tsx",
             Language::Yaml => "yaml",
+            Language::Bash => "bash",
+            Language::Dockerfile => "dockerfile",
         };
 
         let framework_hint = params.framework.as_deref().map(|f| format!(" using the {} framework", f)).unwrap_or_default();
