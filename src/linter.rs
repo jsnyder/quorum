@@ -18,6 +18,8 @@ pub enum LinterKind {
     Clippy,
     Eslint,
     Yamllint,
+    Shellcheck,
+    Hadolint,
 }
 
 impl LinterKind {
@@ -27,6 +29,8 @@ impl LinterKind {
             LinterKind::Clippy => "clippy",
             LinterKind::Eslint => "eslint",
             LinterKind::Yamllint => "yamllint",
+            LinterKind::Shellcheck => "shellcheck",
+            LinterKind::Hadolint => "hadolint",
         }
     }
 }
@@ -74,6 +78,27 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         }
     }
 
+    // Shellcheck: detect if any .sh files exist in project root
+    if std::fs::read_dir(project_dir)
+        .ok()
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.path().extension().and_then(|ext| ext.to_str()) == Some("sh")
+            })
+        })
+        .unwrap_or(false)
+    {
+        linters.push(LinterKind::Shellcheck);
+    }
+
+    // Hadolint: .hadolint.yaml/.hadolint.yml or Dockerfile exists
+    let hadolint_configs = [".hadolint.yaml", ".hadolint.yml"];
+    let has_hadolint_config = hadolint_configs.iter().any(|c| project_dir.join(c).exists());
+    let has_dockerfile = project_dir.join("Dockerfile").exists();
+    if has_hadolint_config || has_dockerfile {
+        linters.push(LinterKind::Hadolint);
+    }
+
     linters
 }
 
@@ -93,6 +118,8 @@ pub fn run_linter(
         )?,
         LinterKind::Eslint => runner.run("eslint", &["--format=json", &file_str], cwd)?,
         LinterKind::Yamllint => runner.run("yamllint", &["-f", "parsable", &file_str], cwd)?,
+        LinterKind::Shellcheck => runner.run("shellcheck", &["--format=json1", &file_str], cwd)?,
+        LinterKind::Hadolint => runner.run("hadolint", &["--format", "tty", &file_str], cwd)?,
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
@@ -111,6 +138,8 @@ pub fn run_linter(
         LinterKind::Clippy => normalize_clippy_output(&output.stdout),
         LinterKind::Eslint => normalize_eslint_output(&output.stdout),
         LinterKind::Yamllint => normalize_yamllint_output(&output.stdout),
+        LinterKind::Shellcheck => normalize_shellcheck_output(&output.stdout),
+        LinterKind::Hadolint => normalize_hadolint_output(&output.stdout),
     }
 }
 
@@ -280,6 +309,99 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             line_start: line_num,
             line_end: line_num,
             evidence: vec!["yamllint".into()],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+    Ok(findings)
+}
+
+pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Finding>> {
+    // shellcheck --format=json1 outputs: {"comments": [{file, line, endLine, column, endColumn, level, code, message}]}
+    let wrapper: serde_json::Value = serde_json::from_str(json_output)?;
+    let comments = wrapper.get("comments").and_then(|c| c.as_array());
+    let mut findings = Vec::new();
+    if let Some(items) = comments {
+        for item in items {
+            let code = item["code"].as_u64().unwrap_or(0);
+            let message = item["message"].as_str().unwrap_or("");
+            let line = item["line"].as_u64().unwrap_or(1) as u32;
+            let end_line = item["endLine"].as_u64().unwrap_or(line as u64) as u32;
+            let level = item["level"].as_str().unwrap_or("warning");
+
+            let severity = match level {
+                "error" => Severity::High,
+                "warning" => Severity::Medium,
+                "info" => Severity::Low,
+                "style" => Severity::Info,
+                _ => Severity::Low,
+            };
+
+            findings.push(Finding {
+                title: format!("SC{}: {}", code, message),
+                description: message.to_string(),
+                severity,
+                category: "lint".into(),
+                source: Source::Linter("shellcheck".into()),
+                line_start: line,
+                line_end: end_line,
+                evidence: vec![format!("shellcheck SC{}", code)],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+            });
+        }
+    }
+    Ok(findings)
+}
+
+pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    // hadolint tty format: file:line rule level: message
+    // Example: "Dockerfile:3 DL3008 warning: Pin versions in apt get install"
+    for line in output.lines() {
+        // Split on first space after file:line
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+
+        // Extract line number from "file:line"
+        let loc_parts: Vec<&str> = parts[0].rsplitn(2, ':').collect();
+        let line_num = if loc_parts.len() >= 2 {
+            loc_parts[0].trim().parse::<u32>().unwrap_or(1)
+        } else {
+            1
+        };
+
+        let rest = parts[1];
+        // rest format: "DL3008 warning: Pin versions..."
+        let rest_parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        if rest_parts.len() < 3 {
+            continue;
+        }
+
+        let rule = rest_parts[0];
+        let level_raw = rest_parts[1].trim_end_matches(':');
+        let message = rest_parts[2];
+
+        let severity = match level_raw {
+            "error" => Severity::High,
+            "warning" => Severity::Medium,
+            "info" => Severity::Low,
+            _ => Severity::Low,
+        };
+
+        findings.push(Finding {
+            title: format!("{}: {}", rule, message),
+            description: message.to_string(),
+            severity,
+            category: "lint".into(),
+            source: Source::Linter("hadolint".into()),
+            line_start: line_num,
+            line_end: line_num,
+            evidence: vec![format!("hadolint {}", rule)],
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
@@ -567,6 +689,73 @@ mod tests {
     #[test]
     fn normalize_yamllint_empty_output() {
         let findings = normalize_yamllint_output("").unwrap();
+        assert!(findings.is_empty());
+    }
+
+    // -- Shellcheck detection --
+
+    #[test]
+    fn detect_shellcheck_from_sh_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("deploy.sh"), "#!/bin/bash\necho hi\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Shellcheck));
+    }
+
+    // -- Hadolint detection --
+
+    #[test]
+    fn detect_hadolint_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".hadolint.yaml"), "ignored: [DL3008]\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Hadolint));
+    }
+
+    #[test]
+    fn detect_hadolint_from_dockerfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Dockerfile"), "FROM node:18\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Hadolint));
+    }
+
+    // -- Shellcheck output normalization --
+
+    #[test]
+    fn normalize_shellcheck_valid_output() {
+        let json = r#"{"comments":[{"file":"test.sh","line":3,"endLine":3,"column":1,"endColumn":6,"level":"warning","code":2086,"message":"Double quote to prevent globbing and word splitting."}]}"#;
+        let findings = normalize_shellcheck_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line_start, 3);
+        assert!(findings[0].title.contains("SC2086"));
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert_eq!(findings[0].source, Source::Linter("shellcheck".into()));
+    }
+
+    #[test]
+    fn normalize_shellcheck_empty() {
+        let json = r#"{"comments":[]}"#;
+        let findings = normalize_shellcheck_output(json).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    // -- Hadolint output normalization --
+
+    #[test]
+    fn normalize_hadolint_valid_output() {
+        let output = "Dockerfile:3 DL3008 warning: Pin versions in apt get install\nDockerfile:1 DL3006 warning: Always tag the version of an image explicitly\n";
+        let findings = normalize_hadolint_output(output).unwrap();
+        assert_eq!(findings.len(), 2);
+        assert!(findings[0].title.contains("DL3008"));
+        assert_eq!(findings[0].line_start, 3);
+        assert_eq!(findings[1].line_start, 1);
+        assert_eq!(findings[0].source, Source::Linter("hadolint".into()));
+    }
+
+    #[test]
+    fn normalize_hadolint_empty() {
+        let findings = normalize_hadolint_output("").unwrap();
         assert!(findings.is_empty());
     }
 }
