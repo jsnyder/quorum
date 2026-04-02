@@ -8,7 +8,7 @@ Rust-native, single-binary distribution. Successor to third-opinion (TypeScript)
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (404 tests)
+cargo test --bin quorum        # run unit tests (443 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (29MB binary)
 cargo run -- version           # check version
@@ -38,6 +38,8 @@ QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 | TypeScript | .ts, .js, .mjs, .cjs | eval, innerHTML, secrets, any type | eslint |
 | TSX/JSX | .tsx, .jsx | same as TypeScript | eslint |
 | YAML | .yaml, .yml | HA automations, secrets, duplicate keys, ESPHome, Jinja2 | yamllint |
+| Bash | .sh, .bash, .zsh, .bats | eval, curl\|bash, set -e, secrets, chmod 777, shebang | shellcheck |
+| Dockerfile | Dockerfile* | FROM latest, no USER, no HEALTHCHECK, secrets in ENV, ADD vs COPY, curl\|bash | hadolint |
 | Other | * | LLM-only review (no AST) | — |
 
 ## Constraints

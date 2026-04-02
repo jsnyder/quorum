@@ -72,6 +72,23 @@ quorum review --daemon src/lib.rs  # cache hit, instant parse
 - ESPHome: OTA without password, API without encryption
 - Jinja2: `states()` without availability check, deprecated dot-notation access
 
+### Bash / Shell
+- `eval` usage (code injection)
+- `curl | bash` / `wget | sh` piping (remote code execution)
+- Missing `set -e` / `set -euo pipefail` (silent error handling)
+- Hardcoded secrets in variable assignments
+- `chmod 777` (world-writable permissions)
+- Missing shebang line
+
+### Dockerfile
+- `FROM :latest` or untagged image (non-reproducible builds)
+- No `USER` instruction (running as root)
+- No `HEALTHCHECK` instruction
+- Secrets hardcoded in `ENV` / `ARG`
+- `ADD` when `COPY` would suffice
+- `curl | bash` in `RUN` instructions
+- Multiple `CMD` / `ENTRYPOINT` (only last takes effect)
+
 ## What LLM Analysis Adds
 
 - Logic bugs, race conditions, state management issues
