@@ -418,30 +418,51 @@ fn scan_insecure_python(
 
     // Bare except: pass (catch-all that silently swallows)
     if node.kind() == "except_clause" {
-        let except_text = &source[node.byte_range()];
-        let is_catch_all = except_text.starts_with("except:")
-            || except_text.starts_with("except Exception:")
-            || except_text.starts_with("except Exception :");
-        if is_catch_all {
-            if let Some(body) = node.named_child(node.named_child_count().saturating_sub(1)) {
-                if body.kind() == "block" {
-                    let body_has_only_pass = body.named_child_count() == 1
-                        && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
-                    if body_has_only_pass {
-                        findings.push(Finding {
-                            title: "Bare `except: pass` silently swallows all errors".into(),
-                            description: "Catching all exceptions with `pass` hides bugs, including KeyboardInterrupt and SystemExit. Log the error or catch a specific exception type.".into(),
-                            severity: Severity::Medium,
-                            category: "reliability".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                        });
+        // Determine exception type and body by walking children.
+        // tree-sitter-python except_clause children: optional exception type/as_pattern, then block.
+        let mut exception_type: Option<String> = None;
+        let mut body_node: Option<tree_sitter::Node> = None;
+        for i in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(i) {
+                match child.kind() {
+                    "identifier" => {
+                        exception_type = Some(source[child.byte_range()].to_string());
                     }
+                    "as_pattern" => {
+                        // `except Exception as e` — extract the type from the first child
+                        if let Some(type_child) = child.named_child(0) {
+                            exception_type = Some(source[type_child.byte_range()].to_string());
+                        }
+                    }
+                    "block" => {
+                        body_node = Some(child);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let is_catch_all = match &exception_type {
+            None => true, // bare `except:`
+            Some(t) => t == "Exception" || t == "BaseException",
+        };
+        if is_catch_all {
+            if let Some(body) = body_node {
+                let body_has_only_pass = body.named_child_count() == 1
+                    && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
+                if body_has_only_pass {
+                    findings.push(Finding {
+                        title: "Catch-all `except: pass` silently swallows errors".into(),
+                        description: "Catching all exceptions with `pass` hides bugs. Log the error or catch a specific exception type.".into(),
+                        severity: Severity::Medium,
+                        category: "reliability".into(),
+                        source: Source::LocalAst,
+                        line_start: line,
+                        line_end: end_line,
+                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                        calibrator_action: None,
+                        similar_precedent: vec![],
+                        canonical_pattern: None,
+                    });
                 }
             }
         }
@@ -716,7 +737,7 @@ fn is_in_async_function(node: &tree_sitter::Node, _source: &str) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "function_declaration" | "method_definition" | "function" | "arrow_function" => {
+            "function_declaration" | "function_expression" | "method_definition" | "function" | "arrow_function" => {
                 let mut cursor = parent.walk();
                 for child in parent.children(&mut cursor) {
                     if child.kind() == "async" {
@@ -1567,9 +1588,12 @@ fn scan_insecure_typescript(
             if op_text == ">=" {
                 if let Some(left) = node.child_by_field_name("left") {
                     if let Some(right) = node.child_by_field_name("right") {
-                        let left_text = &source[left.byte_range()];
                         let right_text = &source[right.byte_range()];
-                        if left_text.ends_with(".length") && right_text.trim() == "0" {
+                        let is_length_access = left.kind() == "member_expression"
+                            && left.child_by_field_name("property")
+                                .map(|p| &source[p.byte_range()] == "length")
+                                .unwrap_or(false);
+                        if is_length_access && right_text.trim() == "0" {
                             findings.push(Finding {
                                 title: "`.length >= 0` is always true".into(),
                                 description: "Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?".into(),
@@ -3259,7 +3283,7 @@ def process(items=None):
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(
-            findings.iter().any(|f| f.title.contains("except") && f.title.contains("pass")),
+            findings.iter().any(|f| f.title.contains("swallows")),
             "Bare except with pass should be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3271,7 +3295,7 @@ def process(items=None):
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(
-            findings.iter().any(|f| f.title.contains("except") && f.title.contains("pass")),
+            findings.iter().any(|f| f.title.contains("swallows")),
             "except Exception with pass should be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3296,6 +3320,30 @@ def process(items=None):
         assert!(
             !findings.iter().any(|f| f.title.contains("Bare")),
             "Specific exception with pass is intentional, should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_except_base_exception_pass() {
+        let source = "try:\n    do_stuff()\nexcept BaseException:\n    pass\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("swallows")),
+            "except BaseException with pass should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_except_exception_as_e_pass_flagged() {
+        let source = "try:\n    do_stuff()\nexcept Exception as e:\n    pass\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("swallows")),
+            "except Exception as e: pass still swallows errors. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
     }
 
