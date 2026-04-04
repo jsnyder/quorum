@@ -1,0 +1,22 @@
+id: bare-except-pass
+language: Python
+severity: warning
+message: "Bare `except: pass` silently swallows all errors including KeyboardInterrupt. Log the error or catch a specific exception."
+note: "Feedback: ~8 confirmed true positives"
+rule:
+  kind: except_clause
+  not:
+    has:
+      any:
+        - kind: as_pattern
+  has:
+    kind: block
+    all:
+      - has:
+          kind: pass_statement
+      - not:
+          has:
+            any:
+              - kind: expression_statement
+              - kind: return_statement
+              - kind: raise_statement

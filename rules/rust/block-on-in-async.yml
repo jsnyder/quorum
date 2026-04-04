@@ -1,0 +1,13 @@
+id: block-on-in-async
+language: Rust
+severity: warning
+message: "Calling `block_on` inside an async context can panic or deadlock the runtime. Use `.await` instead."
+note: "Feedback: ~3 confirmed true positives"
+rule:
+  kind: call_expression
+  pattern: $RUNTIME.block_on($$$ARGS)
+  inside:
+    kind: function_item
+    has:
+      field: modifiers
+      regex: "async"

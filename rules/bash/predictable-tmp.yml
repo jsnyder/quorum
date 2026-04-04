@@ -1,0 +1,12 @@
+id: predictable-tmp
+language: Bash
+severity: warning
+message: "Predictable /tmp filename with variable interpolation is vulnerable to symlink attacks. Use `mktemp` instead."
+note: "Feedback: ~5 confirmed true positives"
+rule:
+  kind: string
+  regex: "/tmp/"
+  has:
+    any:
+      - kind: expansion
+      - kind: simple_expansion

@@ -1,0 +1,12 @@
+id: tautological-length
+language: TypeScript
+severity: warning
+message: ".length >= 0 is always true for arrays and strings. Did you mean .length > 0?"
+note: "Feedback: 2 confirmed true positives, 100% precision"
+rule:
+  kind: binary_expression
+  pattern: $LEFT >= 0
+  all:
+    - has:
+        field: left
+        regex: "\\.length$"
