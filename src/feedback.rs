@@ -75,7 +75,10 @@ impl FeedbackStore {
             if line.trim().is_empty() {
                 continue;
             }
-            entries.push(serde_json::from_str(line)?);
+            match serde_json::from_str(line) {
+                Ok(entry) => entries.push(entry),
+                Err(_) => continue, // skip malformed entries (e.g. from older formats)
+            }
         }
         Ok(entries)
     }
