@@ -13,8 +13,10 @@ pub struct CalibrationResult {
 }
 
 pub struct CalibratorConfig {
-    /// Minimum similarity to consider a precedent match (0.0 - 1.0)
+    /// Minimum similarity for Jaccard fallback (0.0 - 1.0)
     pub similarity_threshold: f64,
+    /// Minimum similarity for embedding-based matching (higher because BGE clusters tightly)
+    pub embedding_similarity_threshold: f64,
     /// Number of FP precedents needed to suppress a finding
     pub fp_suppress_count: usize,
     /// Whether to boost severity when strong TP precedent exists
@@ -27,6 +29,7 @@ impl Default for CalibratorConfig {
     fn default() -> Self {
         Self {
             similarity_threshold: 0.5,
+            embedding_similarity_threshold: 0.75,
             fp_suppress_count: 2,
             boost_tp: true,
             use_auto_feedback: true,
@@ -166,7 +169,7 @@ pub fn calibrate_with_index(
 
         // Filter by similarity threshold and provenance
         let similar: Vec<&crate::feedback_index::SimilarEntry> = similar_entries.iter()
-            .filter(|s| s.similarity >= config.similarity_threshold as f32)
+            .filter(|s| s.similarity >= config.embedding_similarity_threshold as f32)
             .filter(|s| {
                 if config.use_auto_feedback { true }
                 else { !matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) }
@@ -287,6 +290,13 @@ mod tests {
     }
 
     // -- No feedback: passthrough --
+
+    #[test]
+    fn calibrator_config_has_separate_thresholds() {
+        let config = CalibratorConfig::default();
+        assert!(config.embedding_similarity_threshold > config.similarity_threshold,
+            "Embedding threshold should be higher than Jaccard threshold");
+    }
 
     #[test]
     fn calibrate_no_feedback_passthrough() {
