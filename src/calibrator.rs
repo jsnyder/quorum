@@ -92,18 +92,29 @@ pub fn calibrate(
             continue;
         }
 
-        // Compute weighted verdict scores
-        let tp_weight: f64 = similar
-            .iter()
-            .filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial)
-            .map(|e| verdict_weight(e))
-            .sum();
+        // Compute weighted verdict scores with auto-calibrate cap
+        let mut auto_tp_weight: f64 = 0.0;
+        let mut other_tp_weight: f64 = 0.0;
+        for e in similar.iter().filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial) {
+            if matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
+                auto_tp_weight += verdict_weight(e);
+            } else {
+                other_tp_weight += verdict_weight(e);
+            }
+        }
+        let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
+
         // FP + Wontfix both count against confirmation (wontfix = "not worth acting on")
-        let fp_weight: f64 = similar
-            .iter()
-            .filter(|e| e.verdict == Verdict::Fp || e.verdict == Verdict::Wontfix)
-            .map(|e| verdict_weight(e))
-            .sum();
+        let mut auto_fp_weight: f64 = 0.0;
+        let mut other_fp_weight: f64 = 0.0;
+        for e in similar.iter().filter(|e| e.verdict == Verdict::Fp || e.verdict == Verdict::Wontfix) {
+            if matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
+                auto_fp_weight += verdict_weight(e);
+            } else {
+                other_fp_weight += verdict_weight(e);
+            }
+        }
+        let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
         // Annotate with precedent info
         for entry in &similar {
@@ -181,14 +192,29 @@ pub fn calibrate_with_index(
             continue;
         }
 
-        let tp_weight: f64 = similar.iter()
-            .filter(|s| s.entry.verdict == Verdict::Tp || s.entry.verdict == Verdict::Partial)
-            .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
-            .sum();
-        let fp_weight: f64 = similar.iter()
-            .filter(|s| s.entry.verdict == Verdict::Fp || s.entry.verdict == Verdict::Wontfix)
-            .map(|s| verdict_weight(&s.entry) * s.similarity as f64)
-            .sum();
+        let mut auto_tp_weight: f64 = 0.0;
+        let mut other_tp_weight: f64 = 0.0;
+        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Tp || s.entry.verdict == Verdict::Partial) {
+            let w = verdict_weight(&s.entry) * s.similarity as f64;
+            if matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
+                auto_tp_weight += w;
+            } else {
+                other_tp_weight += w;
+            }
+        }
+        let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
+
+        let mut auto_fp_weight: f64 = 0.0;
+        let mut other_fp_weight: f64 = 0.0;
+        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Fp || s.entry.verdict == Verdict::Wontfix) {
+            let w = verdict_weight(&s.entry) * s.similarity as f64;
+            if matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
+                auto_fp_weight += w;
+            } else {
+                other_fp_weight += w;
+            }
+        }
+        let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
         // Annotate with precedent info
         for s in &similar {
@@ -514,11 +540,16 @@ mod tests {
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
         };
-        // 3 auto FPs: 3 * 0.5 = 1.5 weight, meets threshold
-        let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb];
+        let human_fb = FeedbackEntry {
+            provenance: crate::feedback::Provenance::Human,
+            reason: "confirmed".into(),
+            ..auto_fb.clone()
+        };
+        // 2 auto FPs (capped at 1.0) + 1 human FP (1.0) = 2.0 >= 1.5 -> suppress
+        let feedback = vec![auto_fb.clone(), auto_fb, human_fb];
         let config = CalibratorConfig::default(); // use_auto_feedback defaults to true
         let result = calibrate(findings, &feedback, &config);
-        assert_eq!(result.suppressed, 1, "Auto feedback included by default, 3 auto FPs should suppress");
+        assert_eq!(result.suppressed, 1, "Auto+human feedback should suppress (auto capped at 1.0 + human 1.0 = 2.0)");
     }
 
     #[test]
@@ -645,6 +676,54 @@ mod tests {
         let config = CalibratorConfig::default();
         let result = calibrate(findings, &vec![postfix_tp], &config);
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
+    }
+
+    #[test]
+    fn auto_calibrate_weight_capped_at_one() {
+        // 4 auto FPs: uncapped = 4 * 0.5 = 2.0 (would suppress)
+        // capped = min(2.0, 1.0) = 1.0 (should NOT suppress alone)
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 0,
+            "4 auto FPs should not suppress (capped at 1.0 weight, needs human corroboration)");
+    }
+
+    #[test]
+    fn auto_plus_human_still_suppresses() {
+        // 2 auto FPs (capped at 1.0) + 1 human FP (1.0) = 2.0 >= 1.5 -> suppress
+        let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
+        let auto_fb = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "auto".into(),
+            model: Some("o3".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+        };
+        let human_fb = FeedbackEntry {
+            provenance: crate::feedback::Provenance::Human,
+            reason: "confirmed FP".into(),
+            ..auto_fb.clone()
+        };
+        let feedback = vec![auto_fb.clone(), auto_fb, human_fb];
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &feedback, &config);
+        assert_eq!(result.suppressed, 1,
+            "Auto (capped 1.0) + human (1.0) = 2.0 should suppress");
     }
 
     #[test]
