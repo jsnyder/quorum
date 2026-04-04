@@ -47,7 +47,7 @@ fn verdict_weight(entry: &FeedbackEntry) -> f64 {
     };
 
     let age_days = (chrono::Utc::now() - entry.timestamp).num_days().max(0) as f64;
-    let recency_weight = (-age_days / 60.0).exp(); // half-life ~42 days
+    let recency_weight = (-age_days / 120.0).exp(); // half-life ~83 days
 
     provenance_weight * recency_weight
 }
@@ -656,6 +656,23 @@ mod tests {
         let result = calibrate(findings, &vec![tp], &config);
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
+    }
+
+    #[test]
+    fn recency_weight_90_day_old_still_meaningful() {
+        let old_entry = FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: "test".into(),
+            verdict: Verdict::Fp,
+            reason: "old".into(),
+            model: None,
+            timestamp: Utc::now() - chrono::Duration::days(90),
+            provenance: crate::feedback::Provenance::Human,
+        };
+        let weight = verdict_weight(&old_entry);
+        assert!(weight >= 0.3,
+            "90-day-old human feedback should retain >= 30% weight, got {:.3}", weight);
     }
 
     #[test]
