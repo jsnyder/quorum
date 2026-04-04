@@ -1,0 +1,22 @@
+id: sync-in-async
+language: TypeScript
+severity: warning
+message: Synchronous Node.js API used inside async function blocks the event loop. Use fs/promises instead.
+note: "Feedback: 13 confirmed true positives"
+rule:
+  kind: call_expression
+  pattern: $OBJ.$METHOD($$$ARGS)
+  inside:
+    any:
+      - kind: function_declaration
+        has:
+          field: async
+      - kind: arrow_function
+        has:
+          field: async
+      - kind: method_definition
+        has:
+          field: async
+  constraints:
+    METHOD:
+      regex: "^(readFileSync|writeFileSync|mkdirSync|existsSync|readdirSync|unlinkSync|appendFileSync|copyFileSync|renameSync|statSync|accessSync)$"

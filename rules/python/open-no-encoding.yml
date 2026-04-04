@@ -1,0 +1,16 @@
+id: open-no-encoding
+language: Python
+severity: hint
+message: "`open()` without explicit `encoding` parameter uses system default. Specify `encoding='utf-8'` for portable behavior."
+note: "Feedback: 6 confirmed true positives"
+rule:
+  kind: call
+  has:
+    field: function
+    regex: "^open$"
+  not:
+    has:
+      kind: keyword_argument
+      has:
+        field: name
+        regex: "^encoding$"

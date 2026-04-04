@@ -1,0 +1,13 @@
+id: float-zero-fallback
+language: Yaml
+severity: warning
+message: "`float(0)` fallback masks unavailable/unknown sensor states. Use `is_number` filter or check availability first."
+note: "Feedback: ~8 confirmed true positives in Home Assistant automations"
+rule:
+  any:
+    - kind: plain_scalar
+      regex: "\\| *float\\(0\\)"
+    - kind: single_quote_scalar
+      regex: "\\| *float\\(0\\)"
+    - kind: double_quote_scalar
+      regex: "\\| *float\\(0\\)"

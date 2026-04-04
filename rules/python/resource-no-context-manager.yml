@@ -1,0 +1,16 @@
+id: resource-no-context-manager
+language: Python
+severity: hint
+message: "File opened with `open()` outside a `with` statement. Use a context manager to ensure the resource is closed."
+note: "Feedback: ~5 confirmed true positives"
+rule:
+  kind: assignment
+  has:
+    field: right
+    kind: call
+    has:
+      field: function
+      regex: "^open$"
+  not:
+    inside:
+      kind: with_statement

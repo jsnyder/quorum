@@ -1,0 +1,10 @@
+id: as-any-cast
+language: TypeScript
+severity: hint
+message: Type assertion to `any` bypasses TypeScript's type safety. Prefer `unknown` with type narrowing.
+note: "Feedback: 4 confirmed true positives. Complements existing : any annotation check."
+rule:
+  kind: as_expression
+  has:
+    kind: predefined_type
+    regex: "^any$"
