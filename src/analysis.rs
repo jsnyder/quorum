@@ -381,6 +381,70 @@ fn scan_insecure_python(
                 }
             }
         }
+
+        // open() without explicit encoding
+        if let Some(func) = node.child_by_field_name("function") {
+            let func_name = &source[func.byte_range()];
+            if func_name == "open" {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    let args_text = &source[args.byte_range()];
+                    let binary_modes = [
+                        "'rb'", "\"rb\"", "'wb'", "\"wb\"", "'ab'", "\"ab\"", "'xb'", "\"xb\"",
+                        "'r+b'", "\"r+b\"", "'w+b'", "\"w+b\"", "'a+b'", "\"a+b\"", "'x+b'", "\"x+b\"",
+                        "'rb+'", "\"rb+\"", "'wb+'", "\"wb+\"", "'ab+'", "\"ab+\"", "'xb+'", "\"xb+\"",
+                    ];
+                    let is_binary = binary_modes.iter().any(|m| args_text.contains(m));
+                    let has_encoding = args_text.contains("encoding=")
+                        || args_text.contains("encoding =");
+                    if !is_binary && !has_encoding {
+                        findings.push(Finding {
+                            title: "`open()` without explicit `encoding` parameter".into(),
+                            description: "Without `encoding=`, open() uses the system default which varies by platform. Specify `encoding='utf-8'` for portable behavior.".into(),
+                            severity: Severity::Low,
+                            category: "reliability".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Bare except: pass (catch-all that silently swallows)
+    if node.kind() == "except_clause" {
+        let except_text = &source[node.byte_range()];
+        let is_catch_all = except_text.starts_with("except:")
+            || except_text.starts_with("except Exception:")
+            || except_text.starts_with("except Exception :");
+        if is_catch_all {
+            if let Some(body) = node.named_child(node.named_child_count().saturating_sub(1)) {
+                if body.kind() == "block" {
+                    let body_has_only_pass = body.named_child_count() == 1
+                        && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
+                    if body_has_only_pass {
+                        findings.push(Finding {
+                            title: "Bare `except: pass` silently swallows all errors".into(),
+                            description: "Catching all exceptions with `pass` hides bugs, including KeyboardInterrupt and SystemExit. Log the error or catch a specific exception type.".into(),
+                            severity: Severity::Medium,
+                            category: "reliability".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // Hardcoded secrets: SECRET_KEY = "...", PASSWORD = "...", API_KEY = "..."
@@ -642,6 +706,28 @@ fn has_result_call(node: &tree_sitter::Node, source: &str) -> bool {
                 return true;
             }
         }
+    }
+    false
+}
+
+/// Check if a node is inside an async function by inspecting AST structure.
+/// Looks for an "async" child token on function_declaration, method_definition, or arrow_function.
+fn is_in_async_function(node: &tree_sitter::Node, _source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "function_declaration" | "method_definition" | "function" | "arrow_function" => {
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "async" {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            _ => {}
+        }
+        current = parent.parent();
     }
     false
 }
@@ -1410,6 +1496,97 @@ fn scan_insecure_typescript(
                 similar_precedent: vec![],
                 canonical_pattern: None,
             });
+        }
+    }
+
+    // Empty catch blocks that silently swallow errors
+    if node.kind() == "catch_clause" {
+        if let Some(body) = node.child_by_field_name("body") {
+            let has_statements = (0..body.named_child_count()).any(|i| {
+                body.named_child(i)
+                    .map(|c| c.kind() != "comment" && c.kind() != "empty_statement")
+                    .unwrap_or(false)
+            });
+            if !has_statements {
+                findings.push(Finding {
+                    title: "Empty `catch` block silently swallows errors".into(),
+                    description: "An empty catch block hides failures. Log the error, handle it, or rethrow.".into(),
+                    severity: Severity::Medium,
+                    category: "reliability".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                });
+            }
+        }
+    }
+
+    // Sync Node.js APIs inside async functions
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            let func_name = &source[func.byte_range()];
+            let sync_apis = [
+                "readFileSync", "writeFileSync", "mkdirSync", "existsSync",
+                "readdirSync", "unlinkSync", "appendFileSync", "copyFileSync",
+                "renameSync", "statSync", "accessSync",
+            ];
+            for api in &sync_apis {
+                if func_name.ends_with(api) {
+                    if is_in_async_function(node, source) {
+                        findings.push(Finding {
+                            title: format!("`{}` blocks the event loop in async function", api),
+                            description: format!(
+                                "Calling synchronous `{}` inside an async function blocks the event loop. Use the async equivalent from `fs/promises`.",
+                                api
+                            ),
+                            severity: Severity::Medium,
+                            category: "concurrency".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Tautological .length >= 0 (always true for arrays/strings)
+    if node.kind() == "binary_expression" {
+        if let Some(op) = node.child_by_field_name("operator") {
+            let op_text = &source[op.byte_range()];
+            if op_text == ">=" {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if let Some(right) = node.child_by_field_name("right") {
+                        let left_text = &source[left.byte_range()];
+                        let right_text = &source[right.byte_range()];
+                        if left_text.ends_with(".length") && right_text.trim() == "0" {
+                            findings.push(Finding {
+                                title: "`.length >= 0` is always true".into(),
+                                description: "Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?".into(),
+                                severity: Severity::Medium,
+                                category: "correctness".into(),
+                                source: Source::LocalAst,
+                                line_start: line,
+                                line_end: end_line,
+                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                calibrator_action: None,
+                                similar_precedent: vec![],
+                                canonical_pattern: None,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2870,6 +3047,293 @@ def process(items=None):
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
         assert!(findings.iter().any(|f| f.title.contains("Multiple CMD") || f.title.contains("multiple")),
             "Should flag multiple CMD. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+    }
+
+    // -- Empty catch block detection (TypeScript) --
+
+    #[test]
+    fn ts_bare_catch_empty_body() {
+        let source = "try { doStuff(); } catch (e) { }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            "Should flag empty catch. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_bare_catch_comment_only() {
+        let source = "try { doStuff(); } catch (e) { /* ignore */ }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            "Catch with only comments should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_catch_with_logging_not_flagged() {
+        let source = "try { doStuff(); } catch (e) { console.error(e); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            "Catch with real statements should not be flagged"
+        );
+    }
+
+    #[test]
+    fn ts_catch_with_rethrow_not_flagged() {
+        let source = "try { doStuff(); } catch (e) { throw e; }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            "Catch that rethrows should not be flagged"
+        );
+    }
+
+    #[test]
+    fn ts_empty_catch_with_semicolon_flagged() {
+        let source = "try { doStuff(); } catch (e) { ; }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            "Catch with only empty statement should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    // -- Sync APIs in async functions (TypeScript) --
+
+    #[test]
+    fn ts_sync_api_in_async_function() {
+        let source = "async function loadConfig() { const data = fs.readFileSync('config.json'); return JSON.parse(data); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("readFileSync")),
+            "Should flag sync API in async function. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_sync_api_in_async_arrow() {
+        let source = "const save = async () => { fs.writeFileSync('out.json', data); };";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("writeFileSync")),
+            "Should flag sync API in async arrow. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_sync_api_in_sync_function_not_flagged() {
+        let source = "function loadConfig() { const data = fs.readFileSync('config.json'); return JSON.parse(data); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("readFileSync")),
+            "Sync API in sync function should not be flagged"
+        );
+    }
+
+    #[test]
+    fn ts_async_method_with_sync_api() {
+        let source = "class Loader { async load() { return fs.existsSync('file'); } }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("existsSync")),
+            "Should flag sync API in async method. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_sync_api_in_exported_async_function() {
+        let source = "export async function loadConfig() { const data = fs.readFileSync('config.json'); return JSON.parse(data); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains("readFileSync")),
+            "Should flag sync API in exported async function. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_sync_api_not_flagged_for_async_variable_name() {
+        let source = "const asyncHandler = () => { fs.readFileSync('config.json'); };";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("readFileSync")),
+            "Variable named asyncHandler should not trigger async detection"
+        );
+    }
+
+    // -- open() without encoding (Python) --
+
+    #[test]
+    fn python_open_without_encoding() {
+        let source = "with open('config.yaml') as f:\n    data = f.read()\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("encoding")),
+            "open() without encoding should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_open_with_encoding_not_flagged() {
+        let source = "with open('config.yaml', encoding='utf-8') as f:\n    data = f.read()\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("encoding")),
+            "open() with encoding should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_open_binary_mode_not_flagged() {
+        let source = "with open('image.png', 'rb') as f:\n    data = f.read()\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("encoding")),
+            "Binary mode open should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_open_write_without_encoding() {
+        let source = "f = open('output.txt', 'w')\nf.write(data)\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("encoding")),
+            "open('w') without encoding should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_open_xb_mode_not_flagged() {
+        let source = "with open('data.bin', 'xb') as f:\n    f.write(data)\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("encoding")),
+            "xb binary mode should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_open_rplusb_mode_not_flagged() {
+        let source = "with open('data.bin', 'r+b') as f:\n    data = f.read()\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("encoding")),
+            "r+b binary mode should not be flagged"
+        );
+    }
+
+    // -- Bare except: pass (Python) --
+
+    #[test]
+    fn python_bare_except_pass() {
+        let source = "try:\n    do_stuff()\nexcept:\n    pass\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("except") && f.title.contains("pass")),
+            "Bare except with pass should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_except_exception_pass() {
+        let source = "try:\n    do_stuff()\nexcept Exception:\n    pass\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            findings.iter().any(|f| f.title.contains("except") && f.title.contains("pass")),
+            "except Exception with pass should be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn python_except_with_logging_not_flagged() {
+        let source = "try:\n    do_stuff()\nexcept Exception as e:\n    logger.error(e)\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("pass")),
+            "Except with logging should not be flagged"
+        );
+    }
+
+    #[test]
+    fn python_specific_except_pass_not_flagged() {
+        let source = "try:\n    do_stuff()\nexcept FileNotFoundError:\n    pass\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("Bare")),
+            "Specific exception with pass is intentional, should not be flagged"
+        );
+    }
+
+    // -- Tautological .length >= 0 (TypeScript) --
+
+    #[test]
+    fn ts_tautological_length_gte_zero() {
+        let source = "if (items.length >= 0) { doStuff(); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains(".length >= 0")),
+            "Should flag tautological length check. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_valid_length_gt_zero_not_flagged() {
+        let source = "if (items.length > 0) { doStuff(); }";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("tautological") || f.title.contains(".length")),
+            "length > 0 is valid and should not be flagged"
+        );
+    }
+
+    #[test]
+    fn ts_tautological_length_in_condition() {
+        let source = "const valid = results.length >= 0 && isReady;";
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
+        assert!(
+            findings.iter().any(|f| f.title.contains(".length >= 0")),
+            "Should flag tautological length in any expression. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
