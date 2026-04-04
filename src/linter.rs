@@ -20,6 +20,7 @@ pub enum LinterKind {
     Yamllint,
     Shellcheck,
     Hadolint,
+    AstGrep,
 }
 
 impl LinterKind {
@@ -31,6 +32,7 @@ impl LinterKind {
             LinterKind::Yamllint => "yamllint",
             LinterKind::Shellcheck => "shellcheck",
             LinterKind::Hadolint => "hadolint",
+            LinterKind::AstGrep => "ast-grep",
         }
     }
 }
@@ -99,7 +101,44 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         linters.push(LinterKind::Hadolint);
     }
 
+    // ast-grep: rules/<lang>/ directory exists with .yml files AND ast-grep is in PATH
+    if ast_grep_has_rules(project_dir) && which_ast_grep_available() {
+        linters.push(LinterKind::AstGrep);
+    }
+
     linters
+}
+
+/// Check if any rules/<lang>/*.yml files exist in the project directory.
+fn ast_grep_has_rules(project_dir: &Path) -> bool {
+    let rules_dir = project_dir.join("rules");
+    if !rules_dir.is_dir() {
+        return false;
+    }
+    if let Ok(entries) = std::fs::read_dir(&rules_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Ok(files) = std::fs::read_dir(&path) {
+                    for file in files.flatten() {
+                        if file.path().extension().and_then(|e| e.to_str()) == Some("yml") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if ast-grep is available in PATH.
+fn which_ast_grep_available() -> bool {
+    std::process::Command::new("which")
+        .arg("ast-grep")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 pub fn run_linter(
@@ -120,6 +159,9 @@ pub fn run_linter(
         LinterKind::Yamllint => runner.run("yamllint", &["-f", "parsable", &file_str], cwd)?,
         LinterKind::Shellcheck => runner.run("shellcheck", &["--format=json1", &file_str], cwd)?,
         LinterKind::Hadolint => runner.run("hadolint", &["--format", "tty", &file_str], cwd)?,
+        LinterKind::AstGrep => {
+            return run_ast_grep_rules(file, cwd, runner);
+        }
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
@@ -140,6 +182,7 @@ pub fn run_linter(
         LinterKind::Yamllint => normalize_yamllint_output(&output.stdout),
         LinterKind::Shellcheck => normalize_shellcheck_output(&output.stdout),
         LinterKind::Hadolint => normalize_hadolint_output(&output.stdout),
+        LinterKind::AstGrep => unreachable!("ast-grep uses run_ast_grep_rules directly"),
     }
 }
 
@@ -408,6 +451,137 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
         });
     }
     Ok(findings)
+}
+
+/// Map file extension to ast-grep language subdirectory name.
+fn ext_to_ast_grep_lang(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => Some("typescript"),
+        "py" => Some("python"),
+        "rs" => Some("rust"),
+        "yaml" | "yml" => Some("yaml"),
+        "sh" | "bash" | "zsh" => Some("bash"),
+        _ => None,
+    }
+}
+
+/// Collect rule file paths from a language subdirectory.
+fn collect_rule_files(rules_dir: &Path, lang: &str) -> Vec<std::path::PathBuf> {
+    let lang_dir = rules_dir.join(lang);
+    if !lang_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&lang_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+pub fn normalize_ast_grep_output(json_output: &str) -> anyhow::Result<Vec<Finding>> {
+    if json_output.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let items: Vec<serde_json::Value> = serde_json::from_str(json_output)?;
+    let mut findings = Vec::new();
+
+    for item in items {
+        let rule_id = item["ruleId"].as_str().unwrap_or("unknown");
+        let message = item["message"].as_str().unwrap_or("");
+        let severity_str = item["severity"].as_str().unwrap_or("warning");
+        let text = item["text"].as_str().unwrap_or("");
+
+        let start_line = item["range"]["start"]["line"]
+            .as_u64()
+            .map(|l| l as u32 + 1)
+            .unwrap_or(1);
+        let end_line = item["range"]["end"]["line"]
+            .as_u64()
+            .map(|l| l as u32 + 1)
+            .unwrap_or(start_line);
+
+        let severity = match severity_str {
+            "error" => Severity::High,
+            "warning" => Severity::Medium,
+            "hint" | "info" => Severity::Low,
+            _ => Severity::Medium,
+        };
+
+        findings.push(Finding {
+            title: format!("{}: {}", rule_id, message),
+            description: message.to_string(),
+            severity,
+            category: "ast-pattern".into(),
+            source: Source::Linter("ast-grep".into()),
+            line_start: start_line,
+            line_end: end_line,
+            evidence: vec![text.to_string()],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+
+    Ok(findings)
+}
+
+pub fn run_ast_grep_rules(
+    file: &Path,
+    cwd: &Path,
+    runner: &dyn CommandRunner,
+) -> anyhow::Result<Vec<Finding>> {
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let lang = match ext_to_ast_grep_lang(ext) {
+        Some(l) => l,
+        None => return Ok(Vec::new()),
+    };
+
+    // Collect rules from project-local and user-global directories
+    let mut rule_files = collect_rule_files(&cwd.join("rules"), lang);
+
+    if let Ok(home) = std::env::var("HOME") {
+        let user_rules = Path::new(&home).join(".quorum").join("rules");
+        rule_files.extend(collect_rule_files(&user_rules, lang));
+    }
+
+    if rule_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let file_str = file.to_string_lossy().to_string();
+    let mut all_findings = Vec::new();
+
+    for rule_path in &rule_files {
+        let rule_str = rule_path.to_string_lossy().to_string();
+        let output = runner.run(
+            "ast-grep",
+            &["scan", "--json=compact", "-r", &rule_str, &file_str],
+            cwd,
+        );
+
+        match output {
+            Ok(out) => {
+                if !out.stdout.trim().is_empty() {
+                    match normalize_ast_grep_output(&out.stdout) {
+                        Ok(findings) => all_findings.extend(findings),
+                        Err(_) => continue,
+                    }
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    Ok(all_findings)
 }
 
 fn ruff_code_to_category(code: &str) -> String {
@@ -757,5 +931,167 @@ mod tests {
     fn normalize_hadolint_empty() {
         let findings = normalize_hadolint_output("").unwrap();
         assert!(findings.is_empty());
+    }
+
+    // -- ast-grep LinterKind --
+
+    #[test]
+    fn ast_grep_linter_kind_name() {
+        assert_eq!(LinterKind::AstGrep.name(), "ast-grep");
+    }
+
+    // -- ast-grep output normalization --
+
+    #[test]
+    fn normalize_ast_grep_valid_output() {
+        let json = r#"[{"ruleId":"bare-catch","severity":"warning","message":"Empty catch block","range":{"start":{"line":0,"column":19},"end":{"line":0,"column":32}},"file":"test.ts","text":"catch (e) { }","lines":"...","note":null}]"#;
+        let findings = normalize_ast_grep_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "bare-catch: Empty catch block");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert_eq!(findings[0].line_start, 1); // 0-indexed -> 1-indexed
+        assert_eq!(findings[0].line_end, 1);
+        assert_eq!(findings[0].category, "ast-pattern");
+        assert_eq!(findings[0].source, Source::Linter("ast-grep".into()));
+        assert_eq!(findings[0].evidence, vec!["catch (e) { }"]);
+    }
+
+    #[test]
+    fn normalize_ast_grep_error_severity() {
+        let json = r#"[{"ruleId":"no-eval","severity":"error","message":"Do not use eval","range":{"start":{"line":5,"column":0},"end":{"line":5,"column":10}},"file":"test.ts","text":"eval(code)","lines":"...","note":null}]"#;
+        let findings = normalize_ast_grep_output(json).unwrap();
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].line_start, 6); // 0-indexed -> 1-indexed
+    }
+
+    #[test]
+    fn normalize_ast_grep_hint_severity() {
+        let json = r#"[{"ruleId":"style-issue","severity":"hint","message":"Consider refactoring","range":{"start":{"line":2,"column":0},"end":{"line":3,"column":5}},"file":"test.ts","text":"x = 1","lines":"...","note":null}]"#;
+        let findings = normalize_ast_grep_output(json).unwrap();
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert_eq!(findings[0].line_start, 3);
+        assert_eq!(findings[0].line_end, 4);
+    }
+
+    #[test]
+    fn normalize_ast_grep_empty_output() {
+        let findings = normalize_ast_grep_output("").unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn normalize_ast_grep_empty_array() {
+        let findings = normalize_ast_grep_output("[]").unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn normalize_ast_grep_malformed_json() {
+        assert!(normalize_ast_grep_output("not json").is_err());
+    }
+
+    // -- ext_to_ast_grep_lang --
+
+    #[test]
+    fn ext_to_lang_typescript_variants() {
+        assert_eq!(ext_to_ast_grep_lang("ts"), Some("typescript"));
+        assert_eq!(ext_to_ast_grep_lang("tsx"), Some("typescript"));
+        assert_eq!(ext_to_ast_grep_lang("js"), Some("typescript"));
+        assert_eq!(ext_to_ast_grep_lang("jsx"), Some("typescript"));
+        assert_eq!(ext_to_ast_grep_lang("mjs"), Some("typescript"));
+        assert_eq!(ext_to_ast_grep_lang("cjs"), Some("typescript"));
+    }
+
+    #[test]
+    fn ext_to_lang_other_languages() {
+        assert_eq!(ext_to_ast_grep_lang("py"), Some("python"));
+        assert_eq!(ext_to_ast_grep_lang("rs"), Some("rust"));
+        assert_eq!(ext_to_ast_grep_lang("yaml"), Some("yaml"));
+        assert_eq!(ext_to_ast_grep_lang("yml"), Some("yaml"));
+        assert_eq!(ext_to_ast_grep_lang("sh"), Some("bash"));
+        assert_eq!(ext_to_ast_grep_lang("bash"), Some("bash"));
+        assert_eq!(ext_to_ast_grep_lang("zsh"), Some("bash"));
+    }
+
+    #[test]
+    fn ext_to_lang_unsupported() {
+        assert_eq!(ext_to_ast_grep_lang("go"), None);
+        assert_eq!(ext_to_ast_grep_lang("c"), None);
+        assert_eq!(ext_to_ast_grep_lang(""), None);
+    }
+
+    // -- collect_rule_files --
+
+    #[test]
+    fn collect_rule_files_finds_yml_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let lang_dir = dir.path().join("typescript");
+        std::fs::create_dir_all(&lang_dir).unwrap();
+        std::fs::write(lang_dir.join("bare-catch.yml"), "id: bare-catch\n").unwrap();
+        std::fs::write(lang_dir.join("as-any.yml"), "id: as-any\n").unwrap();
+        std::fs::write(lang_dir.join("README.md"), "docs").unwrap(); // should be ignored
+        let files = collect_rule_files(dir.path(), "typescript");
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.extension().unwrap() == "yml"));
+    }
+
+    #[test]
+    fn collect_rule_files_empty_for_missing_lang() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = collect_rule_files(dir.path(), "typescript");
+        assert!(files.is_empty());
+    }
+
+    // -- run_ast_grep_rules --
+
+    #[test]
+    fn run_ast_grep_rules_collects_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join("rules").join("typescript");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("bare-catch.yml"), "id: bare-catch\n").unwrap();
+
+        let json = r#"[{"ruleId":"bare-catch","severity":"warning","message":"Empty catch block","range":{"start":{"line":0,"column":19},"end":{"line":0,"column":32}},"file":"test.ts","text":"catch (e) { }","lines":"...","note":null}]"#;
+        let runner = FakeCommandRunner::success(json);
+        let file = PathBuf::from("test.ts");
+        let findings = run_ast_grep_rules(&file, dir.path(), &runner).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].source, Source::Linter("ast-grep".into()));
+    }
+
+    #[test]
+    fn run_ast_grep_rules_unsupported_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = FakeCommandRunner::success("");
+        let file = PathBuf::from("test.go");
+        let findings = run_ast_grep_rules(&file, dir.path(), &runner).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn run_ast_grep_rules_no_rules_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = FakeCommandRunner::success("");
+        let file = PathBuf::from("test.ts");
+        let findings = run_ast_grep_rules(&file, dir.path(), &runner).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    // -- ast-grep detection --
+
+    #[test]
+    fn detect_ast_grep_with_rules_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules_dir = dir.path().join("rules").join("typescript");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("bare-catch.yml"), "id: bare-catch\n").unwrap();
+        let linters = detect_linters(dir.path());
+        // Detection depends on ast-grep being in PATH, which it is on this machine
+        // but we test the rules-dir check here
+        assert!(
+            linters.contains(&LinterKind::AstGrep)
+                || !which_ast_grep_available(),
+            "Should detect AstGrep when rules exist and ast-grep is in PATH"
+        );
     }
 }
