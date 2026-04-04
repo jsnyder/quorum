@@ -54,27 +54,56 @@ impl Default for PipelineConfig {
 }
 
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
+/// Enforces a TP/FP mix to avoid anchoring the LLM toward only one verdict type.
 fn query_feedback_precedents(
     index: &mut crate::feedback_index::FeedbackIndex,
     file_path: &str,
     language: &str,
-    _code: &str,
+    code: &str,
 ) -> Vec<String> {
     use crate::feedback::{Provenance, Verdict};
 
+    // Query with language + filename + first 200 chars of code for better semantic matching
+    let code_snippet: String = code.chars().take(200).collect();
     let query = format!(
-        "{} {} review",
+        "{} {} {}",
         language,
-        file_path.rsplit('/').next().unwrap_or(file_path)
+        file_path.rsplit('/').next().unwrap_or(file_path),
+        code_snippet
     );
-    let similar = index.find_similar(&query, "", 10);
+    let similar = index.find_similar(&query, "", 15);
 
-    similar
+    let candidates: Vec<_> = similar
         .iter()
         .filter(|s| s.similarity >= 0.6)
         .filter(|s| matches!(s.entry.provenance, Provenance::Human | Provenance::PostFix))
         .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp))
-        .take(3)
+        .collect();
+
+    // Enforce TP/FP mix: pick up to 2 TPs and up to 1 FP (or vice versa if available)
+    let tps: Vec<_> = candidates.iter().filter(|s| s.entry.verdict == Verdict::Tp).take(2).collect();
+    let fps: Vec<_> = candidates.iter().filter(|s| s.entry.verdict == Verdict::Fp).take(2).collect();
+
+    let mut selected: Vec<_> = Vec::new();
+    // Take up to 2 TPs
+    selected.extend(tps.iter().take(2));
+    // Fill remaining slots with FPs (up to 3 total)
+    for fp in &fps {
+        if selected.len() >= 3 { break; }
+        selected.push(fp);
+    }
+    // If we still have room and more TPs, fill
+    let remaining_tps: Vec<_> = candidates.iter()
+        .filter(|s| s.entry.verdict == Verdict::Tp)
+        .skip(2)
+        .collect();
+    for tp in &remaining_tps {
+        if selected.len() >= 3 { break; }
+        selected.push(tp);
+    }
+
+    selected
+        .iter()
         .map(|s| {
             let verdict_label = match s.entry.verdict {
                 Verdict::Tp => "TRUE POSITIVE",
@@ -83,11 +112,10 @@ fn query_feedback_precedents(
             };
             let truncated_reason: String = s.entry.reason.chars().take(100).collect();
             format!(
-                "[{}] {}: {} (similarity: {:.0}%)",
+                "[{}] {}: {}",
                 verdict_label,
                 s.entry.finding_title,
                 truncated_reason,
-                s.similarity * 100.0
             )
         })
         .collect()

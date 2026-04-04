@@ -96,7 +96,9 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     if let Some(precedents) = &req.feedback_precedents {
         if !precedents.is_empty() {
             prompt.push_str("## Historical Review Findings\n");
-            prompt.push_str("Previous human-verified findings on similar code (use as calibration, not as a checklist):\n\n");
+            prompt.push_str("The following are human-verified findings from past reviews of similar code. ");
+            prompt.push_str("Use them to understand project-specific patterns and noise thresholds. ");
+            prompt.push_str("Do NOT limit your review to only these topics.\n\n");
             for p in precedents {
                 prompt.push_str(&format!("- {}\n", p));
             }
