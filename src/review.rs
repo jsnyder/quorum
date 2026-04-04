@@ -12,6 +12,7 @@ pub struct ReviewRequest {
     pub code: String,
     pub hydration_context: Option<HydrationContext>,
     pub framework_docs: Option<Vec<String>>,
+    pub feedback_precedents: Option<Vec<String>>,
 }
 
 /// A single finding as returned by the LLM (before normalization).
@@ -89,6 +90,17 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
                 prompt.push_str(doc);
                 prompt.push_str("\n\n");
             }
+        }
+    }
+
+    if let Some(precedents) = &req.feedback_precedents {
+        if !precedents.is_empty() {
+            prompt.push_str("## Historical Review Findings\n");
+            prompt.push_str("Previous human-verified findings on similar code (use as calibration, not as a checklist):\n\n");
+            for p in precedents {
+                prompt.push_str(&format!("- {}\n", p));
+            }
+            prompt.push('\n');
         }
     }
 
@@ -300,6 +312,7 @@ mod tests {
             code: "fn login() {}".into(),
             hydration_context: None,
             framework_docs: None,
+            feedback_precedents: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("src/auth.rs"));
@@ -321,6 +334,7 @@ mod tests {
             code: "fn process() {}".into(),
             hydration_context: Some(ctx),
             framework_docs: None,
+            feedback_precedents: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("validate"));
@@ -336,6 +350,7 @@ mod tests {
             code: "function App() {}".into(),
             hydration_context: None,
             framework_docs: Some(vec!["### React\nuseEffect requires dependency array".into()]),
+            feedback_precedents: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("useEffect"));
@@ -351,6 +366,7 @@ mod tests {
             code: "fn x() {}".into(),
             hydration_context: Some(ctx),
             framework_docs: None,
+            feedback_precedents: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Called function signatures"));
@@ -445,5 +461,55 @@ mod tests {
             let findings = parse_llm_response(&json, "m").unwrap();
             assert_eq!(findings[0].severity, expected, "Failed for severity: {}", sev_str);
         }
+    }
+
+    // -- Feedback precedent injection --
+
+    #[test]
+    fn build_prompt_includes_feedback_precedents() {
+        let req = ReviewRequest {
+            file_path: "test.py".into(),
+            language: "python".into(),
+            code: "def foo(): pass".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: Some(vec![
+                "[TRUE POSITIVE] open() without encoding: Causes portability issues (similarity: 85%)".into(),
+                "[FALSE POSITIVE] Unused import: Import is used dynamically (similarity: 78%)".into(),
+            ]),
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("Historical Review Findings"));
+        assert!(prompt.contains("TRUE POSITIVE"));
+        assert!(prompt.contains("FALSE POSITIVE"));
+        assert!(prompt.contains("open() without encoding"));
+    }
+
+    #[test]
+    fn build_prompt_no_precedents_section_when_none() {
+        let req = ReviewRequest {
+            file_path: "test.py".into(),
+            language: "python".into(),
+            code: "def foo(): pass".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(!prompt.contains("Historical"));
+    }
+
+    #[test]
+    fn build_prompt_no_precedents_section_when_empty() {
+        let req = ReviewRequest {
+            file_path: "test.py".into(),
+            language: "python".into(),
+            code: "def foo(): pass".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: Some(vec![]),
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(!prompt.contains("Historical"));
     }
 }

@@ -53,6 +53,46 @@ impl Default for PipelineConfig {
     }
 }
 
+/// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
+fn query_feedback_precedents(
+    index: &mut crate::feedback_index::FeedbackIndex,
+    file_path: &str,
+    language: &str,
+    _code: &str,
+) -> Vec<String> {
+    use crate::feedback::{Provenance, Verdict};
+
+    let query = format!(
+        "{} {} review",
+        language,
+        file_path.rsplit('/').next().unwrap_or(file_path)
+    );
+    let similar = index.find_similar(&query, "", 10);
+
+    similar
+        .iter()
+        .filter(|s| s.similarity >= 0.6)
+        .filter(|s| matches!(s.entry.provenance, Provenance::Human | Provenance::PostFix))
+        .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp))
+        .take(3)
+        .map(|s| {
+            let verdict_label = match s.entry.verdict {
+                Verdict::Tp => "TRUE POSITIVE",
+                Verdict::Fp => "FALSE POSITIVE",
+                _ => "NOTED",
+            };
+            let truncated_reason: String = s.entry.reason.chars().take(100).collect();
+            format!(
+                "[{}] {}: {} (similarity: {:.0}%)",
+                verdict_label,
+                s.entry.finding_title,
+                truncated_reason,
+                s.similarity * 100.0
+            )
+        })
+        .collect()
+}
+
 /// Run the full review pipeline on a single file.
 pub fn review_file(
     file_path: &Path,
@@ -64,6 +104,14 @@ pub fn review_file(
 ) -> anyhow::Result<FileReviewResult> {
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
+
+    // Build feedback index once — used for both few-shot injection and calibration
+    let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
+        let store = crate::feedback::FeedbackStore::new(store_path.clone());
+        crate::feedback_index::FeedbackIndex::build(&store).ok()
+    } else {
+        None
+    };
 
     // Source 1: Local AST analysis
     let mut local_findings = Vec::new();
@@ -123,12 +171,18 @@ pub fn review_file(
             }
         };
 
+        // Query feedback index for few-shot precedents
+        let precedents = feedback_index.as_mut().map(|idx| {
+            query_feedback_precedents(idx, &file_str, lang_name(lang), &redacted_code)
+        }).unwrap_or_default();
+
         let req = ReviewRequest {
             file_path: file_str.clone(),
             language: lang_name(lang).to_string(),
             code: redacted_code,
             hydration_context: Some(redacted_ctx),
             framework_docs,
+            feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
         };
 
         let prompt = review::build_review_prompt(&req);
@@ -155,14 +209,12 @@ pub fn review_file(
     let final_findings = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
 
-        // Try to build a FeedbackIndex from the feedback store for semantic retrieval
-        let cal_result = if let Some(store_path) = &pipeline_config.feedback_store {
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            match crate::feedback_index::FeedbackIndex::build(&store) {
-                Ok(mut index) if !index.is_empty() => {
-                    calibrator::calibrate_with_index(merged, &mut index, &config)
-                }
-                _ => calibrator::calibrate(merged, &pipeline_config.feedback, &config),
+        // Reuse FeedbackIndex built earlier for few-shot injection
+        let cal_result = if let Some(ref mut index) = feedback_index {
+            if !index.is_empty() {
+                calibrator::calibrate_with_index(merged, index, &config)
+            } else {
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
             }
         } else {
             calibrator::calibrate(merged, &pipeline_config.feedback, &config)
@@ -273,6 +325,14 @@ pub fn review_file_llm_only(
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
 
+    // Build feedback index once — used for both few-shot injection and calibration
+    let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
+        let store = crate::feedback::FeedbackStore::new(store_path.clone());
+        crate::feedback_index::FeedbackIndex::build(&store).ok()
+    } else {
+        None
+    };
+
     // No local AST analysis — unsupported language
 
     // LLM review (if configured)
@@ -298,12 +358,18 @@ pub fn review_file_llm_only(
                 }
             };
 
+            // Query feedback index for few-shot precedents
+            let precedents = feedback_index.as_mut().map(|idx| {
+                query_feedback_precedents(idx, &file_str, &language, &redacted_code)
+            }).unwrap_or_default();
+
             let req = ReviewRequest {
                 file_path: file_str.clone(),
                 language,
                 code: redacted_code,
                 hydration_context: None,
                 framework_docs,
+                feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
             };
 
             let prompt = review::build_review_prompt(&req);
@@ -327,13 +393,12 @@ pub fn review_file_llm_only(
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
     let final_findings = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
-        let cal_result = if let Some(store_path) = &pipeline_config.feedback_store {
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            match crate::feedback_index::FeedbackIndex::build(&store) {
-                Ok(mut index) if !index.is_empty() => {
-                    calibrator::calibrate_with_index(merged, &mut index, &config)
-                }
-                _ => calibrator::calibrate(merged, &pipeline_config.feedback, &config),
+        // Reuse FeedbackIndex built earlier for few-shot injection
+        let cal_result = if let Some(ref mut index) = feedback_index {
+            if !index.is_empty() {
+                calibrator::calibrate_with_index(merged, index, &config)
+            } else {
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
             }
         } else {
             calibrator::calibrate(merged, &pipeline_config.feedback, &config)
