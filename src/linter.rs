@@ -109,7 +109,7 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
     linters
 }
 
-/// Check if any rules/<lang>/*.yml files exist in the project directory.
+/// Check if any rules/<lang>/*.{yml,yaml} files exist in the project directory.
 fn ast_grep_has_rules(project_dir: &Path) -> bool {
     let rules_dir = project_dir.join("rules");
     if !rules_dir.is_dir() {
@@ -121,7 +121,7 @@ fn ast_grep_has_rules(project_dir: &Path) -> bool {
             if path.is_dir() {
                 if let Ok(files) = std::fs::read_dir(&path) {
                     for file in files.flatten() {
-                        if file.path().extension().and_then(|e| e.to_str()) == Some("yml") {
+                        if is_rule_file(&file.path()) {
                             return true;
                         }
                     }
@@ -130,6 +130,11 @@ fn ast_grep_has_rules(project_dir: &Path) -> bool {
         }
     }
     false
+}
+
+/// Check if a path has a .yml or .yaml extension (valid rule file).
+fn is_rule_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
 }
 
 /// Check if ast-grep is available in PATH.
@@ -454,6 +459,8 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
 }
 
 /// Map file extension to ast-grep language subdirectory name.
+/// Note: JS/JSX/MJS/CJS map to "typescript" because ast-grep uses the TypeScript
+/// grammar to parse JavaScript (it's a superset).
 fn ext_to_ast_grep_lang(ext: &str) -> Option<&'static str> {
     match ext {
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => Some("typescript"),
@@ -475,7 +482,7 @@ fn collect_rule_files(rules_dir: &Path, lang: &str) -> Vec<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&lang_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+            if is_rule_file(&path) {
                 files.push(path);
             }
         }
@@ -548,8 +555,12 @@ pub fn run_ast_grep_rules(
     // Collect rules from project-local and user-global directories
     let mut rule_files = collect_rule_files(&cwd.join("rules"), lang);
 
-    if let Ok(home) = std::env::var("HOME") {
-        let user_rules = Path::new(&home).join(".quorum").join("rules");
+    // Check user-global rules: ~/.quorum/rules/<lang>/
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    if let Some(home_dir) = home {
+        let user_rules = Path::new(&home_dir).join(".quorum").join("rules");
         rule_files.extend(collect_rule_files(&user_rules, lang));
     }
 
@@ -573,11 +584,23 @@ pub fn run_ast_grep_rules(
                 if !out.stdout.trim().is_empty() {
                     match normalize_ast_grep_output(&out.stdout) {
                         Ok(findings) => all_findings.extend(findings),
-                        Err(_) => continue,
+                        Err(e) => {
+                            eprintln!(
+                                "ast-grep: failed to parse output for rule {}: {}",
+                                rule_path.display(),
+                                e
+                            );
+                        }
                     }
                 }
             }
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "ast-grep: failed to run rule {}: {}",
+                    rule_path.display(),
+                    e
+                );
+            }
         }
     }
 
