@@ -38,14 +38,15 @@ pub mod fakes {
     }
 
     impl LlmReviewer for FakeReviewer {
-        fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<String> {
+        fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
             self.captured_prompts.lock().unwrap().push(prompt.to_string());
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
                 anyhow::bail!("FakeReviewer: no responses configured");
             }
             let resp = if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap() };
-            resp.map_err(|e| anyhow::anyhow!(e))
+            resp.map(|content| crate::llm_client::LlmResponse { content, usage: None })
+                .map_err(|e| anyhow::anyhow!(e))
         }
     }
 

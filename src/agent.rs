@@ -79,8 +79,8 @@ pub fn agent_review(
          ## Code under review\n```\n{code}\n```"
     );
 
-    let response = reviewer.review(&prompt, model)?;
-    crate::review::parse_llm_response(&response, model)
+    let resp = reviewer.review(&prompt, model)?;
+    crate::review::parse_llm_response(&resp.content, model)
 }
 
 struct AgentState {
@@ -393,9 +393,9 @@ mod tests {
         // Capture what the reviewer sees
         struct CapturingReviewer(std::sync::Mutex<String>);
         impl crate::pipeline::LlmReviewer for CapturingReviewer {
-            fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<String> {
+            fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 *self.0.lock().unwrap() = prompt.to_string();
-                Ok("[]".into())
+                Ok(crate::llm_client::LlmResponse { content: "[]".into(), usage: None })
             }
         }
 

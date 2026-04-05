@@ -12,12 +12,29 @@ pub struct Args {
 pub enum Command {
     /// Review files for issues
     Review(ReviewOpts),
+    /// Show feedback and review statistics
+    Stats(StatsOpts),
     /// Start MCP server (stdio transport)
     Serve,
     /// Run as daemon with file watching and warm caches
     Daemon(DaemonOpts),
     /// Print version
     Version,
+}
+
+#[derive(Parser)]
+pub struct StatsOpts {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Token-efficient output for LLM consumption
+    #[arg(long)]
+    pub compact: bool,
+
+    /// Show stats since this date (YYYY-MM-DD, default: all time)
+    #[arg(long)]
+    pub since: Option<String>,
 }
 
 #[derive(Parser)]
@@ -83,6 +100,10 @@ pub struct ReviewOpts {
     /// Unified diff file for change-scoped review
     #[arg(long)]
     pub diff_file: Option<PathBuf>,
+
+    /// Token-efficient output for LLM consumption
+    #[arg(long)]
+    pub compact: bool,
 }
 
 impl ReviewOpts {

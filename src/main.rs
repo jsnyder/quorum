@@ -16,6 +16,7 @@ mod embeddings;
 mod feedback;
 mod feedback_index;
 mod finding;
+mod formatting;
 mod hydration;
 mod linter;
 mod llm_client;
@@ -28,6 +29,8 @@ mod pipeline;
 mod progress;
 mod redact;
 mod review;
+mod stats;
+mod telemetry;
 mod tools;
 #[cfg(test)] mod test_support;
 
@@ -42,6 +45,35 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Review(opts) => {
             let exit_code = run_review(opts);
             std::process::exit(exit_code);
+        }
+        cli::Command::Stats(opts) => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            let home_path = std::path::PathBuf::from(&home);
+            let feedback_store = feedback::FeedbackStore::new(home_path.join(".quorum/feedback.jsonl"));
+            let telemetry_store = telemetry::TelemetryStore::new(home_path.join(".quorum/telemetry.jsonl"));
+
+            match stats::compute_report(&feedback_store, &telemetry_store) {
+                Ok(report) => {
+                    if opts.json {
+                        match stats::format_json(&report) {
+                            Ok(json) => println!("{}", json),
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                                std::process::exit(3);
+                            }
+                        }
+                    } else if opts.compact || std::env::var("CLAUDE_CODE").is_ok() {
+                        print!("{}", stats::format_compact(&report));
+                    } else {
+                        let style = output::Style::detect(false);
+                        print!("{}", stats::format_human(&report, &style));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(3);
+                }
+            }
         }
         cli::Command::Serve => {
             run_mcp_server().await?;
@@ -200,8 +232,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         ..Default::default()
     };
 
+    let review_start = std::time::Instant::now();
+
     let style = output::Style::detect(opts.no_color);
-    let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let use_compact = opts.compact || std::env::var("CLAUDE_CODE").is_ok();
+    let use_json = !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let parse_cache = cache::ParseCache::new(128);
     let progress = progress::ProgressReporter::detect();
     let mut all_findings = Vec::new();
@@ -248,12 +283,14 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 ) {
                     Ok(findings) => {
                         progress.finish_file(findings.len());
-                        if use_json {
-                            all_findings.extend(findings);
+                        if use_compact {
+                            println!("{}", output::format_compact_review(&file_display, &findings));
+                        } else if use_json {
+                            // collected below
                         } else {
                             print!("{}", output::format_review(&file_display, &findings, &style));
-                            all_findings.extend(findings);
                         }
+                        all_findings.extend(findings);
                         continue;
                     }
                     Err(e) => {
@@ -286,7 +323,9 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         match review_result {
             Ok(result) => {
                 progress.finish_file(result.findings.len());
-                if !use_json {
+                if use_compact {
+                    println!("{}", output::format_compact_review(&result.file_path, &result.findings));
+                } else if !use_json {
                     print!("{}", output::format_review(&result.file_path, &result.findings, &style));
                 }
                 all_findings.extend(result.findings.clone());
@@ -298,6 +337,33 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 had_errors = true;
             }
         }
+    }
+
+    let review_duration = review_start.elapsed();
+
+    // Record telemetry (best-effort, don't fail the review)
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let telem_path = std::path::PathBuf::from(&home).join(".quorum/telemetry.jsonl");
+        let telem_store = telemetry::TelemetryStore::new(telem_path);
+        let mut finding_counts = std::collections::HashMap::new();
+        for f in &all_findings {
+            let sev = format!("{:?}", f.severity).to_lowercase();
+            *finding_counts.entry(sev).or_insert(0usize) += 1;
+        }
+        let total_tokens_in: u64 = file_results.iter().map(|r| r.usage.prompt_tokens).sum();
+        let total_tokens_out: u64 = file_results.iter().map(|r| r.usage.completion_tokens).sum();
+        let telem_entry = telemetry::TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: opts.files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+            findings: finding_counts,
+            model: pipeline_cfg.models.first().cloned().unwrap_or_default(),
+            tokens_in: total_tokens_in,
+            tokens_out: total_tokens_out,
+            duration_ms: review_duration.as_millis() as u64,
+            suppressed: 0,  // TODO: wire from calibrator
+        };
+        let _ = telem_store.record(&telem_entry);
     }
 
     // If all files had errors and no findings, exit with tool error

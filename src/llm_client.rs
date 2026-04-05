@@ -4,6 +4,36 @@
 
 use crate::pipeline::LlmReviewer;
 
+/// Token usage reported by the LLM API.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn total(&self) -> u64 {
+        self.prompt_tokens + self.completion_tokens
+    }
+}
+
+/// Combined response from an LLM API call.
+#[derive(Debug, Clone)]
+pub struct LlmResponse {
+    pub content: String,
+    pub usage: Option<TokenUsage>,
+}
+
+pub fn parse_usage(json: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = json.get("usage")?;
+    let prompt = usage.get("prompt_tokens")?.as_u64()?;
+    let completion = usage.get("completion_tokens")?.as_u64()?;
+    Some(TokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+    })
+}
+
 /// Models that require the Responses API instead of Chat Completions.
 const RESPONSES_API_MODELS: &[&str] = &[
     "gpt-5.3-codex",
@@ -42,7 +72,7 @@ impl OpenAiClient {
         RESPONSES_API_MODELS.iter().any(|m| *m == model)
     }
 
-    async fn call_model(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
+    async fn call_model(&self, model: &str, prompt: &str) -> anyhow::Result<LlmResponse> {
         if Self::needs_responses_api(model) {
             self.responses_api(model, prompt).await
         } else {
@@ -50,7 +80,7 @@ impl OpenAiClient {
         }
     }
 
-    async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
+    async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<LlmResponse> {
         let system_msg = Self::system_prompt();
 
         let mut body = serde_json::json!({
@@ -83,6 +113,7 @@ impl OpenAiClient {
         }
 
         let json: serde_json::Value = resp.json().await?;
+        let usage = parse_usage(&json);
 
         let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("unknown");
         if finish_reason == "length" {
@@ -95,11 +126,11 @@ impl OpenAiClient {
                 "Unexpected API response structure: no choices[0].message.content"
             ))?;
 
-        Ok(content.to_string())
+        Ok(LlmResponse { content: content.to_string(), usage })
     }
 
     /// OpenAI Responses API (/v1/responses) for codex and other responses-only models.
-    async fn responses_api(&self, model: &str, prompt: &str) -> anyhow::Result<String> {
+    async fn responses_api(&self, model: &str, prompt: &str) -> anyhow::Result<LlmResponse> {
         let mut body = serde_json::json!({
             "model": model,
             "instructions": Self::system_prompt(),
@@ -133,6 +164,7 @@ impl OpenAiClient {
         }
 
         let json: serde_json::Value = resp.json().await?;
+        let usage = parse_usage(&json);
 
         if json["status"].as_str() == Some("incomplete") {
             let reason = json["incomplete_details"].to_string();
@@ -161,7 +193,7 @@ impl OpenAiClient {
         if texts.is_empty() {
             anyhow::bail!("No text content in Responses API output");
         }
-        Ok(texts.join("\n"))
+        Ok(LlmResponse { content: texts.join("\n"), usage })
     }
 
     /// Send a chat completion request with tool definitions.
@@ -251,7 +283,7 @@ pub fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
 }
 
 impl LlmReviewer for OpenAiClient {
-    fn review(&self, prompt: &str, model: &str) -> anyhow::Result<String> {
+    fn review(&self, prompt: &str, model: &str) -> anyhow::Result<LlmResponse> {
         block_on_async(self.call_model(model, prompt))
     }
 }
@@ -328,6 +360,53 @@ mod tests {
         assert_eq!(arr[0]["function"]["name"], "read_file");
         assert_eq!(arr[0]["function"]["description"], "Read a file");
         assert!(arr[0]["function"]["parameters"]["properties"]["path"].is_object());
+    }
+
+    // -- parse_usage --
+
+    #[test]
+    fn parse_usage_valid_chat_completion() {
+        let json = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 1500,
+                "completion_tokens": 800,
+                "total_tokens": 2300
+            }
+        });
+        let usage = parse_usage(&json).unwrap();
+        assert_eq!(usage.prompt_tokens, 1500);
+        assert_eq!(usage.completion_tokens, 800);
+    }
+
+    #[test]
+    fn parse_usage_missing_usage_key() {
+        let json = serde_json::json!({"choices": []});
+        assert!(parse_usage(&json).is_none());
+    }
+
+    #[test]
+    fn parse_usage_null_tokens() {
+        let json = serde_json::json!({
+            "usage": {
+                "prompt_tokens": null,
+                "completion_tokens": null
+            }
+        });
+        assert!(parse_usage(&json).is_none());
+    }
+
+    #[test]
+    fn parse_usage_zero_tokens() {
+        let json = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        });
+        let usage = parse_usage(&json).unwrap();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
     }
 
     // Integration tests requiring a real API endpoint are in tests/llm_integration.rs

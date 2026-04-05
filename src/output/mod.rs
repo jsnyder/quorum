@@ -158,6 +158,50 @@ pub fn format_json_grouped(results: &[crate::pipeline::FileReviewResult]) -> any
     Ok(serde_json::to_string_pretty(&grouped)?)
 }
 
+pub fn format_compact_finding(f: &Finding) -> String {
+    let icon = severity_icon(&f.severity);
+    let line_label = if f.line_start == f.line_end {
+        format!("L{}", f.line_start)
+    } else {
+        format!("L{}-{}", f.line_start, f.line_end)
+    };
+    let title = if f.title.chars().count() > 80 {
+        let truncated: String = f.title.chars().take(80).collect();
+        format!("{}...", truncated)
+    } else {
+        f.title.clone()
+    };
+    format!("{icon}|{cat}|{line}|{title}",
+        icon = icon,
+        cat = f.category,
+        line = line_label,
+        title = title,
+    )
+}
+
+pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
+    if findings.is_empty() {
+        return format!("{}: clean", file_path);
+    }
+
+    let mut lines: Vec<String> = findings.iter()
+        .map(format_compact_finding)
+        .collect();
+
+    let critical = findings.iter()
+        .filter(|f| matches!(f.severity, Severity::Critical | Severity::High))
+        .count();
+    let warning = findings.iter()
+        .filter(|f| f.severity == Severity::Medium)
+        .count();
+    let info = findings.len() - critical - warning;
+
+    lines.push(format!("{} findings ({}C {}W {}I)",
+        findings.len(), critical, warning, info));
+
+    lines.join("\n")
+}
+
 pub fn compute_exit_code(findings: &[Finding]) -> i32 {
     if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
         2
@@ -317,5 +361,85 @@ mod tests {
             FindingBuilder::new().severity(Severity::Critical).build(),
         ];
         assert_eq!(compute_exit_code(&findings), 2);
+    }
+
+    // -- format_compact_finding --
+
+    #[test]
+    fn compact_finding_single_line() {
+        let f = FindingBuilder::new()
+            .title("SQL injection risk")
+            .severity(Severity::Critical)
+            .category("security")
+            .lines(42, 42)
+            .build();
+        let out = format_compact_finding(&f);
+        assert_eq!(out, "!|security|L42|SQL injection risk");
+    }
+
+    #[test]
+    fn compact_finding_line_range() {
+        let f = FindingBuilder::new()
+            .title("Complex function")
+            .severity(Severity::Medium)
+            .category("complexity")
+            .lines(10, 25)
+            .build();
+        let out = format_compact_finding(&f);
+        assert_eq!(out, "~|complexity|L10-25|Complex function");
+    }
+
+    #[test]
+    fn compact_finding_truncates_long_title() {
+        let long_title = "A".repeat(100);
+        let f = FindingBuilder::new()
+            .title(&long_title)
+            .severity(Severity::Info)
+            .lines(1, 1)
+            .build();
+        let out = format_compact_finding(&f);
+        assert!(out.len() < 120);
+        assert!(out.ends_with("..."));
+    }
+
+    // -- format_compact_review --
+
+    #[test]
+    fn compact_review_with_findings() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Bug A")
+                .severity(Severity::Critical)
+                .category("security")
+                .lines(42, 42)
+                .build(),
+            FindingBuilder::new()
+                .title("Bug B")
+                .severity(Severity::Medium)
+                .category("style")
+                .lines(10, 10)
+                .build(),
+        ];
+        let out = format_compact_review("src/main.rs", &findings);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "!|security|L42|Bug A");
+        assert_eq!(lines[1], "~|style|L10|Bug B");
+        assert!(lines[2].contains("2 findings"));
+    }
+
+    #[test]
+    fn compact_review_clean() {
+        let out = format_compact_review("src/main.rs", &[]);
+        assert_eq!(out.trim(), "src/main.rs: clean");
+    }
+
+    #[test]
+    fn compact_no_ansi_codes() {
+        let f = FindingBuilder::new()
+            .title("Test")
+            .severity(Severity::Critical)
+            .build();
+        let out = format_compact_finding(&f);
+        assert!(!out.contains("\x1b["));
     }
 }

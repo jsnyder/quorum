@@ -15,13 +15,14 @@ use crate::review::{self, ReviewRequest};
 
 /// Trait for LLM review — allows testing with fake implementations.
 pub trait LlmReviewer: Send + Sync {
-    fn review(&self, prompt: &str, model: &str) -> anyhow::Result<String>;
+    fn review(&self, prompt: &str, model: &str) -> anyhow::Result<crate::llm_client::LlmResponse>;
 }
 
 /// Result of reviewing a single file.
 pub struct FileReviewResult {
     pub file_path: String,
     pub findings: Vec<Finding>,
+    pub usage: crate::llm_client::TokenUsage,
 }
 
 pub struct PipelineConfig {
@@ -132,6 +133,7 @@ pub fn review_file(
 ) -> anyhow::Result<FileReviewResult> {
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
+    let mut total_usage = crate::llm_client::TokenUsage::default();
 
     // Build feedback index once — used for both few-shot injection and calibration
     let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
@@ -217,8 +219,12 @@ pub fn review_file(
 
         for model in &pipeline_config.models {
             match reviewer.review(&prompt, model) {
-                Ok(response) => {
-                    match review::parse_llm_response(&response, model) {
+                Ok(resp) => {
+                    if let Some(u) = &resp.usage {
+                        total_usage.prompt_tokens += u.prompt_tokens;
+                        total_usage.completion_tokens += u.completion_tokens;
+                    }
+                    match review::parse_llm_response(&resp.content, model) {
                         Ok(findings) => all_sources.push(findings),
                         Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
                     }
@@ -284,6 +290,7 @@ pub fn review_file(
     Ok(FileReviewResult {
         file_path: file_str,
         findings: final_findings,
+        usage: total_usage,
     })
 }
 
@@ -352,6 +359,7 @@ pub fn review_file_llm_only(
 ) -> anyhow::Result<FileReviewResult> {
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
+    let mut total_usage = crate::llm_client::TokenUsage::default();
 
     // Build feedback index once — used for both few-shot injection and calibration
     let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
@@ -403,8 +411,12 @@ pub fn review_file_llm_only(
             let prompt = review::build_review_prompt(&req);
             for model in &pipeline_config.models {
                 match reviewer.review(&prompt, model) {
-                    Ok(response) => {
-                        match review::parse_llm_response(&response, model) {
+                    Ok(resp) => {
+                        if let Some(u) = &resp.usage {
+                            total_usage.prompt_tokens += u.prompt_tokens;
+                            total_usage.completion_tokens += u.completion_tokens;
+                        }
+                        match review::parse_llm_response(&resp.content, model) {
                             Ok(findings) => all_sources.push(findings),
                             Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
                         }
@@ -466,6 +478,7 @@ pub fn review_file_llm_only(
     Ok(FileReviewResult {
         file_path: file_str,
         findings: final_findings,
+        usage: total_usage,
     })
 }
 

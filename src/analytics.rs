@@ -1,6 +1,7 @@
 /// Per-source TP/FP analytics computed from the feedback store.
 
 use std::collections::HashMap;
+use chrono::{DateTime, Utc};
 
 use crate::feedback::{FeedbackEntry, Verdict};
 
@@ -70,6 +71,63 @@ pub fn format_stats_report(stats: &HashMap<String, SourceStats>) -> String {
     lines.push(format!("Total: {} entries ({} TP, {} FP)", total, total_tp, total_fp));
 
     lines.join("\n")
+}
+
+#[derive(Debug, Clone)]
+pub struct PrecisionWindow {
+    pub week_start: DateTime<Utc>,
+    pub precision: f64,
+    pub count: usize,
+}
+
+/// Compute rolling precision over time windows.
+/// Requires minimum 10 entries per window to report.
+pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<PrecisionWindow> {
+    if entries.is_empty() || window_days <= 0 {
+        return vec![];
+    }
+
+    let min_entries = 10;
+    let mut sorted: Vec<&FeedbackEntry> = entries.iter().collect();
+    sorted.sort_by_key(|e| e.timestamp);
+
+    let first_ts = sorted.first().unwrap().timestamp;
+    let last_ts = sorted.last().unwrap().timestamp;
+    let mut windows = Vec::new();
+
+    let mut window_start = first_ts;
+    while window_start <= last_ts {
+        let window_end = window_start + chrono::Duration::days(window_days);
+        let window_entries: Vec<_> = sorted.iter()
+            .filter(|e| e.timestamp >= window_start && e.timestamp < window_end)
+            .collect();
+
+        if window_entries.len() >= min_entries {
+            let mut tp = 0usize;
+            let mut partial = 0usize;
+            let mut fp = 0usize;
+            for e in &window_entries {
+                match e.verdict {
+                    Verdict::Tp => tp += 1,
+                    Verdict::Partial => partial += 1,
+                    Verdict::Fp => fp += 1,
+                    Verdict::Wontfix => {}
+                }
+            }
+            let relevant = tp + partial;
+            let total = relevant + fp;
+            let precision = if total > 0 { relevant as f64 / total as f64 } else { 0.0 };
+            windows.push(PrecisionWindow {
+                week_start: window_start,
+                precision,
+                count: window_entries.len(),
+            });
+        }
+
+        window_start = window_end;
+    }
+
+    windows
 }
 
 #[cfg(test)]
@@ -192,5 +250,52 @@ mod tests {
         let stats = compute_stats(&[]);
         let report = format_stats_report(&stats);
         assert!(report.contains("No feedback"));
+    }
+
+    // -- precision_trend --
+
+    #[test]
+    fn precision_trend_by_week() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let mut entries = Vec::new();
+
+        // Week 1: 5 TP, 5 FP = 50% precision (need 10 min)
+        for _ in 0..5 {
+            let mut e = entry("model", Verdict::Tp);
+            e.timestamp = now - Duration::days(20);
+            entries.push(e);
+        }
+        for _ in 0..5 {
+            let mut e = entry("model", Verdict::Fp);
+            e.timestamp = now - Duration::days(20);
+            entries.push(e);
+        }
+
+        // Week 2: 8 TP, 2 FP = 80% precision (need 10 min)
+        for _ in 0..8 {
+            let mut e = entry("model", Verdict::Tp);
+            e.timestamp = now - Duration::days(5);
+            entries.push(e);
+        }
+        for _ in 0..2 {
+            let mut e = entry("model", Verdict::Fp);
+            e.timestamp = now - Duration::days(5);
+            entries.push(e);
+        }
+
+        let trend = precision_trend(&entries, 7);
+        assert!(trend.len() >= 2);
+        let first = trend.first().unwrap();
+        let last = trend.last().unwrap();
+        assert!((first.precision - 0.5).abs() < 0.1);
+        assert!((last.precision - 0.8).abs() < 0.1);
+    }
+
+    #[test]
+    fn precision_trend_skips_sparse_windows() {
+        let entries = vec![entry("model", Verdict::Tp)]; // only 1 entry
+        let trend = precision_trend(&entries, 7);
+        assert!(trend.is_empty()); // not enough data
     }
 }

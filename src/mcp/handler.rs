@@ -178,10 +178,10 @@ impl QuorumHandler {
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
         }
 
-        let response = reviewer.review(&prompt, &self.config.model)
+        let resp = reviewer.review(&prompt, &self.config.model)
             .map_err(|e| format!("LLM error: {}", e))?;
 
-        Ok(CallToolResult::text_content(vec![response.into()]))
+        Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
     fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
@@ -195,10 +195,10 @@ impl QuorumHandler {
             params.file_path, redacted_error, redacted_code
         );
 
-        let response = reviewer.review(&prompt, &self.config.model)
+        let resp = reviewer.review(&prompt, &self.config.model)
             .map_err(|e| format!("LLM error: {}", e))?;
 
-        Ok(CallToolResult::text_content(vec![response.into()]))
+        Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
     fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
@@ -225,10 +225,10 @@ impl QuorumHandler {
             framework_hint, lang_name, params.file_path, lang_name, redacted_code
         );
 
-        let response = reviewer.review(&prompt, &self.config.model)
+        let resp = reviewer.review(&prompt, &self.config.model)
             .map_err(|e| format!("LLM error: {}", e))?;
 
-        Ok(CallToolResult::text_content(vec![response.into()]))
+        Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 }
 
@@ -499,8 +499,11 @@ mod tests {
 
         struct FakeLlm;
         impl LlmReviewer for FakeLlm {
-            fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<String> {
-                Ok("This is a helpful response about the code.".into())
+            fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+                Ok(crate::llm_client::LlmResponse {
+                    content: "This is a helpful response about the code.".into(),
+                    usage: None,
+                })
             }
         }
 

@@ -26,8 +26,8 @@ pub fn auto_calibrate(
     }
 
     let prompt = build_triage_prompt(findings, code, file_path);
-    let response = reviewer.review(&prompt, model)?;
-    let verdicts = parse_triage_response(&response, findings)?;
+    let resp = reviewer.review(&prompt, model)?;
+    let verdicts = parse_triage_response(&resp.content, findings)?;
 
     let mut recorded = 0;
     for (finding, verdict, reason) in &verdicts {
@@ -171,8 +171,8 @@ mod tests {
     fn auto_calibrate_empty_findings() {
         struct FakeLlm;
         impl LlmReviewer for FakeLlm {
-            fn review(&self, _: &str, _: &str) -> anyhow::Result<String> {
-                Ok("[]".into())
+            fn review(&self, _: &str, _: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+                Ok(crate::llm_client::LlmResponse { content: "[]".into(), usage: None })
             }
         }
         let store = FeedbackStore::new(std::path::PathBuf::from("/tmp/auto-cal-test.jsonl"));
@@ -184,8 +184,11 @@ mod tests {
     fn auto_calibrate_records_verdicts() {
         struct FakeLlm;
         impl LlmReviewer for FakeLlm {
-            fn review(&self, _: &str, _: &str) -> anyhow::Result<String> {
-                Ok(r#"[{"index":0,"verdict":"tp","reason":"confirmed real"}]"#.into())
+            fn review(&self, _: &str, _: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+                Ok(crate::llm_client::LlmResponse {
+                    content: r#"[{"index":0,"verdict":"tp","reason":"confirmed real"}]"#.into(),
+                    usage: None,
+                })
             }
         }
         let dir = tempfile::tempdir().unwrap();
