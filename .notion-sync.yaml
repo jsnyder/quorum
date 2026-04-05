@@ -1,0 +1,32 @@
+# .notion-sync.yaml
+# Notion workspace sync configuration for quorum
+
+workspace:
+  name: "Quorum"
+  description: "Rust-native multi-source code review tool"
+  repo_url: "https://github.com/jsnyder/quorum"
+
+systems: []
+
+databases:
+  reference:
+    name: "Reference Docs"
+    icon: "docs"
+    sources:
+      - path: "docs/*.md"
+      - path: "DESIGN.md"
+    sync_direction: "git_to_notion"
+
+  plans:
+    name: "Implementation Plans"
+    icon: "target"
+    sources:
+      - path: "docs/plans/*.md"
+    sync_direction: "git_to_notion"
+
+  rules:
+    name: "ast-grep Rules"
+    icon: "search"
+    sources:
+      - path: "rules/**/*.yml"
+    sync_direction: "git_to_notion"
