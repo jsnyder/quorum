@@ -2,7 +2,7 @@
 
 Multi-source code review: local AST analysis + LLM ensemble + linter orchestration + ast-grep rules + feedback-calibrated findings.
 
-Rust-native successor to [third-opinion](https://github.com/jsnyder/third-opinion). Single binary, 485 tests, 31MB.
+Rust-native successor to [third-opinion](https://github.com/jsnyder/third-opinion). Single binary, 492 tests, 31MB.
 
 ## What it does
 

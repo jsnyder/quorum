@@ -236,7 +236,7 @@ The Rust port is an opportunity to redesign the review pipeline, not just transl
                     | Feedback RAG       |
                     | Retrieve similar   |
                     | TP/FP precedent    |
-                    | from 562 entries   |
+                    | from ~2200 entries |
                     +---------+----------+
                               |
                     +---------v----------+
@@ -305,7 +305,7 @@ The LLM calibrator adds value on top: assessing whether a linter finding is cont
 
 ### 4. Feedback RAG for Calibration
 
-**Data**: 562 entries (276 TP, 111 FP, 109 partial, 66 wontfix) -- unused at review time.
+**Data**: ~2,200+ entries (growing) -- now used both pre-generation (few-shot injection) and post-generation (calibration).
 
 Architecture:
 1. Embed all feedback entries (code snippet + finding text + TP/FP label)

@@ -8,9 +8,9 @@ Rust-native, single-binary distribution. Successor to third-opinion (TypeScript)
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (485 tests)
+cargo test --bin quorum        # run unit tests (492 tests)
 cargo test                     # run all tests (includes CLI integration)
-cargo build --release          # release build (29MB binary)
+cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
