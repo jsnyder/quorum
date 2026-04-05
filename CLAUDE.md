@@ -1,8 +1,4 @@
-# Quorum
-
-Multi-source code review tool: LLM ensemble + local AST analysis + linter orchestration + feedback-augmented calibration.
-
-Rust-native, single-binary distribution. Successor to third-opinion (TypeScript).
+# Quorum — Rust-native multi-source code review tool
 
 ## Commands
 
