@@ -64,6 +64,7 @@ tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 tree-sitter-bash = "0.23"
+tree-sitter-hcl = "1.1"
 tree-sitter-language = "0.1"
 # tree-sitter-dockerfile grammar is vendored in grammars/ and compiled via build.rs
 # (the crate depends on tree-sitter 0.20 which conflicts with 0.25)
