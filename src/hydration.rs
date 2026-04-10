@@ -78,6 +78,7 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Yaml => vec![],
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
+        Language::Terraform => vec![],
     }
 }
 
@@ -89,6 +90,7 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Yaml => vec![],
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
+        Language::Terraform => vec![],
     }
 }
 
@@ -100,6 +102,7 @@ fn call_expr_kinds(lang: Language) -> Vec<&'static str> {
         Language::Yaml => vec![],
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
+        Language::Terraform => vec![],
     }
 }
 
@@ -111,6 +114,7 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
         Language::Yaml => vec![],
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
+        Language::Terraform => vec![],
     }
 }
 

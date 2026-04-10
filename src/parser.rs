@@ -9,6 +9,7 @@ pub enum Language {
     Yaml,
     Bash,
     Dockerfile,
+    Terraform,
 }
 
 impl Language {
@@ -21,6 +22,7 @@ impl Language {
             "yaml" | "yml" => Some(Language::Yaml),
             "sh" | "bash" | "zsh" | "bats" => Some(Language::Bash),
             "dockerfile" => Some(Language::Dockerfile),
+            "tf" | "tfvars" => Some(Language::Terraform),
             _ => None,
         }
     }
@@ -54,6 +56,7 @@ impl Language {
                 };
                 lang_fn.into()
             }
+            Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
         }
     }
 
@@ -68,6 +71,7 @@ impl Language {
             Language::Yaml => &[],
             Language::Bash => &["function_definition"],
             Language::Dockerfile => &[],
+            Language::Terraform => &[],
         }
     }
 }
@@ -424,5 +428,69 @@ mod tests {
         let source = "automation:\n  - alias: Turn on lights\n    trigger:\n      - platform: state\n        entity_id: binary_sensor.motion\n    action:\n      - service: light.turn_on\n        target:\n          entity_id: light.living_room\n";
         let tree = parse(source, Language::Yaml).unwrap();
         assert!(!tree.root_node().has_error());
+    }
+
+    // -- Terraform/HCL support --
+    //
+    // tree-sitter-hcl AST node kinds (verified via dump test):
+    //   Root: config_file
+    //   Top-level: body > block | attribute
+    //   Block structure: block > identifier (type), string_lit (labels), block_start, body, block_end
+    //   Attribute: attribute > identifier, =, expression
+    //   Values: literal_value > string_lit (quoted_template_start, template_literal, quoted_template_end)
+    //           | numeric_lit | bool_lit
+    //   Expressions: expression > variable_expr > identifier
+    //                | function_call > identifier, function_arguments
+    //                | collection_value > object | tuple
+    //   Object: object > object_start, object_elem (expression = expression), object_end
+    //   String interpolation: template_expr > (template_interpolation > expression)
+
+    #[test]
+    fn detect_language_terraform() {
+        assert_eq!(Language::from_extension("tf"), Some(Language::Terraform));
+        assert_eq!(Language::from_extension("tfvars"), Some(Language::Terraform));
+        assert_eq!(Language::from_extension("TF"), Some(Language::Terraform));
+    }
+
+    #[test]
+    fn detect_language_terraform_from_path() {
+        assert_eq!(
+            Language::from_path(std::path::Path::new("main.tf")),
+            Some(Language::Terraform)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("modules/vpc/variables.tf")),
+            Some(Language::Terraform)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("terraform.tfvars")),
+            Some(Language::Terraform)
+        );
+    }
+
+    #[test]
+    fn parse_valid_terraform() {
+        let source = r#"resource "aws_s3_bucket" "example" {
+  bucket = "my-bucket"
+  tags = {
+    Name = "My bucket"
+  }
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        assert_eq!(tree.root_node().kind(), "config_file");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn terraform_no_functions() {
+        let source = r#"resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let fns = extract_functions(&tree, source, Language::Terraform);
+        assert!(fns.is_empty());
     }
 }

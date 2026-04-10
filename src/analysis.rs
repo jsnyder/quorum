@@ -17,6 +17,7 @@ pub fn analyze_complexity(
         Language::Yaml => &[][..],
         Language::Bash => &[][..],
         Language::Dockerfile => &[][..],
+        Language::Terraform => &[][..],
     };
 
     let mut func_nodes = Vec::new();
@@ -172,6 +173,7 @@ fn scan_insecure_nodes(
         Language::Yaml => scan_insecure_yaml(node, source, findings),
         Language::Bash => scan_insecure_bash(node, source, findings),
         Language::Dockerfile => scan_insecure_dockerfile(node, source, findings),
+        Language::Terraform => {},
     }
 
     for i in 0..node.child_count() {

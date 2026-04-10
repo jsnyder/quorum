@@ -173,6 +173,7 @@ impl QuorumHandler {
                     Language::Yaml => "yaml",
                     Language::Bash => "bash",
                     Language::Dockerfile => "dockerfile",
+                    Language::Terraform => "terraform",
                 })
                 .unwrap_or("text");
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
@@ -216,6 +217,7 @@ impl QuorumHandler {
             Language::Yaml => "yaml",
             Language::Bash => "bash",
             Language::Dockerfile => "dockerfile",
+            Language::Terraform => "terraform",
         };
 
         let framework_hint = params.framework.as_deref().map(|f| format!(" using the {} framework", f)).unwrap_or_default();
