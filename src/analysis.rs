@@ -157,6 +157,9 @@ pub fn analyze_insecure_patterns(
     if matches!(lang, Language::Dockerfile) {
         findings.extend(analyze_dockerfile_structure(tree, source));
     }
+    if matches!(lang, Language::Terraform) {
+        findings.extend(analyze_terraform_structure(tree, source));
+    }
     findings
 }
 
@@ -173,7 +176,7 @@ fn scan_insecure_nodes(
         Language::Yaml => scan_insecure_yaml(node, source, findings),
         Language::Bash => scan_insecure_bash(node, source, findings),
         Language::Dockerfile => scan_insecure_dockerfile(node, source, findings),
-        Language::Terraform => {},
+        Language::Terraform => scan_insecure_terraform(node, source, findings),
     }
 
     for i in 0..node.child_count() {
@@ -1904,6 +1907,200 @@ fn scan_insecure_dockerfile(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Terraform / HCL patterns
+// ---------------------------------------------------------------------------
+
+/// Secret-like attribute name patterns for Terraform hardcoded secret detection.
+const TF_SECRET_PATTERNS: &[&str] = &[
+    "PASSWORD", "API_KEY", "SECRET", "TOKEN", "PRIVATE_KEY",
+    "ACCESS_KEY", "CREDENTIAL", "AUTH_KEY", "SECRET_KEY",
+];
+
+/// Check if a Terraform attribute's expression (third child) contains a variable
+/// reference rather than a literal value.
+fn tf_expr_is_variable_ref(attr_node: &tree_sitter::Node) -> bool {
+    // attribute children: identifier, =, expression
+    // expression child(0) is variable_expr for `var.xxx`
+    if let Some(expr) = attr_node.child(2) {
+        if expr.kind() == "expression" {
+            if let Some(first) = expr.child(0) {
+                return first.kind() == "variable_expr";
+            }
+        }
+    }
+    false
+}
+
+/// Extract the string content of a Terraform attribute's expression value.
+/// Returns the inner text (without quotes) if the value is a string literal.
+fn tf_expr_string_inner<'a>(attr_node: &tree_sitter::Node, source: &'a str) -> Option<&'a str> {
+    if let Some(expr) = attr_node.child(2) {
+        if expr.kind() == "expression" {
+            let text = source[expr.byte_range()].trim();
+            if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+                return Some(&text[1..text.len() - 1]);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the numeric value from a Terraform attribute's expression.
+fn tf_expr_numeric(attr_node: &tree_sitter::Node, source: &str) -> Option<u16> {
+    if let Some(expr) = attr_node.child(2) {
+        if expr.kind() == "expression" {
+            let text = source[expr.byte_range()].trim();
+            return text.parse::<u16>().ok();
+        }
+    }
+    None
+}
+
+fn scan_insecure_terraform(
+    node: &tree_sitter::Node,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let kind = node.kind();
+    let line = node.start_position().row as u32 + 1;
+    let end_line = node.end_position().row as u32 + 1;
+
+    // T1: Hardcoded secrets in attributes
+    // AST: attribute > identifier, =, expression > literal_value > string_lit
+    if kind == "attribute" {
+        if let Some(name_node) = node.child(0) {
+            if name_node.kind() == "identifier" {
+                let attr_name = source[name_node.byte_range()].to_uppercase();
+                if TF_SECRET_PATTERNS.iter().any(|p| attr_name.contains(p)) {
+                    // Only flag if value is a non-empty string literal (not a variable ref)
+                    if !tf_expr_is_variable_ref(node) {
+                        if let Some(inner) = tf_expr_string_inner(node, source) {
+                            if !inner.is_empty()
+                                && !inner.starts_with("${var.")
+                                && !inner.starts_with("${")
+                            {
+                                findings.push(Finding {
+                                    title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
+                                    description: "Secrets should be loaded from variables or a secrets manager, not hardcoded in Terraform files.".into(),
+                                    severity: Severity::High,
+                                    category: "security".into(),
+                                    source: Source::LocalAst,
+                                    line_start: line,
+                                    line_end: end_line,
+                                    evidence: vec![format!("{} = [REDACTED]", &source[name_node.byte_range()])],
+                                    calibrator_action: None,
+                                    similar_precedent: vec![],
+                                    canonical_pattern: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // T2: Wildcard IAM actions in object_elem (jsonencode-style HCL objects)
+    // AST: object_elem > expression(variable_expr "Action"), =, expression(literal_value "\"*\"")
+    if kind == "object_elem" {
+        // Check if the key expression is "Action" (case-insensitive)
+        if let Some(key_expr) = node.child(0) {
+            if key_expr.kind() == "expression" {
+                let key_text = source[key_expr.byte_range()].trim();
+                if key_text.eq_ignore_ascii_case("Action") {
+                    // Check if value expression is "*"
+                    if let Some(val_expr) = node.child(2) {
+                        if val_expr.kind() == "expression" {
+                            let val_text = source[val_expr.byte_range()].trim();
+                            let inner = val_text.trim_matches('"');
+                            if inner == "*" {
+                                findings.push(Finding {
+                                    title: "Wildcard IAM action grants unrestricted permissions".into(),
+                                    description: "Using `Action = \"*\"` grants all permissions. Follow the principle of least privilege.".into(),
+                                    severity: Severity::High,
+                                    category: "security".into(),
+                                    source: Source::LocalAst,
+                                    line_start: line,
+                                    line_end: end_line,
+                                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                    calibrator_action: None,
+                                    similar_precedent: vec![],
+                                    canonical_pattern: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // T3: Open security groups on sensitive ports
+    // AST: block > identifier("ingress"), block_start, body > attribute(from_port), attribute(cidr_blocks), block_end
+    if kind == "block" {
+        if let Some(first_child) = node.child(0) {
+            if first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress" {
+                let mut has_open_cidr = false;
+                let mut port_is_sensitive = true;
+                let mut found_port = false;
+
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "body" {
+                            for j in 0..child.child_count() {
+                                if let Some(attr) = child.child(j) {
+                                    if attr.kind() == "attribute" {
+                                        if let Some(attr_name) = attr.child(0) {
+                                            if attr_name.kind() == "identifier" {
+                                                let name = &source[attr_name.byte_range()];
+                                                if name == "cidr_blocks" {
+                                                    let attr_text = &source[attr.byte_range()];
+                                                    if attr_text.contains("0.0.0.0/0") || attr_text.contains("::/0") {
+                                                        has_open_cidr = true;
+                                                    }
+                                                }
+                                                if name == "from_port" {
+                                                    if let Some(port) = tf_expr_numeric(&attr, source) {
+                                                        found_port = true;
+                                                        if port == 80 || port == 443 {
+                                                            port_is_sensitive = false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if has_open_cidr && port_is_sensitive && found_port {
+                    findings.push(Finding {
+                        title: "Security group open to 0.0.0.0/0 on sensitive port".into(),
+                        description: "Allowing ingress from 0.0.0.0/0 on non-HTTP(S) ports exposes the service to the internet. Restrict to specific CIDR ranges.".into(),
+                        severity: Severity::High,
+                        category: "security".into(),
+                        source: Source::LocalAst,
+                        line_start: line,
+                        line_end: end_line,
+                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                        calibrator_action: None,
+                        similar_precedent: vec![],
+                        canonical_pattern: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn analyze_terraform_structure(_tree: &tree_sitter::Tree, _source: &str) -> Vec<Finding> {
+    Vec::new() // Implemented in Task 6
+}
+
 fn analyze_dockerfile_structure(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -3384,6 +3581,129 @@ def process(items=None):
             "Should flag tautological length in any expression. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
+    }
+
+    // -- Terraform security patterns --
+
+    #[test]
+    fn terraform_hardcoded_secret_in_attribute() {
+        let source = r#"resource "aws_db_instance" "db" {
+  engine   = "postgres"
+  password = "hunter2"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.category == "security" && f.title.to_lowercase().contains("secret")),
+            "Should detect hardcoded password in resource: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_password_from_variable_is_ok() {
+        let source = r#"resource "aws_db_instance" "db" {
+  engine   = "postgres"
+  password = var.db_password
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.to_lowercase().contains("secret")),
+            "Password from variable ref should not flag: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_hardcoded_api_key() {
+        let source = r#"resource "aws_instance" "web" {
+  api_key = "AKIAIOSFODNN7EXAMPLE"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.category == "security"),
+            "Should detect hardcoded API key: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_wildcard_iam_action() {
+        let source = r#"resource "aws_iam_policy" "admin" {
+  name   = "admin-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "*"
+      Resource = "*"
+    }]
+  })
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.category == "security" && f.title.to_lowercase().contains("wildcard")),
+            "Should detect wildcard IAM action: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_open_security_group_ssh() {
+        let source = r#"resource "aws_security_group" "open" {
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.category == "security" && f.title.contains("0.0.0.0/0")),
+            "Should detect open security group on port 22: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_open_sg_on_443_is_ok() {
+        let source = r#"resource "aws_security_group" "web" {
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
+            "Port 443 open to public is normal for web servers: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_open_sg_on_80_is_ok() {
+        let source = r#"resource "aws_security_group" "web" {
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
+            "Port 80 open to public is normal for web servers: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_empty_string_not_flagged_as_secret() {
+        let source = r#"resource "aws_instance" "web" {
+  password = ""
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.to_lowercase().contains("secret")),
+            "Empty string should not flag as secret: {:?}", findings);
     }
 
     #[test]
