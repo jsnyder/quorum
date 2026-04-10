@@ -2097,8 +2097,211 @@ fn scan_insecure_terraform(
     }
 }
 
-fn analyze_terraform_structure(_tree: &tree_sitter::Tree, _source: &str) -> Vec<Finding> {
-    Vec::new() // Implemented in Task 6
+fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let root = tree.root_node();
+
+    // Walk top-level to find blocks in the config_file > body
+    let top_body = if root.kind() == "config_file" {
+        (0..root.child_count()).find_map(|i| {
+            let c = root.child(i)?;
+            if c.kind() == "body" { Some(c) } else { None }
+        })
+    } else {
+        None
+    };
+
+    let Some(top_body) = top_body else {
+        return findings;
+    };
+
+    let mut has_terraform_block = false;
+    let mut has_required_version = false;
+    let mut has_resource_or_data = false;
+
+    for i in 0..top_body.child_count() {
+        let Some(child) = top_body.child(i) else { continue };
+        if child.kind() != "block" {
+            continue;
+        }
+        let Some(btype) = hcl_block_type(child, source) else { continue };
+
+        match btype {
+            "resource" | "data" => {
+                has_resource_or_data = true;
+            }
+            "terraform" => {
+                has_terraform_block = true;
+                // Check for required_version attribute in terraform block body
+                if let Some(tbody) = hcl_block_body(child) {
+                    for j in 0..tbody.child_count() {
+                        let Some(attr_or_block) = tbody.child(j) else { continue };
+                        if attr_or_block.kind() == "attribute" {
+                            if let Some(id) = attr_or_block.child(0) {
+                                if id.kind() == "identifier" && &source[id.byte_range()] == "required_version" {
+                                    has_required_version = true;
+                                }
+                            }
+                        }
+
+                        // S2: Check required_providers block
+                        if attr_or_block.kind() == "block" {
+                            if hcl_block_type(attr_or_block, source) == Some("required_providers") {
+                                if let Some(rp_body) = hcl_block_body(attr_or_block) {
+                                    check_required_providers(rp_body, source, &mut findings);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // S1: Missing required_version
+    if (!has_terraform_block || !has_required_version) && has_resource_or_data {
+        findings.push(Finding {
+            title: "Missing required_version in terraform block".into(),
+            description: "Add a `terraform { required_version = \">= X.Y\" }` block to pin the Terraform version and prevent unexpected upgrades.".into(),
+            severity: Severity::Medium,
+            category: "reliability".into(),
+            source: Source::LocalAst,
+            line_start: 1,
+            line_end: 1,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+        });
+    }
+
+    findings
+}
+
+/// Get the first child identifier text from an HCL block node.
+fn hcl_block_type<'a>(block: tree_sitter::Node, source: &'a str) -> Option<&'a str> {
+    for i in 0..block.child_count() {
+        if let Some(c) = block.child(i) {
+            if c.kind() == "identifier" {
+                return Some(&source[c.byte_range()]);
+            }
+        }
+    }
+    None
+}
+
+/// Get the body child node from an HCL block.
+fn hcl_block_body(block: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    for i in 0..block.child_count() {
+        if let Some(c) = block.child(i) {
+            if c.kind() == "body" {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// S2: Check each provider entry in required_providers for missing version constraint.
+fn check_required_providers(
+    rp_body: tree_sitter::Node,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    // required_providers body contains attributes like:
+    //   aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    // Each entry is an attribute node whose value is an object expression.
+    for i in 0..rp_body.child_count() {
+        let Some(attr) = rp_body.child(i) else { continue };
+        if attr.kind() != "attribute" {
+            continue;
+        }
+
+        // Get provider name (first identifier child)
+        let provider_name = (0..attr.child_count()).find_map(|j| {
+            let c = attr.child(j)?;
+            if c.kind() == "identifier" { Some(&source[c.byte_range()]) } else { None }
+        });
+
+        // Find the expression child (the value after =)
+        let expr = (0..attr.child_count()).find_map(|j| {
+            let c = attr.child(j)?;
+            if c.kind() == "expression" { Some(c) } else { None }
+        });
+
+        let Some(expr) = expr else { continue };
+
+        // Walk the expression tree looking for object keys "source" and "version"
+        let mut has_source = false;
+        let mut has_version = false;
+        walk_for_object_keys(expr, source, &mut has_source, &mut has_version);
+
+        if has_source && !has_version {
+            findings.push(Finding {
+                title: format!(
+                    "Provider `{}` in required_providers has no version constraint",
+                    provider_name.unwrap_or("unknown")
+                ),
+                description: "Add a `version` constraint to prevent unexpected provider upgrades.".into(),
+                severity: Severity::Medium,
+                category: "reliability".into(),
+                source: Source::LocalAst,
+                line_start: attr.start_position().row as u32 + 1,
+                line_end: attr.end_position().row as u32 + 1,
+                evidence: vec![],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+            });
+        }
+    }
+}
+
+/// Recursively walk an expression node looking for object keys named "source" and "version".
+/// In HCL AST, object_elem has structure: expression(variable_expr(identifier)) = expression
+fn walk_for_object_keys(
+    node: tree_sitter::Node,
+    source: &str,
+    has_source: &mut bool,
+    has_version: &mut bool,
+) {
+    if node.kind() == "object_elem" {
+        // The key is the first child: expression > variable_expr > identifier
+        if let Some(key_expr) = node.child(0) {
+            let key_name = extract_identifier_from_expr(key_expr, source);
+            if let Some(name) = key_name {
+                if name == "source" {
+                    *has_source = true;
+                }
+                if name == "version" {
+                    *has_version = true;
+                }
+            }
+        }
+        return;
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_for_object_keys(child, source, has_source, has_version);
+        }
+    }
+}
+
+/// Extract identifier text from an expression node (expression > variable_expr > identifier).
+fn extract_identifier_from_expr<'a>(node: tree_sitter::Node, source: &'a str) -> Option<&'a str> {
+    if node.kind() == "identifier" {
+        return Some(&source[node.byte_range()]);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(result) = extract_identifier_from_expr(child, source) {
+                return Some(result);
+            }
+        }
+    }
+    None
 }
 
 fn analyze_dockerfile_structure(
@@ -3714,6 +3917,97 @@ def process(items=None):
         let serious = findings.iter().filter(|f| f.severity >= Severity::Medium).count();
         assert_eq!(serious, 0, "Clean Dockerfile should have no serious findings. Got: {:?}",
             findings.iter().filter(|f| f.severity >= Severity::Medium).map(|f| (&f.severity, &f.title)).collect::<Vec<_>>());
+    }
+
+    // -- Terraform structural analysis --
+
+    #[test]
+    fn terraform_missing_required_version() {
+        let source = r#"provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.title.contains("required_version")),
+            "Should warn about missing terraform required_version: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_has_required_version_is_ok() {
+        let source = r#"terraform {
+  required_version = ">= 1.0"
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.contains("required_version")),
+            "Should not warn when required_version is present: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_no_resources_no_version_warning() {
+        let source = r#"variable "name" {
+  type = string
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.contains("required_version")),
+            "Files without resources should not warn about required_version: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_provider_without_version() {
+        let source = r#"terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+    }
+  }
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(findings.iter().any(|f| f.title.contains("version constraint")),
+            "Should warn about provider without version constraint: {:?}", findings);
+    }
+
+    #[test]
+    fn terraform_provider_with_version_is_ok() {
+        let source = r#"terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-123"
+}
+"#;
+        let tree = parse(source, Language::Terraform).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
+        assert!(!findings.iter().any(|f| f.title.contains("version constraint")),
+            "Should not warn when provider has version constraint: {:?}", findings);
     }
 
 }
