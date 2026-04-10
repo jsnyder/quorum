@@ -21,6 +21,7 @@ pub enum LinterKind {
     Shellcheck,
     Hadolint,
     AstGrep,
+    Tflint,
 }
 
 impl LinterKind {
@@ -33,6 +34,7 @@ impl LinterKind {
             LinterKind::Shellcheck => "shellcheck",
             LinterKind::Hadolint => "hadolint",
             LinterKind::AstGrep => "ast-grep",
+            LinterKind::Tflint => "tflint",
         }
     }
 }
@@ -101,6 +103,20 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         linters.push(LinterKind::Hadolint);
     }
 
+    // Tflint: .tflint.hcl config or .tf files in project root
+    let has_tflint_config = project_dir.join(".tflint.hcl").exists();
+    let has_tf_files = std::fs::read_dir(project_dir)
+        .ok()
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.path().extension().and_then(|ext| ext.to_str()) == Some("tf")
+            })
+        })
+        .unwrap_or(false);
+    if has_tflint_config || has_tf_files {
+        linters.push(LinterKind::Tflint);
+    }
+
     // ast-grep: rules/<lang>/ directory exists with .yml files AND ast-grep is in PATH
     if ast_grep_has_rules(project_dir) && which_ast_grep_available() {
         linters.push(LinterKind::AstGrep);
@@ -164,6 +180,7 @@ pub fn run_linter(
         LinterKind::Yamllint => runner.run("yamllint", &["-f", "parsable", &file_str], cwd)?,
         LinterKind::Shellcheck => runner.run("shellcheck", &["--format=json1", &file_str], cwd)?,
         LinterKind::Hadolint => runner.run("hadolint", &["--format", "tty", &file_str], cwd)?,
+        LinterKind::Tflint => runner.run("tflint", &["--format=json", "--force", &file_str], cwd)?,
         LinterKind::AstGrep => {
             return run_ast_grep_rules(file, cwd, runner);
         }
@@ -187,6 +204,7 @@ pub fn run_linter(
         LinterKind::Yamllint => normalize_yamllint_output(&output.stdout),
         LinterKind::Shellcheck => normalize_shellcheck_output(&output.stdout),
         LinterKind::Hadolint => normalize_hadolint_output(&output.stdout),
+        LinterKind::Tflint => normalize_tflint_output(&output.stdout),
         LinterKind::AstGrep => unreachable!("ast-grep uses run_ast_grep_rules directly"),
     }
 }
@@ -458,6 +476,45 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
     Ok(findings)
 }
 
+pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>> {
+    let wrapper: serde_json::Value = serde_json::from_str(json_output)?;
+    let issues = wrapper.get("issues").and_then(|i| i.as_array());
+    let mut findings = Vec::new();
+
+    if let Some(items) = issues {
+        for item in items {
+            let rule_name = item["rule"]["name"].as_str().unwrap_or("unknown");
+            let severity_str = item["rule"]["severity"].as_str().unwrap_or("warning");
+            let message = item["message"].as_str().unwrap_or("");
+            let line_start = item["range"]["start"]["line"].as_u64().unwrap_or(1) as u32;
+            let line_end = item["range"]["end"]["line"].as_u64().unwrap_or(line_start as u64) as u32;
+
+            let severity = match severity_str {
+                "error" => Severity::High,
+                "warning" => Severity::Medium,
+                "notice" => Severity::Low,
+                _ => Severity::Low,
+            };
+
+            findings.push(Finding {
+                title: format!("{}: {}", rule_name, message),
+                description: message.to_string(),
+                severity,
+                category: "lint".into(),
+                source: Source::Linter("tflint".into()),
+                line_start,
+                line_end,
+                evidence: vec![format!("tflint {}", rule_name)],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+            });
+        }
+    }
+
+    Ok(findings)
+}
+
 /// Map file extension to ast-grep language subdirectory name.
 /// Note: JS/JSX/MJS/CJS map to "typescript" because ast-grep uses the TypeScript
 /// grammar to parse JavaScript (it's a superset).
@@ -468,6 +525,7 @@ fn ext_to_ast_grep_lang(ext: &str) -> Option<&'static str> {
         "rs" => Some("rust"),
         "yaml" | "yml" => Some("yaml"),
         "sh" | "bash" | "zsh" => Some("bash"),
+        "tf" => Some("hcl"),
         _ => None,
     }
 }
@@ -1098,6 +1156,85 @@ mod tests {
         let file = PathBuf::from("test.ts");
         let findings = run_ast_grep_rules(&file, dir.path(), &runner).unwrap();
         assert!(findings.is_empty());
+    }
+
+    // -- ast-grep detection --
+
+    // -- Tflint detection --
+
+    #[test]
+    fn detect_tflint_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".tflint.hcl"), "plugin \"terraform\" {\n  enabled = true\n}\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Tflint));
+    }
+
+    #[test]
+    fn detect_tflint_from_tf_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.tf"), "resource \"aws_instance\" \"web\" {}\n").unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Tflint));
+    }
+
+    // -- Tflint output normalization --
+
+    #[test]
+    fn normalize_tflint_valid_output() {
+        let json = r#"{"issues":[{"rule":{"name":"aws_instance_invalid_type","severity":"error","link":"https://example.com"},"message":"\"t2.nano\" is an invalid instance type.","range":{"filename":"main.tf","start":{"line":3,"column":17},"end":{"line":3,"column":29}},"callers":[]}],"errors":[]}"#;
+        let findings = normalize_tflint_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].title.contains("aws_instance_invalid_type"));
+        assert_eq!(findings[0].line_start, 3);
+        assert_eq!(findings[0].line_end, 3);
+        assert_eq!(findings[0].severity, Severity::High);
+        assert_eq!(findings[0].source, Source::Linter("tflint".into()));
+    }
+
+    #[test]
+    fn normalize_tflint_warning_severity() {
+        let json = r#"{"issues":[{"rule":{"name":"terraform_deprecated_interpolation","severity":"warning","link":""},"message":"Interpolation-only expressions are deprecated.","range":{"filename":"main.tf","start":{"line":5,"column":10},"end":{"line":5,"column":30}},"callers":[]}],"errors":[]}"#;
+        let findings = normalize_tflint_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn normalize_tflint_notice_severity() {
+        let json = r#"{"issues":[{"rule":{"name":"terraform_naming_convention","severity":"notice","link":""},"message":"resource name should be snake_case","range":{"filename":"main.tf","start":{"line":1,"column":1},"end":{"line":1,"column":20}},"callers":[]}],"errors":[]}"#;
+        let findings = normalize_tflint_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Low);
+    }
+
+    #[test]
+    fn normalize_tflint_empty_issues() {
+        let json = r#"{"issues":[],"errors":[]}"#;
+        let findings = normalize_tflint_output(json).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn normalize_tflint_malformed_json() {
+        assert!(normalize_tflint_output("not json").is_err());
+    }
+
+    #[test]
+    fn run_tflint_via_runner() {
+        let json = r#"{"issues":[{"rule":{"name":"test_rule","severity":"warning","link":""},"message":"test message","range":{"filename":"main.tf","start":{"line":1,"column":1},"end":{"line":1,"column":10}},"callers":[]}],"errors":[]}"#;
+        let runner = FakeCommandRunner::with_exit_code(json, 2);
+        let file = PathBuf::from("main.tf");
+        let cwd = PathBuf::from(".");
+        let findings = run_linter(&LinterKind::Tflint, &file, &cwd, &runner).unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    // -- ext_to_ast_grep_lang for HCL --
+
+    #[test]
+    fn ext_to_lang_hcl() {
+        assert_eq!(ext_to_ast_grep_lang("tf"), Some("hcl"));
     }
 
     // -- ast-grep detection --
