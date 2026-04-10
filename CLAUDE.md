@@ -36,7 +36,8 @@ QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 | YAML | .yaml, .yml | HA automations, secrets, duplicate keys, ESPHome, Jinja2 | yamllint |
 | Bash | .sh, .bash, .zsh, .bats | eval, curl\|bash, set -e, secrets, chmod 777, shebang | shellcheck |
 | Dockerfile | Dockerfile* | FROM latest, no USER, no HEALTHCHECK, secrets in ENV, ADD vs COPY, curl\|bash | hadolint |
-| Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, etc. | custom YAML rules via ast-grep | ast-grep |
+| Terraform | .tf, .tfvars | secrets, wildcard IAM, open SGs, missing version pins | tflint |
+| Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
 
 ### ast-grep custom rules
