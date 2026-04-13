@@ -189,6 +189,7 @@ pub fn review_file(
 
         // Redact secrets in both code AND hydration context before LLM
         let redacted_code = redact::redact_secrets(source);
+        let (review_code, truncation_notice) = truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
         let redacted_ctx = crate::hydration::HydrationContext {
             callee_signatures: ctx.callee_signatures.iter().map(|s| redact::redact_secrets(s)).collect(),
             type_definitions: ctx.type_definitions.iter().map(|s| redact::redact_secrets(s)).collect(),
@@ -224,11 +225,11 @@ pub fn review_file(
         let req = ReviewRequest {
             file_path: file_str.clone(),
             language: lang_name(lang).to_string(),
-            code: redacted_code,
+            code: review_code,
             hydration_context: Some(redacted_ctx),
             framework_docs,
             feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
-            truncation_notice: None,
+            truncation_notice: truncation_notice.clone(),
         };
 
         let prompt = review::build_review_prompt(&req);
@@ -241,7 +242,16 @@ pub fn review_file(
                         total_usage.completion_tokens += u.completion_tokens;
                     }
                     match review::parse_llm_response(&resp.content, model) {
-                        Ok(findings) => all_sources.push(findings),
+                        Ok(mut findings) => {
+                            if let Some(ref notice) = truncation_notice {
+                                for f in &mut findings {
+                                    if matches!(f.source, crate::finding::Source::Llm(_)) {
+                                        f.based_on_excerpt = Some(notice.clone());
+                                    }
+                                }
+                            }
+                            all_sources.push(findings);
+                        }
                         Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
                     }
                 }
@@ -392,6 +402,7 @@ pub fn review_file_llm_only(
     if let Some(reviewer) = llm {
         if !pipeline_config.models.is_empty() {
             let redacted_code = redact::redact_secrets(source);
+            let (review_code, truncation_notice) = truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
             let language = lang_name_from_path(file_path);
 
             // Context7 framework docs
@@ -419,11 +430,11 @@ pub fn review_file_llm_only(
             let req = ReviewRequest {
                 file_path: file_str.clone(),
                 language,
-                code: redacted_code,
+                code: review_code,
                 hydration_context: None,
                 framework_docs,
                 feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
-                truncation_notice: None,
+                truncation_notice: truncation_notice.clone(),
             };
 
             let prompt = review::build_review_prompt(&req);
@@ -435,7 +446,16 @@ pub fn review_file_llm_only(
                             total_usage.completion_tokens += u.completion_tokens;
                         }
                         match review::parse_llm_response(&resp.content, model) {
-                            Ok(findings) => all_sources.push(findings),
+                            Ok(mut findings) => {
+                                if let Some(ref notice) = truncation_notice {
+                                    for f in &mut findings {
+                                        if matches!(f.source, crate::finding::Source::Llm(_)) {
+                                            f.based_on_excerpt = Some(notice.clone());
+                                        }
+                                    }
+                                }
+                                all_sources.push(findings);
+                            }
                             Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
                         }
                     }

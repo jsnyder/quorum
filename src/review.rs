@@ -117,6 +117,14 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     prompt.push_str("For findings with severity MEDIUM or higher, include a `suggested_fix` field with a concrete code example or specific action the developer should take.\n");
     prompt.push_str("For test quality findings, show what the test should assert. For code smells, show the improved pattern.\n\n");
 
+    if let Some(ref notice) = req.truncation_notice {
+        prompt.push_str(&format!(
+            "**Note:** This is a partial view of the file ({}). \
+             Do not flag missing content or incompleteness — you are reviewing an excerpt.\n\n",
+            notice
+        ));
+    }
+
     prompt.push_str("## Code\n```");
     prompt.push_str(&req.language);
     prompt.push('\n');
@@ -563,6 +571,37 @@ mod tests {
         }]"#;
         let findings = parse_llm_response(json, "test-model").unwrap();
         assert!(findings[0].suggested_fix.is_none());
+    }
+
+    #[test]
+    fn build_prompt_includes_truncation_notice() {
+        let req = ReviewRequest {
+            file_path: "test.rs".into(),
+            language: "rust".into(),
+            code: "fn main() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            truncation_notice: Some("lines 1-150 of 500".into()),
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("lines 1-150 of 500"));
+        assert!(prompt.contains("partial"));
+    }
+
+    #[test]
+    fn build_prompt_no_truncation_notice_when_full() {
+        let req = ReviewRequest {
+            file_path: "test.rs".into(),
+            language: "rust".into(),
+            code: "fn main() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(!prompt.contains("partial view"));
     }
 
     #[test]
