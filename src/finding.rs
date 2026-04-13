@@ -61,6 +61,8 @@ pub struct Finding {
     pub canonical_pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_fix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on_excerpt: Option<String>,
 }
 
 impl Finding {
@@ -101,6 +103,7 @@ impl FindingBuilder {
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             },
         }
     }
@@ -153,6 +156,11 @@ impl FindingBuilder {
 
     pub fn suggested_fix(mut self, s: &str) -> Self {
         self.inner.suggested_fix = Some(s.into());
+        self
+    }
+
+    pub fn based_on_excerpt(mut self, s: &str) -> Self {
+        self.inner.based_on_excerpt = Some(s.to_string());
         self
     }
 
@@ -237,6 +245,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -265,6 +274,7 @@ mod tests {
             similar_precedent: vec!["similar TP in auth.py".into()],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -286,6 +296,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -309,6 +320,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         assert!(f.is_valid());
     }
@@ -328,6 +340,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         assert!(f.is_valid());
     }
@@ -347,6 +360,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         assert!(!f.is_valid());
     }
@@ -366,6 +380,7 @@ mod tests {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         };
         assert!(!f.is_valid());
     }
@@ -448,5 +463,22 @@ mod tests {
         let f = FindingBuilder::new().build();
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("suggested_fix"));
+    }
+
+    #[test]
+    fn finding_based_on_excerpt_serializes() {
+        let f = FindingBuilder::new()
+            .based_on_excerpt("lines 1-150 of 500")
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("based_on_excerpt"));
+        assert!(json.contains("lines 1-150 of 500"));
+    }
+
+    #[test]
+    fn finding_no_excerpt_omitted_from_json() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("based_on_excerpt"));
     }
 }

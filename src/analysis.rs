@@ -55,6 +55,7 @@ pub fn analyze_complexity(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -246,6 +247,7 @@ fn scan_insecure_rust(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -270,6 +272,7 @@ fn scan_insecure_rust(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -307,6 +310,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -328,6 +332,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -344,6 +349,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -373,6 +379,7 @@ fn scan_insecure_python(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
@@ -388,6 +395,7 @@ fn scan_insecure_python(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         }
                     }
@@ -423,6 +431,7 @@ fn scan_insecure_python(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -477,6 +486,7 @@ fn scan_insecure_python(
                         similar_precedent: vec![],
                         canonical_pattern: None,
                         suggested_fix: None,
+                        based_on_excerpt: None,
                     });
                 }
             }
@@ -534,6 +544,7 @@ fn scan_insecure_python(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -564,6 +575,7 @@ fn scan_insecure_python(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -614,6 +626,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -640,6 +653,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -667,6 +681,7 @@ fn scan_insecure_python(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1013,6 +1028,7 @@ fn scan_insecure_yaml(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         } else {
                             seen_keys.push((key_text, key_line));
@@ -1041,6 +1057,7 @@ fn scan_insecure_yaml(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
 
@@ -1059,6 +1076,7 @@ fn scan_insecure_yaml(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
 
@@ -1086,6 +1104,7 @@ fn scan_insecure_yaml(
                         similar_precedent: vec![],
                         canonical_pattern: None,
                         suggested_fix: None,
+                        based_on_excerpt: None,
                     });
                 }
             }
@@ -1113,6 +1132,7 @@ fn scan_insecure_yaml(
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
                                     suggested_fix: None,
+                                    based_on_excerpt: None,
                                 });
                             }
                         }
@@ -1148,6 +1168,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1174,6 +1195,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1204,6 +1226,7 @@ fn scan_insecure_yaml(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         }
                     }
@@ -1240,6 +1263,7 @@ fn scan_insecure_yaml(
                                                     similar_precedent: vec![],
                                                     canonical_pattern: None,
                                                     suggested_fix: None,
+                                                    based_on_excerpt: None,
                                                 });
                                             }
                                         }
@@ -1266,6 +1290,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1292,6 +1317,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1315,6 +1341,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1338,6 +1365,7 @@ fn scan_insecure_yaml(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -1368,6 +1396,7 @@ fn scan_insecure_yaml(
                         similar_precedent: vec![],
                         canonical_pattern: None,
                         suggested_fix: None,
+                        based_on_excerpt: None,
                     });
                 }
             }
@@ -1399,6 +1428,7 @@ fn scan_insecure_yaml(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1431,6 +1461,7 @@ fn scan_insecure_typescript(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
 
@@ -1449,6 +1480,7 @@ fn scan_insecure_typescript(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
 
@@ -1467,6 +1499,7 @@ fn scan_insecure_typescript(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1508,6 +1541,7 @@ fn scan_insecure_typescript(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         }
                     }
@@ -1535,6 +1569,7 @@ fn scan_insecure_typescript(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1557,6 +1592,7 @@ fn scan_insecure_typescript(
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -1583,6 +1619,7 @@ fn scan_insecure_typescript(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1616,6 +1653,7 @@ fn scan_insecure_typescript(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                         break;
                     }
@@ -1650,6 +1688,7 @@ fn scan_insecure_typescript(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         }
                     }
@@ -1673,6 +1712,7 @@ fn scan_insecure_typescript(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 }
@@ -1702,6 +1742,7 @@ fn scan_insecure_bash(
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -1735,6 +1776,7 @@ fn scan_insecure_bash(
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -1757,6 +1799,7 @@ fn scan_insecure_bash(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
 
@@ -1779,6 +1822,7 @@ fn scan_insecure_bash(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                             break;
                         }
@@ -1812,6 +1856,7 @@ fn scan_insecure_bash(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                             break;
                         }
@@ -1853,6 +1898,7 @@ fn scan_insecure_bash(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                         }
                     }
@@ -1887,6 +1933,7 @@ fn scan_insecure_dockerfile(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -1920,6 +1967,7 @@ fn scan_insecure_dockerfile(
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
                                 suggested_fix: None,
+                                based_on_excerpt: None,
                             });
                             break;
                         }
@@ -1948,6 +1996,7 @@ fn scan_insecure_dockerfile(
                     similar_precedent: vec![],
                     canonical_pattern: None,
                     suggested_fix: None,
+                    based_on_excerpt: None,
                 });
             }
         }
@@ -2042,6 +2091,7 @@ fn scan_insecure_terraform(
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
                                     suggested_fix: None,
+                                    based_on_excerpt: None,
                                 });
                             }
                         }
@@ -2078,6 +2128,7 @@ fn scan_insecure_terraform(
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
                                     suggested_fix: None,
+                                    based_on_excerpt: None,
                                 });
                             }
                         }
@@ -2142,6 +2193,7 @@ fn scan_insecure_terraform(
                         similar_precedent: vec![],
                         canonical_pattern: None,
                         suggested_fix: None,
+                        based_on_excerpt: None,
                     });
                 }
             }
@@ -2226,6 +2278,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -2307,6 +2360,7 @@ fn check_required_providers(
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -2404,6 +2458,7 @@ fn analyze_dockerfile_structure(
                             similar_precedent: vec![],
                             canonical_pattern: None,
                             suggested_fix: None,
+                            based_on_excerpt: None,
                         });
                     }
                 }
@@ -2432,6 +2487,7 @@ fn analyze_dockerfile_structure(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -2450,6 +2506,7 @@ fn analyze_dockerfile_structure(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -2468,6 +2525,7 @@ fn analyze_dockerfile_structure(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
     if entrypoint_count > 1 {
@@ -2484,6 +2542,7 @@ fn analyze_dockerfile_structure(
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 

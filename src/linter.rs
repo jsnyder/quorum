@@ -235,6 +235,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -289,6 +290,7 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 
@@ -331,6 +333,7 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -382,6 +385,7 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
     Ok(findings)
@@ -421,6 +425,7 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -477,6 +482,7 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
     Ok(findings)
@@ -515,6 +521,7 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 similar_precedent: vec![],
                 canonical_pattern: None,
                 suggested_fix: None,
+                based_on_excerpt: None,
             });
         }
     }
@@ -598,6 +605,7 @@ pub fn normalize_ast_grep_output(json_output: &str) -> anyhow::Result<Vec<Findin
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: None,
+            based_on_excerpt: None,
         });
     }
 

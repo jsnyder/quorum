@@ -13,6 +13,8 @@ pub struct ReviewRequest {
     pub hydration_context: Option<HydrationContext>,
     pub framework_docs: Option<Vec<String>>,
     pub feedback_precedents: Option<Vec<String>>,
+    /// If the file was truncated, describes what was sent (e.g., "lines 1-150 of 500")
+    pub truncation_notice: Option<String>,
 }
 
 /// A single finding as returned by the LLM (before normalization).
@@ -51,6 +53,7 @@ impl LlmFinding {
             similar_precedent: vec![],
             canonical_pattern: None,
             suggested_fix: self.suggested_fix,
+            based_on_excerpt: None,
         }
     }
 }
@@ -326,6 +329,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("src/auth.rs"));
@@ -348,6 +352,7 @@ mod tests {
             hydration_context: Some(ctx),
             framework_docs: None,
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("validate"));
@@ -364,6 +369,7 @@ mod tests {
             hydration_context: None,
             framework_docs: Some(vec!["### React\nuseEffect requires dependency array".into()]),
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("useEffect"));
@@ -380,6 +386,7 @@ mod tests {
             hydration_context: Some(ctx),
             framework_docs: None,
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Called function signatures"));
@@ -490,6 +497,7 @@ mod tests {
                 "[TRUE POSITIVE] open() without encoding: Causes portability issues (similarity: 85%)".into(),
                 "[FALSE POSITIVE] Unused import: Import is used dynamically (similarity: 78%)".into(),
             ]),
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("Historical Review Findings"));
@@ -507,6 +515,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Historical"));
@@ -521,6 +530,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: Some(vec![]),
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Historical"));
@@ -564,6 +574,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("suggested_fix"));
