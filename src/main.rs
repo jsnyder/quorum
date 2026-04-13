@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
                                 std::process::exit(3);
                             }
                         }
-                    } else if opts.compact || std::env::var("CLAUDE_CODE").is_ok() {
+                    } else if output::should_use_compact(opts.compact) {
                         print!("{}", stats::format_compact(&report));
                     } else {
                         let style = output::Style::detect(false);
@@ -235,7 +235,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let review_start = std::time::Instant::now();
 
     let style = output::Style::detect(opts.no_color);
-    let use_compact = opts.compact || std::env::var("CLAUDE_CODE").is_ok();
+    let use_compact = output::should_use_compact(opts.compact);
     let use_json = !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let parse_cache = cache::ParseCache::new(128);
     let progress = progress::ProgressReporter::detect();
