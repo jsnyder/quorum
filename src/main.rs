@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Daemon(opts) => {
             run_daemon(opts).await?;
         }
+        cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
@@ -538,4 +539,176 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
     }
 
     output::compute_exit_code(&all_findings)
+}
+
+/// Core feedback logic -- testable with custom feedback path.
+fn run_feedback_inner(
+    file: &str,
+    finding: &str,
+    verdict_str: &str,
+    reason: &str,
+    model: Option<&str>,
+    feedback_path: &std::path::Path,
+) -> (i32, String) {
+    let verdict = match cli::parse_verdict(verdict_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return (3, format!("Error: {}", e));
+        }
+    };
+
+    let entry = feedback::FeedbackEntry {
+        file_path: file.to_string(),
+        finding_title: finding.to_string(),
+        finding_category: "manual".to_string(),
+        verdict: verdict.clone(),
+        reason: reason.to_string(),
+        model: model.map(|s| s.to_string()),
+        timestamp: chrono::Utc::now(),
+        provenance: feedback::Provenance::Human,
+    };
+
+    let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
+    if let Err(e) = store.record(&entry) {
+        return (3, format!("Error: Failed to write feedback: {}", e));
+    }
+
+    let total = store.count().unwrap_or(0);
+    let verdict_label = format!("{:?}", entry.verdict).to_lowercase();
+
+    // Format output based on mode
+    let use_compact = output::should_use_compact(false);
+    let use_json = !use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    let output = if use_json {
+        let json_obj = serde_json::json!({
+            "verdict": verdict_label,
+            "file_path": entry.file_path,
+            "finding_title": entry.finding_title,
+            "total": total,
+        });
+        serde_json::to_string(&json_obj).unwrap_or_default()
+    } else if use_compact {
+        format!("feedback:{}|{}|{}", verdict_label, entry.file_path, entry.finding_title)
+    } else {
+        format!(
+            "Recorded: {} for \"{}\" in {} ({} entries)",
+            verdict_label, entry.finding_title, entry.file_path, total,
+        )
+    };
+
+    (0, output)
+}
+
+/// CLI entry point for `quorum feedback`.
+fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+    let (exit_code, output) = run_feedback_inner(
+        &opts.file, &opts.finding, &opts.verdict, &opts.reason,
+        opts.model.as_deref(), &feedback_path,
+    );
+    if exit_code != 0 {
+        eprintln!("{}", output);
+    } else {
+        println!("{}", output);
+    }
+    exit_code
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn feedback_records_tp_verdict() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _output) = run_feedback_inner(
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("SQL injection"));
+        assert!(contents.contains("\"verdict\":\"tp\""));
+        assert!(contents.contains("src/auth.rs"));
+    }
+
+    #[test]
+    fn feedback_invalid_verdict_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, output) = run_feedback_inner(
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, &path,
+        );
+        assert_eq!(exit_code, 3);
+        assert!(output.contains("Invalid verdict"));
+    }
+
+    #[test]
+    fn feedback_provenance_is_human() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"provenance\":\"human\""));
+    }
+
+    #[test]
+    fn feedback_category_is_manual() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs", "Test finding", "fp", "Not real", None, &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"finding_category\":\"manual\""));
+    }
+
+    #[test]
+    fn feedback_output_contains_key_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (_, output) = run_feedback_inner(
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, &path,
+        );
+        assert!(output.contains("tp"));
+        assert!(output.contains("src/auth.rs"));
+        assert!(output.contains("SQL injection"));
+    }
+
+    #[test]
+    fn feedback_json_output_parseable() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, output) = run_feedback_inner(
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, &path,
+        );
+        assert_eq!(exit_code, 0);
+        // In test environment stdout is not a TTY, so output should be JSON
+        if output.starts_with('{') {
+            let v: serde_json::Value = serde_json::from_str(&output).unwrap();
+            assert_eq!(v["verdict"], "fp");
+            assert_eq!(v["file_path"], "src/auth.rs");
+            assert_eq!(v["finding_title"], "SQL injection");
+            assert!(v["total"].is_number());
+        }
+    }
+
+    #[test]
+    fn feedback_with_model() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("gpt-5.4"));
+    }
 }

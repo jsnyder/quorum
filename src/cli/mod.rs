@@ -14,6 +14,8 @@ pub enum Command {
     Review(ReviewOpts),
     /// Show feedback and review statistics
     Stats(StatsOpts),
+    /// Record feedback on a finding
+    Feedback(FeedbackOpts),
     /// Start MCP server (stdio transport)
     Serve,
     /// Run as daemon with file watching and warm caches
@@ -110,8 +112,71 @@ pub struct ReviewOpts {
     pub show_suppressed: bool,
 }
 
+#[derive(Parser)]
+pub struct FeedbackOpts {
+    /// File path the finding was about
+    #[arg(long)]
+    pub file: String,
+
+    /// Finding title or substring to match
+    #[arg(long)]
+    pub finding: String,
+
+    /// Verdict: tp, fp, partial, wontfix
+    #[arg(long)]
+    pub verdict: String,
+
+    /// Reason for the verdict
+    #[arg(long)]
+    pub reason: String,
+
+    /// Model that produced the finding (optional)
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Parse a verdict string into a Verdict enum.
+pub fn parse_verdict(s: &str) -> anyhow::Result<crate::feedback::Verdict> {
+    match s.to_lowercase().as_str() {
+        "tp" => Ok(crate::feedback::Verdict::Tp),
+        "fp" => Ok(crate::feedback::Verdict::Fp),
+        "partial" => Ok(crate::feedback::Verdict::Partial),
+        "wontfix" => Ok(crate::feedback::Verdict::Wontfix),
+        other => anyhow::bail!("Invalid verdict '{}'. Must be: tp, fp, partial, wontfix", other),
+    }
+}
+
 impl ReviewOpts {
     pub fn no_auto_calibrate(&self) -> bool {
         self.no_auto_calibrate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_verdict_valid() {
+        assert_eq!(parse_verdict("tp").unwrap(), crate::feedback::Verdict::Tp);
+        assert_eq!(parse_verdict("fp").unwrap(), crate::feedback::Verdict::Fp);
+        assert_eq!(parse_verdict("partial").unwrap(), crate::feedback::Verdict::Partial);
+        assert_eq!(parse_verdict("wontfix").unwrap(), crate::feedback::Verdict::Wontfix);
+    }
+
+    #[test]
+    fn parse_verdict_case_insensitive() {
+        assert_eq!(parse_verdict("TP").unwrap(), crate::feedback::Verdict::Tp);
+        assert_eq!(parse_verdict("Fp").unwrap(), crate::feedback::Verdict::Fp);
+    }
+
+    #[test]
+    fn parse_verdict_invalid() {
+        assert!(parse_verdict("maybe").is_err());
+        assert!(parse_verdict("").is_err());
     }
 }
