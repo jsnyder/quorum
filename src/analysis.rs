@@ -54,6 +54,7 @@ pub fn analyze_complexity(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -244,6 +245,7 @@ fn scan_insecure_rust(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 
@@ -267,6 +269,7 @@ fn scan_insecure_rust(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -303,6 +306,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -323,6 +327,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -338,6 +343,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -366,6 +372,7 @@ fn scan_insecure_python(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
@@ -380,6 +387,7 @@ fn scan_insecure_python(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         }
                     }
@@ -414,6 +422,7 @@ fn scan_insecure_python(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -467,6 +476,7 @@ fn scan_insecure_python(
                         calibrator_action: None,
                         similar_precedent: vec![],
                         canonical_pattern: None,
+                        suggested_fix: None,
                     });
                 }
             }
@@ -523,6 +533,7 @@ fn scan_insecure_python(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -552,6 +563,7 @@ fn scan_insecure_python(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -601,6 +613,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -626,6 +639,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -652,6 +666,7 @@ fn scan_insecure_python(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -997,6 +1012,7 @@ fn scan_insecure_yaml(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         } else {
                             seen_keys.push((key_text, key_line));
@@ -1024,6 +1040,7 @@ fn scan_insecure_yaml(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
 
@@ -1041,6 +1058,7 @@ fn scan_insecure_yaml(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
 
@@ -1067,6 +1085,7 @@ fn scan_insecure_yaml(
                         calibrator_action: None,
                         similar_precedent: vec![],
                         canonical_pattern: None,
+                        suggested_fix: None,
                     });
                 }
             }
@@ -1093,6 +1112,7 @@ fn scan_insecure_yaml(
                                     calibrator_action: None,
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
+                                    suggested_fix: None,
                                 });
                             }
                         }
@@ -1127,6 +1147,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1152,6 +1173,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1181,6 +1203,7 @@ fn scan_insecure_yaml(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         }
                     }
@@ -1216,6 +1239,7 @@ fn scan_insecure_yaml(
                                                     calibrator_action: None,
                                                     similar_precedent: vec![],
                                                     canonical_pattern: None,
+                                                    suggested_fix: None,
                                                 });
                                             }
                                         }
@@ -1241,6 +1265,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1266,6 +1291,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1288,6 +1314,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1310,6 +1337,7 @@ fn scan_insecure_yaml(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -1339,6 +1367,7 @@ fn scan_insecure_yaml(
                         calibrator_action: None,
                         similar_precedent: vec![],
                         canonical_pattern: None,
+                        suggested_fix: None,
                     });
                 }
             }
@@ -1369,6 +1398,7 @@ fn scan_insecure_yaml(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1400,6 +1430,7 @@ fn scan_insecure_typescript(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
 
@@ -1417,6 +1448,7 @@ fn scan_insecure_typescript(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
 
@@ -1434,6 +1466,7 @@ fn scan_insecure_typescript(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1474,6 +1507,7 @@ fn scan_insecure_typescript(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         }
                     }
@@ -1500,6 +1534,7 @@ fn scan_insecure_typescript(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1521,6 +1556,7 @@ fn scan_insecure_typescript(
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
+                suggested_fix: None,
             });
         }
     }
@@ -1546,6 +1582,7 @@ fn scan_insecure_typescript(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1578,6 +1615,7 @@ fn scan_insecure_typescript(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                         break;
                     }
@@ -1611,6 +1649,7 @@ fn scan_insecure_typescript(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         }
                     }
@@ -1633,6 +1672,7 @@ fn scan_insecure_typescript(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 }
@@ -1661,6 +1701,7 @@ fn scan_insecure_bash(
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
+                suggested_fix: None,
             });
         }
     }
@@ -1693,6 +1734,7 @@ fn scan_insecure_bash(
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
+                suggested_fix: None,
             });
         }
     }
@@ -1714,6 +1756,7 @@ fn scan_insecure_bash(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
 
@@ -1735,6 +1778,7 @@ fn scan_insecure_bash(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                             break;
                         }
@@ -1767,6 +1811,7 @@ fn scan_insecure_bash(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                             break;
                         }
@@ -1807,6 +1852,7 @@ fn scan_insecure_bash(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                         }
                     }
@@ -1840,6 +1886,7 @@ fn scan_insecure_dockerfile(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1872,6 +1919,7 @@ fn scan_insecure_dockerfile(
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
+                                suggested_fix: None,
                             });
                             break;
                         }
@@ -1899,6 +1947,7 @@ fn scan_insecure_dockerfile(
                     calibrator_action: None,
                     similar_precedent: vec![],
                     canonical_pattern: None,
+                    suggested_fix: None,
                 });
             }
         }
@@ -1992,6 +2041,7 @@ fn scan_insecure_terraform(
                                     calibrator_action: None,
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
+                                    suggested_fix: None,
                                 });
                             }
                         }
@@ -2027,6 +2077,7 @@ fn scan_insecure_terraform(
                                     calibrator_action: None,
                                     similar_precedent: vec![],
                                     canonical_pattern: None,
+                                    suggested_fix: None,
                                 });
                             }
                         }
@@ -2090,6 +2141,7 @@ fn scan_insecure_terraform(
                         calibrator_action: None,
                         similar_precedent: vec![],
                         canonical_pattern: None,
+                        suggested_fix: None,
                     });
                 }
             }
@@ -2173,6 +2225,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 
@@ -2253,6 +2306,7 @@ fn check_required_providers(
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
+                suggested_fix: None,
             });
         }
     }
@@ -2349,6 +2403,7 @@ fn analyze_dockerfile_structure(
                             calibrator_action: None,
                             similar_precedent: vec![],
                             canonical_pattern: None,
+                            suggested_fix: None,
                         });
                     }
                 }
@@ -2376,6 +2431,7 @@ fn analyze_dockerfile_structure(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 
@@ -2393,6 +2449,7 @@ fn analyze_dockerfile_structure(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 
@@ -2410,6 +2467,7 @@ fn analyze_dockerfile_structure(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
     if entrypoint_count > 1 {
@@ -2425,6 +2483,7 @@ fn analyze_dockerfile_structure(
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         });
     }
 

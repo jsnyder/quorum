@@ -48,6 +48,7 @@ impl LlmFinding {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         }
     }
 }

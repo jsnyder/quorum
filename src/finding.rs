@@ -59,6 +59,8 @@ pub struct Finding {
     pub similar_precedent: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_fix: Option<String>,
 }
 
 impl Finding {
@@ -98,6 +100,7 @@ impl FindingBuilder {
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
+                suggested_fix: None,
             },
         }
     }
@@ -145,6 +148,11 @@ impl FindingBuilder {
 
     pub fn canonical_pattern(mut self, p: &str) -> Self {
         self.inner.canonical_pattern = Some(p.into());
+        self
+    }
+
+    pub fn suggested_fix(mut self, s: &str) -> Self {
+        self.inner.suggested_fix = Some(s.into());
         self
     }
 
@@ -228,6 +236,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -255,6 +264,7 @@ mod tests {
             calibrator_action: Some(CalibratorAction::Confirmed),
             similar_precedent: vec!["similar TP in auth.py".into()],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -275,6 +285,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -297,6 +308,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         assert!(f.is_valid());
     }
@@ -315,6 +327,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         assert!(f.is_valid());
     }
@@ -333,6 +346,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         assert!(!f.is_valid());
     }
@@ -351,6 +365,7 @@ mod tests {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
+            suggested_fix: None,
         };
         assert!(!f.is_valid());
     }
@@ -416,5 +431,22 @@ mod tests {
         assert_eq!(f.evidence, vec!["some evidence".to_string()]);
         assert_eq!(f.calibrator_action, Some(CalibratorAction::Confirmed));
         assert_eq!(f.similar_precedent, vec!["similar finding".to_string()]);
+    }
+
+    #[test]
+    fn finding_suggested_fix_serializes() {
+        let f = FindingBuilder::new()
+            .suggested_fix("Use parameterized queries instead")
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("suggested_fix"));
+        assert!(json.contains("Use parameterized queries instead"));
+    }
+
+    #[test]
+    fn finding_no_suggested_fix_omitted_from_json() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("suggested_fix"));
     }
 }
