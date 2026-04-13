@@ -116,25 +116,30 @@ pub fn apply_suppressions(
 }
 
 /// Load suppression rules from a .quorum/suppress.toml file.
-/// Returns empty vec if file doesn't exist or can't be parsed.
+/// Returns empty vec if file doesn't exist. Warns on permission or other read errors.
 pub fn load_project_suppressions(path: &std::path::Path) -> Vec<SuppressionRule> {
     match std::fs::read_to_string(path) {
         Ok(contents) => parse_suppress_config(&contents).unwrap_or_else(|e| {
             eprintln!("Warning: Failed to parse {}: {}", path.display(), e);
             Vec::new()
         }),
-        Err(_) => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            eprintln!("Warning: Could not read {}: {}", path.display(), e);
+            Vec::new()
+        }
     }
 }
 
 /// Format a suppressed finding for --show-suppressed output.
+/// Strips control characters from finding title to prevent terminal injection.
 pub fn format_suppressed_finding(finding: &Finding, rule: &SuppressionRule) -> String {
     let reason = rule.reason.as_deref().unwrap_or("no reason given");
+    let safe_title: String = finding.title.chars().filter(|c| !c.is_control()).collect();
+    let safe_category: String = finding.category.chars().filter(|c| !c.is_control()).collect();
     format!(
-        "  [SUPPRESSED] {}  [{}]
-    Reason: {}
-",
-        finding.title, finding.category, reason
+        "  [SUPPRESSED] {}  [{}]\n    Reason: {}\n",
+        safe_title, safe_category, reason
     )
 }
 
