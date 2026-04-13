@@ -36,6 +36,8 @@ pub struct PipelineConfig {
     pub feedback_store: Option<std::path::PathBuf>,
     /// Per-file changed line ranges from a unified diff (overrides full-file hydration)
     pub diff_ranges: Option<Vec<(String, Vec<(u32, u32)>)>>,
+    /// Maximum number of lines to send to the LLM for review
+    pub max_review_lines: usize,
 }
 
 impl Default for PipelineConfig {
@@ -50,8 +52,21 @@ impl Default for PipelineConfig {
             auto_calibrate: true,
             feedback_store: None,
             diff_ranges: None,
+            max_review_lines: 500,
         }
     }
+}
+
+/// Truncate source code for LLM review if it exceeds the line limit.
+/// Returns (possibly truncated source, optional truncation notice).
+fn truncate_for_review(source: &str, max_lines: usize) -> (String, Option<String>) {
+    let total_lines = source.lines().count();
+    if total_lines <= max_lines {
+        return (source.to_string(), None);
+    }
+    let truncated: String = source.lines().take(max_lines).collect::<Vec<_>>().join("\n");
+    let notice = format!("lines 1-{} of {}", max_lines, total_lines);
+    (truncated, Some(notice))
 }
 
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
@@ -213,6 +228,7 @@ pub fn review_file(
             hydration_context: Some(redacted_ctx),
             framework_docs,
             feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
+            truncation_notice: None,
         };
 
         let prompt = review::build_review_prompt(&req);
@@ -407,6 +423,7 @@ pub fn review_file_llm_only(
                 hydration_context: None,
                 framework_docs,
                 feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
+                truncation_notice: None,
             };
 
             let prompt = review::build_review_prompt(&req);
@@ -679,5 +696,32 @@ mod tests {
 
         assert_eq!(cache.stats().misses, 2);
         assert_eq!(cache.stats().size, 2);
+    }
+
+    #[test]
+    fn truncate_source_within_limit() {
+        let source = "line1\nline2\nline3\n";
+        let (truncated, notice) = truncate_for_review(source, 100);
+        assert_eq!(truncated, source);
+        assert!(notice.is_none());
+    }
+
+    #[test]
+    fn truncate_source_over_limit() {
+        let source = (0..600).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let (truncated, notice) = truncate_for_review(&source, 500);
+        let truncated_lines = truncated.lines().count();
+        assert_eq!(truncated_lines, 500);
+        let notice = notice.expect("should have truncation notice");
+        assert!(notice.contains("500"));
+        assert!(notice.contains("600"));
+    }
+
+    #[test]
+    fn truncate_source_at_exact_limit() {
+        let source = (0..500).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let (truncated, notice) = truncate_for_review(&source, 500);
+        assert_eq!(truncated, source);
+        assert!(notice.is_none());
     }
 }
