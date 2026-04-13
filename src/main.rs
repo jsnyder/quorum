@@ -30,6 +30,7 @@ mod progress;
 mod redact;
 mod review;
 mod stats;
+mod suppress;
 mod telemetry;
 mod tools;
 #[cfg(test)] mod test_support;
