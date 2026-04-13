@@ -94,6 +94,11 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
             dim = style.dim, reset = style.reset, indented = indented));
     }
 
+    if let Some(ref excerpt) = f.based_on_excerpt {
+        output.push_str(&format!("    {dim}[partial view: {excerpt}]{reset}\n",
+            dim = style.dim, reset = style.reset, excerpt = excerpt));
+    }
+
     output
 }
 
@@ -179,12 +184,16 @@ pub fn format_compact_finding(f: &Finding) -> String {
     } else {
         f.title.clone()
     };
-    format!("{icon}|{cat}|{line}|{title}",
+    let mut result = format!("{icon}|{cat}|{line}|{title}",
         icon = icon,
         cat = f.category,
         line = line_label,
         title = title,
-    )
+    );
+    if f.based_on_excerpt.is_some() {
+        result.push_str(" [excerpt]");
+    }
+    result
 }
 
 pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
@@ -510,6 +519,39 @@ mod tests {
             .build();
         let output = format_compact_finding(&f);
         assert!(!output.contains("parameterized"));
+    }
+
+    #[test]
+    fn format_finding_shows_excerpt_annotation() {
+        let f = FindingBuilder::new()
+            .title("Missing error handling")
+            .description("No error handling found")
+            .based_on_excerpt("lines 1-150 of 500")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(output.contains("[partial view: lines 1-150 of 500]"));
+    }
+
+    #[test]
+    fn format_finding_no_annotation_when_full() {
+        let f = FindingBuilder::new()
+            .title("Missing error handling")
+            .description("No error handling found")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(!output.contains("partial view"));
+    }
+
+    #[test]
+    fn compact_finding_shows_excerpt_tag() {
+        let f = FindingBuilder::new()
+            .title("Missing error handling")
+            .based_on_excerpt("lines 1-150 of 500")
+            .build();
+        let output = format_compact_finding(&f);
+        assert!(output.contains("[excerpt]"));
     }
 
     #[test]
