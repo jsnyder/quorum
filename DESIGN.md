@@ -6,29 +6,85 @@ The CLI follows the [Command Line Interface Guidelines](https://clig.dev/) and d
 
 **The output is subtle and professional -- no emoji overload, no gratuitous gradients, just clean information hierarchy with minimal visual cues.**
 
+**Three audiences, three modes:** humans at a terminal, LLMs reading output in context windows, and machines piping JSON.
+
 Core principles:
 
 - **Color encodes meaning, not decoration.** Green means pass, red means critical, yellow means warning, dim means secondary. Nothing else gets color.
 - **Respect the user's environment.** Honor `NO_COLOR`, `TERM=dumb`, and pipe detection. Never assume a rich terminal.
 - **Data goes to stdout, status goes to stderr.** Spinners, progress, and errors write to stderr. Structured output writes to stdout. This makes piping reliable.
-- **Three audiences, three modes.** Humans get styled output. Machines get JSON. Auto-detect when possible.
+- **Token-efficient by default.** When consumed by LLMs (detected via `CLAUDE_CODE` env or `--compact`), output is aggressively compressed for minimal context window impact.
 - **Start fast.** Cold start under 50ms. The LLM call is the bottleneck, not the tool.
 
 ---
 
 ## 2. Output Modes
 
-| Mode | When | Format |
-|------|------|--------|
-| Human | stdout is a TTY | Styled findings, colored severity, headers |
-| JSON | `--json` flag or stdout is piped | Pretty-printed JSON |
+| Mode | When | Format | Audience |
+|------|------|--------|----------|
+| Human | stdout is a TTY, no flags | Styled findings, colored severity, headers | Terminal user |
+| Compact | `--compact` or `CLAUDE_CODE` env set | Token-optimized single-line records | LLM context window |
+| JSON | `--json` flag or stdout is piped | Machine-parseable JSON | Scripts, pipes |
 
 Detection logic:
 
 ```
 if --json flag OR !stdout.is_terminal() -> JSON
-else -> Human
+else if --compact or CLAUDE_CODE env    -> Compact
+else                                    -> Human
 ```
+
+### Compact mode design (critical for LLM consumption)
+
+When output is destined for an LLM's context window, every token matters. The compact format follows these rules:
+
+1. **One finding per line.** Severity, category, location, and title on a single line separated by `|`.
+2. **No headers, separators, or decorations.** Zero chrome tokens.
+3. **Truncate aggressively.** Titles/descriptions capped at ~80 chars with `...`.
+4. **Source attribution inline.** Model names abbreviated after the title.
+5. **Numeric precision matches utility.** Scores to 2 decimals, line numbers as integers.
+
+Example (single file review):
+```
+!|security|L42|Unvalidated input to SQL query|gpt-5.4,ast
+~|security|L89|Session token not rotated after priv change|gpt-5.4
+-|style|L15|Consider extracting validation logic|ast
+3 findings (1 critical, 1 warning, 1 info)
+```
+
+Example (multi-file review):
+```
+src/auth.rs: !|security|L42|Unvalidated input to SQL query ~|security|L89|Session token not rotated
+src/db.rs: ~|resource|L23|Connection pool not bounded
+src/main.rs: clean
+3 findings across 3 files (1C 1W 1I)
+```
+
+Example (stats):
+```
+feedback:2230 precision:0.74 tp:1412 fp:498 models:3 reviewed:847 files calibrated:12.1k findings
+```
+
+### Token budget guidelines
+
+| Output type | Target tokens | Strategy |
+|-------------|--------------|----------|
+| Single finding | < 30 | One-line `sev\|cat\|line\|title\|source` |
+| File review (5 findings) | < 200 | One line per finding, summary line |
+| Multi-file summary (10 files) | < 400 | File: findings on single line, summary |
+| Stats dashboard | < 100 | Key-value pairs, abbreviated counts |
+| Error messages | < 50 | Error + suggestion, no stack traces |
+
+### Abbreviations for compact mode
+
+| Full | Compact | Context |
+|------|---------|---------|
+| critical | C | Severity count |
+| warning | W | Severity count |
+| info | I | Severity count |
+| security | security | Category (keep -- already short) |
+| local-ast | ast | Source |
+| auto-calibrate | auto | Source |
 
 ---
 
@@ -263,7 +319,108 @@ Provenance details are dim, only shown when requested.
 
 ---
 
-## 11. Anti-patterns
+## 11. Numeric Formatting
+
+| Range | Format | Example |
+|-------|--------|---------|
+| < 1,000 | Raw number | `842` |
+| 1,000 - 999,999 | `N.Nk` | `63.1k` |
+| >= 1,000,000 | `N.NM` | `1.2M` |
+| Scores/precision | 2 decimal places | `0.74` |
+| Line numbers | Integer, `L` prefix | `L42` |
+| Percentages | Integer + % | `88%` |
+| Duration | Integer + unit | `1318ms`, `4.2s` |
+
+---
+
+## 12. Stats Dashboard
+
+`quorum stats` displays feedback effectiveness and usage metrics. Data sourced from `~/.quorum/feedback.jsonl` and review telemetry.
+
+### Metrics
+
+**Feedback health:**
+
+| Metric | What it measures | Why it matters |
+|--------|-----------------|----------------|
+| Total feedback entries | Size of the feedback corpus | Calibration quality scales with data |
+| Precision by model | (TP + Partial) / (TP + Partial + FP) per model | Shows which models produce actionable findings |
+| TP/FP/Partial/Wontfix breakdown | Verdict distribution | Identifies if a model is noisy vs useful |
+| Precision trend (30d rolling) | Precision computed over sliding windows | Shows whether calibration is improving over time |
+| Feedback velocity | Entries per week | Indicates engagement with the feedback loop |
+
+**Review activity:**
+
+| Metric | What it measures | Why it matters |
+|--------|-----------------|----------------|
+| Reviews run (total, 7d, 30d) | How often the tool is used | Basic adoption signal |
+| Findings per review (mean) | Average density of findings | Trending down = codebase improving or model drifting |
+| Suppression rate | % of findings killed by calibrator | Too high = over-fitting to past feedback |
+| Categories reviewed | Distribution across security, style, etc. | Shows coverage breadth |
+
+**LLM spend:**
+
+| Metric | What it measures | Why it matters |
+|--------|-----------------|----------------|
+| Tokens in/out (total, 7d) | Prompt and completion token counts | Cost visibility |
+| Estimated cost (7d, 30d) | Token counts x model pricing | Budget tracking |
+| Tokens per finding | Cost efficiency of review | Higher = model is verbose or files are large |
+| Cache hit rate | Parse cache effectiveness (daemon) | Measures warm-cache benefit |
+
+### Display
+
+Human mode:
+```
+~ Quorum Stats
+
+  Feedback (2,230 entries)
+    precision    0.74    tp    1,412    fp    498    partial    214    wontfix    106
+    30d trend    0.71 -> 0.74 -> 0.77
+
+  Activity (7d)
+    reviews      23      findings/review    4.2    suppressed    18%
+    top category security (41%)    style (28%)    resource (19%)
+
+  Spend (7d)
+    tokens in    842k    tokens out    126k    est. cost    $2.14
+    tokens/finding    1.8k    cache hits    67%
+```
+
+Compact mode:
+```
+feedback:2230 precision:0.74 tp:1412 fp:498 trend:0.71>0.74>0.77 reviews-7d:23 findings/rev:4.2 suppressed:18% spend-7d:$2.14 tokens/finding:1.8k cache:67%
+```
+
+### Precision trend methodology
+
+Precision trending is computed over fixed calendar windows (e.g., weekly) rather than per-review, because quorum reviews different subsets of code each time. A single review of a well-maintained module will naturally have fewer findings than a review of legacy code -- this doesn't mean overall quality changed.
+
+To make trends meaningful:
+- Window by calendar week, not by review count
+- Require minimum 10 feedback entries per window to report
+- Show the trend line, not point estimates ("0.71 -> 0.74 -> 0.77")
+- Don't extrapolate or forecast -- just show what happened
+
+### Data sources
+
+- **Feedback entries**: `~/.quorum/feedback.jsonl` (already persisted)
+- **Review telemetry**: `~/.quorum/telemetry.jsonl` (new -- append-only log of review runs)
+  - Fields: timestamp, files reviewed, finding count by severity, model(s) used, tokens in/out, duration, calibrator actions
+- **No network calls**: stats computed entirely from local data
+
+### Telemetry design
+
+Review telemetry is opt-in, local-only, and append-only:
+
+```jsonl
+{"ts":"2026-04-05T10:23:00Z","files":["src/auth.rs"],"findings":{"critical":1,"warning":1,"info":1},"model":"gpt-5.4","tokens_in":4200,"tokens_out":1800,"duration_ms":3400,"suppressed":2}
+```
+
+No file contents, no finding text, no code snippets. Just counts and metadata. The telemetry file can be deleted at any time with no impact on functionality.
+
+---
+
+## 13. Anti-patterns
 
 Things this CLI will never do:
 
@@ -277,3 +434,4 @@ Things this CLI will never do:
 - Verbose success messages ("Successfully completed review of...")
 - Color in JSON output mode
 - Slow startup (target: <50ms to first spinner)
+- Phone-home telemetry (all metrics are local-only)
