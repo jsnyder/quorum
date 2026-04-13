@@ -73,6 +73,36 @@ pub fn rule_matches(rule: &SuppressionRule, finding: &Finding, file_path: &str) 
     true
 }
 
+/// Result of applying suppression rules to findings.
+pub struct SuppressionResult {
+    pub kept: Vec<Finding>,
+    pub suppressed: Vec<(Finding, SuppressionRule)>,
+}
+
+/// Filter findings through suppression rules.
+pub fn apply_suppressions(
+    findings: Vec<Finding>,
+    rules: &[SuppressionRule],
+    file_path: &str,
+) -> SuppressionResult {
+    if rules.is_empty() {
+        return SuppressionResult {
+            kept: findings,
+            suppressed: Vec::new(),
+        };
+    }
+    let mut kept = Vec::new();
+    let mut suppressed = Vec::new();
+    for f in findings {
+        if let Some(matched_rule) = rules.iter().find(|r| rule_matches(r, &f, file_path)) {
+            suppressed.push((f, matched_rule.clone()));
+        } else {
+            kept.push(f);
+        }
+    }
+    SuppressionResult { kept, suppressed }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +303,94 @@ category = "security"
             .build();
         assert!(rule_matches(&rule, &finding, "src/sub/deep/file.py"));
         assert!(!rule_matches(&rule, &finding, "lib/file.py"));
+    }
+
+    // --- Part C: apply_suppressions tests ---
+
+    #[test]
+    fn apply_suppressions_filters_matching_findings() {
+        let rules = vec![SuppressionRule {
+            pattern: "TLS certificate".into(),
+            category: Some("security".into()),
+            file: None,
+            reason: Some("Internal service".into()),
+        }];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("TLS certificate verification disabled")
+                .category("security")
+                .build(),
+            FindingBuilder::new()
+                .title("SQL injection risk")
+                .category("security")
+                .build(),
+        ];
+        let result = apply_suppressions(findings, &rules, "src/main.py");
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(result.kept[0].title, "SQL injection risk");
+        assert_eq!(result.suppressed.len(), 1);
+        assert_eq!(result.suppressed[0].0.title, "TLS certificate verification disabled");
+    }
+
+    #[test]
+    fn apply_suppressions_empty_rules_passes_all() {
+        let findings = vec![
+            FindingBuilder::new().title("Finding A").build(),
+            FindingBuilder::new().title("Finding B").build(),
+        ];
+        let result = apply_suppressions(findings, &[], "src/main.py");
+        assert_eq!(result.kept.len(), 2);
+        assert!(result.suppressed.is_empty());
+    }
+
+    #[test]
+    fn apply_suppressions_multiple_rules() {
+        let rules = vec![
+            SuppressionRule {
+                pattern: "TLS certificate".into(),
+                category: None,
+                file: None,
+                reason: Some("Internal service".into()),
+            },
+            SuppressionRule {
+                pattern: "SQL injection".into(),
+                category: None,
+                file: None,
+                reason: Some("Parameterized queries used".into()),
+            },
+        ];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("TLS certificate verification disabled")
+                .build(),
+            FindingBuilder::new()
+                .title("SQL injection risk in query builder")
+                .build(),
+            FindingBuilder::new()
+                .title("Unused import")
+                .build(),
+        ];
+        let result = apply_suppressions(findings, &rules, "src/main.py");
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(result.kept[0].title, "Unused import");
+        assert_eq!(result.suppressed.len(), 2);
+    }
+
+    #[test]
+    fn apply_suppressions_returns_matched_rule() {
+        let rules = vec![SuppressionRule {
+            pattern: "TLS certificate".into(),
+            category: None,
+            file: None,
+            reason: Some("Internal service".into()),
+        }];
+        let findings = vec![FindingBuilder::new()
+            .title("TLS certificate verification disabled")
+            .build()];
+        let result = apply_suppressions(findings, &rules, "src/main.py");
+        assert_eq!(result.suppressed.len(), 1);
+        let (_, matched_rule) = &result.suppressed[0];
+        assert_eq!(matched_rule.pattern, "TLS certificate");
+        assert_eq!(matched_rule.reason.as_deref(), Some("Internal service"));
     }
 }
