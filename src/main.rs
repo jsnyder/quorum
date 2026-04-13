@@ -233,6 +233,22 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         ..Default::default()
     };
 
+    // Load project-level suppressions from target project root
+    let project_root = if let Some(first_file) = opts.files.first() {
+        pipeline::find_project_root(first_file)
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    let suppress_path = project_root.join(".quorum/suppress.toml");
+    let suppress_rules = suppress::load_project_suppressions(&suppress_path);
+    if !suppress_rules.is_empty() {
+        eprintln!(
+            "Loaded {} suppression rule(s) from {}",
+            suppress_rules.len(),
+            suppress_path.display()
+        );
+    }
+
     let review_start = std::time::Instant::now();
 
     let style = output::Style::detect(opts.no_color);
@@ -283,6 +299,12 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     &agent_cfg,
                 ) {
                     Ok(findings) => {
+                        // Apply project-level suppressions
+                        let sup_result = suppress::apply_suppressions(findings, &suppress_rules, &file_display);
+                        if !sup_result.suppressed.is_empty() {
+                            eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                        }
+                        let findings = sup_result.kept;
                         progress.finish_file(findings.len());
                         if use_compact {
                             println!("{}", output::format_compact_review(&file_display, &findings));
@@ -322,7 +344,14 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             )
         };
         match review_result {
-            Ok(result) => {
+            Ok(mut result) => {
+                // Apply project-level suppressions
+                let file_display = result.file_path.clone();
+                let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
+                if !sup_result.suppressed.is_empty() {
+                    eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                }
+                result.findings = sup_result.kept;
                 progress.finish_file(result.findings.len());
                 if use_compact {
                     println!("{}", output::format_compact_review(&result.file_path, &result.findings));

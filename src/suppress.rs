@@ -103,6 +103,18 @@ pub fn apply_suppressions(
     SuppressionResult { kept, suppressed }
 }
 
+/// Load suppression rules from a .quorum/suppress.toml file.
+/// Returns empty vec if file doesn't exist or can't be parsed.
+pub fn load_project_suppressions(path: &std::path::Path) -> Vec<SuppressionRule> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => parse_suppress_config(&contents).unwrap_or_else(|e| {
+            eprintln!("Warning: Failed to parse {}: {}", path.display(), e);
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +404,14 @@ category = "security"
         let (_, matched_rule) = &result.suppressed[0];
         assert_eq!(matched_rule.pattern, "TLS certificate");
         assert_eq!(matched_rule.reason.as_deref(), Some("Internal service"));
+    }
+
+    // --- Part D: File loading tests ---
+
+    #[test]
+    fn load_suppressions_returns_empty_for_missing_file() {
+        let path = std::path::Path::new("/tmp/nonexistent_quorum_suppress.toml");
+        let rules = load_project_suppressions(path);
+        assert!(rules.is_empty());
     }
 }

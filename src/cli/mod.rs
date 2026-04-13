@@ -104,6 +104,10 @@ pub struct ReviewOpts {
     /// Token-efficient output for LLM consumption
     #[arg(long)]
     pub compact: bool,
+
+    /// Show findings that were suppressed by project rules
+    #[arg(long)]
+    pub show_suppressed: bool,
 }
 
 impl ReviewOpts {
