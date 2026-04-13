@@ -74,7 +74,7 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
         format!("L{}-{}", f.line_start, f.line_end)
     };
 
-    format!(
+    let mut output = format!(
         "  {icon_color}{icon}{icon_reset} {bold}{title}{reset}  [{dim}{category}{reset}] {line}\n    {desc}\n",
         icon_color = icon_color,
         icon = icon,
@@ -86,7 +86,15 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
         category = f.category,
         line = line_label,
         desc = f.description,
-    )
+    );
+
+    if let Some(ref fix) = f.suggested_fix {
+        let indented = fix.replace('\n', "\n      ");
+        output.push_str(&format!("    {dim}Suggested fix:{reset} {indented}\n",
+            dim = style.dim, reset = style.reset, indented = indented));
+    }
+
+    output
 }
 
 pub fn format_review(file_path: &str, findings: &[Finding], style: &Style) -> String {
@@ -468,5 +476,53 @@ mod tests {
         // this will return true — that's correct behavior
         // We can only reliably test that flag=true always returns true
         assert!(should_use_compact(true));
+    }
+
+    #[test]
+    fn format_finding_includes_suggested_fix() {
+        let f = FindingBuilder::new()
+            .title("SQL injection")
+            .description("User input not sanitized")
+            .suggested_fix("Use parameterized queries")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(output.contains("Use parameterized queries"));
+        assert!(output.contains("Suggested fix:"));
+    }
+
+    #[test]
+    fn format_finding_no_fix_no_extra_line() {
+        let f = FindingBuilder::new()
+            .title("SQL injection")
+            .description("User input not sanitized")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(!output.contains("Suggested fix:"));
+    }
+
+    #[test]
+    fn compact_finding_omits_suggested_fix() {
+        let f = FindingBuilder::new()
+            .title("SQL injection")
+            .suggested_fix("Use parameterized queries")
+            .build();
+        let output = format_compact_finding(&f);
+        assert!(!output.contains("parameterized"));
+    }
+
+    #[test]
+    fn format_finding_multiline_suggested_fix() {
+        let f = FindingBuilder::new()
+            .title("Missing validation")
+            .description("No input validation")
+            .suggested_fix("Add validation:\n  if input.is_empty() {\n    return Err(\"empty\");\n  }")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(output.contains("Suggested fix:"));
+        // Multiline fix should be indented
+        assert!(output.contains("      if input.is_empty()"));
     }
 }
