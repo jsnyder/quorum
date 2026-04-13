@@ -304,6 +304,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                         if !sup_result.suppressed.is_empty() {
                             eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
                         }
+                        if opts.show_suppressed {
+                            for (f, rule) in &sup_result.suppressed {
+                                eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                            }
+                        }
                         let findings = sup_result.kept;
                         progress.finish_file(findings.len());
                         if use_compact {
@@ -350,6 +355,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
                 if !sup_result.suppressed.is_empty() {
                     eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                }
+                if opts.show_suppressed {
+                    for (f, rule) in &sup_result.suppressed {
+                        eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                    }
                 }
                 result.findings = sup_result.kept;
                 progress.finish_file(result.findings.len());

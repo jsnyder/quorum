@@ -115,6 +115,17 @@ pub fn load_project_suppressions(path: &std::path::Path) -> Vec<SuppressionRule>
     }
 }
 
+/// Format a suppressed finding for --show-suppressed output.
+pub fn format_suppressed_finding(finding: &Finding, rule: &SuppressionRule) -> String {
+    let reason = rule.reason.as_deref().unwrap_or("no reason given");
+    format!(
+        "  [SUPPRESSED] {}  [{}]
+    Reason: {}
+",
+        finding.title, finding.category, reason
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +424,42 @@ category = "security"
         let path = std::path::Path::new("/tmp/nonexistent_quorum_suppress.toml");
         let rules = load_project_suppressions(path);
         assert!(rules.is_empty());
+    }
+
+    // --- Part E: format_suppressed_finding tests ---
+
+    #[test]
+    fn format_suppressed_finding_shows_rule_reason() {
+        let finding = FindingBuilder::new()
+            .title("TLS certificate verification disabled")
+            .category("security")
+            .build();
+        let rule = SuppressionRule {
+            pattern: "TLS certificate".into(),
+            category: Some("security".into()),
+            file: None,
+            reason: Some("Internal service, TLS not required".into()),
+        };
+        let output = format_suppressed_finding(&finding, &rule);
+        assert!(output.contains("SUPPRESSED"));
+        assert!(output.contains("TLS certificate verification disabled"));
+        assert!(output.contains("Internal service, TLS not required"));
+    }
+
+    #[test]
+    fn format_suppressed_finding_no_reason() {
+        let finding = FindingBuilder::new()
+            .title("Some finding")
+            .category("test")
+            .build();
+        let rule = SuppressionRule {
+            pattern: "Some finding".into(),
+            category: None,
+            file: None,
+            reason: None,
+        };
+        let output = format_suppressed_finding(&finding, &rule);
+        assert!(output.contains("SUPPRESSED"));
+        assert!(output.contains("no reason given"));
     }
 }
