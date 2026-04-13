@@ -24,7 +24,19 @@ pub fn parse_suppress_config(toml_str: &str) -> anyhow::Result<Vec<SuppressionRu
         return Ok(Vec::new());
     }
     let config: SuppressConfig = toml::from_str(toml_str)?;
-    Ok(config.suppress)
+    let rules: Vec<_> = config
+        .suppress
+        .into_iter()
+        .filter(|r| {
+            if r.pattern.trim().is_empty() {
+                eprintln!("Warning: Ignoring suppression rule with empty pattern");
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    Ok(rules)
 }
 
 /// Check if a suppression rule matches a finding for the given file path.
@@ -461,5 +473,20 @@ category = "security"
         let output = format_suppressed_finding(&finding, &rule);
         assert!(output.contains("SUPPRESSED"));
         assert!(output.contains("no reason given"));
+    }
+
+    #[test]
+    fn parse_empty_pattern_filtered_out() {
+        let toml = r#"
+[[suppress]]
+pattern = ""
+category = "security"
+
+[[suppress]]
+pattern = "TLS"
+"#;
+        let rules = parse_suppress_config(toml).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "TLS");
     }
 }

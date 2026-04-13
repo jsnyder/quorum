@@ -237,10 +237,14 @@ pub fn compute_exit_code(findings: &[Finding]) -> i32 {
 /// - AGENT: Generic agent identifier (proposed Codex standard)
 pub fn should_use_compact(compact_flag: bool) -> bool {
     compact_flag
-        || std::env::var("CLAUDE_CODE").is_ok()
-        || std::env::var("GEMINI_CLI").is_ok()
-        || std::env::var("CODEX_CI").is_ok()
-        || std::env::var("AGENT").is_ok()
+        || is_env_set("CLAUDE_CODE")
+        || is_env_set("GEMINI_CLI")
+        || is_env_set("CODEX_CI")
+        || is_env_set("AGENT")
+}
+
+fn is_env_set(var: &str) -> bool {
+    std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
 #[cfg(test)]
