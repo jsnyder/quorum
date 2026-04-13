@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (492 tests)
+cargo test --bin quorum        # run unit tests (600 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
@@ -12,6 +12,7 @@ cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
+cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"
 cargo run -- serve                           # MCP server (stdio)
 cargo run -- daemon --watch-dir .            # persistent daemon
 ```
@@ -57,5 +58,5 @@ Bundled rules live in `rules/<language>/`. Users can add custom rules to `~/.quo
 ## Feedback
 
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
-Record feedback via MCP `feedback` tool or programmatically via the FeedbackStore API.
+Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
