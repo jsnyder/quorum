@@ -24,6 +24,8 @@ pub struct LlmFinding {
     pub category: String,
     pub line_start: u32,
     pub line_end: u32,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
 }
 
 impl LlmFinding {
@@ -48,7 +50,7 @@ impl LlmFinding {
             calibrator_action: None,
             similar_precedent: vec![],
             canonical_pattern: None,
-            suggested_fix: None,
+            suggested_fix: self.suggested_fix,
         }
     }
 }
@@ -272,6 +274,7 @@ mod tests {
             category: "security".into(),
             line_start: 42,
             line_end: 50,
+            suggested_fix: None,
         };
         let f = lf.into_finding("gpt-5.4");
         assert_eq!(f.severity, Severity::Critical);
@@ -288,6 +291,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            suggested_fix: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::Info);
     }
@@ -301,6 +305,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            suggested_fix: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::High);
     }
@@ -514,5 +519,34 @@ mod tests {
         };
         let prompt = build_review_prompt(&req);
         assert!(!prompt.contains("Historical"));
+    }
+
+    #[test]
+    fn llm_finding_with_suggested_fix() {
+        let json = r#"[{
+            "title": "SQL injection",
+            "description": "User input not sanitized",
+            "severity": "high",
+            "category": "security",
+            "line_start": 42,
+            "line_end": 42,
+            "suggested_fix": "Use parameterized queries: db.execute('SELECT * FROM t WHERE id = ?', [user_id])"
+        }]"#;
+        let findings = parse_llm_response(json, "test-model").unwrap();
+        assert_eq!(findings[0].suggested_fix.as_deref(), Some("Use parameterized queries: db.execute('SELECT * FROM t WHERE id = ?', [user_id])"));
+    }
+
+    #[test]
+    fn llm_finding_without_suggested_fix_is_none() {
+        let json = r#"[{
+            "title": "SQL injection",
+            "description": "desc",
+            "severity": "high",
+            "category": "security",
+            "line_start": 42,
+            "line_end": 42
+        }]"#;
+        let findings = parse_llm_response(json, "test-model").unwrap();
+        assert!(findings[0].suggested_fix.is_none());
     }
 }
