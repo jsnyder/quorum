@@ -109,6 +109,11 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
         }
     }
 
+    prompt.push_str("## Response Format\n");
+    prompt.push_str("Return a JSON array of findings. Each finding has: title, description, severity (critical/high/medium/low/info), category, line_start, line_end.\n");
+    prompt.push_str("For findings with severity MEDIUM or higher, include a `suggested_fix` field with a concrete code example or specific action the developer should take.\n");
+    prompt.push_str("For test quality findings, show what the test should assert. For code smells, show the improved pattern.\n\n");
+
     prompt.push_str("## Code\n```");
     prompt.push_str(&req.language);
     prompt.push('\n');
@@ -548,5 +553,19 @@ mod tests {
         }]"#;
         let findings = parse_llm_response(json, "test-model").unwrap();
         assert!(findings[0].suggested_fix.is_none());
+    }
+
+    #[test]
+    fn build_prompt_requests_suggested_fix() {
+        let req = ReviewRequest {
+            file_path: "test.rs".into(),
+            language: "rust".into(),
+            code: "fn main() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("suggested_fix"));
     }
 }
