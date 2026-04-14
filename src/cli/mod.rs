@@ -114,6 +114,10 @@ pub struct ReviewOpts {
     /// Override framework detection (e.g., --framework home-assistant)
     #[arg(long)]
     pub framework: Vec<String>,
+
+    /// Max concurrent LLM calls (default: 4, 0 = unlimited, 1 = sequential)
+    #[arg(long, default_value = "4")]
+    pub parallel: usize,
 }
 
 #[derive(Parser)]
@@ -188,5 +192,25 @@ mod tests {
     fn parse_verdict_trims_whitespace() {
         assert_eq!(parse_verdict(" tp ").unwrap(), crate::feedback::Verdict::Tp);
         assert_eq!(parse_verdict("fp\n").unwrap(), crate::feedback::Verdict::Fp);
+    }
+
+    #[test]
+    fn parse_parallel_flag() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "review", "--parallel", "8", "file.rs"]);
+        match args.command {
+            Command::Review(opts) => assert_eq!(opts.parallel, 8),
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn parse_parallel_default() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "review", "file.rs"]);
+        match args.command {
+            Command::Review(opts) => assert_eq!(opts.parallel, 4),
+            _ => panic!("Expected Review command"),
+        }
     }
 }
