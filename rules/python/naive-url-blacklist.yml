@@ -1,0 +1,7 @@
+id: naive-url-blacklist
+language: Python
+severity: warning
+message: "String-matching URL safety check can be bypassed. Use `ipaddress.ip_address()` for IP validation."
+note: "Feedback: confirmed TP in coa_scraper security.py"
+rule:
+  pattern: any($ITEM in $URL for $ITEM in $LIST)

@@ -58,14 +58,27 @@ axum = "0.8"
 tower = "0.5"
 
 # Tree-sitter (core + language grammars)
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
-tree-sitter-bash = "0.23"
+tree-sitter-bash = "0.25"
 tree-sitter-hcl = "1.1"
 tree-sitter-language = "0.1"
+
+# ast-grep (compiled-in rule engine)
+ast-grep-core = "=0.42.1"
+ast-grep-config = "=0.42.1"
+ast-grep-language = { version = "=0.42.1", default-features = false, features = [
+    "tree-sitter-bash",
+    "tree-sitter-hcl",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
 
 # Suppression config
 toml = "0.8"

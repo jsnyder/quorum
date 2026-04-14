@@ -1,0 +1,6 @@
+id: non-null-assertion
+language: TypeScript
+severity: hint
+message: "Non-null assertion `!` bypasses TypeScript's type safety. Prefer proper null checking."
+rule:
+  kind: non_null_expression

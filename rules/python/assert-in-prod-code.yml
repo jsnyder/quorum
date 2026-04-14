@@ -1,0 +1,7 @@
+id: assert-in-prod-code
+language: Python
+severity: hint
+message: "assert is stripped by `python -O`. Use explicit validation for production checks."
+note: "Feedback: 4 confirmed true positives"
+rule:
+  kind: assert_statement

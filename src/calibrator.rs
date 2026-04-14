@@ -29,7 +29,7 @@ impl Default for CalibratorConfig {
     fn default() -> Self {
         Self {
             similarity_threshold: 0.5,
-            embedding_similarity_threshold: 0.75,
+            embedding_similarity_threshold: 0.80,
             fp_suppress_count: 2,
             boost_tp: true,
             use_auto_feedback: true,

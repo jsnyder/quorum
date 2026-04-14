@@ -1,0 +1,9 @@
+id: non-threadsafe-singleton
+language: Python
+severity: warning
+message: "Non-threadsafe singleton pattern. Use `threading.Lock` or module-level instance."
+note: "Feedback: confirmed TP in coa_scraper cache.py"
+rule:
+  pattern: |
+    if cls._instance is None:
+        cls._instance = $EXPR

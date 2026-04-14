@@ -1,0 +1,8 @@
+id: expect-empty-message
+language: Rust
+severity: hint
+message: "Empty `.expect()` message makes debugging hard. Provide context about what failed."
+note: "Feedback: 3 confirmed true positives"
+rule:
+  kind: call_expression
+  regex: '\.\s*expect\s*\(\s*"[^"]{0,8}"\s*\)'

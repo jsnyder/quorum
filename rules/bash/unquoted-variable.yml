@@ -1,0 +1,9 @@
+id: unquoted-variable
+language: Bash
+severity: hint
+message: "Unquoted variable expansion is subject to word splitting and globbing. Use \"$VAR\" instead."
+rule:
+  kind: simple_expansion
+  not:
+    inside:
+      kind: string

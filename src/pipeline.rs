@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use crate::analysis;
+use crate::ast_grep;
 use crate::calibrator::{self, CalibratorConfig};
 use crate::feedback::FeedbackEntry;
 use crate::finding::Finding;
@@ -166,7 +167,24 @@ pub fn review_file(
     local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
     all_sources.push(local_findings);
 
-    // Source 2: LLM review (if configured and models specified)
+    // Source 2: ast-grep library rules
+    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ast_grep::ext_to_language(ext).is_some() {
+        let project_root = find_project_root(file_path);
+        let home_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let rules = ast_grep::load_rules(&project_root, &home_dir);
+        if !rules.is_empty() {
+            let ag_findings = ast_grep::scan_file(source, ext, &rules);
+            if !ag_findings.is_empty() {
+                all_sources.push(ag_findings);
+            }
+        }
+    }
+
+    // Source 3: LLM review (if configured and models specified)
     if let Some(reviewer) = llm {
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review

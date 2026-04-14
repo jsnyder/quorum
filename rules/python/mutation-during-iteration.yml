@@ -1,0 +1,20 @@
+id: mutation-during-iteration
+language: Python
+severity: warning
+message: "Mutating a collection while iterating over it causes undefined behavior. Iterate over a copy: `for x in list(coll):`"
+note: "Feedback: confirmed TP in coa_scraper scrapers"
+rule:
+  any:
+    - pattern: $COLL.append($$$)
+    - pattern: $COLL.remove($$$)
+    - pattern: $COLL.pop($$$)
+    - pattern: $COLL.extend($$$)
+    - pattern: $COLL.insert($$$)
+    - pattern: $COLL.add($$$)
+    - pattern: $COLL.discard($$$)
+  inside:
+    kind: for_statement
+    has:
+      field: right
+      pattern: $COLL
+    stopBy: end

@@ -3,6 +3,7 @@
 mod agent;
 mod analytics;
 mod analysis;
+mod ast_grep;
 mod auto_calibrate;
 mod cache;
 mod calibrator;

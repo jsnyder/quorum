@@ -1,0 +1,11 @@
+id: md5-usage
+language: Python
+severity: warning
+message: "MD5 is cryptographically broken. Use `hashlib.sha256()` for integrity checks."
+note: "Feedback: confirmed TP in coa_scraper cache.py and pipelines.py"
+rule:
+  kind: call
+  has:
+    field: function
+    regex: "^hashlib\\.md5$"
+    stopBy: end

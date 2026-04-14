@@ -160,7 +160,7 @@ fn collect_definitions(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             collect_definitions(&child, source, func_kinds, type_kinds, import_kinds_list,
                 funcs, types, imports);
         }
@@ -263,7 +263,7 @@ fn collect_calls_in_range(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             collect_calls_in_range(&child, source, _lang, call_kinds, start_line, end_line,
                 all_funcs, out, seen);
         }
@@ -299,7 +299,7 @@ fn collect_type_refs_in_range(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             collect_type_refs_in_range(&child, source, _lang, _type_kinds, start_line, end_line,
                 all_types, out, seen);
         }
@@ -410,7 +410,7 @@ fn find_callers_of(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             find_callers_of(&child, source, _lang, call_kinds, target_name, all_funcs, callers);
         }
     }
