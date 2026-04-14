@@ -1,0 +1,22 @@
+id: requests-verify-false
+language: Python
+severity: warning
+message: "`requests` call with `verify=False` disables TLS certificate validation, allowing man-in-the-middle attacks."
+note: "Inspired by semgrep python.requests.best-practice.use-timeout.verify-disabled"
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        regex: "^requests\\.(get|post|put|delete|patch|head|options|request)$"
+        stopBy: end
+    - has:
+        kind: keyword_argument
+        all:
+          - has:
+              field: name
+              regex: "^verify$"
+          - has:
+              field: value
+              regex: "^False$"
+        stopBy: end
