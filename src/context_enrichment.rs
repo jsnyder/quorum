@@ -84,6 +84,53 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     section
 }
 
+/// Caching wrapper around a ContextFetcher. Caches query_docs results by (library_id, query) key.
+pub struct CachedContextFetcher<'a> {
+    inner: &'a dyn ContextFetcher,
+    cache: std::sync::Mutex<std::collections::HashMap<(String, String), Option<String>>>,
+    max_entries: usize,
+}
+
+impl<'a> CachedContextFetcher<'a> {
+    pub fn new(inner: &'a dyn ContextFetcher, max_entries: usize) -> Self {
+        Self {
+            inner,
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            max_entries,
+        }
+    }
+}
+
+impl<'a> ContextFetcher for CachedContextFetcher<'a> {
+    fn resolve_library(&self, name: &str) -> Option<String> {
+        self.inner.resolve_library(name)
+    }
+
+    fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
+        let key = (library_id.to_string(), query.to_string());
+
+        // Check cache
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
+        // Cache miss — fetch from inner
+        let result = self.inner.query_docs(library_id, query, max_tokens);
+
+        // Store in cache
+        if let Ok(mut cache) = self.cache.lock() {
+            if cache.len() >= self.max_entries {
+                cache.clear(); // simple eviction: clear all when full
+            }
+            cache.insert(key, result.clone());
+        }
+
+        result
+    }
+}
+
 /// Real Context7 fetcher — calls Context7 HTTP API directly.
 /// Uses async reqwest::Client internally, bridged to sync via block_in_place.
 /// Requires CONTEXT7_API_KEY env var. Gracefully degrades if not set.
@@ -362,5 +409,59 @@ mod tests {
         let query = build_code_aware_query(base, &imports);
         assert!(query.contains("useEffect"));
         assert!(!query.contains(" os ")); // "os" is too short (<=2 chars), filtered
+    }
+
+    #[test]
+    fn cached_fetcher_avoids_duplicate_calls() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingFetcher {
+            calls: Arc<AtomicUsize>,
+        }
+        impl ContextFetcher for CountingFetcher {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                Some(format!("/lib/{}", name))
+            }
+            fn query_docs(&self, library_id: &str, _query: &str, _max_tokens: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(format!("docs for {}", library_id))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingFetcher { calls: calls.clone() };
+        let cached = CachedContextFetcher::new(&inner, 16);
+
+        // First call hits inner
+        let r1 = cached.query_docs("/lib/react", "hooks", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(r1.is_some());
+
+        // Second call with same args should be cached
+        let r2 = cached.query_docs("/lib/react", "hooks", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 1); // no additional call
+        assert_eq!(r1, r2);
+
+        // Different query hits inner again
+        let _r3 = cached.query_docs("/lib/react", "different query", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cached_fetcher_delegates_resolve() {
+        struct StubFetcher;
+        impl ContextFetcher for StubFetcher {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                Some(format!("/resolved/{}", name))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
+        }
+
+        let inner = StubFetcher;
+        let cached = CachedContextFetcher::new(&inner, 16);
+        assert_eq!(cached.resolve_library("react"), Some("/resolved/react".into()));
     }
 }

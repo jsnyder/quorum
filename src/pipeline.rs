@@ -224,7 +224,8 @@ pub fn review_file(
             if !domain.frameworks.is_empty() {
                 eprintln!("Detected frameworks: {:?}", domain.frameworks);
                 let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
-                let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher, &redacted_ctx.import_targets);
+                let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
+                let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &redacted_ctx.import_targets);
                 if !docs.is_empty() {
                     eprintln!("Context7: injected {} framework doc(s) into prompt", docs.len());
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
@@ -432,7 +433,8 @@ pub fn review_file_llm_only(
                 let domain = crate::domain::detect_domain(&project_root);
                 if !domain.frameworks.is_empty() {
                     let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
-                    let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &fetcher, &[]);
+                    let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
+                    let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &[]);
                     if !docs.is_empty() {
                         Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
                     } else {
