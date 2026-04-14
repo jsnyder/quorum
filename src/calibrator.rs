@@ -104,10 +104,10 @@ pub fn calibrate(
         }
         let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
 
-        // FP + Wontfix both count against confirmation (wontfix = "not worth acting on")
+        // Strict FP weight (drives full suppression)
         let mut auto_fp_weight: f64 = 0.0;
         let mut other_fp_weight: f64 = 0.0;
-        for e in similar.iter().filter(|e| e.verdict == Verdict::Fp || e.verdict == Verdict::Wontfix) {
+        for e in similar.iter().filter(|e| e.verdict == Verdict::Fp) {
             if matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
                 auto_fp_weight += verdict_weight(e);
             } else {
@@ -115,6 +115,13 @@ pub fn calibrate(
             }
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
+
+        // Wontfix weight (only contributes to soft suppression)
+        let mut wontfix_weight: f64 = 0.0;
+        for e in similar.iter().filter(|e| e.verdict == Verdict::Wontfix) {
+            wontfix_weight += verdict_weight(e);
+        }
+        let soft_fp_weight = fp_weight + wontfix_weight;
 
         // Annotate with precedent info
         for entry in &similar {
@@ -131,16 +138,16 @@ pub fn calibrate(
             ));
         }
 
-        // Suppress: FP clearly dominates TP
+        // Full suppress: only strict FP weight (no wontfix contribution)
         if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue; // don't add to output
         }
 
-        // Soft suppress: auto-only FP can downgrade to INFO but not remove
+        // Soft suppress: FP + wontfix combined, or auto-only FP
         // This preserves the finding for human review while reducing noise
-        if fp_weight >= 1.0 && fp_weight > tp_weight * 2.0 {
+        if soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0 {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
@@ -212,9 +219,10 @@ pub fn calibrate_with_index(
         }
         let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
 
+        // Strict FP weight (drives full suppression)
         let mut auto_fp_weight: f64 = 0.0;
         let mut other_fp_weight: f64 = 0.0;
-        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Fp || s.entry.verdict == Verdict::Wontfix) {
+        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Fp) {
             let w = verdict_weight(&s.entry) * s.similarity as f64;
             if matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
                 auto_fp_weight += w;
@@ -223,6 +231,14 @@ pub fn calibrate_with_index(
             }
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
+
+        // Wontfix weight (only contributes to soft suppression)
+        let mut wontfix_weight: f64 = 0.0;
+        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Wontfix) {
+            let w = verdict_weight(&s.entry) * s.similarity as f64;
+            wontfix_weight += w;
+        }
+        let soft_fp_weight = fp_weight + wontfix_weight;
 
         // Annotate with precedent info
         for s in &similar {
@@ -236,16 +252,16 @@ pub fn calibrate_with_index(
             ));
         }
 
-        // Suppress: FP clearly dominates TP
+        // Full suppress: only strict FP weight (no wontfix contribution)
         if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue;
         }
 
-        // Soft suppress: auto-only FP can downgrade to INFO but not remove
+        // Soft suppress: FP + wontfix combined, or auto-only FP
         // This preserves the finding for human review while reducing noise
-        if fp_weight >= 1.0 && fp_weight > tp_weight * 2.0 {
+        if soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0 {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
@@ -879,5 +895,64 @@ mod tests {
         let config = CalibratorConfig::default();
         let result = calibrate(findings, &vec![postfix_fp], &config);
         assert_eq!(result.suppressed, 1, "Single PostFix FP should suppress (weight 1.5 >= threshold)");
+    }
+
+    #[test]
+    fn wontfix_only_soft_suppresses_not_full() {
+        let finding = FindingBuilder::new()
+            .title("console.log debug artifact")
+            .severity(Severity::Medium)
+            .category("quality")
+            .build();
+        let feedback = vec![
+            fb("console.log debug artifact", "quality", Verdict::Wontfix),
+            fb("console.log debug artifact", "quality", Verdict::Wontfix),
+            fb("console.log debug artifact", "quality", Verdict::Wontfix),
+        ];
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+
+        assert_eq!(result.suppressed, 0, "wontfix should NOT fully suppress");
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].severity, Severity::Info, "wontfix should soft-suppress to INFO");
+    }
+
+    #[test]
+    fn fp_still_fully_suppresses() {
+        let finding = FindingBuilder::new()
+            .title("console.log debug artifact")
+            .severity(Severity::Medium)
+            .category("quality")
+            .build();
+        let feedback = vec![
+            fb("console.log debug artifact", "quality", Verdict::Fp),
+            fb("console.log debug artifact", "quality", Verdict::Fp),
+        ];
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+
+        assert_eq!(result.suppressed, 1, "FP should fully suppress");
+        assert_eq!(result.findings.len(), 0);
+    }
+
+    #[test]
+    fn mixed_fp_wontfix_fp_drives_suppress() {
+        let finding = FindingBuilder::new()
+            .title("unused variable")
+            .severity(Severity::Medium)
+            .category("quality")
+            .build();
+        // 2 FP (enough for full suppress) + 1 wontfix
+        let feedback = vec![
+            fb("unused variable", "quality", Verdict::Fp),
+            fb("unused variable", "quality", Verdict::Fp),
+            fb("unused variable", "quality", Verdict::Wontfix),
+        ];
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+
+        // FP alone should drive full suppression
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.findings.len(), 0);
     }
 }
