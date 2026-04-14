@@ -32,6 +32,7 @@ pub trait LlmReviewer: Send + Sync {
 }
 
 /// Result of reviewing a single file.
+#[derive(Clone)]
 pub struct FileReviewResult {
     pub file_path: String,
     pub findings: Vec<Finding>,

@@ -169,18 +169,19 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     };
 
     // Build LLM client if API key is available (implements both LlmReviewer and AgentReviewer)
-    let llm_client: Option<llm_client::OpenAiClient> = if let Ok(api_key) = cfg.require_api_key() {
+    // Arc-wrapped for sharing across parallel file reviews
+    let llm_client: Option<std::sync::Arc<llm_client::OpenAiClient>> = if let Ok(api_key) = cfg.require_api_key() {
         let effort = opts.reasoning_effort.clone()
             .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()))
             .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
-        Some(
+        Some(std::sync::Arc::new(
             llm_client::OpenAiClient::new(&cfg.base_url, api_key)
                 .with_reasoning_effort(effort)
-        )
+        ))
     } else {
         None
     };
-    let llm_reviewer: Option<&dyn LlmReviewer> = llm_client.as_ref().map(|c| c as &dyn LlmReviewer);
+    let llm_reviewer: Option<&dyn LlmReviewer> = llm_client.as_deref().map(|c| c as _);
 
     // Build pipeline config
     let models = if opts.ensemble {
@@ -225,6 +226,35 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         None
     };
 
+    // Create semaphore for parallel LLM concurrency control
+    let semaphore = if opts.parallel > 1 {
+        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(opts.parallel)))
+    } else if opts.parallel == 0 {
+        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(usize::MAX >> 4)))
+    } else {
+        None // parallel=1, sequential
+    };
+
+    // Pre-build FeedbackIndex once for sharing across parallel tasks
+    let shared_feedback_index = {
+        let feedback_path_ref = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+        if feedback_path_ref.exists() {
+            let store = feedback::FeedbackStore::new(feedback_path_ref);
+            match feedback_index::FeedbackIndex::build(&store) {
+                Ok(idx) => {
+                    eprintln!("FeedbackIndex: pre-built for parallel calibration");
+                    Some(std::sync::Arc::new(std::sync::Mutex::new(idx)))
+                }
+                Err(e) => {
+                    eprintln!("Warning: Could not build feedback index: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     let pipeline_cfg = PipelineConfig {
         models,
         calibration_model: opts.calibration_model.clone(),
@@ -233,6 +263,8 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
         framework_overrides: opts.framework.clone(),
+        semaphore,
+        feedback_index: shared_feedback_index,
         ..Default::default()
     };
 
@@ -252,120 +284,250 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
     }
 
+    // Arc-wrap shared config for parallel access
+    let pipeline_cfg = std::sync::Arc::new(pipeline_cfg);
+    let suppress_rules = std::sync::Arc::new(suppress_rules);
+
     let review_start = std::time::Instant::now();
 
     let style = output::Style::detect(opts.no_color);
     let use_compact = output::should_use_compact(opts.compact);
     let use_json = !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    let parse_cache = cache::ParseCache::new(128);
-    let progress = progress::ProgressReporter::detect();
     let mut all_findings = Vec::new();
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
 
-    for file_path in &opts.files {
-        if !file_path.exists() {
-            eprintln!("Error: File not found: {}", file_path.display());
-            had_errors = true;
-            continue;
-        }
+    if opts.parallel == 1 || opts.files.len() <= 1 {
+        // === SEQUENTIAL PATH ===
+        let parse_cache = cache::ParseCache::new(128);
+        let progress = progress::ProgressReporter::detect();
 
-        let lang = parser::Language::from_path(file_path);
-
-        let source = match std::fs::read_to_string(file_path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error: Could not read {}: {}", file_path.display(), e);
+        for file_path in &opts.files {
+            if !file_path.exists() {
+                eprintln!("Error: File not found: {}", file_path.display());
                 had_errors = true;
                 continue;
             }
-        };
 
-        let file_display = file_path.to_string_lossy().to_string();
-        progress.start_file(&file_display);
+            let lang = parser::Language::from_path(file_path);
 
-        // Deep review: agent loop with tool calling
-        if opts.deep {
-            if let Some(client) = llm_client.as_ref() {
-                let project_root = std::env::current_dir().unwrap_or_default();
-                let tool_reg = tools::ToolRegistry::new(&project_root);
-                let agent_cfg = agent::AgentConfig::default();
-                let model = pipeline_cfg.models.first()
-                    .map(|s| s.as_str())
-                    .unwrap_or("gpt-5.4");
-                match agent::agent_loop(
-                    &source,
-                    &file_path.to_string_lossy(),
-                    client as &dyn agent::AgentReviewer,
-                    model,
-                    &tool_reg,
-                    &agent_cfg,
-                ) {
-                    Ok(findings) => {
-                        // Apply project-level suppressions
-                        let sup_result = suppress::apply_suppressions(findings, &suppress_rules, &file_display);
-                        if !sup_result.suppressed.is_empty() {
-                            eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+            let source = match std::fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error: Could not read {}: {}", file_path.display(), e);
+                    had_errors = true;
+                    continue;
+                }
+            };
+
+            let file_display = file_path.to_string_lossy().to_string();
+            progress.start_file(&file_display);
+
+            // Deep review: agent loop with tool calling
+            if opts.deep {
+                if let Some(client) = llm_client.as_deref() {
+                    let project_root = std::env::current_dir().unwrap_or_default();
+                    let tool_reg = tools::ToolRegistry::new(&project_root);
+                    let agent_cfg = agent::AgentConfig::default();
+                    let model = pipeline_cfg.models.first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("gpt-5.4");
+                    match agent::agent_loop(
+                        &source,
+                        &file_path.to_string_lossy(),
+                        client as &dyn agent::AgentReviewer,
+                        model,
+                        &tool_reg,
+                        &agent_cfg,
+                    ) {
+                        Ok(findings) => {
+                            // Apply project-level suppressions
+                            let sup_result = suppress::apply_suppressions(findings, &suppress_rules, &file_display);
+                            if !sup_result.suppressed.is_empty() {
+                                eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                            }
+                            if opts.show_suppressed {
+                                for (f, rule) in &sup_result.suppressed {
+                                    eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                                }
+                            }
+                            let findings = sup_result.kept;
+                            progress.finish_file(findings.len());
+                            if use_compact {
+                                println!("{}", output::format_compact_review(&file_display, &findings));
+                            } else if use_json {
+                                // collected below
+                            } else {
+                                print!("{}", output::format_review(&file_display, &findings, &style));
+                            }
+                            all_findings.extend(findings);
+                            continue;
                         }
-                        if opts.show_suppressed {
-                            for (f, rule) in &sup_result.suppressed {
-                                eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                        Err(e) => {
+                            progress.clear_line();
+                            eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
+                        }
+                    }
+                }
+            }
+
+            // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
+            let review_result = if let Some(l) = lang {
+                pipeline::review_source(
+                    file_path,
+                    &source,
+                    l,
+                    llm_reviewer,
+                    &pipeline_cfg,
+                    Some(&parse_cache),
+                )
+            } else {
+                eprintln!("Note: No AST support for {}, using LLM-only review", file_path.display());
+                pipeline::review_file_llm_only(
+                    file_path,
+                    &source,
+                    llm_reviewer,
+                    &pipeline_cfg,
+                )
+            };
+            match review_result {
+                Ok(mut result) => {
+                    // Apply project-level suppressions
+                    let file_display = result.file_path.clone();
+                    let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
+                    if !sup_result.suppressed.is_empty() {
+                        eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                    }
+                    if opts.show_suppressed {
+                        for (f, rule) in &sup_result.suppressed {
+                            eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                        }
+                    }
+                    result.findings = sup_result.kept;
+                    progress.finish_file(result.findings.len());
+                    if use_compact {
+                        println!("{}", output::format_compact_review(&result.file_path, &result.findings));
+                    } else if !use_json {
+                        print!("{}", output::format_review(&result.file_path, &result.findings, &style));
+                    }
+                    all_findings.extend(result.findings.clone());
+                    file_results.push(result);
+                }
+                Err(e) => {
+                    progress.clear_line();
+                    eprintln!("Error: Review failed for {}: {}", file_path.display(), e);
+                    had_errors = true;
+                }
+            }
+        }
+    } else {
+        // === PARALLEL PATH ===
+        let rt = tokio::runtime::Handle::current();
+        let mut handles = Vec::new();
+
+        for (idx, file_path) in opts.files.iter().enumerate() {
+            let file_path = file_path.clone();
+            let pipeline_cfg = pipeline_cfg.clone();
+            let suppress_rules = suppress_rules.clone();
+            let _show_suppressed = opts.show_suppressed;
+            let deep = opts.deep;
+            let llm_client = llm_client.clone();
+
+            let handle = rt.spawn_blocking(move || {
+                if !file_path.exists() {
+                    return (idx, Err(anyhow::anyhow!("File not found: {}", file_path.display())));
+                }
+                let source = match std::fs::read_to_string(&file_path) {
+                    Ok(s) => s,
+                    Err(e) => return (idx, Err(anyhow::anyhow!("Could not read {}: {}", file_path.display(), e))),
+                };
+                let lang = parser::Language::from_path(&file_path);
+                let file_display = file_path.to_string_lossy().to_string();
+
+                // Deep review path
+                if deep {
+                    if let Some(ref client) = llm_client {
+                        let project_root = std::env::current_dir().unwrap_or_default();
+                        let tool_reg = tools::ToolRegistry::new(&project_root);
+                        let agent_cfg = agent::AgentConfig::default();
+                        let model = pipeline_cfg.models.first()
+                            .map(|s| s.as_str()).unwrap_or("gpt-5.4");
+                        match agent::agent_loop(
+                            &source, &file_display,
+                            &**client as &dyn agent::AgentReviewer,
+                            model, &tool_reg, &agent_cfg,
+                        ) {
+                            Ok(findings) => {
+                                let sup_result = suppress::apply_suppressions(
+                                    findings, &suppress_rules, &file_display);
+                                let result = pipeline::FileReviewResult {
+                                    file_path: file_display,
+                                    findings: sup_result.kept,
+                                    usage: Default::default(),
+                                    suppressed: sup_result.suppressed.len(),
+                                };
+                                return (idx, Ok((result, sup_result.suppressed)));
+                            }
+                            Err(e) => {
+                                eprintln!("[{}] Warning: Deep review failed: {}. Falling back.", file_path.display(), e);
                             }
                         }
-                        let findings = sup_result.kept;
-                        progress.finish_file(findings.len());
-                        if use_compact {
-                            println!("{}", output::format_compact_review(&file_display, &findings));
-                        } else if use_json {
-                            // collected below
-                        } else {
-                            print!("{}", output::format_review(&file_display, &findings, &style));
-                        }
-                        all_findings.extend(findings);
-                        continue;
                     }
-                    Err(e) => {
-                        progress.clear_line();
-                        eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
+                }
+
+                // Standard review path
+                let llm_reviewer: Option<&dyn pipeline::LlmReviewer> = llm_client.as_deref().map(|c| c as _);
+                let parse_cache = cache::ParseCache::new(128);
+                let review_result = if let Some(l) = lang {
+                    pipeline::review_source(
+                        &file_path, &source, l, llm_reviewer, &pipeline_cfg, Some(&parse_cache))
+                } else {
+                    pipeline::review_file_llm_only(
+                        &file_path, &source, llm_reviewer, &pipeline_cfg)
+                };
+
+                match review_result {
+                    Ok(mut result) => {
+                        let sup_result = suppress::apply_suppressions(
+                            result.findings, &suppress_rules, &file_display);
+                        result.findings = sup_result.kept;
+                        result.suppressed = sup_result.suppressed.len();
+                        (idx, Ok((result, sup_result.suppressed)))
                     }
+                    Err(e) => (idx, Err(e)),
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Collect results in file order
+        type ParResult = (pipeline::FileReviewResult, Vec<(crate::finding::Finding, suppress::SuppressionRule)>);
+        let mut indexed_results: Vec<Option<ParResult>> = vec![None; opts.files.len()];
+        for handle in handles {
+            match tokio::task::block_in_place(|| rt.block_on(handle)) {
+                Ok((idx, Ok(result))) => { indexed_results[idx] = Some(result); }
+                Ok((idx, Err(e))) => {
+                    eprintln!("Error: Review failed for {}: {}", opts.files[idx].display(), e);
+                    had_errors = true;
+                }
+                Err(e) => {
+                    eprintln!("Error: Task panicked: {}", e);
+                    had_errors = true;
                 }
             }
         }
 
-        // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
-        let review_result = if let Some(l) = lang {
-            pipeline::review_source(
-                file_path,
-                &source,
-                l,
-                llm_reviewer,
-                &pipeline_cfg,
-                Some(&parse_cache),
-            )
-        } else {
-            eprintln!("Note: No AST support for {}, using LLM-only review", file_path.display());
-            pipeline::review_file_llm_only(
-                file_path,
-                &source,
-                llm_reviewer,
-                &pipeline_cfg,
-            )
-        };
-        match review_result {
-            Ok(mut result) => {
-                // Apply project-level suppressions
-                let file_display = result.file_path.clone();
-                let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
-                if !sup_result.suppressed.is_empty() {
-                    eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+        // Output in file order (sequential -- no interleaving)
+        for result_opt in indexed_results.into_iter() {
+            if let Some((result, suppressed_findings)) = result_opt {
+                if !suppressed_findings.is_empty() {
+                    eprintln!("Suppressed {} finding(s) in {}", suppressed_findings.len(), result.file_path);
                 }
                 if opts.show_suppressed {
-                    for (f, rule) in &sup_result.suppressed {
+                    for (f, rule) in &suppressed_findings {
                         eprint!("{}", suppress::format_suppressed_finding(f, rule));
                     }
                 }
-                result.findings = sup_result.kept;
-                progress.finish_file(result.findings.len());
                 if use_compact {
                     println!("{}", output::format_compact_review(&result.file_path, &result.findings));
                 } else if !use_json {
@@ -374,11 +536,10 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 all_findings.extend(result.findings.clone());
                 file_results.push(result);
             }
-            Err(e) => {
-                progress.clear_line();
-                eprintln!("Error: Review failed for {}: {}", file_path.display(), e);
-                had_errors = true;
-            }
+        }
+
+        if opts.parallel > 1 && file_results.len() > 1 {
+            eprintln!("{} file(s) reviewed in parallel (--parallel {})", file_results.len(), opts.parallel);
         }
     }
 
