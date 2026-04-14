@@ -42,6 +42,10 @@ pub struct PipelineConfig {
     pub max_review_lines: usize,
     /// Framework overrides from CLI --framework flags
     pub framework_overrides: Vec<String>,
+    /// Semaphore to limit concurrent LLM calls (None = unlimited)
+    pub semaphore: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    /// Pre-built feedback index for calibration (shared across parallel tasks)
+    pub feedback_index: Option<std::sync::Arc<std::sync::Mutex<crate::feedback_index::FeedbackIndex>>>,
 }
 
 impl Default for PipelineConfig {
@@ -58,6 +62,8 @@ impl Default for PipelineConfig {
             diff_ranges: None,
             max_review_lines: 500,
             framework_overrides: Vec::new(),
+            semaphore: None,
+            feedback_index: None,
         }
     }
 }
@@ -789,5 +795,22 @@ mod tests {
         // Should clamp to 1 line, not produce empty output
         assert_eq!(truncated.lines().count(), 1);
         assert!(notice.is_some());
+    }
+
+    #[test]
+    fn pipeline_config_default_has_no_semaphore() {
+        let cfg = PipelineConfig::default();
+        assert!(cfg.semaphore.is_none());
+        assert!(cfg.feedback_index.is_none());
+    }
+
+    #[test]
+    fn pipeline_config_with_semaphore() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+        let cfg = PipelineConfig {
+            semaphore: Some(sem.clone()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.semaphore.as_ref().unwrap().available_permits(), 4);
     }
 }
