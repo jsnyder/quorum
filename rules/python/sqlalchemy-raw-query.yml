@@ -1,0 +1,49 @@
+id: sqlalchemy-raw-query
+language: Python
+severity: error
+message: "Raw SQL with f-string or string concatenation in `.execute()` enables SQL injection. Use parameterized queries with `:param` placeholders."
+note: "Complements analysis.rs f-string SQL detection with SQLAlchemy-specific .execute() and text() wrappers."
+rule:
+  kind: call
+  has:
+    field: function
+    kind: attribute
+    has:
+      field: attribute
+      regex: "^execute$"
+  any:
+    - has:
+        field: arguments
+        has:
+          kind: string
+          regex: "^f['\"]"
+        stopBy: end
+    - has:
+        field: arguments
+        has:
+          kind: concatenated_string
+        stopBy: end
+    - has:
+        field: arguments
+        has:
+          kind: binary_operator
+          has:
+            kind: string
+          stopBy: end
+        stopBy: end
+    - has:
+        field: arguments
+        has:
+          kind: call
+          all:
+            - has:
+                field: function
+                regex: "^text$"
+            - has:
+                field: arguments
+                has:
+                  kind: string
+                  regex: "^f['\"]"
+                stopBy: end
+          stopBy: end
+        stopBy: end

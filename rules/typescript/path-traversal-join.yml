@@ -1,0 +1,14 @@
+id: path-traversal-join
+language: TypeScript
+severity: warning
+message: "`path.join`/`path.resolve` with user-controlled input (req.params, req.query, req.body) enables path traversal. Validate and sanitize the input or use a whitelist."
+note: "Feedback: 13 confirmed true positives across third-opinion reviews. Top finding by volume."
+rule:
+  kind: call_expression
+  any:
+    - pattern: path.join($$$ARGS)
+    - pattern: path.resolve($$$ARGS)
+  has:
+    kind: member_expression
+    regex: "^req\\.(params|query|body)\\."
+    stopBy: end

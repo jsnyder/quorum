@@ -1,0 +1,18 @@
+id: non-literal-regexp
+language: TypeScript
+severity: warning
+message: "`new RegExp()` with a non-literal argument is a ReDoS risk if the pattern source is user-controlled. Use a literal regex or validate the input."
+note: "ReDoS detection: matches dynamic RegExp construction, ignores string literal patterns."
+rule:
+  kind: new_expression
+  pattern: new RegExp($ARG)
+  not:
+    has:
+      field: arguments
+      has:
+        kind: string
+        nthChild: 1
+constraints:
+  ARG:
+    not:
+      kind: string

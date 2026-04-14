@@ -1200,6 +1200,88 @@ fn scan_insecure_yaml(
                     }
                 }
             }
+
+            // --- Tier 5b: Docker Compose checks ---
+            // Detect docker-compose files by presence of top-level `services:` key.
+            // Skip if `apiVersion` is present (excludes Kubernetes, CloudFormation, etc.).
+            if keys.contains(&"services") && !keys.contains(&"apiVersion") {
+                if let Some(services_mapping) = find_value_mapping(node, source, "services") {
+                    // Iterate over each service defined under `services:`
+                    for i in 0..services_mapping.child_count() {
+                        if let Some(child) = services_mapping.child(i as u32) {
+                            if child.kind() == "block_mapping_pair" {
+                                let svc_line = child.start_position().row as u32 + 1;
+                                let svc_end = child.end_position().row as u32 + 1;
+                                let svc_name = if let Some(key) = child.child_by_field_name("key") {
+                                    source[key.byte_range()].trim().to_string()
+                                } else {
+                                    "unknown".to_string()
+                                };
+
+                                // Get the service's block_mapping (its config keys)
+                                let svc_mapping = if let Some(value) = child.child_by_field_name("value") {
+                                    find_block_mapping_in(&value)
+                                } else {
+                                    None
+                                };
+
+                                if let Some(ref svc_map) = svc_mapping {
+                                    let svc_keys = collect_mapping_keys(svc_map, source);
+
+                                    // Pattern: Docker Compose service missing no-new-privileges
+                                    let has_no_new_privs = if svc_keys.contains(&"security_opt") {
+                                        // Check if security_opt value contains no-new-privileges
+                                        if let Some(value) = child.child_by_field_name("value") {
+                                            let svc_text = source[value.byte_range()].to_string();
+                                            svc_text.contains("no-new-privileges")
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    };
+                                    if !has_no_new_privs {
+                                        findings.push(Finding {
+                                            title: format!("Docker Compose service `{}` missing `no-new-privileges` security option", svc_name),
+                                            description: "Without `security_opt: [no-new-privileges:true]`, containers can escalate privileges via setuid binaries.".into(),
+                                            severity: Severity::Medium,
+                                            category: "security".into(),
+                                            source: Source::LocalAst,
+                                            line_start: svc_line,
+                                            line_end: svc_end,
+                                            evidence: vec![],
+                                            calibrator_action: None,
+                                            similar_precedent: vec![],
+                                            canonical_pattern: None,
+                                            suggested_fix: Some(format!("Add `security_opt: [no-new-privileges:true]` to the `{}` service.", svc_name)),
+                                            based_on_excerpt: None,
+                                        });
+                                    }
+
+                                    // Pattern: Docker Compose service missing read_only
+                                    if !svc_keys.contains(&"read_only") {
+                                        findings.push(Finding {
+                                            title: format!("Docker Compose service `{}` has writable root filesystem", svc_name),
+                                            description: "Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.".into(),
+                                            severity: Severity::Low,
+                                            category: "security".into(),
+                                            source: Source::LocalAst,
+                                            line_start: svc_line,
+                                            line_end: svc_end,
+                                            evidence: vec![],
+                                            calibrator_action: None,
+                                            similar_precedent: vec![],
+                                            canonical_pattern: None,
+                                            suggested_fix: Some(format!("Add `read_only: true` to the `{}` service and use tmpfs mounts for writable paths.", svc_name)),
+                                            based_on_excerpt: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3339,6 +3421,95 @@ def process(items=None):
         assert!(
             !findings.iter().any(|f| f.title.contains("API") || f.title.contains("encryption")),
             "ESPHome API with encryption should NOT be flagged"
+        );
+    }
+
+    // -- Tier 5b: Docker Compose checks --
+
+    #[test]
+    fn yaml_docker_compose_missing_no_new_privileges() {
+        let source = "services:\n  web:\n    image: nginx:latest\n    ports:\n      - \"80:80\"\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("no-new-privileges")),
+            "Should flag docker-compose service without no-new-privileges. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_docker_compose_with_no_new_privileges_ok() {
+        let source = "services:\n  web:\n    image: nginx:latest\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("no-new-privileges")),
+            "Service with no-new-privileges should NOT be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_docker_compose_missing_read_only() {
+        let source = "services:\n  web:\n    image: nginx:latest\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            findings.iter().any(|f| f.title.contains("writable root filesystem")),
+            "Should flag docker-compose service without read_only. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_docker_compose_with_read_only_ok() {
+        let source = "services:\n  web:\n    image: nginx:latest\n    read_only: true\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("writable root filesystem")),
+            "Service with read_only should NOT be flagged. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn yaml_docker_compose_multiple_services() {
+        let source = "services:\n  web:\n    image: nginx:latest\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n  db:\n    image: postgres:15\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        // web is fully secured, db is not
+        let no_new_priv_findings: Vec<_> = findings.iter().filter(|f| f.title.contains("no-new-privileges")).collect();
+        assert_eq!(
+            no_new_priv_findings.len(), 1,
+            "Only db should be flagged for no-new-privileges. Got: {:?}",
+            no_new_priv_findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+        assert!(no_new_priv_findings[0].title.contains("db"));
+    }
+
+    #[test]
+    fn yaml_non_docker_compose_not_flagged() {
+        // Regular YAML with a `services` key that is NOT docker-compose format
+        let source = "name: myapp\nversion: '1.0'\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("no-new-privileges") || f.title.contains("writable root")),
+            "Non docker-compose YAML should NOT trigger docker-compose checks"
+        );
+    }
+
+    #[test]
+    fn yaml_k8s_with_services_not_flagged() {
+        // Kubernetes manifest has both `apiVersion` and `services`-like structure
+        let source = "apiVersion: v1\nkind: Service\nmetadata:\n  name: my-svc\nservices:\n  web:\n    image: nginx\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("no-new-privileges") || f.title.contains("writable root")),
+            "Kubernetes YAML with apiVersion should NOT trigger docker-compose checks"
         );
     }
 
