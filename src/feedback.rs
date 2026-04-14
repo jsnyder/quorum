@@ -58,8 +58,9 @@ impl FeedbackStore {
             .append(true)
             .open(&self.path)
             .with_context(|| format!("Failed to open feedback file: {}", self.path.display()))?;
-        let line = serde_json::to_string(entry)?;
-        writeln!(file, "{}", line)?;
+        let mut buf = serde_json::to_string(entry)?;
+        buf.push('\n');
+        file.write_all(buf.as_bytes())?;
         Ok(())
     }
 
