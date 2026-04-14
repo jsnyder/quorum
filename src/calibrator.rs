@@ -138,6 +138,14 @@ pub fn calibrate(
             continue; // don't add to output
         }
 
+        // Soft suppress: auto-only FP can downgrade to INFO but not remove
+        // This preserves the finding for human review while reducing noise
+        if fp_weight >= 1.0 && fp_weight > tp_weight * 2.0 {
+            finding.severity = Severity::Info;
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            // Don't increment suppressed — finding stays in output at reduced severity
+        }
+
         // Boost: TP clearly dominates FP
         if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
             finding.severity = boost_severity(&finding.severity);
@@ -233,6 +241,14 @@ pub fn calibrate_with_index(
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue;
+        }
+
+        // Soft suppress: auto-only FP can downgrade to INFO but not remove
+        // This preserves the finding for human review while reducing noise
+        if fp_weight >= 1.0 && fp_weight > tp_weight * 2.0 {
+            finding.severity = Severity::Info;
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            // Don't increment suppressed — finding stays in output at reduced severity
         }
 
         // Boost: TP clearly dominates FP
@@ -698,7 +714,8 @@ mod tests {
     #[test]
     fn auto_calibrate_weight_capped_at_one() {
         // 4 auto FPs: uncapped = 4 * 0.5 = 2.0 (would suppress)
-        // capped = min(2.0, 1.0) = 1.0 (should NOT suppress alone)
+        // capped = min(2.0, 1.0) = 1.0 (should NOT fully suppress — needs human corroboration)
+        // Note: soft suppression downgrades severity to INFO but finding remains in output
         let findings = vec![FindingBuilder::new().title("Bug").category("test").build()];
         let auto_fb = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -741,6 +758,107 @@ mod tests {
         let result = calibrate(findings, &feedback, &config);
         assert_eq!(result.suppressed, 1,
             "Auto (capped 1.0) + human (1.0) = 2.0 should suppress");
+    }
+
+    #[test]
+    fn auto_only_fp_soft_suppresses_to_info() {
+        // Auto-only FP should downgrade to INFO, not fully suppress
+        let finding = FindingBuilder::new()
+            .title("Template uses states() without availability check")
+            .severity(Severity::Medium)
+            .category("quality")
+            .build();
+        let feedback = vec![
+            fb("Template uses states() without availability check", "quality", Verdict::Fp),
+            fb("Template uses states() without availability check", "quality", Verdict::Fp),
+            fb("Template uses states() without availability check", "quality", Verdict::Fp),
+        ];
+        // Make all entries auto-calibrate provenance
+        let auto_feedback: Vec<FeedbackEntry> = feedback.into_iter().map(|mut e| {
+            e.provenance = crate::feedback::Provenance::AutoCalibrate("gpt-5.4".into());
+            e
+        }).collect();
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &auto_feedback, &config);
+
+        // Finding should NOT be fully suppressed
+        assert_eq!(result.suppressed, 0);
+        assert_eq!(result.findings.len(), 1);
+        // But should be downgraded to INFO
+        assert_eq!(result.findings[0].severity, Severity::Info);
+        assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Disputed));
+    }
+
+    #[test]
+    fn auto_plus_human_fp_still_fully_suppresses() {
+        // Human corroboration should still enable full suppression
+        let finding = FindingBuilder::new()
+            .title("Template uses states() without availability check")
+            .severity(Severity::Medium)
+            .category("quality")
+            .build();
+        let mut feedback = vec![
+            fb("Template uses states() without availability check", "quality", Verdict::Fp),
+            fb("Template uses states() without availability check", "quality", Verdict::Fp),
+        ];
+        // One auto, one human — human provides the extra weight to cross 1.5
+        feedback[0].provenance = crate::feedback::Provenance::AutoCalibrate("gpt-5.4".into());
+        feedback[1].provenance = crate::feedback::Provenance::Human;
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+
+        // Should be fully suppressed (human corroboration)
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.findings.len(), 0);
+    }
+
+    #[test]
+    fn auto_fp_with_tp_opposition_no_soft_suppress() {
+        // If there's significant TP signal, don't soft suppress even with auto FP
+        let finding = FindingBuilder::new()
+            .title("Use of unwrap() may panic")
+            .severity(Severity::Medium)
+            .category("security")
+            .build();
+        let mut feedback = vec![
+            fb("Use of unwrap() may panic", "security", Verdict::Fp),
+            fb("Use of unwrap() may panic", "security", Verdict::Fp),
+            fb("Use of unwrap() may panic", "security", Verdict::Tp),
+        ];
+        feedback[0].provenance = crate::feedback::Provenance::AutoCalibrate("gpt-5.4".into());
+        feedback[1].provenance = crate::feedback::Provenance::AutoCalibrate("gpt-5.4".into());
+        feedback[2].provenance = crate::feedback::Provenance::Human;
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+
+        // Mixed signal — should NOT be soft suppressed
+        assert_eq!(result.suppressed, 0);
+        assert_eq!(result.findings.len(), 1);
+        assert_ne!(result.findings[0].severity, Severity::Info); // severity preserved
+    }
+
+    #[test]
+    fn soft_suppress_preserves_finding_in_output() {
+        // Soft-suppressed findings must remain in output (not filtered out)
+        let finding = FindingBuilder::new()
+            .title("Deprecated trigger syntax")
+            .severity(Severity::High)
+            .category("quality")
+            .build();
+        let auto_feedback: Vec<FeedbackEntry> = (0..5).map(|_| {
+            let mut e = fb("Deprecated trigger syntax", "quality", Verdict::Fp);
+            e.provenance = crate::feedback::Provenance::AutoCalibrate("gpt-5.4".into());
+            e
+        }).collect();
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &auto_feedback, &config);
+
+        assert_eq!(result.findings.len(), 1); // still in output
+        assert_eq!(result.findings[0].severity, Severity::Info); // but downgraded
     }
 
     #[test]
