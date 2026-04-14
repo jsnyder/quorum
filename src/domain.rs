@@ -81,35 +81,85 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
         }
     }
 
-    // Home Assistant detection
+    // Home Assistant detection — two-tier system:
+    // Tier 1 (strong signals, standalone): .HA_VERSION, anchored homeassistant: key
+    // Tier 2 (weak signals, need 2+): custom_components/, blueprints/, secrets.yaml, etc.
+
+    // Tier 1: .HA_VERSION is definitive
     if project_dir.join(".HA_VERSION").exists() {
         frameworks.insert("home-assistant".into());
     }
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("configuration.yaml")) {
-        if content.contains("homeassistant:") {
+
+    // Tier 1: configuration.yaml with line-anchored homeassistant: key
+    if !frameworks.contains("home-assistant") {
+        for config_path in &[
+            project_dir.join("configuration.yaml"),
+            project_dir.join("configuration/configuration.yaml"),
+        ] {
+            if let Ok(content) = std::fs::read_to_string(config_path) {
+                if has_yaml_top_level_key(&content, "homeassistant") {
+                    frameworks.insert("home-assistant".into());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Tier 2: weak signals — need 2+ to trigger
+    if !frameworks.contains("home-assistant") {
+        let mut ha_score: usize = 0;
+        let ha_dirs = ["custom_components", "blueprints", "packages", "www"];
+        for d in &ha_dirs {
+            if project_dir.join(d).is_dir() {
+                ha_score += 1;
+            }
+        }
+        if project_dir.join("secrets.yaml").exists() {
+            ha_score += 1;
+        }
+        let ha_marker_count = ["automations.yaml", "scripts.yaml", "scenes.yaml"]
+            .iter()
+            .filter(|f| project_dir.join(f).exists())
+            .count();
+        ha_score += ha_marker_count;
+
+        if ha_score >= 2 {
             frameworks.insert("home-assistant".into());
         }
     }
-    // HA marker files: only count if multiple exist (single file is too generic)
-    let ha_marker_count = ["automations.yaml", "scripts.yaml", "scenes.yaml"]
-        .iter()
-        .filter(|f| project_dir.join(f).exists())
-        .count();
-    if ha_marker_count >= 2 {
-        frameworks.insert("home-assistant".into());
-    }
 
-    // ESPHome detection: any .yaml file with top-level `esphome:` key
-    if let Ok(entries) = std::fs::read_dir(project_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.starts_with("esphome:")
-                        || content.contains("\nesphome:")
-                    {
-                        frameworks.insert("esphome".into());
-                        break;
+    // ESPHome detection: check root YAML files and esphome/ subdirectory
+    if project_dir.join("esphome").is_dir() {
+        // esphome/ directory exists — scan it for ESPHome configs
+        if let Ok(entries) = std::fs::read_dir(project_dir.join("esphome")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if content.starts_with("esphome:")
+                            || content.contains("\nesphome:")
+                        {
+                            frameworks.insert("esphome".into());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Also check root-level YAML files (flat layout)
+    if !frameworks.contains("esphome") {
+        if let Ok(entries) = std::fs::read_dir(project_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if content.starts_with("esphome:")
+                            || content.contains("\nesphome:")
+                        {
+                            frameworks.insert("esphome".into());
+                            break;
+                        }
                     }
                 }
             }
@@ -125,6 +175,21 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
         frameworks: fws,
         languages: langs,
     }
+}
+
+/// Check if a YAML string has a top-level key (not commented out).
+fn has_yaml_top_level_key(content: &str, key: &str) -> bool {
+    let pattern = format!("{}:", key);
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed == pattern || trimmed.starts_with(&format!("{} ", pattern)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Collect exact dependency key names from package.json
@@ -315,6 +380,136 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn detect_ha_from_subdirectory_layout() {
+        // Real HA repos use configuration/ subdirectory
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("configuration")).unwrap();
+        std::fs::write(
+            dir.path().join("configuration/configuration.yaml"),
+            "homeassistant:\n  name: Home\n",
+        ).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "Should detect HA from configuration/configuration.yaml. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_from_custom_components_plus_secrets() {
+        // custom_components/ is a weak signal — needs one more to trigger
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("custom_components")).unwrap();
+        std::fs::write(dir.path().join("secrets.yaml"), "key: val\n").unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "Should detect HA from custom_components/ + secrets.yaml. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_esphome_from_subdirectory() {
+        // esphome/ directory with YAML files
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("esphome")).unwrap();
+        std::fs::write(
+            dir.path().join("esphome/device.yaml"),
+            "esphome:\n  name: test\n",
+        ).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            domain.frameworks.iter().any(|f| f.contains("esphome")),
+            "Should detect ESPHome from esphome/ subdir. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_scoring_weak_signals() {
+        // blueprints/ + secrets.yaml = 2 weak signals, should detect HA
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("blueprints")).unwrap();
+        std::fs::write(dir.path().join("secrets.yaml"), "api_key: xxx\n").unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "2 weak HA signals should detect HA. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_single_weak_signal_not_enough() {
+        // Only blueprints/ alone shouldn't trigger (too generic)
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("blueprints")).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "Single weak signal should NOT detect HA. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_custom_components_plus_one() {
+        // custom_components/ + packages/ = 2 weak signals
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("custom_components")).unwrap();
+        std::fs::create_dir_all(dir.path().join("packages")).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "custom_components + packages should detect HA. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_custom_components_alone_not_enough() {
+        // custom_components/ alone is ambiguous
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("custom_components")).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "custom_components alone should NOT detect HA. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
+    #[test]
+    fn detect_ha_homeassistant_key_anchored() {
+        // Should match when homeassistant: is a top-level key
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("configuration.yaml"),
+            "homeassistant:\n  name: Home\n",
+        ).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(domain.frameworks.iter().any(|f| f.contains("home-assistant")));
+    }
+
+    #[test]
+    fn detect_ha_homeassistant_in_comment_ignored() {
+        // Should NOT match when homeassistant: is in a comment
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("configuration.yaml"),
+            "# homeassistant: is configured elsewhere\nsome_key: value\n",
+        ).unwrap();
+        let domain = detect_domain(dir.path());
+        assert!(
+            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            "Commented homeassistant: should NOT detect HA. Got: {:?}",
+            domain.frameworks
+        );
+    }
+
     fn detect_multi_language_project() {
         let dir = create_project(&[
             ("Cargo.toml", "[package]\n"),

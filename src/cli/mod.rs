@@ -110,6 +110,10 @@ pub struct ReviewOpts {
     /// Show findings that were suppressed by project rules
     #[arg(long)]
     pub show_suppressed: bool,
+
+    /// Override framework detection (e.g., --framework home-assistant)
+    #[arg(long)]
+    pub framework: Vec<String>,
 }
 
 #[derive(Parser)]

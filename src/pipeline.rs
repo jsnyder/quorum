@@ -40,6 +40,8 @@ pub struct PipelineConfig {
     pub diff_ranges: Option<Vec<(String, Vec<(u32, u32)>)>>,
     /// Maximum number of lines to send to the LLM for review
     pub max_review_lines: usize,
+    /// Framework overrides from CLI --framework flags
+    pub framework_overrides: Vec<String>,
 }
 
 impl Default for PipelineConfig {
@@ -55,6 +57,7 @@ impl Default for PipelineConfig {
             feedback_store: None,
             diff_ranges: None,
             max_review_lines: 500,
+            framework_overrides: Vec::new(),
         }
     }
 }
@@ -220,7 +223,12 @@ pub fn review_file(
         // Fetch Context7 framework docs if frameworks are detected
         let framework_docs = {
             let project_root = find_project_root(file_path);
-            let domain = crate::domain::detect_domain(&project_root);
+            let mut domain = crate::domain::detect_domain(&project_root);
+            for fw in &pipeline_config.framework_overrides {
+                if !domain.frameworks.contains(fw) {
+                    domain.frameworks.push(fw.clone());
+                }
+            }
             if !domain.frameworks.is_empty() {
                 eprintln!("Detected frameworks: {:?}", domain.frameworks);
                 let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
@@ -430,7 +438,12 @@ pub fn review_file_llm_only(
             // Context7 framework docs
             let framework_docs = {
                 let project_root = find_project_root(file_path);
-                let domain = crate::domain::detect_domain(&project_root);
+                let mut domain = crate::domain::detect_domain(&project_root);
+                for fw in &pipeline_config.framework_overrides {
+                    if !domain.frameworks.contains(fw) {
+                        domain.frameworks.push(fw.clone());
+                    }
+                }
                 if !domain.frameworks.is_empty() {
                     let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
                     let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);

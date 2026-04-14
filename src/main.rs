@@ -232,6 +232,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         auto_calibrate: !opts.no_auto_calibrate(),
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
+        framework_overrides: opts.framework.clone(),
         ..Default::default()
     };
 
