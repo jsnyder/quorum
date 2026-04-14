@@ -1,0 +1,18 @@
+id: subprocess-no-check
+language: Python
+severity: hint
+message: "`subprocess.run()` without `check=True` silently ignores non-zero exit codes. Add `check=True` or inspect the return code."
+note: "Feedback: ~5 confirmed true positives"
+rule:
+  kind: call
+  has:
+    field: function
+    pattern: subprocess.run
+    stopBy: end
+  not:
+    has:
+      kind: keyword_argument
+      has:
+        field: name
+        regex: "^check$"
+      stopBy: end

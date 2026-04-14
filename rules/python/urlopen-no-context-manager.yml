@@ -1,0 +1,15 @@
+id: urlopen-no-context-manager
+language: Python
+severity: hint
+message: "`urlopen()` response not used as a context manager. Use `with urlopen(...) as resp:` to ensure the connection is closed."
+note: "Feedback: ~5 confirmed true positives from resource_leak cluster"
+rule:
+  kind: call
+  has:
+    field: function
+    regex: "^(urlopen|urllib\\.request\\.urlopen)$"
+    stopBy: end
+  not:
+    inside:
+      kind: with_clause
+      stopBy: end

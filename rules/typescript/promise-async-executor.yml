@@ -1,0 +1,20 @@
+id: promise-async-executor
+language: TypeScript
+severity: warning
+message: "Async function as Promise executor swallows rejected promises. Errors thrown after the first `await` will be silently lost."
+note: "Feedback: ~3 confirmed true positives"
+rule:
+  kind: new_expression
+  all:
+    - has:
+        field: constructor
+        regex: "^Promise$"
+    - has:
+        kind: arguments
+        has:
+          any:
+            - kind: arrow_function
+            - kind: function_expression
+          regex: "^async"
+          stopBy: end
+        stopBy: end

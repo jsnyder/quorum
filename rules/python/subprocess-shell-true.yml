@@ -1,0 +1,22 @@
+id: subprocess-shell-true
+language: Python
+severity: warning
+message: "`subprocess` call with `shell=True` enables command injection if the command includes user input. Use a list of arguments instead."
+note: "Feedback: ~8 confirmed true positives from injection_cmd cluster"
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        regex: "^subprocess\\.(run|call|check_output|check_call|Popen)$"
+        stopBy: end
+    - has:
+        kind: keyword_argument
+        all:
+          - has:
+              field: name
+              regex: "^shell$"
+          - has:
+              field: value
+              regex: "^True$"
+        stopBy: end

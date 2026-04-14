@@ -41,9 +41,19 @@ QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 | Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
 
-### ast-grep custom rules
+### ast-grep custom rules (20 bundled)
 
 Bundled rules live in `rules/<language>/`. Users can add custom rules to `~/.quorum/rules/<language>/` (e.g. `~/.quorum/rules/typescript/my-rule.yml`). Both directories are scanned automatically when ast-grep is in PATH.
+
+Bundled rules by language:
+- **Python** (7): bare-except-pass, broad-exception-catch, open-no-encoding, re-compile-in-loop, resource-no-context-manager, subprocess-no-check, subprocess-shell-true, urlopen-no-context-manager
+- **TypeScript** (5): as-any-cast, bare-catch, nullish-coalescing-preferred, promise-async-executor, sync-in-async, tautological-length
+- **JavaScript** (2): bind-in-add-event-listener, console-log-artifact
+- **Rust** (2): block-on-in-async, string-byte-slice
+- **Bash** (1): predictable-tmp
+- **YAML** (1): float-zero-fallback
+
+Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-pattern-mining.md`.
 
 ## Constraints
 

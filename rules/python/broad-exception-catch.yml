@@ -1,0 +1,41 @@
+id: broad-exception-catch
+language: Python
+severity: hint
+message: "`except Exception` catches too broadly, including unexpected errors. Catch specific exception types where possible."
+note: "Feedback: ~8 confirmed true positives from error_handling cluster. Complements bare-except-pass rule."
+rule:
+  kind: except_clause
+  all:
+    - has:
+        any:
+          - kind: identifier
+            regex: "^Exception$"
+          - kind: as_pattern
+            has:
+              regex: "^Exception"
+              stopBy: end
+        stopBy: end
+    - has:
+        kind: block
+        all:
+          - any:
+              - has:
+                  kind: pass_statement
+                  stopBy: end
+              - has:
+                  kind: continue_statement
+                  stopBy: end
+              - has:
+                  kind: return_statement
+                  stopBy: end
+          - not:
+              has:
+                any:
+                  - kind: raise_statement
+                  - kind: call
+                    has:
+                      field: function
+                      regex: "(log|logger|logging|print|warn)"
+                      stopBy: end
+                stopBy: end
+        stopBy: end

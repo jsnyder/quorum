@@ -1,0 +1,11 @@
+id: string-byte-slice
+language: Rust
+severity: hint
+message: "Byte-index slicing on a `&str` panics if the index falls on a multi-byte UTF-8 character boundary. Consider `.chars().take(n)` or `.get(..n)`."
+note: "Feedback: ~5 confirmed true positives from off_by_one cluster"
+rule:
+  kind: index_expression
+  has:
+    kind: range_expression
+    stopBy: end
+  regex: "&?\\w+\\[\\.\\.\\d+\\]|&?\\w+\\[\\d+\\.\\.\\]|&?\\w+\\[\\d+\\.\\.\\d+\\]"

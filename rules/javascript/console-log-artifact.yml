@@ -1,0 +1,11 @@
+id: console-log-artifact
+language: JavaScript
+severity: hint
+message: "`console.log()` left in code. Remove debug artifacts before shipping, or use a structured logger."
+note: "Feedback: 30 confirmed true positives"
+rule:
+  pattern: console.log($$$)
+  not:
+    inside:
+      kind: catch_clause
+      stopBy: end

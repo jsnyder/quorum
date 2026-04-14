@@ -1,0 +1,20 @@
+id: re-compile-in-loop
+language: Python
+severity: hint
+message: "Regex pattern is recompiled on every loop iteration. Pre-compile with `re.compile()` outside the loop."
+note: "Feedback: ~6 confirmed true positives from regex_issue cluster"
+rule:
+  kind: call
+  has:
+    field: function
+    regex: "^re\\.(sub|match|search|findall|finditer|fullmatch|split|subn)$"
+    stopBy: end
+  inside:
+    any:
+      - kind: for_statement
+      - kind: while_statement
+      - kind: list_comprehension
+      - kind: dictionary_comprehension
+      - kind: set_comprehension
+      - kind: generator_expression
+    stopBy: end

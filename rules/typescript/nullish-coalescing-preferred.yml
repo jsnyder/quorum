@@ -1,0 +1,31 @@
+id: nullish-coalescing-preferred
+language: TypeScript
+severity: hint
+message: "Logical OR `||` treats `0`, `\"\"`, and `false` as missing. Use nullish coalescing `??` if you only want to default on `null`/`undefined`."
+note: "Feedback: ~10 confirmed true positives from null_undef cluster"
+rule:
+  kind: binary_expression
+  all:
+    - has:
+        field: operator
+        regex: "^\\|\\|$"
+    - has:
+        field: right
+        any:
+          - kind: number
+          - kind: string
+            not:
+              regex: "^$"
+          - kind: array
+          - kind: object
+    - has:
+        field: left
+        any:
+          - kind: member_expression
+          - kind: identifier
+          - kind: subscript_expression
+          - kind: call_expression
+  not:
+    inside:
+      kind: if_statement
+      stopBy: neighbor
