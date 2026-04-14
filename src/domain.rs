@@ -81,6 +81,25 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
         }
     }
 
+    // Terraform detection
+    if project_dir.join(".terraform.lock.hcl").exists()
+        || project_dir.join("terraform.tfvars").exists()
+    {
+        frameworks.insert("terraform".into());
+        languages.insert("hcl".into());
+    } else {
+        // Check for .tf files in project root
+        if let Ok(entries) = std::fs::read_dir(project_dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("tf") {
+                    frameworks.insert("terraform".into());
+                    languages.insert("hcl".into());
+                    break;
+                }
+            }
+        }
+    }
+
     // Home Assistant detection — two-tier system:
     // Tier 1 (strong signals, standalone): .HA_VERSION, anchored homeassistant: key
     // Tier 2 (weak signals, need 2+): custom_components/, blueprints/, secrets.yaml, etc.
@@ -518,5 +537,39 @@ mod tests {
         let info = detect_domain(dir.path());
         assert!(info.languages.contains(&"rust".to_string()));
         assert!(info.languages.contains(&"javascript".to_string()));
+    }
+
+    #[test]
+    fn detect_terraform_from_lock_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".terraform.lock.hcl"), "provider {}").unwrap();
+        let info = detect_domain(dir.path());
+        assert!(info.frameworks.contains(&"terraform".to_string()));
+        assert!(info.languages.contains(&"hcl".to_string()));
+    }
+
+    #[test]
+    fn detect_terraform_from_tfvars() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("terraform.tfvars"), "region = \"us-east-1\"").unwrap();
+        let info = detect_domain(dir.path());
+        assert!(info.frameworks.contains(&"terraform".to_string()));
+    }
+
+    #[test]
+    fn detect_terraform_from_tf_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.tf"), "resource \"aws_instance\" \"web\" {}").unwrap();
+        let info = detect_domain(dir.path());
+        assert!(info.frameworks.contains(&"terraform".to_string()));
+        assert!(info.languages.contains(&"hcl".to_string()));
+    }
+
+    #[test]
+    fn no_terraform_without_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.py"), "x = 1").unwrap();
+        let info = detect_domain(dir.path());
+        assert!(!info.frameworks.contains(&"terraform".to_string()));
     }
 }

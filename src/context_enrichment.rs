@@ -29,6 +29,7 @@ pub fn framework_queries(frameworks: &[String]) -> Vec<(String, String)> {
             "fastify" => Some(("fastify".into(), "plugin system validation security hooks".into())),
             "home-assistant" => Some(("home-assistant".into(), "automations templates blueprints Jinja2 states triggers conditions actions".into())),
             "esphome" => Some(("esphome".into(), "yaml components lambda sensors substitutions".into())),
+            "terraform" => Some(("terraform".into(), "provider resource data module security best practices".into())),
             _ => None,
         };
         if let Some(p) = pair {
@@ -310,6 +311,14 @@ mod tests {
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].0, "esphome");
         assert!(queries[0].1.contains("yaml"));
+    }
+
+    #[test]
+    fn framework_queries_terraform() {
+        let queries = framework_queries(&["terraform".into()]);
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].0, "terraform");
+        assert!(queries[0].1.contains("provider"));
     }
 
     #[test]

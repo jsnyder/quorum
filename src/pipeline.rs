@@ -390,7 +390,10 @@ pub fn review_file(
 
 /// Walk up from file path to find the project root (directory containing pyproject.toml, package.json, Cargo.toml, etc.)
 pub fn find_project_root(file_path: &Path) -> std::path::PathBuf {
-    let markers = ["pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py"];
+    let markers = [
+        "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py",
+        ".terraform.lock.hcl", "terraform.tfvars",
+    ];
     let mut dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     for _ in 0..10 {
         for marker in &markers {
