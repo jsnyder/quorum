@@ -38,13 +38,32 @@ pub fn framework_queries(frameworks: &[String]) -> Vec<(String, String)> {
     queries
 }
 
+/// Build a code-aware Context7 query by appending relevant import targets to the baseline query.
+/// Preserves the baseline to avoid context starvation, appends up to 10 import keywords.
+pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> String {
+    if import_targets.is_empty() {
+        return base_query.to_string();
+    }
+    // Extract short names from import paths (e.g., "os.path.join" -> "join")
+    let keywords: Vec<&str> = import_targets.iter()
+        .filter_map(|imp| imp.split(&['.', '/', ':'][..]).last())
+        .filter(|s| s.len() > 2) // skip very short names like "os", "re"
+        .take(10)
+        .collect();
+    if keywords.is_empty() {
+        return base_query.to_string();
+    }
+    format!("{} {}", base_query, keywords.join(" "))
+}
+
 /// Fetch docs for detected frameworks using a ContextFetcher.
-pub fn fetch_framework_docs(frameworks: &[String], fetcher: &dyn ContextFetcher) -> Vec<ContextDoc> {
+pub fn fetch_framework_docs(frameworks: &[String], fetcher: &dyn ContextFetcher, import_targets: &[String]) -> Vec<ContextDoc> {
     let queries = framework_queries(frameworks);
     let mut docs = Vec::new();
     for (lib_name, query) in queries {
         if let Some(library_id) = fetcher.resolve_library(&lib_name) {
-            if let Some(content) = fetcher.query_docs(&library_id, &query, 5000) {
+            let enriched_query = build_code_aware_query(&query, import_targets);
+            if let Some(content) = fetcher.query_docs(&library_id, &enriched_query, 5000) {
                 docs.push(ContextDoc { library: lib_name, content });
             }
         }
@@ -252,7 +271,7 @@ mod tests {
                 Some("async docs content".into())
             }
         }
-        let docs = fetch_framework_docs(&["react".into()], &FakeAsyncFetcher);
+        let docs = fetch_framework_docs(&["react".into()], &FakeAsyncFetcher, &[]);
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("async"));
     }
@@ -268,7 +287,7 @@ mod tests {
                 Some(format!("Docs for {}: use hooks correctly", library_id))
             }
         }
-        let docs = fetch_framework_docs(&["react".into()], &FakeFetcher);
+        let docs = fetch_framework_docs(&["react".into()], &FakeFetcher, &[]);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].library, "react");
         assert!(docs[0].content.contains("hooks"));
@@ -281,7 +300,7 @@ mod tests {
             fn resolve_library(&self, _: &str) -> Option<String> { None }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
         }
-        let docs = fetch_framework_docs(&["react".into()], &NullFetcher);
+        let docs = fetch_framework_docs(&["react".into()], &NullFetcher, &[]);
         assert!(docs.is_empty());
     }
 
@@ -299,5 +318,49 @@ mod tests {
     #[test]
     fn format_context_section_empty() {
         assert!(format_context_section(&[]).is_empty());
+    }
+
+    #[test]
+    fn build_code_aware_query_appends_imports() {
+        let base = "hooks rules component lifecycle common pitfalls";
+        let imports = vec!["useEffect".to_string(), "useState".to_string(), "useCallback".to_string()];
+        let query = build_code_aware_query(base, &imports);
+        assert!(query.contains("hooks rules"));  // baseline preserved
+        assert!(query.contains("useEffect"));
+        assert!(query.contains("useState"));
+    }
+
+    #[test]
+    fn build_code_aware_query_no_imports_returns_base() {
+        let base = "hooks rules component lifecycle";
+        let query = build_code_aware_query(base, &[]);
+        assert_eq!(query, base);
+    }
+
+    #[test]
+    fn build_code_aware_query_truncates_long_imports() {
+        let base = "security validation";
+        let imports: Vec<String> = (0..50).map(|i| format!("import_{}", i)).collect();
+        let query = build_code_aware_query(base, &imports);
+        assert!(query.len() < 300);
+        assert!(query.contains("security validation")); // baseline preserved
+    }
+
+    #[test]
+    fn build_code_aware_query_extracts_short_names() {
+        let base = "ORM security";
+        let imports = vec!["os.path.join".to_string(), "collections.OrderedDict".to_string()];
+        let query = build_code_aware_query(base, &imports);
+        assert!(query.contains("join"));
+        assert!(query.contains("OrderedDict"));
+    }
+
+    #[test]
+    fn build_code_aware_query_filters_short_names() {
+        let base = "hooks";
+        let imports = vec!["os".to_string(), "re".to_string(), "useEffect".to_string()];
+        let query = build_code_aware_query(base, &imports);
+        assert!(query.contains("useEffect"));
+        assert!(!query.contains(" os ")); // "os" is too short (<=2 chars), filtered
     }
 }
