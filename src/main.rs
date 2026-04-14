@@ -402,7 +402,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             tokens_in: total_tokens_in,
             tokens_out: total_tokens_out,
             duration_ms: review_duration.as_millis() as u64,
-            suppressed: 0,  // TODO: wire from calibrator
+            suppressed: file_results.iter().map(|r| r.suppressed).sum(),
         };
         let _ = telem_store.record(&telem_entry);
     }

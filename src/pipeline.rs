@@ -23,6 +23,7 @@ pub struct FileReviewResult {
     pub file_path: String,
     pub findings: Vec<Finding>,
     pub usage: crate::llm_client::TokenUsage,
+    pub suppressed: usize,
 }
 
 pub struct PipelineConfig {
@@ -266,7 +267,7 @@ pub fn review_file(
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
-    let final_findings = if pipeline_config.calibrate && has_feedback {
+    let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
 
         // Reuse FeedbackIndex built earlier for few-shot injection
@@ -286,9 +287,9 @@ pub fn review_file(
                 cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
             );
         }
-        cal_result.findings
+        (cal_result.findings, cal_result.suppressed)
     } else {
-        merged
+        (merged, 0)
     };
 
     // Auto-calibration: use a second LLM pass to triage findings and record verdicts
@@ -317,6 +318,7 @@ pub fn review_file(
         file_path: file_str,
         findings: final_findings,
         usage: total_usage,
+        suppressed: suppressed_count,
     })
 }
 
@@ -469,7 +471,7 @@ pub fn review_file_llm_only(
 
     // Calibrate
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
-    let final_findings = if pipeline_config.calibrate && has_feedback {
+    let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
         // Reuse FeedbackIndex built earlier for few-shot injection
         let cal_result = if let Some(ref mut index) = feedback_index {
@@ -487,9 +489,9 @@ pub fn review_file_llm_only(
                 cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
             );
         }
-        cal_result.findings
+        (cal_result.findings, cal_result.suppressed)
     } else {
-        merged
+        (merged, 0)
     };
 
     // Auto-calibration
@@ -517,6 +519,7 @@ pub fn review_file_llm_only(
         file_path: file_str,
         findings: final_findings,
         usage: total_usage,
+        suppressed: suppressed_count,
     })
 }
 
