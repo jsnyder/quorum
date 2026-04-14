@@ -63,7 +63,7 @@ pub fn rule_matches(rule: &SuppressionRule, finding: &Finding, file_path: &str) 
         let normalized_glob = file_glob.replace('\\', "/");
         let match_opts = glob::MatchOptions {
             case_sensitive: true,
-            require_literal_separator: false,
+            require_literal_separator: true,
             require_literal_leading_dot: false,
         };
         let pattern = glob::Pattern::new(&normalized_glob);

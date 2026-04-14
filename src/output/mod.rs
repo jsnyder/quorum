@@ -51,6 +51,14 @@ fn should_disable_color(no_color_flag: bool) -> bool {
         || std::env::var("TERM").is_ok_and(|v| v == "dumb")
 }
 
+/// Strip control characters from untrusted text to prevent terminal injection.
+/// Preserves normal printable chars, newlines, and tabs.
+fn strip_control_chars(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
 pub fn severity_icon(severity: &Severity) -> &'static str {
     match severity {
         Severity::Critical | Severity::High => "!",
@@ -74,18 +82,22 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
         format!("L{}-{}", f.line_start, f.line_end)
     };
 
+    // Strip control characters (ANSI escapes, etc.) from untrusted LLM-generated text
+    let safe_title = strip_control_chars(&f.title);
+    let safe_desc = strip_control_chars(&f.description);
+
     let mut output = format!(
         "  {icon_color}{icon}{icon_reset} {bold}{title}{reset}  [{dim}{category}{reset}] {line}\n    {desc}\n",
         icon_color = icon_color,
         icon = icon,
         icon_reset = icon_reset,
         bold = style.bold,
-        title = f.title,
+        title = safe_title,
         reset = style.reset,
         dim = style.dim,
         category = f.category,
         line = line_label,
-        desc = f.description,
+        desc = safe_desc,
     );
 
     if let Some(ref fix) = f.suggested_fix {

@@ -78,8 +78,10 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     }
     let mut section = "## Framework Documentation (via Context7)\n\n".to_string();
     for doc in docs {
-        // Wrap in fenced block to isolate fetched content from prompt instructions
-        section.push_str(&format!("### {}\n```\n{}\n```\n\n", doc.library, doc.content));
+        // Wrap in fenced block to isolate fetched content from prompt instructions.
+        // Sanitize triple backticks in content to prevent fence breakout.
+        let sanitized = doc.content.replace("```", "'''");
+        section.push_str(&format!("### {}\n```\n{}\n```\n\n", doc.library, sanitized));
     }
     section
 }
@@ -208,7 +210,10 @@ impl ContextFetcher for Context7HttpFetcher {
 
         let resp = match self.block_on(
             self.http
-                .get(format!("https://context7.com/api/v1{}", library_id))
+                .get(format!("https://context7.com/api/v1/{}",
+                    library_id.trim_start_matches('/').split('/')
+                        .map(|seg| url::form_urlencoded::byte_serialize(seg.as_bytes()).collect::<String>())
+                        .collect::<Vec<_>>().join("/")))
                 .query(&[("query", query), ("tokens", &max_tokens.to_string())])
                 .header("Authorization", format!("Bearer {}", api_key))
                 .send()
