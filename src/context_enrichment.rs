@@ -84,10 +84,10 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     section
 }
 
-/// Caching wrapper around a ContextFetcher. Caches query_docs results by (library_id, query) key.
+/// Caching wrapper around a ContextFetcher. Caches query_docs results by (library_id, query, max_tokens) key.
 pub struct CachedContextFetcher<'a> {
     inner: &'a dyn ContextFetcher,
-    cache: std::sync::Mutex<std::collections::HashMap<(String, String), Option<String>>>,
+    cache: std::sync::Mutex<std::collections::HashMap<(String, String, usize), Option<String>>>,
     max_entries: usize,
 }
 
@@ -107,7 +107,7 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     }
 
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
-        let key = (library_id.to_string(), query.to_string());
+        let key = (library_id.to_string(), query.to_string(), max_tokens);
 
         // Check cache
         if let Ok(cache) = self.cache.lock() {
