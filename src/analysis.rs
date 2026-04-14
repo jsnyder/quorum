@@ -1202,8 +1202,9 @@ fn scan_insecure_yaml(
             }
 
             // --- Tier 5b: Docker Compose checks ---
-            // Detect docker-compose files by presence of top-level `services:` key
-            if keys.contains(&"services") {
+            // Detect docker-compose files by presence of top-level `services:` key.
+            // Skip if `apiVersion` is present (excludes Kubernetes, CloudFormation, etc.).
+            if keys.contains(&"services") && !keys.contains(&"apiVersion") {
                 if let Some(services_mapping) = find_value_mapping(node, source, "services") {
                     // Iterate over each service defined under `services:`
                     for i in 0..services_mapping.child_count() {
@@ -1262,7 +1263,7 @@ fn scan_insecure_yaml(
                                         findings.push(Finding {
                                             title: format!("Docker Compose service `{}` has writable root filesystem", svc_name),
                                             description: "Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.".into(),
-                                            severity: Severity::Info,
+                                            severity: Severity::Low,
                                             category: "security".into(),
                                             source: Source::LocalAst,
                                             line_start: svc_line,
@@ -3497,6 +3498,18 @@ def process(items=None):
         assert!(
             !findings.iter().any(|f| f.title.contains("no-new-privileges") || f.title.contains("writable root")),
             "Non docker-compose YAML should NOT trigger docker-compose checks"
+        );
+    }
+
+    #[test]
+    fn yaml_k8s_with_services_not_flagged() {
+        // Kubernetes manifest has both `apiVersion` and `services`-like structure
+        let source = "apiVersion: v1\nkind: Service\nmetadata:\n  name: my-svc\nservices:\n  web:\n    image: nginx\n";
+        let tree = parse(source, Language::Yaml).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("no-new-privileges") || f.title.contains("writable root")),
+            "Kubernetes YAML with apiVersion should NOT trigger docker-compose checks"
         );
     }
 

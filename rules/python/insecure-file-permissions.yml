@@ -1,8 +1,8 @@
 id: insecure-file-permissions
 language: Python
 severity: warning
-message: "`os.chmod` with mode `0o777` grants read/write/execute to all users. Use a restrictive mode like `0o755` or `0o600`."
-note: "Inspired by semgrep python.lang.security.audit.insecure-file-permissions"
+message: "`os.chmod` with world-accessible mode grants read/write to all users. Use a restrictive mode like `0o755` or `0o600`."
+note: "Matches 0o777 and 0o666. We intentionally skip 0o755 since executable scripts legitimately need it. Inspired by semgrep python.lang.security.audit.insecure-file-permissions."
 rule:
   kind: call
   all:
@@ -14,5 +14,7 @@ rule:
         field: arguments
         has:
           kind: integer
-          regex: "^0o777$"
+          any:
+            - regex: "^0o777$"
+            - regex: "^0o666$"
         stopBy: end

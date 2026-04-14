@@ -12,6 +12,9 @@ session.execute(text(f"SELECT * FROM users WHERE id = {uid}"))
 # match: string concatenation in execute
 engine.execute("SELECT * FROM users WHERE id = " + user_id)
 
+# match: implicit string concatenation with f-string
+db.execute("SELECT * FROM users " f"WHERE id = {user_id}")
+
 # no-match: parameterized query
 db.execute("SELECT * FROM users WHERE id = :id", {"id": user_id})
 
