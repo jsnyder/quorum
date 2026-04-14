@@ -174,10 +174,15 @@ pub fn review_file(
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
 
-    // Build feedback index once — used for both few-shot injection and calibration
-    let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
-        let store = crate::feedback::FeedbackStore::new(store_path.clone());
-        crate::feedback_index::FeedbackIndex::build(&store).ok()
+    // Use pre-built shared index if available (parallel mode), otherwise build locally
+    let shared_index = pipeline_config.feedback_index.clone();
+    let mut local_index = if shared_index.is_none() {
+        if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            crate::feedback_index::FeedbackIndex::build(&store).ok()
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -265,9 +270,14 @@ pub fn review_file(
         };
 
         // Query feedback index for few-shot precedents
-        let precedents = feedback_index.as_mut().map(|idx| {
+        let precedents = if let Some(ref shared) = shared_index {
+            let mut idx = shared.lock().unwrap();
+            query_feedback_precedents(&mut idx, &file_str, lang_name(lang), &redacted_code)
+        } else if let Some(ref mut idx) = local_index {
             query_feedback_precedents(idx, &file_str, lang_name(lang), &redacted_code)
-        }).unwrap_or_default();
+        } else {
+            Vec::new()
+        };
 
         let req = ReviewRequest {
             file_path: file_str.clone(),
@@ -317,8 +327,15 @@ pub fn review_file(
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
 
-        // Reuse FeedbackIndex built earlier for few-shot injection
-        let cal_result = if let Some(ref mut index) = feedback_index {
+        // Use shared FeedbackIndex (parallel mode) or local index for calibration
+        let cal_result = if let Some(ref shared) = shared_index {
+            let mut idx = shared.lock().unwrap();
+            if !idx.is_empty() {
+                calibrator::calibrate_with_index(merged, &mut idx, &config)
+            } else {
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+            }
+        } else if let Some(ref mut index) = local_index {
             if !index.is_empty() {
                 calibrator::calibrate_with_index(merged, index, &config)
             } else {
@@ -438,10 +455,15 @@ pub fn review_file_llm_only(
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
 
-    // Build feedback index once — used for both few-shot injection and calibration
-    let mut feedback_index = if let Some(store_path) = &pipeline_config.feedback_store {
-        let store = crate::feedback::FeedbackStore::new(store_path.clone());
-        crate::feedback_index::FeedbackIndex::build(&store).ok()
+    // Use pre-built shared index if available (parallel mode), otherwise build locally
+    let shared_index = pipeline_config.feedback_index.clone();
+    let mut local_index = if shared_index.is_none() {
+        if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            crate::feedback_index::FeedbackIndex::build(&store).ok()
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -479,9 +501,14 @@ pub fn review_file_llm_only(
             };
 
             // Query feedback index for few-shot precedents
-            let precedents = feedback_index.as_mut().map(|idx| {
+            let precedents = if let Some(ref shared) = shared_index {
+                let mut idx = shared.lock().unwrap();
+                query_feedback_precedents(&mut idx, &file_str, &language, &redacted_code)
+            } else if let Some(ref mut idx) = local_index {
                 query_feedback_precedents(idx, &file_str, &language, &redacted_code)
-            }).unwrap_or_default();
+            } else {
+                Vec::new()
+            };
 
             let req = ReviewRequest {
                 file_path: file_str.clone(),
@@ -528,8 +555,15 @@ pub fn review_file_llm_only(
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let config = CalibratorConfig::default();
-        // Reuse FeedbackIndex built earlier for few-shot injection
-        let cal_result = if let Some(ref mut index) = feedback_index {
+        // Use shared FeedbackIndex (parallel mode) or local index for calibration
+        let cal_result = if let Some(ref shared) = shared_index {
+            let mut idx = shared.lock().unwrap();
+            if !idx.is_empty() {
+                calibrator::calibrate_with_index(merged, &mut idx, &config)
+            } else {
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+            }
+        } else if let Some(ref mut index) = local_index {
             if !index.is_empty() {
                 calibrator::calibrate_with_index(merged, index, &config)
             } else {
