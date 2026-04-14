@@ -61,6 +61,7 @@ impl Default for PipelineConfig {
 /// Truncate source code for LLM review if it exceeds the line limit.
 /// Returns (possibly truncated source, optional truncation notice).
 fn truncate_for_review(source: &str, max_lines: usize) -> (String, Option<String>) {
+    let max_lines = max_lines.max(1);
     let total_lines = source.lines().count();
     if total_lines <= max_lines {
         return (source.to_string(), None);
@@ -746,5 +747,14 @@ mod tests {
         let (truncated, notice) = truncate_for_review(&source, 500);
         assert_eq!(truncated, source);
         assert!(notice.is_none());
+    }
+
+    #[test]
+    fn truncate_source_zero_limit_clamps_to_one() {
+        let source = "line1\nline2\nline3\n";
+        let (truncated, notice) = truncate_for_review(source, 0);
+        // Should clamp to 1 line, not produce empty output
+        assert_eq!(truncated.lines().count(), 1);
+        assert!(notice.is_some());
     }
 }

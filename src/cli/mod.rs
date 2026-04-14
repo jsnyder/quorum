@@ -141,7 +141,7 @@ pub struct FeedbackOpts {
 
 /// Parse a verdict string into a Verdict enum.
 pub fn parse_verdict(s: &str) -> anyhow::Result<crate::feedback::Verdict> {
-    match s.to_lowercase().as_str() {
+    match s.trim().to_lowercase().as_str() {
         "tp" => Ok(crate::feedback::Verdict::Tp),
         "fp" => Ok(crate::feedback::Verdict::Fp),
         "partial" => Ok(crate::feedback::Verdict::Partial),
@@ -178,5 +178,11 @@ mod tests {
     fn parse_verdict_invalid() {
         assert!(parse_verdict("maybe").is_err());
         assert!(parse_verdict("").is_err());
+    }
+
+    #[test]
+    fn parse_verdict_trims_whitespace() {
+        assert_eq!(parse_verdict(" tp ").unwrap(), crate::feedback::Verdict::Tp);
+        assert_eq!(parse_verdict("fp\n").unwrap(), crate::feedback::Verdict::Fp);
     }
 }
