@@ -285,7 +285,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     // Arc-wrap shared config for parallel access
-    let pipeline_cfg = std::sync::Arc::new(pipeline_cfg);
+    let mut pipeline_cfg = std::sync::Arc::new(pipeline_cfg);
     let suppress_rules = std::sync::Arc::new(suppress_rules);
 
     let review_start = std::time::Instant::now();
@@ -299,6 +299,12 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     if opts.parallel == 1 || opts.files.len() <= 1 {
         // === SEQUENTIAL PATH ===
+        // Clear semaphore: no concurrency control needed, and block_on panics
+        // inside tokio runtime thread (only safe from spawn_blocking threads).
+        {
+            let cfg = std::sync::Arc::get_mut(&mut pipeline_cfg).expect("no other Arc refs yet");
+            cfg.semaphore = None;
+        }
         let parse_cache = cache::ParseCache::new(128);
         let progress = progress::ProgressReporter::detect();
 
