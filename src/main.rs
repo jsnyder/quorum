@@ -230,7 +230,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let semaphore = if opts.parallel > 1 {
         Some(std::sync::Arc::new(tokio::sync::Semaphore::new(opts.parallel)))
     } else if opts.parallel == 0 {
-        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(usize::MAX >> 4)))
+        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(32)))
     } else {
         None // parallel=1, sequential
     };
