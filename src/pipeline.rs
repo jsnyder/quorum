@@ -14,6 +14,18 @@ use crate::parser::{self, Language};
 use crate::redact;
 use crate::review::{self, ReviewRequest};
 
+/// Acquire a semaphore permit if configured. Uses Handle::block_on (not block_in_place)
+/// because this may be called from spawn_blocking threads.
+/// Returns an owned permit that is released on drop (RAII).
+fn acquire_llm_permit(sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let sem = sem.as_ref()?.clone();
+    Some(
+        tokio::runtime::Handle::current()
+            .block_on(sem.acquire_owned())
+            .expect("semaphore closed unexpectedly")
+    )
+}
+
 /// Trait for LLM review — allows testing with fake implementations.
 pub trait LlmReviewer: Send + Sync {
     fn review(&self, prompt: &str, model: &str) -> anyhow::Result<crate::llm_client::LlmResponse>;
@@ -270,6 +282,7 @@ pub fn review_file(
         let prompt = review::build_review_prompt(&req);
 
         for model in &pipeline_config.models {
+            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
             match reviewer.review(&prompt, model) {
                 Ok(resp) => {
                     if let Some(u) = &resp.usage {
@@ -336,6 +349,7 @@ pub fn review_file(
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
             // Redact secrets before sending to auto-calibration LLM
             let redacted_source = redact::redact_secrets(source);
+            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
             match crate::auto_calibrate::auto_calibrate(
                 &final_findings, &redacted_source, &file_str, reviewer, model, &store,
             ) {
@@ -481,6 +495,7 @@ pub fn review_file_llm_only(
 
             let prompt = review::build_review_prompt(&req);
             for model in &pipeline_config.models {
+                let _permit = acquire_llm_permit(&pipeline_config.semaphore);
                 match reviewer.review(&prompt, model) {
                     Ok(resp) => {
                         if let Some(u) = &resp.usage {
@@ -543,6 +558,7 @@ pub fn review_file_llm_only(
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
             // Redact secrets before sending to auto-calibration LLM
             let redacted_source = redact::redact_secrets(source);
+            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
             match crate::auto_calibrate::auto_calibrate(
                 &final_findings, &redacted_source, &file_str, reviewer, model, &store,
             ) {
@@ -812,5 +828,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.semaphore.as_ref().unwrap().available_permits(), 4);
+    }
+
+    #[test]
+    fn review_file_works_with_semaphore() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+        let cfg = PipelineConfig {
+            models: vec!["test-model".into()],
+            semaphore: Some(sem),
+            ..Default::default()
+        };
+
+        struct EmptyReviewer;
+        impl LlmReviewer for EmptyReviewer {
+            fn review(&self, _: &str, _: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+                Ok(crate::llm_client::LlmResponse { content: "[]".into(), usage: None })
+            }
+        }
+
+        let source = "fn main() {}";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let result = review_file(
+            std::path::Path::new("test.rs"), source, Language::Rust, &tree,
+            Some(&EmptyReviewer), &cfg,
+        );
+        assert!(result.is_ok());
     }
 }
