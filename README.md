@@ -2,16 +2,16 @@
 
 Multi-source code review: local AST analysis + LLM ensemble + linter orchestration + ast-grep rules + feedback-calibrated findings.
 
-Rust-native successor to [third-opinion](https://github.com/jsnyder/third-opinion). Single binary, 492 tests, 31MB.
+Rust-native successor to [third-opinion](https://github.com/jsnyder/third-opinion). Single binary, 606 tests, 31MB.
 
 ## What it does
 
 quorum reviews code using four complementary sources:
 
-1. **Local AST analysis** (instant, free) -- tree-sitter patterns for 7 languages
+1. **Local AST analysis** (instant, free) -- tree-sitter patterns for 8 languages
 2. **LLM cold read** (12-20s) -- GPT-5.4/Claude/Gemini via any OpenAI-compatible endpoint
-3. **Linter orchestration** -- normalize ruff/clippy/eslint/yamllint/shellcheck/hadolint output into unified findings
-4. **ast-grep rules** (instant, extensible) -- user-customizable YAML pattern rules
+3. **Linter orchestration** -- normalize ruff/clippy/eslint/yamllint/shellcheck/hadolint/tflint output into unified findings
+4. **ast-grep rules** (instant, extensible) -- 20 bundled + user-customizable YAML pattern rules
 
 Findings are merged, deduplicated, and calibrated using your feedback history. Each review automatically trains the calibrator for better future results.
 
@@ -76,11 +76,12 @@ quorum review src/auth.py --diff-file changes.patch
 | YAML | .yaml, .yml | HA automations, secrets, duplicate keys, ESPHome, Jinja2 | yamllint |
 | Bash | .sh, .bash, .zsh, .bats | eval, curl\|bash, set -e, secrets, chmod 777, shebang | shellcheck |
 | Dockerfile | Dockerfile* | FROM latest, no USER, no HEALTHCHECK, secrets in ENV, ADD vs COPY, curl\|bash | hadolint |
+| Terraform | .tf, .tfvars | secrets, wildcard IAM, open SGs, missing version pins | tflint |
 | Other | * | LLM-only review (no AST) | -- |
 
 ## ast-grep Custom Rules
 
-quorum integrates [ast-grep](https://ast-grep.github.io/) as an extensible pattern engine. 10 bundled rules ship in `rules/` covering common patterns from feedback analysis.
+quorum integrates [ast-grep](https://ast-grep.github.io/) as an extensible pattern engine. 20 bundled rules ship in `rules/` covering common patterns from feedback analysis of 1,666 confirmed true positives.
 
 ### Bundled rules
 
@@ -163,13 +164,43 @@ Verdicts (tp/fp/partial/wontfix) accumulate in `~/.quorum/feedback.jsonl`. The c
 quorum improves over time through feedback. Record verdicts on findings:
 
 ```bash
-# Via MCP feedback tool (in Claude Code)
+# CLI (new in v0.9.5)
+quorum feedback --file src/auth.rs --finding "SQL injection" --verdict tp --reason "Fixed with params"
+quorum feedback --file src/auth.rs --finding "complexity 5" --verdict fp --reason "Trivial match"
+
+# Or via MCP feedback tool (in Claude Code)
 # Or programmatically via the FeedbackStore API
 ```
 
-Provenance weights: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
+Provenance weights: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x, soft-suppresses to INFO).
 
-Feedback also drives AST pattern development -- the 5 new patterns in v0.9.0 were identified by analyzing 840 confirmed true positives in the feedback store with GPT-5.4 and Gemini 3 Pro.
+Feedback drives AST pattern development -- 20 ast-grep rules were mined from 1,666 confirmed true positives in the feedback store.
+
+## Project-Level Suppression
+
+Suppress known findings per-project via `.quorum/suppress.toml`:
+
+```toml
+[[suppress]]
+pattern = "TLS certificate verification"
+category = "security"
+file = "src/url_resolver.py"
+reason = "Intentional -- self-signed cert on local network"
+
+[[suppress]]
+pattern = "cyclomatic complexity"
+reason = "Accepted for config loading patterns"
+```
+
+```bash
+# Review with suppression
+quorum review src/*.py
+
+# Audit what's being hidden
+quorum review src/*.py --show-suppressed
+```
+
+Matching: case-insensitive substring on title, exact on category, glob on file path. All specified fields must match (AND logic). No effect on global calibration.
 
 ## Model Recommendations
 
@@ -205,13 +236,15 @@ CONTEXT7_API_KEY=...                         # enables framework doc injection
 
 ```
 Code -> Parse (tree-sitter, cached) -> Hydrate (callee sigs, type defs)
+  -> Truncate (500 lines max for LLM, annotates findings)
   -> Parallel reviewers:
-    |-- Local AST patterns (instant, 7 languages)
-    |-- ast-grep rules (instant, user-extensible)
-    |-- LLM cold read (GPT-5.4 + Context7 docs)
-    +-- Linters (ruff, clippy, eslint, yamllint, shellcheck, hadolint, ast-grep)
-  -> Merge/dedup -> Calibrate (feedback history) -> Auto-calibrate (o3 triage)
-  -> Output (human/JSON) -> Exit code
+    |-- Local AST patterns (instant, 8 languages)
+    |-- ast-grep rules (instant, 20 bundled + user rules)
+    |-- LLM cold read (GPT-5.4 + Context7 docs + suggested fixes)
+    +-- Linters (ruff, clippy, eslint, yamllint, shellcheck, hadolint, tflint)
+  -> Merge/dedup -> Calibrate (feedback, soft-suppress auto-only FPs)
+  -> Project suppress (.quorum/suppress.toml)
+  -> Auto-calibrate (o3 triage) -> Output (human/compact/JSON) -> Exit code
 ```
 
 ## License

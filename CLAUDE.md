@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (600 tests)
+cargo test --bin quorum        # run unit tests (606 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
