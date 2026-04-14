@@ -27,6 +27,8 @@ pub fn framework_queries(frameworks: &[String]) -> Vec<(String, String)> {
             "express" => Some(("express".into(), "middleware security input validation".into())),
             "vue" => Some(("vue".into(), "reactivity composition API common pitfalls".into())),
             "fastify" => Some(("fastify".into(), "plugin system validation security hooks".into())),
+            "home-assistant" => Some(("home-assistant".into(), "automations templates blueprints Jinja2 states triggers conditions actions".into())),
+            "esphome" => Some(("esphome".into(), "yaml components lambda sensors substitutions".into())),
             _ => None,
         };
         if let Some(p) = pair {
@@ -221,6 +223,22 @@ mod tests {
     fn framework_queries_unknown_framework_skipped() {
         let queries = framework_queries(&["unknown-framework".into()]);
         assert!(queries.is_empty());
+    }
+
+    #[test]
+    fn framework_queries_home_assistant() {
+        let queries = framework_queries(&["home-assistant".into()]);
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].0, "home-assistant");
+        assert!(queries[0].1.contains("automation"));
+    }
+
+    #[test]
+    fn framework_queries_esphome() {
+        let queries = framework_queries(&["esphome".into()]);
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].0, "esphome");
+        assert!(queries[0].1.contains("yaml"));
     }
 
     #[test]
