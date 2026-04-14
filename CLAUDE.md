@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (625 tests)
+cargo test --bin quorum        # run unit tests (639 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
@@ -12,6 +12,7 @@ cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
+cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
 cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"
 cargo run -- serve                           # MCP server (stdio)
 cargo run -- daemon --watch-dir .            # persistent daemon

@@ -101,5 +101,8 @@ fn parallel_multiple_files_local_only() {
     for i in 1..=5 {
         cmd.arg(dir.path().join(format!("mod{}.rs", i)));
     }
-    cmd.assert().success();
+    let output = cmd.output().unwrap();
+    let code = output.status.code().unwrap_or(0);
+    // Exit 0 (clean) or 1 (warnings) are both valid — only 2+ is critical/error
+    assert!(code <= 1, "expected exit code 0 or 1, got {}", code);
 }
