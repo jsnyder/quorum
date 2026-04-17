@@ -25,7 +25,8 @@ pub fn init_trace_subscriber(trace_path: Option<PathBuf>) -> Option<tracing_appe
         .with_writer(non_blocking)
         .with_target(false)
         .with_level(true)
-        .init();
+        .try_init()
+        .ok();
 
     Some(guard)
 }

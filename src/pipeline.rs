@@ -13,6 +13,41 @@ use crate::merge;
 use crate::parser::{self, Language};
 use crate::redact;
 use crate::review::{self, ReviewRequest};
+use std::path::PathBuf;
+
+/// Log calibrator traces and write them to JSONL for tuning analysis.
+fn write_calibrator_traces(
+    traces: &[crate::calibrator_trace::CalibratorTraceEntry],
+    feedback_store: Option<&PathBuf>,
+) {
+    for trace in traces {
+        tracing::info!(
+            finding = %trace.finding_title,
+            category = %trace.finding_category,
+            tp_weight = trace.tp_weight,
+            fp_weight = trace.fp_weight,
+            wontfix_weight = trace.wontfix_weight,
+            action = ?trace.action,
+            precedent_count = trace.matched_precedents.len(),
+            "Calibrator decision"
+        );
+    }
+    if let Some(store_path) = feedback_store {
+        let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&trace_path)
+        {
+            use std::io::Write;
+            for trace in traces {
+                if let Ok(json) = serde_json::to_string(trace) {
+                    let _ = writeln!(file, "{}", json);
+                }
+            }
+        }
+    }
+}
 
 /// Acquire a semaphore permit if configured. Uses Handle::block_on (not block_in_place)
 /// because this may be called from spawn_blocking threads.
@@ -360,36 +395,7 @@ pub fn review_file(
             );
         }
 
-        // Write calibrator traces to JSONL for tuning analysis
-        if !cal_result.traces.is_empty() {
-            for trace in &cal_result.traces {
-                tracing::info!(
-                    finding = %trace.finding_title,
-                    category = %trace.finding_category,
-                    tp_weight = trace.tp_weight,
-                    fp_weight = trace.fp_weight,
-                    wontfix_weight = trace.wontfix_weight,
-                    action = ?trace.action,
-                    precedent_count = trace.matched_precedents.len(),
-                    "Calibrator decision"
-                );
-            }
-            if let Some(store_path) = &pipeline_config.feedback_store {
-                let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&trace_path)
-                {
-                    use std::io::Write;
-                    for trace in &cal_result.traces {
-                        if let Ok(json) = serde_json::to_string(trace) {
-                            let _ = writeln!(file, "{}", json);
-                        }
-                    }
-                }
-            }
-        }
+        write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
 
         (cal_result.findings, cal_result.suppressed)
     } else {
@@ -622,36 +628,7 @@ pub fn review_file_llm_only(
             );
         }
 
-        // Write calibrator traces to JSONL for tuning analysis
-        if !cal_result.traces.is_empty() {
-            for trace in &cal_result.traces {
-                tracing::info!(
-                    finding = %trace.finding_title,
-                    category = %trace.finding_category,
-                    tp_weight = trace.tp_weight,
-                    fp_weight = trace.fp_weight,
-                    wontfix_weight = trace.wontfix_weight,
-                    action = ?trace.action,
-                    precedent_count = trace.matched_precedents.len(),
-                    "Calibrator decision"
-                );
-            }
-            if let Some(store_path) = &pipeline_config.feedback_store {
-                let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&trace_path)
-                {
-                    use std::io::Write;
-                    for trace in &cal_result.traces {
-                        if let Ok(json) = serde_json::to_string(trace) {
-                            let _ = writeln!(file, "{}", json);
-                        }
-                    }
-                }
-            }
-        }
+        write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
 
         (cal_result.findings, cal_result.suppressed)
     } else {
