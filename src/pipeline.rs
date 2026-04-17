@@ -105,7 +105,7 @@ impl Default for PipelineConfig {
             calibration_model: None,
             feedback: vec![],
             calibrate: true,
-            auto_calibrate: true,
+            auto_calibrate: false,
             feedback_store: None,
             diff_ranges: None,
             max_review_lines: 500,

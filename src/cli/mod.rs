@@ -67,8 +67,8 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub ensemble: bool,
 
-    /// Model for auto-calibration triage (default: same as review model)
-    #[arg(long)]
+    /// Model for auto-calibration triage (disabled -- auto-calibrate is off)
+    #[arg(long, hide = true)]
     pub calibration_model: Option<String>,
 
     /// Reasoning effort: none, minimal, low, medium, high, xhigh
@@ -83,8 +83,8 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub provenance: bool,
 
-    /// Disable auto-calibration (second LLM pass that triages findings)
-    #[arg(long)]
+    /// Disable auto-calibration (no-op: auto-calibrate is off by default)
+    #[arg(long, hide = true)]
     pub no_auto_calibrate: bool,
 
     /// Send review request to running daemon instead of parsing locally
