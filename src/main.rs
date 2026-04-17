@@ -272,10 +272,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         models,
         calibration_model: opts.calibration_model.clone(),
         feedback: feedback_entries,
-        auto_calibrate: !opts.no_auto_calibrate(),
+        auto_calibrate: false,
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
         framework_overrides: opts.framework.clone(),
+        skip_context7: opts.skip_context7,
         semaphore,
         feedback_index: shared_feedback_index,
         ..Default::default()

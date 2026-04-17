@@ -94,6 +94,8 @@ pub struct PipelineConfig {
     pub semaphore: Option<std::sync::Arc<tokio::sync::Semaphore>>,
     /// Pre-built feedback index for calibration (shared across parallel tasks)
     pub feedback_index: Option<std::sync::Arc<std::sync::Mutex<crate::feedback_index::FeedbackIndex>>>,
+    /// Skip Context7 enrichment (default false: fail if frameworks detected but docs unavailable)
+    pub skip_context7: bool,
 }
 
 impl Default for PipelineConfig {
@@ -112,6 +114,7 @@ impl Default for PipelineConfig {
             framework_overrides: Vec::new(),
             semaphore: None,
             feedback_index: None,
+            skip_context7: false,
         }
     }
 }
@@ -303,9 +306,15 @@ pub fn review_file(
                 if !docs.is_empty() {
                     eprintln!("Context7: injected {} framework doc(s) into prompt", docs.len());
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
-                } else {
-                    eprintln!("Context7: no docs fetched (key missing or API unavailable)");
+                } else if pipeline_config.skip_context7 {
+                    eprintln!("Context7: no docs fetched (skipped via --skip-context7)");
                     None
+                } else {
+                    anyhow::bail!(
+                        "Context7: failed to fetch docs for frameworks {:?}. \
+                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                        domain.frameworks
+                    );
                 }
             } else {
                 None
@@ -541,8 +550,15 @@ pub fn review_file_llm_only(
                     let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &[]);
                     if !docs.is_empty() {
                         Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
-                    } else {
+                    } else if pipeline_config.skip_context7 {
+                        eprintln!("Context7: no docs fetched (skipped via --skip-context7)");
                         None
+                    } else {
+                        anyhow::bail!(
+                            "Context7: failed to fetch docs for frameworks {:?}. \
+                             This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                            domain.frameworks
+                        );
                     }
                 } else {
                     None

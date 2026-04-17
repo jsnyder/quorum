@@ -115,6 +115,10 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub framework: Vec<String>,
 
+    /// Skip Context7 framework doc enrichment (default: fail if frameworks detected but docs unavailable)
+    #[arg(long)]
+    pub skip_context7: bool,
+
     /// Max concurrent LLM calls (default: 4, 0 = unlimited, 1 = sequential)
     #[arg(long, default_value = "4")]
     pub parallel: usize,
