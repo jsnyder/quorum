@@ -61,7 +61,8 @@ impl LlmFinding {
 /// Build the review prompt from a ReviewRequest.
 pub fn build_review_prompt(req: &ReviewRequest) -> String {
     let mut prompt = format!(
-        "Review the following {} code from `{}` for bugs, security issues, and code quality problems.\n\n",
+        "Review the following {} code from `{}` for bugs, security vulnerabilities, logic errors, and architectural flaws.\n\
+         Do NOT flag stylistic preferences, naming conventions, formatting issues, or missing documentation.\n\n",
         req.language, req.file_path
     );
 
@@ -103,7 +104,8 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
         if !precedents.is_empty() {
             prompt.push_str("## Historical Review Findings\n");
             prompt.push_str("The following are human-verified findings from past reviews of similar code. ");
-            prompt.push_str("Use them to understand project-specific patterns and noise thresholds. ");
+            prompt.push_str("CRITICAL: If the code matches a FALSE POSITIVE precedent, you MUST NOT flag it. ");
+            prompt.push_str("TRUE POSITIVE precedents show real issues -- look for similar patterns. ");
             prompt.push_str("Do NOT limit your review to only these topics.\n\n");
             for p in precedents {
                 prompt.push_str(&format!("- {}\n", p));
@@ -617,5 +619,42 @@ mod tests {
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("suggested_fix"));
+    }
+
+    #[test]
+    fn build_prompt_excludes_stylistic_findings() {
+        let req = ReviewRequest {
+            file_path: "test.rs".into(),
+            language: "rust".into(),
+            code: "fn main() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("bugs"), "prompt should mention bugs");
+        assert!(prompt.contains("security"), "prompt should mention security");
+        assert!(!prompt.contains("code quality problems"), "prompt should NOT mention code quality problems");
+        assert!(prompt.contains("Do NOT flag"), "prompt should contain Do NOT flag instruction");
+        assert!(prompt.contains("stylistic"), "prompt should mention stylistic as excluded");
+    }
+
+    #[test]
+    fn build_prompt_fp_precedents_are_hard_negative() {
+        let req = ReviewRequest {
+            file_path: "test.yaml".into(),
+            language: "yaml".into(),
+            code: "automation: []".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: Some(vec![
+                "[FALSE POSITIVE] states() without check: HA safe form".into(),
+            ]),
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("MUST NOT flag"), "FP precedents should use MUST NOT flag language");
+        assert!(prompt.contains("FALSE POSITIVE precedent"), "should reference FALSE POSITIVE precedent");
     }
 }
