@@ -149,7 +149,7 @@ pub fn calibrate(
                 verdict: e.verdict.clone(),
                 similarity: 1.0, // Jaccard doesn't expose per-entry similarity
                 weight: verdict_weight(e),
-                provenance: format!("{:?}", e.provenance),
+                provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
                 file_path: e.file_path.clone(),
             })
             .collect();
@@ -323,7 +323,7 @@ pub fn calibrate_with_index(
                 verdict: s.entry.verdict.clone(),
                 similarity: s.similarity as f64,
                 weight: verdict_weight(&s.entry),
-                provenance: format!("{:?}", s.entry.provenance),
+                provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
                 file_path: s.entry.file_path.clone(),
             })
             .collect();
