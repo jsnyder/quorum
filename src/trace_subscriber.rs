@@ -20,15 +20,15 @@ pub fn init_trace_subscriber(trace_path: Option<PathBuf>) -> Option<tracing_appe
         .ok()?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
-    tracing_subscriber::fmt()
+    let installed = tracing_subscriber::fmt()
         .json()
         .with_writer(non_blocking)
         .with_target(false)
         .with_level(true)
         .try_init()
-        .ok();
+        .is_ok();
 
-    Some(guard)
+    if installed { Some(guard) } else { None }
 }
 
 #[cfg(test)]
