@@ -35,6 +35,7 @@ mod stats;
 mod suppress;
 mod telemetry;
 mod tools;
+mod trace_subscriber;
 #[cfg(test)] mod test_support;
 
 use clap::Parser;
@@ -154,6 +155,17 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         eprintln!("Error: No files specified");
         return 3;
     }
+
+    // Initialize structured tracing if --trace flag or QUORUM_TRACE=1 env var
+    let trace_enabled = opts.trace || std::env::var("QUORUM_TRACE").map(|v| v == "1").unwrap_or(false);
+    let _trace_guard = if trace_enabled {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let trace_path = std::path::PathBuf::from(&home).join(".quorum/trace.jsonl");
+        eprintln!("Tracing enabled: writing to {}", trace_path.display());
+        trace_subscriber::init_trace_subscriber(Some(trace_path))
+    } else {
+        None
+    };
 
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {

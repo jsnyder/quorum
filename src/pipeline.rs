@@ -143,6 +143,13 @@ fn query_feedback_precedents(
         selected.push(tp);
     }
 
+    tracing::debug!(
+        query_prefix = &query[..query.len().min(100)],
+        candidates_found = candidates.len(),
+        selected_count = selected.len(),
+        "Few-shot precedent retrieval"
+    );
+
     selected
         .iter()
         .map(|s| {
@@ -352,6 +359,38 @@ pub fn review_file(
                 cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
             );
         }
+
+        // Write calibrator traces to JSONL for tuning analysis
+        if !cal_result.traces.is_empty() {
+            for trace in &cal_result.traces {
+                tracing::info!(
+                    finding = %trace.finding_title,
+                    category = %trace.finding_category,
+                    tp_weight = trace.tp_weight,
+                    fp_weight = trace.fp_weight,
+                    wontfix_weight = trace.wontfix_weight,
+                    action = ?trace.action,
+                    precedent_count = trace.matched_precedents.len(),
+                    "Calibrator decision"
+                );
+            }
+            if let Some(store_path) = &pipeline_config.feedback_store {
+                let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&trace_path)
+                {
+                    use std::io::Write;
+                    for trace in &cal_result.traces {
+                        if let Ok(json) = serde_json::to_string(trace) {
+                            let _ = writeln!(file, "{}", json);
+                        }
+                    }
+                }
+            }
+        }
+
         (cal_result.findings, cal_result.suppressed)
     } else {
         (merged, 0)
@@ -582,6 +621,38 @@ pub fn review_file_llm_only(
                 cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
             );
         }
+
+        // Write calibrator traces to JSONL for tuning analysis
+        if !cal_result.traces.is_empty() {
+            for trace in &cal_result.traces {
+                tracing::info!(
+                    finding = %trace.finding_title,
+                    category = %trace.finding_category,
+                    tp_weight = trace.tp_weight,
+                    fp_weight = trace.fp_weight,
+                    wontfix_weight = trace.wontfix_weight,
+                    action = ?trace.action,
+                    precedent_count = trace.matched_precedents.len(),
+                    "Calibrator decision"
+                );
+            }
+            if let Some(store_path) = &pipeline_config.feedback_store {
+                let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&trace_path)
+                {
+                    use std::io::Write;
+                    for trace in &cal_result.traces {
+                        if let Ok(json) = serde_json::to_string(trace) {
+                            let _ = writeln!(file, "{}", json);
+                        }
+                    }
+                }
+            }
+        }
+
         (cal_result.findings, cal_result.suppressed)
     } else {
         (merged, 0)

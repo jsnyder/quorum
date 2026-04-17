@@ -118,6 +118,10 @@ pub struct ReviewOpts {
     /// Max concurrent LLM calls (default: 4, 0 = unlimited, 1 = sequential)
     #[arg(long, default_value = "4")]
     pub parallel: usize,
+
+    /// Enable structured tracing to ~/.quorum/trace.jsonl (also: QUORUM_TRACE=1)
+    #[arg(long)]
+    pub trace: bool,
 }
 
 #[derive(Parser)]
