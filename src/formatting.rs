@@ -38,19 +38,23 @@ pub fn estimate_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
 
 fn model_pricing(model: &str) -> (f64, f64) {
     // (input $/M, output $/M)
-    // Prices as of 2026-04. Update as needed.
+    // Prices as of 2026-04-17. Sources:
+    //   OpenAI: https://openai.com/api/pricing/
+    //   Anthropic: https://docs.anthropic.com/en/docs/about-claude/pricing
+    //   Google: https://ai.google.dev/gemini-api/docs/pricing
     match model {
-        m if m.starts_with("gpt-5.4") => (2.0, 8.0),
+        m if m.starts_with("gpt-5.4") => (2.5, 15.0),
         m if m.starts_with("gpt-5.3") => (1.0, 4.0),
+        m if m.starts_with("gpt-5.2") => (1.75, 14.0),
         m if m.starts_with("gpt-4o") => (2.5, 10.0),
         m if m.starts_with("gpt-4.1") => (2.0, 8.0),
         m if m.starts_with("o3") => (2.0, 8.0),
         m if m.starts_with("o4-mini") => (1.1, 4.4),
         m if m.contains("claude-sonnet") => (3.0, 15.0),
-        m if m.contains("claude-opus") => (15.0, 75.0),
-        m if m.contains("claude-haiku") => (0.8, 4.0),
-        m if m.starts_with("gemini-2.5-pro") => (1.25, 10.0),
-        m if m.starts_with("gemini-2.5-flash") => (0.15, 0.60),
+        m if m.contains("claude-opus") => (5.0, 25.0),
+        m if m.contains("claude-haiku") => (1.0, 5.0),
+        m if m.starts_with("gemini-2.5-pro") => (1.25, 2.50),
+        m if m.starts_with("gemini-2.5-flash") => (0.10, 0.40),
         _ => (3.0, 15.0), // conservative fallback
     }
 }
@@ -114,8 +118,8 @@ mod tests {
     #[test]
     fn estimate_cost_known_model() {
         let cost = estimate_cost("gpt-5.4", 1_000_000, 500_000);
-        // gpt-5.4: $2/M input, $8/M output -> $2.00 + $4.00 = $6.00
-        assert!((cost - 6.0).abs() < 0.01, "cost was {cost}");
+        // gpt-5.4: $2.50/M input, $15/M output -> $2.50 + $7.50 = $10.00
+        assert!((cost - 10.0).abs() < 0.01, "cost was {cost}");
     }
 
     #[test]
@@ -133,7 +137,7 @@ mod tests {
     #[test]
     fn estimate_cost_gemini() {
         let cost = estimate_cost("gemini-2.5-pro", 1_000_000, 500_000);
-        // gemini-2.5-pro: $1.25/M input, $10/M output -> $1.25 + $5.00 = $6.25
-        assert!((cost - 6.25).abs() < 0.01, "cost was {cost}");
+        // gemini-2.5-pro: $1.25/M input, $2.50/M output -> $1.25 + $1.25 = $2.50
+        assert!((cost - 2.50).abs() < 0.01, "cost was {cost}");
     }
 }
