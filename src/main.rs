@@ -7,6 +7,7 @@ mod ast_grep;
 mod auto_calibrate;
 mod cache;
 mod calibrator;
+mod calibrator_trace;
 mod cli;
 mod config;
 mod context_enrichment;

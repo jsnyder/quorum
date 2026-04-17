@@ -10,6 +10,7 @@ pub struct CalibrationResult {
     pub findings: Vec<Finding>,
     pub suppressed: usize,
     pub boosted: usize,
+    pub traces: Vec<crate::calibrator_trace::CalibratorTraceEntry>,
 }
 
 pub struct CalibratorConfig {
@@ -73,14 +74,18 @@ pub fn calibrate(
             findings,
             suppressed: 0,
             boosted: 0,
+            traces: vec![],
         };
     }
 
     let mut output = Vec::new();
     let mut suppressed = 0;
     let mut boosted = 0;
+    let mut traces = Vec::new();
 
     for mut finding in findings {
+        let input_severity = finding.severity.clone();
+
         // Find similar feedback entries
         let similar: Vec<&&FeedbackEntry> = filtered
             .iter()
@@ -88,6 +93,19 @@ pub fn calibrate(
             .collect();
 
         if similar.is_empty() {
+            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: finding.title.clone(),
+                finding_category: finding.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: input_severity.clone(),
+                output_severity: finding.severity.clone(),
+            });
             output.push(finding);
             continue;
         }
@@ -116,12 +134,25 @@ pub fn calibrate(
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
-        // Wontfix weight (only contributes to soft suppression)
+        // Wontfix weight (soft suppression at 100%, full suppression at 50%)
         let mut wontfix_weight: f64 = 0.0;
         for e in similar.iter().filter(|e| e.verdict == Verdict::Wontfix) {
             wontfix_weight += verdict_weight(e);
         }
         let soft_fp_weight = fp_weight + wontfix_weight;
+
+        // Build precedent traces for this finding
+        let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
+            .iter()
+            .map(|e| crate::calibrator_trace::PrecedentTrace {
+                finding_title: e.finding_title.clone(),
+                verdict: e.verdict.clone(),
+                similarity: 1.0, // Jaccard doesn't expose per-entry similarity
+                weight: verdict_weight(e),
+                provenance: format!("{:?}", e.provenance),
+                file_path: e.file_path.clone(),
+            })
+            .collect();
 
         // Annotate with precedent info
         for entry in &similar {
@@ -142,6 +173,19 @@ pub fn calibrate(
         let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: finding.title.clone(),
+                finding_category: finding.category.clone(),
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                action: finding.calibrator_action.clone(),
+                input_severity,
+                output_severity: finding.severity.clone(),
+            });
             suppressed += 1;
             continue; // don't add to output
         }
@@ -165,6 +209,20 @@ pub fn calibrate(
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
 
+        traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+            finding_title: finding.title.clone(),
+            finding_category: finding.category.clone(),
+            tp_weight,
+            fp_weight,
+            wontfix_weight,
+            full_suppress_weight,
+            soft_fp_weight,
+            matched_precedents,
+            action: finding.calibrator_action.clone(),
+            input_severity,
+            output_severity: finding.severity.clone(),
+        });
+
         output.push(finding);
     }
 
@@ -172,6 +230,7 @@ pub fn calibrate(
         findings: output,
         suppressed,
         boosted,
+        traces,
     }
 }
 
@@ -184,14 +243,16 @@ pub fn calibrate_with_index(
     config: &CalibratorConfig,
 ) -> CalibrationResult {
     if index.is_empty() {
-        return CalibrationResult { findings, suppressed: 0, boosted: 0 };
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
     let mut output = Vec::new();
     let mut suppressed = 0;
     let mut boosted = 0;
+    let mut traces = Vec::new();
 
     for mut finding in findings {
+        let input_severity = finding.severity.clone();
         let similar_entries = index.find_similar(&finding.title, &finding.category, 10);
 
         // Filter by similarity threshold and provenance
@@ -204,6 +265,19 @@ pub fn calibrate_with_index(
             .collect();
 
         if similar.is_empty() {
+            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: finding.title.clone(),
+                finding_category: finding.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: input_severity.clone(),
+                output_severity: finding.severity.clone(),
+            });
             output.push(finding);
             continue;
         }
@@ -233,13 +307,26 @@ pub fn calibrate_with_index(
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
-        // Wontfix weight (only contributes to soft suppression)
+        // Wontfix weight (soft suppression at 100%, full suppression at 50%)
         let mut wontfix_weight: f64 = 0.0;
         for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Wontfix) {
             let w = verdict_weight(&s.entry) * s.similarity as f64;
             wontfix_weight += w;
         }
         let soft_fp_weight = fp_weight + wontfix_weight;
+
+        // Build precedent traces for this finding
+        let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
+            .iter()
+            .map(|s| crate::calibrator_trace::PrecedentTrace {
+                finding_title: s.entry.finding_title.clone(),
+                verdict: s.entry.verdict.clone(),
+                similarity: s.similarity as f64,
+                weight: verdict_weight(&s.entry),
+                provenance: format!("{:?}", s.entry.provenance),
+                file_path: s.entry.file_path.clone(),
+            })
+            .collect();
 
         // Annotate with precedent info
         for s in &similar {
@@ -257,6 +344,19 @@ pub fn calibrate_with_index(
         let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: finding.title.clone(),
+                finding_category: finding.category.clone(),
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                action: finding.calibrator_action.clone(),
+                input_severity,
+                output_severity: finding.severity.clone(),
+            });
             suppressed += 1;
             continue;
         }
@@ -280,10 +380,24 @@ pub fn calibrate_with_index(
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
 
+        traces.push(crate::calibrator_trace::CalibratorTraceEntry {
+            finding_title: finding.title.clone(),
+            finding_category: finding.category.clone(),
+            tp_weight,
+            fp_weight,
+            wontfix_weight,
+            full_suppress_weight,
+            soft_fp_weight,
+            matched_precedents,
+            action: finding.calibrator_action.clone(),
+            input_severity,
+            output_severity: finding.severity.clone(),
+        });
+
         output.push(finding);
     }
 
-    CalibrationResult { findings: output, suppressed, boosted }
+    CalibrationResult { findings: output, suppressed, boosted, traces }
 }
 
 fn boost_severity(severity: &Severity) -> Severity {
@@ -998,5 +1112,78 @@ mod tests {
         assert_eq!(result.suppressed, 0);
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn calibrate_populates_trace_for_suppressed_finding() {
+        let finding = FindingBuilder::new()
+            .title("Unused import")
+            .category("style")
+            .severity(Severity::Low)
+            .build();
+
+        let feedback = vec![
+            fb("Unused import", "style", Verdict::Fp),
+            fb("Unused import os", "style", Verdict::Fp),
+        ];
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.traces.len(), 1);
+
+        let trace = &result.traces[0];
+        assert_eq!(trace.finding_title, "Unused import");
+        assert!(trace.fp_weight > 0.0);
+        assert_eq!(trace.action, Some(CalibratorAction::Disputed));
+        assert!(!trace.matched_precedents.is_empty());
+    }
+
+    #[test]
+    fn calibrate_populates_trace_for_boosted_finding() {
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security")
+            .severity(Severity::Medium)
+            .build();
+
+        let feedback = vec![
+            fb("SQL injection", "security", Verdict::Tp),
+            fb("SQL injection in query", "security", Verdict::Tp),
+        ];
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        assert_eq!(result.traces.len(), 1);
+
+        let trace = &result.traces[0];
+        assert_eq!(trace.action, Some(CalibratorAction::Confirmed));
+        assert!(trace.tp_weight > 0.0);
+        assert_eq!(trace.input_severity, Severity::Medium);
+        assert_eq!(trace.output_severity, Severity::High);
+    }
+
+    #[test]
+    fn calibrate_populates_trace_for_passthrough() {
+        let finding = FindingBuilder::new()
+            .title("Race condition")
+            .category("concurrency")
+            .build();
+
+        let feedback = vec![
+            fb("Unused import", "style", Verdict::Fp),
+        ];
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.traces.len(), 1);
+
+        let trace = &result.traces[0];
+        assert_eq!(trace.finding_title, "Race condition");
+        assert_eq!(trace.tp_weight, 0.0);
+        assert_eq!(trace.fp_weight, 0.0);
+        assert!(trace.matched_precedents.is_empty());
+        assert_eq!(trace.action, None);
     }
 }
