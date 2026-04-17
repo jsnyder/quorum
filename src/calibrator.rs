@@ -138,8 +138,9 @@ pub fn calibrate(
             ));
         }
 
-        // Full suppress: only strict FP weight (no wontfix contribution)
-        if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
+        // Full suppress: FP weight + wontfix at 50% contribution
+        let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
+        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue; // don't add to output
@@ -252,8 +253,9 @@ pub fn calibrate_with_index(
             ));
         }
 
-        // Full suppress: only strict FP weight (no wontfix contribution)
-        if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
+        // Full suppress: FP weight + wontfix at 50% contribution
+        let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
+        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed += 1;
             continue;
@@ -954,5 +956,47 @@ mod tests {
         // FP alone should drive full suppression
         assert_eq!(result.suppressed, 1);
         assert_eq!(result.findings.len(), 0);
+    }
+
+    #[test]
+    fn wontfix_contributes_to_full_suppress_with_fp() {
+        let finding = FindingBuilder::new()
+            .title("Missing explicit mode")
+            .category("quality")
+            .severity(Severity::Medium)
+            .build();
+
+        let feedback = vec![
+            fb("Missing explicit mode", "quality", Verdict::Fp),
+            fb("Missing explicit mode defaults", "quality", Verdict::Wontfix),
+            fb("No explicit mode set", "quality", Verdict::Wontfix),
+        ];
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        assert_eq!(result.suppressed, 1);
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn wontfix_alone_insufficient_for_full_suppress() {
+        let finding = FindingBuilder::new()
+            .title("No explicit mode")
+            .category("quality")
+            .severity(Severity::Medium)
+            .build();
+
+        let feedback = vec![
+            fb("No explicit mode", "quality", Verdict::Wontfix),
+            fb("No explicit mode set", "quality", Verdict::Wontfix),
+            fb("Missing explicit mode", "quality", Verdict::Wontfix),
+            fb("Automation has no mode", "quality", Verdict::Wontfix),
+        ];
+
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        assert_eq!(result.suppressed, 0);
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].severity, Severity::Info);
     }
 }
