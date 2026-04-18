@@ -96,12 +96,14 @@ pub struct PipelineConfig {
     pub feedback_index: Option<std::sync::Arc<std::sync::Mutex<crate::feedback_index::FeedbackIndex>>>,
     /// Skip Context7 enrichment (default false: fail if frameworks detected but docs unavailable)
     pub skip_context7: bool,
+    /// Skip fastembed model — fall back to Jaccard word-overlap for calibration.
+    pub fast: bool,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            complexity_threshold: 5,
+            complexity_threshold: 10,
             similarity_threshold: 0.8,
             models: vec![],
             calibration_model: None,
@@ -115,6 +117,7 @@ impl Default for PipelineConfig {
             semaphore: None,
             feedback_index: None,
             skip_context7: false,
+            fast: false,
         }
     }
 }
@@ -225,7 +228,11 @@ pub fn review_file(
     let mut local_index = if shared_index.is_none() {
         if let Some(store_path) = &pipeline_config.feedback_store {
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            crate::feedback_index::FeedbackIndex::build(&store).ok()
+            if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store).ok()
+            } else {
+                crate::feedback_index::FeedbackIndex::build(&store).ok()
+            }
         } else {
             None
         }
@@ -235,25 +242,35 @@ pub fn review_file(
 
     // Source 1: Local AST analysis
     let mut local_findings = Vec::new();
-    local_findings.extend(analysis::analyze_complexity(tree, source, lang, pipeline_config.complexity_threshold));
-    local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
+    {
+        let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
+        let t0 = std::time::Instant::now();
+        local_findings.extend(analysis::analyze_complexity(tree, source, lang, pipeline_config.complexity_threshold));
+        local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
+        tracing::info!(phase = "local_ast", duration_ms = t0.elapsed().as_millis() as u64, findings = local_findings.len(), "phase complete");
+    }
     all_sources.push(local_findings);
 
     // Source 2: ast-grep library rules
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ast_grep::ext_to_language(ext).is_some() {
+        let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
+        let t0 = std::time::Instant::now();
         let project_root = find_project_root(file_path);
         let home_dir = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
         let rules = ast_grep::load_rules(&project_root, &home_dir);
+        let mut ag_count = 0;
         if !rules.is_empty() {
             let ag_findings = ast_grep::scan_file(source, ext, &rules);
+            ag_count = ag_findings.len();
             if !ag_findings.is_empty() {
                 all_sources.push(ag_findings);
             }
         }
+        tracing::info!(phase = "ast_grep", duration_ms = t0.elapsed().as_millis() as u64, rules = rules.len(), findings = ag_count, "phase complete");
     }
 
     // Source 3: LLM review (if configured and models specified)
@@ -277,7 +294,13 @@ pub fn review_file(
         } else {
             changed_lines
         };
-        let ctx = hydration::hydrate(tree, source, lang, &hydration_ranges);
+        let hydrate_t0 = std::time::Instant::now();
+        let ctx = {
+            let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
+            let c = hydration::hydrate(tree, source, lang, &hydration_ranges);
+            tracing::info!(phase = "hydrate", duration_ms = hydrate_t0.elapsed().as_millis() as u64, callees = c.callee_signatures.len(), types = c.type_definitions.len(), imports = c.import_targets.len(), "phase complete");
+            c
+        };
 
         // Redact secrets in both code AND hydration context before LLM
         let redacted_code = redact::redact_secrets(source);
@@ -299,15 +322,18 @@ pub fn review_file(
                 }
             }
             if !domain.frameworks.is_empty() {
-                eprintln!("Detected frameworks: {:?}", domain.frameworks);
+                tracing::debug!(frameworks = ?domain.frameworks, "detected frameworks");
                 let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
                 let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
+                let ctx7_t0 = std::time::Instant::now();
+                let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
                 let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &redacted_ctx.import_targets);
+                tracing::info!(phase = "context7", duration_ms = ctx7_t0.elapsed().as_millis() as u64, frameworks = domain.frameworks.len(), docs = docs.len(), "phase complete");
                 if !docs.is_empty() {
-                    eprintln!("Context7: injected {} framework doc(s) into prompt", docs.len());
+                    tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
                 } else if pipeline_config.skip_context7 {
-                    eprintln!("Context7: no docs fetched (skipped via --skip-context7)");
+                    tracing::debug!("Context7: no docs fetched (skipped via --skip-context7)");
                     None
                 } else {
                     anyhow::bail!(
@@ -344,15 +370,19 @@ pub fn review_file(
         let prompt = review::build_review_prompt(&req);
 
         for model in &pipeline_config.models {
+            let _span = tracing::info_span!("phase.llm_call", model = %model, file = %file_str).entered();
+            let t0 = std::time::Instant::now();
             let _permit = acquire_llm_permit(&pipeline_config.semaphore);
             match reviewer.review(&prompt, model) {
                 Ok(resp) => {
+                    let (prompt_tok, completion_tok) = resp.usage.as_ref().map(|u| (u.prompt_tokens, u.completion_tokens)).unwrap_or((0, 0));
                     if let Some(u) = &resp.usage {
                         total_usage.prompt_tokens += u.prompt_tokens;
                         total_usage.completion_tokens += u.completion_tokens;
                     }
                     match review::parse_llm_response(&resp.content, model) {
                         Ok(mut findings) => {
+                            let n_findings = findings.len();
                             if let Some(ref notice) = truncation_notice {
                                 for f in &mut findings {
                                     if matches!(f.source, crate::finding::Source::Llm(_)) {
@@ -361,22 +391,37 @@ pub fn review_file(
                                 }
                             }
                             all_sources.push(findings);
+                            tracing::info!(phase = "llm_call", model = %model, duration_ms = t0.elapsed().as_millis() as u64, findings = n_findings, prompt_tokens = prompt_tok, completion_tokens = completion_tok, "phase complete");
                         }
-                        Err(e) => eprintln!("Warning: Failed to parse {} response: {}", model, e),
+                        Err(e) => {
+                            tracing::warn!(phase = "llm_call", model = %model, error = %e, "failed to parse response");
+                            eprintln!("Warning: Failed to parse {} response: {}", model, e);
+                        }
                     }
                 }
-                Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
+                Err(e) => {
+                    tracing::warn!(phase = "llm_call", model = %model, duration_ms = t0.elapsed().as_millis() as u64, error = %e, "review call failed");
+                    eprintln!("Warning: {} review failed: {}", model, e);
+                }
             }
         }
         } // end if models not empty
     }
 
     // Merge all sources
-    let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
+    let merge_t0 = std::time::Instant::now();
+    let merged = {
+        let _span = tracing::info_span!("phase.merge", file = %file_str).entered();
+        let result = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
+        tracing::info!(phase = "merge", duration_ms = merge_t0.elapsed().as_millis() as u64, merged_findings = result.len(), "phase complete");
+        result
+    };
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
+        let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
+        let cal_t0 = std::time::Instant::now();
         let config = CalibratorConfig::default();
 
         // Use shared FeedbackIndex (parallel mode) or local index for calibration
@@ -398,13 +443,16 @@ pub fn review_file(
         };
 
         if cal_result.suppressed > 0 || cal_result.boosted > 0 {
-            eprintln!(
-                "Calibrator: {} suppressed, {} boosted (from {} feedback entries)",
-                cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
+            tracing::debug!(
+                suppressed = cal_result.suppressed,
+                boosted = cal_result.boosted,
+                feedback_entries = pipeline_config.feedback.len(),
+                "calibrator decision per-file",
             );
         }
 
         write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
+        tracing::info!(phase = "calibrate", duration_ms = cal_t0.elapsed().as_millis() as u64, suppressed = cal_result.suppressed, boosted = cal_result.boosted, final_findings = cal_result.findings.len(), "phase complete");
 
         (cal_result.findings, cal_result.suppressed)
     } else {
@@ -518,7 +566,11 @@ pub fn review_file_llm_only(
     let mut local_index = if shared_index.is_none() {
         if let Some(store_path) = &pipeline_config.feedback_store {
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            crate::feedback_index::FeedbackIndex::build(&store).ok()
+            if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store).ok()
+            } else {
+                crate::feedback_index::FeedbackIndex::build(&store).ok()
+            }
         } else {
             None
         }
@@ -619,6 +671,8 @@ pub fn review_file_llm_only(
     // Calibrate
     let has_feedback = !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
+        let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
+        let cal_t0 = std::time::Instant::now();
         let config = CalibratorConfig::default();
         // Use shared FeedbackIndex (parallel mode) or local index for calibration
         let cal_result = if let Some(ref shared) = shared_index {
@@ -638,13 +692,16 @@ pub fn review_file_llm_only(
             calibrator::calibrate(merged, &pipeline_config.feedback, &config)
         };
         if cal_result.suppressed > 0 || cal_result.boosted > 0 {
-            eprintln!(
-                "Calibrator: {} suppressed, {} boosted (from {} feedback entries)",
-                cal_result.suppressed, cal_result.boosted, pipeline_config.feedback.len()
+            tracing::debug!(
+                suppressed = cal_result.suppressed,
+                boosted = cal_result.boosted,
+                feedback_entries = pipeline_config.feedback.len(),
+                "calibrator decision per-file",
             );
         }
 
         write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
+        tracing::info!(phase = "calibrate", duration_ms = cal_t0.elapsed().as_millis() as u64, suppressed = cal_result.suppressed, boosted = cal_result.boosted, final_findings = cal_result.findings.len(), "phase complete");
 
         (cal_result.findings, cal_result.suppressed)
     } else {
@@ -697,6 +754,23 @@ mod tests {
         review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).unwrap()
     }
 
+    // -- Complexity threshold default --
+
+    #[test]
+    fn default_complexity_threshold_is_ten() {
+        assert_eq!(PipelineConfig::default().complexity_threshold, 10);
+    }
+
+    #[test]
+    fn pipeline_default_does_not_flag_cc_six_function() {
+        let source = "fn moderate(a: bool, b: bool, c: bool) {\n    if a {\n        if b {\n            if c {\n                for i in 0..10 {\n                    if i > 5 { break; }\n                }\n            }\n        }\n    }\n}\n";
+        let result = parse_and_review(source, Language::Rust, None, vec![]);
+        assert!(
+            !result.findings.iter().any(|f| f.category == "complexity"),
+            "CC=6 should not flag at default threshold=10"
+        );
+    }
+
     // -- Local-only mode --
 
     #[test]
@@ -709,7 +783,8 @@ mod tests {
 
     #[test]
     fn pipeline_local_finds_complexity() {
-        let source = "fn complex(a: bool, b: bool, c: bool) {\n    if a {\n        if b {\n            if c {\n                for i in 0..10 {\n                    if i > 5 { break; }\n                }\n            }\n        }\n    }\n}\n";
+        // CC=11: 10 decision points + 1 baseline. Must exceed default threshold (10).
+        let source = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
         let result = parse_and_review(source, Language::Rust, None, vec![]);
         assert!(!result.findings.is_empty());
         assert!(result.findings.iter().any(|f| f.category == "complexity"));

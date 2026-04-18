@@ -215,7 +215,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
     if !feedback_entries.is_empty() {
-        eprintln!("Loaded {} feedback entries for calibration", feedback_entries.len());
+        tracing::debug!(entries = feedback_entries.len(), "loaded feedback entries");
     }
 
     // Parse diff file if provided for change-scoped review
@@ -248,14 +248,20 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         None // parallel=1, sequential
     };
 
-    // Pre-build FeedbackIndex once for sharing across parallel tasks
+    // Pre-build FeedbackIndex once for sharing across parallel tasks.
+    // --fast skips fastembed model load and uses Jaccard-only matching.
     let shared_feedback_index = {
         let feedback_path_ref = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
         if feedback_path_ref.exists() {
             let store = feedback::FeedbackStore::new(feedback_path_ref);
-            match feedback_index::FeedbackIndex::build(&store) {
+            let build_result = if opts.fast {
+                feedback_index::FeedbackIndex::build_bm25(&store)
+            } else {
+                feedback_index::FeedbackIndex::build(&store)
+            };
+            match build_result {
                 Ok(idx) => {
-                    eprintln!("FeedbackIndex: pre-built for parallel calibration");
+                    tracing::debug!(fast_mode = opts.fast, "FeedbackIndex: pre-built for parallel calibration");
                     Some(std::sync::Arc::new(std::sync::Mutex::new(idx)))
                 }
                 Err(e) => {
@@ -277,6 +283,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         diff_ranges,
         framework_overrides: opts.framework.clone(),
         skip_context7: opts.skip_context7,
+        fast: opts.fast,
         semaphore,
         feedback_index: shared_feedback_index,
         ..Default::default()
@@ -291,10 +298,10 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let suppress_path = project_root.join(".quorum/suppress.toml");
     let suppress_rules = suppress::load_project_suppressions(&suppress_path);
     if !suppress_rules.is_empty() {
-        eprintln!(
-            "Loaded {} suppression rule(s) from {}",
-            suppress_rules.len(),
-            suppress_path.display()
+        tracing::debug!(
+            rules = suppress_rules.len(),
+            path = %suppress_path.display(),
+            "loaded project suppression rules"
         );
     }
 
@@ -364,7 +371,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                             // Apply project-level suppressions
                             let sup_result = suppress::apply_suppressions(findings, &suppress_rules, &file_display);
                             if !sup_result.suppressed.is_empty() {
-                                eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                                tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
                             }
                             if opts.show_suppressed {
                                 for (f, rule) in &sup_result.suppressed {
@@ -416,7 +423,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     let file_display = result.file_path.clone();
                     let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
                     if !sup_result.suppressed.is_empty() {
-                        eprintln!("Suppressed {} finding(s) in {}", sup_result.suppressed.len(), file_display);
+                        tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
                     }
                     if opts.show_suppressed {
                         for (f, rule) in &sup_result.suppressed {
@@ -559,11 +566,28 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
 
         if opts.parallel > 1 && file_results.len() > 1 {
-            eprintln!("{} file(s) reviewed in parallel (--parallel {})", file_results.len(), opts.parallel);
+            tracing::debug!(files = file_results.len(), parallel = opts.parallel, "parallel review complete");
         }
     }
 
     let review_duration = review_start.elapsed();
+
+    // Aggregated end-of-run summary (one line, always printed to stderr).
+    {
+        let total_suppressed: usize = file_results.iter().map(|r| r.suppressed).sum();
+        let total_findings = all_findings.len();
+        eprintln!(
+            "Reviewed {} file(s) in {:.1}s: {} finding(s){}",
+            file_results.len(),
+            review_duration.as_secs_f64(),
+            total_findings,
+            if total_suppressed > 0 {
+                format!(", {} suppressed", total_suppressed)
+            } else {
+                String::new()
+            }
+        );
+    }
 
     // Record telemetry (best-effort, don't fail the review)
     {

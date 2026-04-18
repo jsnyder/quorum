@@ -1,0 +1,22 @@
+id: ha-template-none-fallback
+language: Yaml
+severity: warning
+message: "Jinja template concatenated with unit suffix has no `| default(...)` filter. When the source sensor returns `None`, the template renders e.g. 'None%' or 'None K' instead of being unavailable."
+note: "Feedback: 4+ confirmed TPs ('Status sensor None% @ NoneK'). Add `| default(0)` or `| default('unknown')` before the unit."
+rule:
+  any:
+    - all:
+        - kind: plain_scalar
+        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - not:
+            regex: 'default\s*\('
+    - all:
+        - kind: double_quote_scalar
+        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - not:
+            regex: 'default\s*\('
+    - all:
+        - kind: single_quote_scalar
+        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - not:
+            regex: 'default\s*\('

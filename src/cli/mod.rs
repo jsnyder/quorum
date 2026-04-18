@@ -126,6 +126,11 @@ pub struct ReviewOpts {
     /// Enable structured tracing to ~/.quorum/trace.jsonl (also: QUORUM_TRACE=1)
     #[arg(long)]
     pub trace: bool,
+
+    /// Skip fastembed model (saves ~1.5 GB RAM, ~15 s startup). Calibrator
+    /// falls back to Jaccard word-overlap matching on feedback titles.
+    #[arg(long)]
+    pub fast: bool,
 }
 
 #[derive(Parser)]

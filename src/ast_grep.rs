@@ -481,6 +481,117 @@ rule:
         );
     }
 
+    // ── block-on-in-async (Rust) ──
+
+    #[test]
+    fn block_on_in_async_rule_parses_cleanly() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let parsed: Result<Vec<RuleConfig<SupportLang>>, _> =
+            from_yaml_string(&yaml, &GlobalRules::default());
+        parsed.expect("block-on-in-async.yml must parse without errors");
+    }
+
+    #[test]
+    fn block_on_in_async_matches_block_on_inside_async_fn() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+        let findings = scan_file(
+            "async fn run() { runtime.block_on(async { 1 }); }",
+            "rs",
+            &rules,
+        );
+        assert!(!findings.is_empty(), "should flag block_on inside async fn");
+    }
+
+    #[test]
+    fn block_on_in_async_does_not_match_in_sync_fn() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+        let findings = scan_file(
+            "fn run() { runtime.block_on(async { 1 }); }",
+            "rs",
+            &rules,
+        );
+        assert!(findings.is_empty(), "must NOT flag in sync fn");
+    }
+
+    // ── ha-template-none-fallback rule ──
+
+    fn load_yaml_rule(name: &str) -> Vec<RuleConfig<SupportLang>> {
+        let path = format!("{}/rules/yaml/{}.yml", env!("CARGO_MANIFEST_DIR"), name);
+        let yaml = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("rule file missing: {}: {}", path, e));
+        from_yaml_string(&yaml, &GlobalRules::default())
+            .unwrap_or_else(|e| panic!("rule {} failed to parse: {}", name, e))
+    }
+
+    fn yaml_matches(source: &str, rules: &[RuleConfig<SupportLang>]) -> usize {
+        let lang: SupportLang = "yaml".parse().unwrap();
+        let root = lang.ast_grep(source);
+        root.root().find_all(&rules[0].matcher).count()
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_percent_unit() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo_battery') }}%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1, "percent suffix w/o default should match");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_kelvin_unit() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo_temperature') }} K\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1, "K suffix w/o default should match");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_single_quoted() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: '{{ states(\"sensor.foo\") }}%'\n";
+        assert_eq!(yaml_matches(src, &rules), 1);
+    }
+
+    #[test]
+    fn ha_template_none_fallback_negative_has_default() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo') | float(0) | default(0) }}%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 0, "default() filter must suppress");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_negative_default_after_other_filter() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo') | round(1) | default(0) }}%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 0, "default after round should still suppress");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_negative_no_unit_suffix() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo') }}\"\n";
+        assert_eq!(yaml_matches(src, &rules), 0, "no unit suffix is not the risk pattern");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_negative_plain_string() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"Battery at 80%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 0);
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_celsius_suffix() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.temp') }} C\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1);
+    }
+
     // ── Parity: all bundled rules match their test fixtures ──
 
     #[test]

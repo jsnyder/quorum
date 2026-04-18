@@ -7,12 +7,12 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
     }
 
     let mut merged: Vec<Finding> = Vec::new();
+    let mut occurrence_count: Vec<usize> = Vec::new();
 
     for finding in all {
         let mut found_match = false;
-        for existing in merged.iter_mut() {
+        for (idx, existing) in merged.iter_mut().enumerate() {
             if similarity(existing, &finding) >= similarity_threshold {
-                // Merge: keep highest severity, widen line range, combine evidence
                 if finding.severity > existing.severity {
                     existing.severity = finding.severity.clone();
                 }
@@ -23,16 +23,27 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
                         existing.evidence.push(e.clone());
                     }
                 }
+                occurrence_count[idx] += 1;
                 found_match = true;
                 break;
             }
         }
         if !found_match {
             merged.push(finding);
+            occurrence_count.push(1);
         }
     }
 
-    // Sort: highest severity first, then by line number
+    // Annotate findings that absorbed duplicates so downstream output can
+    // show "N occurrences" instead of N separate entries.
+    for (idx, count) in occurrence_count.iter().enumerate() {
+        if *count > 1 {
+            merged[idx]
+                .evidence
+                .push(format!("{} occurrences merged", count));
+        }
+    }
+
     merged.sort_by(|a, b| {
         b.severity.cmp(&a.severity).then(a.line_start.cmp(&b.line_start))
     });
@@ -41,10 +52,16 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
 }
 
 fn similarity(a: &Finding, b: &Finding) -> f64 {
+    // Exact title+category match collapses regardless of line overlap.
+    // These are the "4x Catch-all except: pass at different lines" cases
+    // that used to leak through as separate findings.
+    if a.title == b.title && a.category == b.category {
+        return 1.0;
+    }
+
     let mut score = 0.0;
     let mut weights = 0.0;
 
-    // Title similarity (highest weight)
     let title_sim = string_similarity(&a.title, &b.title);
     score += title_sim * 3.0;
     weights += 3.0;
@@ -186,13 +203,44 @@ mod tests {
     }
 
     #[test]
-    fn merge_non_overlapping_same_title_not_merged() {
+    fn merge_non_overlapping_exact_title_and_category_collapses() {
         let f1 = FindingBuilder::new()
-            .title("Unused variable")
+            .title("Catch-all except: pass")
+            .category("error-handling")
             .lines(10, 10)
             .build();
         let f2 = FindingBuilder::new()
-            .title("Unused variable")
+            .title("Catch-all except: pass")
+            .category("error-handling")
+            .lines(100, 100)
+            .build();
+        let f3 = FindingBuilder::new()
+            .title("Catch-all except: pass")
+            .category("error-handling")
+            .lines(150, 150)
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2], vec![f3]], 0.8);
+        assert_eq!(result.len(), 1, "exact title+category matches must collapse");
+        assert_eq!(result[0].line_start, 10);
+        assert_eq!(result[0].line_end, 150);
+        let joined = result[0].evidence.join(" ");
+        assert!(
+            joined.contains("3 occurrences") || joined.contains("occurrences: 3"),
+            "merged finding should record occurrence count, got evidence: {:?}",
+            result[0].evidence
+        );
+    }
+
+    #[test]
+    fn merge_different_titles_not_collapsed() {
+        let f1 = FindingBuilder::new()
+            .title("SQL injection in query builder")
+            .category("security")
+            .lines(10, 10)
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("XSS in html renderer")
+            .category("security")
             .lines(100, 100)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);

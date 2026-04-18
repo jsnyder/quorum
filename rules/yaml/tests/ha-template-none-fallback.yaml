@@ -1,0 +1,6 @@
+# Fixture: Jinja template + unit suffix, no default() -- should flag.
+sensor:
+  - name: "Foo battery"
+    state: "{{ states('sensor.foo_battery') }}%"
+  - name: "Foo temperature"
+    state: "{{ states('sensor.foo_temperature') }} K"

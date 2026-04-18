@@ -192,7 +192,10 @@ pub fn calibrate(
 
         // Soft suppress: FP + wontfix combined, or auto-only FP
         // This preserves the finding for human review while reducing noise
-        if soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0 {
+        // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
+        if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
+            || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
+        {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
@@ -237,6 +240,36 @@ pub fn calibrate(
 /// Calibrate findings using a FeedbackIndex for similarity matching.
 /// Uses semantic embeddings when available, falls back to Jaccard.
 /// This is the preferred path when a FeedbackIndex has been built.
+/// Extract the numeric metric from a complexity-style finding title.
+/// Returns Some(N) for titles like "Function `foo` has cyclomatic complexity 11".
+pub fn extract_complexity_metric(title: &str) -> Option<u32> {
+    let lower = title.to_lowercase();
+    let key = "complexity ";
+    let pos = lower.find(key)?;
+    let tail = &title[pos + key.len()..];
+    let num: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num.parse().ok()
+}
+
+/// A precedent is metric-compatible with a finding if either:
+/// - neither title has an extractable metric (no numeric constraint), OR
+/// - both have metrics within an absolute gap of 2 (i.e. `|a - b| <= 2`).
+///
+/// An absolute threshold is stricter at low CC and more realistic at high CC
+/// than a relative window — CC=10 vs CC=7 (gap=3) is rejected, CC=30 vs
+/// CC=25 (gap=5) is rejected, CC=11 vs CC=10 (gap=1) is accepted.
+pub fn precedent_metric_compatible(finding_title: &str, precedent_title: &str) -> bool {
+    let f = extract_complexity_metric(finding_title);
+    let p = extract_complexity_metric(precedent_title);
+    match (f, p) {
+        (Some(fn_), Some(pn)) => {
+            let gap = if fn_ > pn { fn_ - pn } else { pn - fn_ };
+            gap <= 2
+        }
+        _ => true,
+    }
+}
+
 pub fn calibrate_with_index(
     findings: Vec<Finding>,
     index: &mut crate::feedback_index::FeedbackIndex,
@@ -255,13 +288,18 @@ pub fn calibrate_with_index(
         let input_severity = finding.severity.clone();
         let similar_entries = index.find_similar(&finding.title, &finding.category, 10);
 
-        // Filter by similarity threshold and provenance
+        // Filter by similarity threshold, provenance, and metric compatibility.
+        // Metric filter: complexity findings must match precedents with a
+        // comparable cyclomatic number. Without this, a CC=5 FP precedent at
+        // embedding similarity 0.9 will wrongly suppress a real CC=11 finding.
+        let finding_title_for_metric = finding.title.clone();
         let similar: Vec<&crate::feedback_index::SimilarEntry> = similar_entries.iter()
             .filter(|s| s.similarity >= config.embedding_similarity_threshold as f32)
             .filter(|s| {
                 if config.use_auto_feedback { true }
                 else { !matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) }
             })
+            .filter(|s| precedent_metric_compatible(&finding_title_for_metric, &s.entry.finding_title))
             .collect();
 
         if similar.is_empty() {
@@ -363,7 +401,10 @@ pub fn calibrate_with_index(
 
         // Soft suppress: FP + wontfix combined, or auto-only FP
         // This preserves the finding for human review while reducing noise
-        if soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0 {
+        // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
+        if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
+            || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
+        {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
@@ -1185,5 +1226,154 @@ mod tests {
         assert_eq!(trace.fp_weight, 0.0);
         assert!(trace.matched_precedents.is_empty());
         assert_eq!(trace.action, None);
+    }
+
+    // ── Metric-aware precedent filtering ──
+
+    #[test]
+    fn extract_complexity_metric_parses_cc() {
+        assert_eq!(
+            extract_complexity_metric("Function `foo` has cyclomatic complexity 11"),
+            Some(11)
+        );
+        assert_eq!(
+            extract_complexity_metric("Function `bar` has cyclomatic complexity 5"),
+            Some(5)
+        );
+        assert_eq!(
+            extract_complexity_metric("open-no-encoding: missing encoding"),
+            None
+        );
+    }
+
+    #[test]
+    fn precedent_metric_close_values_compatible() {
+        // CC=11 vs CC=10 -- 9% gap, well within window
+        assert!(precedent_metric_compatible(
+            "Function `x` has cyclomatic complexity 11",
+            "Function `y` has cyclomatic complexity 10"
+        ));
+    }
+
+    #[test]
+    fn precedent_metric_incompatible_large_gap() {
+        assert!(!precedent_metric_compatible(
+            "Function `x` has cyclomatic complexity 11",
+            "Function `y` has cyclomatic complexity 5"
+        ));
+        assert!(!precedent_metric_compatible(
+            "Function `x` has cyclomatic complexity 11",
+            "Function `y` has cyclomatic complexity 6"
+        ));
+        assert!(!precedent_metric_compatible(
+            "Function `big` has cyclomatic complexity 30",
+            "Function `small` has cyclomatic complexity 6"
+        ));
+    }
+
+    #[test]
+    fn precedent_metric_uses_absolute_gap_not_relative() {
+        // Absolute threshold |a-b| < 3 so CC=10 vs CC=7 is rejected (gap=3)
+        // This matters for moderate-CC findings where a 30% relative window
+        // still admits noisy precedents.
+        assert!(
+            !precedent_metric_compatible(
+                "Function `x` has cyclomatic complexity 10",
+                "Function `y` has cyclomatic complexity 7"
+            ),
+            "CC=10 vs CC=7 (gap=3) must be rejected under absolute threshold"
+        );
+        // CC=30 vs CC=25 (gap=5) rejected under absolute, though 17% relative.
+        assert!(
+            !precedent_metric_compatible(
+                "Function `a` has cyclomatic complexity 30",
+                "Function `b` has cyclomatic complexity 25"
+            ),
+            "CC=30 vs CC=25 (gap=5) must be rejected"
+        );
+        // Within absolute threshold: gap=2
+        assert!(precedent_metric_compatible(
+            "Function `x` has cyclomatic complexity 11",
+            "Function `y` has cyclomatic complexity 9"
+        ));
+    }
+
+    #[test]
+    fn precedent_metric_compatible_when_no_metric() {
+        // Non-complexity findings: no metric constraint applies
+        assert!(precedent_metric_compatible(
+            "SQL injection in query builder",
+            "SQL injection risk"
+        ));
+    }
+
+    #[test]
+    fn calibrate_downgrades_clear_fp_no_tp_to_info() {
+        // Observed case (from real review of script.js): finding "Function X has
+        // cyclomatic complexity 13" with ONE FP precedent at similarity ~0.83.
+        // fp_weight ~= 0.83 * 1.0 (human) = 0.83. No TP precedents.
+        // Current logic requires soft_fp_weight >= 1.0 so this passes through
+        // at Medium severity unchanged. With clear FP signal and no TP, we
+        // should downgrade to Info.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Slightly different title -> similarity ~0.83, fp_weight ~0.83.
+        store.record(&fb(
+            "Function `helper` has cyclomatic complexity 12",
+            "complexity",
+            Verdict::Fp,
+        )).unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("Function `createFood` has cyclomatic complexity 13")
+            .category("complexity")
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        let config = CalibratorConfig::default();
+        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        assert_eq!(result.findings.len(), 1);
+        let out = &result.findings[0];
+        assert_eq!(
+            out.severity,
+            crate::finding::Severity::Info,
+            "clear-FP-no-TP finding should be downgraded to Info"
+        );
+        assert_eq!(
+            out.calibrator_action,
+            Some(crate::finding::CalibratorAction::Disputed),
+            "downgraded finding should be marked Disputed"
+        );
+    }
+
+    #[test]
+    fn calibrate_ignores_low_cc_fp_precedent_for_high_cc_finding() {
+        // CC=11 finding must not receive FP weight from CC=5 precedents.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for e in [
+            fb("Function `simple` has cyclomatic complexity 5", "complexity", Verdict::Fp),
+            fb("Function `tiny` has cyclomatic complexity 6", "complexity", Verdict::Fp),
+            fb("Function `tiny2` has cyclomatic complexity 4", "complexity", Verdict::Fp),
+        ] {
+            store.record(&e).unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("Function `bigfn` has cyclomatic complexity 11")
+            .category("complexity")
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        let config = CalibratorConfig::default();
+        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        assert_eq!(result.findings.len(), 1);
+        let trace = &result.traces[0];
+        assert_eq!(
+            trace.fp_weight, 0.0,
+            "CC=5/6/4 FP precedents must NOT contribute to CC=11 finding's fp_weight"
+        );
+        assert!(
+            trace.matched_precedents.is_empty(),
+            "metric-incompatible precedents should be filtered out before weighting"
+        );
     }
 }

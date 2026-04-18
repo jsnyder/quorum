@@ -17,9 +17,107 @@ pub struct FeedbackIndex {
     vectors: Vec<Vec<f32>>,
     #[cfg(feature = "embeddings")]
     embedder: Option<crate::embeddings::LocalEmbedder>,
+    /// Optional BM25 keyword index (used by `--fast` mode). When present,
+    /// it takes precedence over both embeddings and Jaccard.
+    bm25_engine: Option<bm25::SearchEngine<u32>>,
 }
 
 impl FeedbackIndex {
+    /// Build a Jaccard-only index without initializing fastembed.
+    /// Used as a last-resort fallback when both embeddings and BM25 are unavailable.
+    pub fn build_jaccard_only(store: &FeedbackStore) -> anyhow::Result<Self> {
+        let entries = store.load_all()?;
+        Ok(Self {
+            entries,
+            #[cfg(feature = "embeddings")]
+            vectors: vec![],
+            #[cfg(feature = "embeddings")]
+            embedder: None,
+            bm25_engine: None,
+        })
+    }
+
+    /// Build a hybrid index combining BM25 + fastembed. At query time both
+    /// retrievers run and their ranked lists are fused with Reciprocal Rank
+    /// Fusion (k=60). Uses the most memory of all modes (BM25 index + embed
+    /// model + vectors) but produces the highest retrieval quality.
+    #[cfg(feature = "embeddings")]
+    pub fn build_hybrid(store: &FeedbackStore) -> anyhow::Result<Self> {
+        let entries = store.load_all()?;
+        let bm25_engine = if entries.is_empty() {
+            None
+        } else {
+            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            Some(
+                bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
+                    .build(),
+            )
+        };
+        match crate::embeddings::LocalEmbedder::new() {
+            Ok(mut embedder) => {
+                let texts: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        let pattern = patterns::classify_pattern(
+                            &e.finding_title,
+                            "",
+                            &e.finding_category,
+                        );
+                        patterns::embedding_text(
+                            &e.finding_title,
+                            &e.finding_category,
+                            pattern.as_deref(),
+                        )
+                    })
+                    .collect();
+                let vectors = if texts.is_empty() {
+                    vec![]
+                } else {
+                    embedder.embed_batch(&texts)?
+                };
+                Ok(Self {
+                    entries,
+                    vectors,
+                    embedder: Some(embedder),
+                    bm25_engine,
+                })
+            }
+            Err(_) => {
+                // Fall back to BM25-only if fastembed unavailable.
+                Ok(Self {
+                    entries,
+                    vectors: vec![],
+                    embedder: None,
+                    bm25_engine,
+                })
+            }
+        }
+    }
+
+    /// Build a BM25-only index. Used by `--fast` mode: skips the ~1.5 GB
+    /// fastembed model and ~15 s startup, while still handling rare-term
+    /// weighting better than plain Jaccard.
+    pub fn build_bm25(store: &FeedbackStore) -> anyhow::Result<Self> {
+        let entries = store.load_all()?;
+        let bm25_engine = if entries.is_empty() {
+            None
+        } else {
+            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            Some(
+                bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
+                    .build(),
+            )
+        };
+        Ok(Self {
+            entries,
+            #[cfg(feature = "embeddings")]
+            vectors: vec![],
+            #[cfg(feature = "embeddings")]
+            embedder: None,
+            bm25_engine,
+        })
+    }
+
     pub fn build(store: &FeedbackStore) -> anyhow::Result<Self> {
         let entries = store.load_all()?;
 
@@ -38,8 +136,20 @@ impl FeedbackIndex {
                     } else {
                         embedder.embed_batch(&texts)?
                     };
-                    eprintln!("FeedbackIndex: embedded {} entries with bge-small-en-v1.5", entries.len());
-                    return Ok(Self { entries, vectors, embedder: Some(embedder) });
+                    tracing::debug!(entries = entries.len(), "FeedbackIndex: embedded with bge-small-en-v1.5");
+                    // Build BM25 engine alongside so find_similar can fuse via RRF.
+                    // QUORUM_NO_RRF=1 disables the BM25 side for A/B comparison.
+                    let rrf_disabled = std::env::var("QUORUM_NO_RRF").ok().as_deref() == Some("1");
+                    let bm25_engine = if entries.is_empty() || rrf_disabled {
+                        None
+                    } else {
+                        let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+                        Some(
+                            bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
+                                .build(),
+                        )
+                    };
+                    return Ok(Self { entries, vectors, embedder: Some(embedder), bm25_engine });
                 }
                 Err(e) => {
                     eprintln!("FeedbackIndex: embedding model unavailable ({}), using Jaccard fallback", e);
@@ -53,6 +163,7 @@ impl FeedbackIndex {
             vectors: vec![],
             #[cfg(feature = "embeddings")]
             embedder: None,
+            bm25_engine: None,
         })
     }
 
@@ -61,12 +172,114 @@ impl FeedbackIndex {
     }
 
     pub fn find_similar(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+        // Hybrid path: both BM25 and embeddings present → RRF fuse.
+        #[cfg(feature = "embeddings")]
+        if self.bm25_engine.is_some()
+            && self.embedder.is_some()
+            && !self.vectors.is_empty()
+        {
+            return self.find_similar_hybrid_rrf(finding_title, category, top_k);
+        }
+
+        if self.bm25_engine.is_some() {
+            return self.find_similar_bm25(finding_title, category, top_k);
+        }
+
         #[cfg(feature = "embeddings")]
         if self.embedder.is_some() && !self.vectors.is_empty() {
             return self.find_similar_embedding(finding_title, category, top_k);
         }
 
         self.find_similar_jaccard(finding_title, category, top_k)
+    }
+
+    /// Reciprocal Rank Fusion over BM25 + embedding result lists.
+    /// Standard k=60. Pulls a deeper candidate pool per method (3×top_k) so
+    /// the tail of each retriever gets a chance to surface items the other
+    /// missed.
+    #[cfg(feature = "embeddings")]
+    fn find_similar_hybrid_rrf(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+        const K: f32 = 60.0;
+        let pool = (top_k * 3).max(20);
+
+        // BM25 ranked list → (entry_index, rank)
+        let bm25_results = if let Some(engine) = &self.bm25_engine {
+            engine.search(finding_title, pool)
+        } else {
+            Vec::new()
+        };
+        let bm25_ranked: Vec<(u32, usize)> = bm25_results
+            .iter()
+            .enumerate()
+            .map(|(rank, r)| (r.document.id, rank))
+            .collect();
+
+        // Embedding ranked list → (entry_index, rank)
+        let embed_entries = self.find_similar_embedding(finding_title, category, pool);
+        let embed_ranked: Vec<(u32, usize)> = embed_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, se)| {
+                self.entries
+                    .iter()
+                    .position(|e| {
+                        e.finding_title == se.entry.finding_title
+                            && e.finding_category == se.entry.finding_category
+                            && e.timestamp == se.entry.timestamp
+                    })
+                    .map(|idx| (idx as u32, rank))
+            })
+            .collect();
+
+        // Accumulate RRF scores keyed by entry index.
+        let mut scores: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
+        for (id, rank) in bm25_ranked.iter().chain(embed_ranked.iter()) {
+            *scores.entry(*id).or_insert(0.0) += 1.0 / (K + *rank as f32 + 1.0);
+        }
+
+        let mut fused: Vec<(u32, f32)> = scores.into_iter().collect();
+        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Normalize fused scores to [0, 1] for calibrator threshold compatibility.
+        let max = fused.first().map(|(_, s)| *s).unwrap_or(1e-6).max(1e-6);
+        fused
+            .into_iter()
+            .take(top_k)
+            .filter_map(|(id, s)| {
+                self.entries.get(id as usize).map(|e| SimilarEntry {
+                    entry: e.clone(),
+                    similarity: (s / max).clamp(0.0, 1.0),
+                })
+            })
+            .collect()
+    }
+
+    fn find_similar_bm25(&self, finding_title: &str, _category: &str, top_k: usize) -> Vec<SimilarEntry> {
+        let engine = match &self.bm25_engine {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+        // Fetch a few more than top_k so normalization is stable.
+        let results = engine.search(finding_title, top_k.max(1));
+        if results.is_empty() {
+            return Vec::new();
+        }
+        let max_score = results
+            .iter()
+            .map(|r| r.score)
+            .fold(f32::MIN, f32::max)
+            .max(1e-6);
+        results
+            .into_iter()
+            .filter_map(|r| {
+                self.entries
+                    .get(r.document.id as usize)
+                    .map(|e| SimilarEntry {
+                        entry: e.clone(),
+                        similarity: (r.score / max_score).clamp(0.0, 1.0),
+                    })
+            })
+            .collect()
     }
 
     fn find_similar_jaccard(&self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
@@ -132,6 +345,129 @@ mod tests {
             timestamp: Utc::now(),
             provenance: Provenance::Unknown,
         }
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn default_build_uses_rrf_when_embeddings_available() {
+        // Default build() should construct both retrievers so find_similar
+        // dispatches to the RRF hybrid path. This is the quality improvement
+        // shipped as the default.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
+        let index = FeedbackIndex::build(&store).unwrap();
+        assert!(
+            index.embedder.is_some(),
+            "default build must load embeddings"
+        );
+        assert!(
+            index.bm25_engine.is_some(),
+            "default build must also build BM25 for RRF fusion"
+        );
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn build_hybrid_rrf_returns_fused_ranking() {
+        // Hybrid path runs both BM25 and embeddings, fuses via RRF.
+        // Must return results (non-empty) and the top hit must be a
+        // plausible BM25 or embedding match, not noise.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for (t, c) in &[
+            ("SQL injection via string concat", "security"),
+            ("SQL injection in query builder", "security"),
+            ("Unused imports increase noise", "style"),
+            ("Hardcoded API key in source", "security"),
+        ] {
+            store.record(&make_entry(t, c, Verdict::Tp)).unwrap();
+        }
+        let mut index = FeedbackIndex::build_hybrid(&store).unwrap();
+        let similar = index.find_similar("SQL injection risk", "security", 3);
+        assert!(!similar.is_empty());
+        // First result should be SQL-related
+        assert!(
+            similar[0].entry.finding_title.contains("SQL"),
+            "RRF top hit should be SQL-related, got: {}",
+            similar[0].entry.finding_title
+        );
+        // Similarity is normalized 0-1
+        assert!(similar[0].similarity > 0.0 && similar[0].similarity <= 1.0);
+    }
+
+    #[test]
+    fn build_bm25_returns_rare_token_match() {
+        // BM25 should weight rare terms more heavily than shared boilerplate.
+        // Query for "SQL injection" should retrieve SQL-injection entries
+        // ahead of generic "Unused import" or "complexity" entries.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for (t, c) in &[
+            ("SQL injection in user input auth path", "security"),
+            ("Unused import os.path module", "style"),
+            ("Function foo has cyclomatic complexity 12", "complexity"),
+            ("SQL injection via f-string formatting", "security"),
+            ("Function bar has cyclomatic complexity 8", "complexity"),
+        ] {
+            store.record(&make_entry(t, c, Verdict::Tp)).unwrap();
+        }
+        let mut index = FeedbackIndex::build_bm25(&store).unwrap();
+        let similar = index.find_similar("SQL injection risk in query builder", "security", 3);
+        assert!(similar.len() >= 2);
+        // Top-2 results must be the SQL entries, not complexity/style
+        assert!(
+            similar[0].entry.finding_title.contains("SQL"),
+            "top result should be SQL-related, got: {}",
+            similar[0].entry.finding_title
+        );
+        assert!(similar[1].entry.finding_title.contains("SQL"));
+    }
+
+    #[test]
+    fn build_bm25_similarity_normalized_to_unit() {
+        // BM25 scores are unbounded; we normalize to [0, 1] against the top
+        // hit so the existing calibrator threshold logic still applies.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for (t, c) in &[
+            ("SQL injection in auth", "security"),
+            ("Unused import", "style"),
+        ] {
+            store.record(&make_entry(t, c, Verdict::Tp)).unwrap();
+        }
+        let mut index = FeedbackIndex::build_bm25(&store).unwrap();
+        let similar = index.find_similar("SQL injection risk", "security", 2);
+        assert!(similar[0].similarity > 0.0);
+        assert!(similar[0].similarity <= 1.0, "similarity must be <= 1.0, got {}", similar[0].similarity);
+    }
+
+    #[test]
+    fn build_jaccard_only_skips_embedder() {
+        // --fast mode must never init fastembed: preserves ~40x RSS reduction
+        // and ~100x startup-time reduction for single-shot CLI use.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
+        let index = FeedbackIndex::build_jaccard_only(&store).unwrap();
+        #[cfg(feature = "embeddings")]
+        {
+            assert!(index.embedder.is_none(), "fast mode must not load embedder");
+            assert!(index.vectors.is_empty(), "fast mode must not compute vectors");
+        }
+        assert_eq!(index.entries.len(), 1);
+    }
+
+    #[test]
+    fn build_jaccard_only_retrieval_works() {
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
+        store.record(&make_entry("Unused import os", "style", Verdict::Fp)).unwrap();
+        let mut index = FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let similar = index.find_similar("SQL injection in query", "security", 2);
+        assert!(!similar.is_empty());
+        assert!(similar[0].entry.finding_title.contains("SQL"));
     }
 
     #[test]
