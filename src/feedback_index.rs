@@ -121,6 +121,21 @@ impl FeedbackIndex {
     pub fn build(store: &FeedbackStore) -> anyhow::Result<Self> {
         let entries = store.load_all()?;
 
+        // BM25 is always built alongside (unless disabled or store is empty)
+        // so that RRF fusion works even when embeddings fail to initialize —
+        // and so callers without embeddings fall back to BM25, not Jaccard.
+        // QUORUM_NO_RRF=1 disables the BM25 side for A/B comparison.
+        let rrf_disabled = std::env::var("QUORUM_NO_RRF").ok().as_deref() == Some("1");
+        let bm25_engine = if entries.is_empty() || rrf_disabled {
+            None
+        } else {
+            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            Some(
+                bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
+                    .build(),
+            )
+        };
+
         #[cfg(feature = "embeddings")]
         {
             match crate::embeddings::LocalEmbedder::new() {
@@ -137,22 +152,10 @@ impl FeedbackIndex {
                         embedder.embed_batch(&texts)?
                     };
                     tracing::debug!(entries = entries.len(), "FeedbackIndex: embedded with bge-small-en-v1.5");
-                    // Build BM25 engine alongside so find_similar can fuse via RRF.
-                    // QUORUM_NO_RRF=1 disables the BM25 side for A/B comparison.
-                    let rrf_disabled = std::env::var("QUORUM_NO_RRF").ok().as_deref() == Some("1");
-                    let bm25_engine = if entries.is_empty() || rrf_disabled {
-                        None
-                    } else {
-                        let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
-                        Some(
-                            bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
-                                .build(),
-                        )
-                    };
                     return Ok(Self { entries, vectors, embedder: Some(embedder), bm25_engine });
                 }
                 Err(e) => {
-                    eprintln!("FeedbackIndex: embedding model unavailable ({}), using Jaccard fallback", e);
+                    eprintln!("FeedbackIndex: embedding model unavailable ({}), falling back to BM25+Jaccard", e);
                 }
             }
         }
@@ -163,7 +166,7 @@ impl FeedbackIndex {
             vectors: vec![],
             #[cfg(feature = "embeddings")]
             embedder: None,
-            bm25_engine: None,
+            bm25_engine,
         })
     }
 
@@ -214,21 +217,14 @@ impl FeedbackIndex {
             .map(|(rank, r)| (r.document.id, rank))
             .collect();
 
-        // Embedding ranked list → (entry_index, rank)
-        let embed_entries = self.find_similar_embedding(finding_title, category, pool);
-        let embed_ranked: Vec<(u32, usize)> = embed_entries
-            .iter()
+        // Embedding ranked list → (entry_index, rank). Use index-preserving
+        // helper so we never misattribute ranks when two entries share the
+        // same (title, category, timestamp).
+        let embed_ranked: Vec<(u32, usize)> = self
+            .embed_rank_indices(finding_title, category, pool)
+            .into_iter()
             .enumerate()
-            .filter_map(|(rank, se)| {
-                self.entries
-                    .iter()
-                    .position(|e| {
-                        e.finding_title == se.entry.finding_title
-                            && e.finding_category == se.entry.finding_category
-                            && e.timestamp == se.entry.timestamp
-                    })
-                    .map(|idx| (idx as u32, rank))
-            })
+            .map(|(rank, (idx, _sim))| (idx as u32, rank))
             .collect();
 
         // Accumulate RRF scores keyed by entry index.
@@ -283,36 +279,68 @@ impl FeedbackIndex {
     }
 
     fn find_similar_jaccard(&self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
-        let mut scored: Vec<SimilarEntry> = self.entries.iter()
-            .map(|e| {
+        self.jaccard_rank_indices(finding_title, category, top_k)
+            .into_iter()
+            .filter_map(|(idx, sim)| {
+                self.entries.get(idx).map(|e| SimilarEntry { entry: e.clone(), similarity: sim })
+            })
+            .collect()
+    }
+
+    /// Rank entries by Jaccard + category match, returning (entry_index, sim).
+    /// Index-preserving (mirrors `embed_rank_indices`) so duplicate-title
+    /// entries stay distinct during RRF fusion.
+    fn jaccard_rank_indices(&self, finding_title: &str, category: &str, top_k: usize) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self.entries.iter().enumerate()
+            .map(|(i, e)| {
                 let title_sim = word_jaccard(finding_title, &e.finding_title);
                 let cat_match = if !e.finding_category.is_empty() && category == e.finding_category { 0.4 } else { 0.0 };
-                SimilarEntry { entry: e.clone(), similarity: (title_sim * 0.6 + cat_match) as f32 }
+                (i, (title_sim * 0.6 + cat_match) as f32)
             })
             .collect();
-        scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
         scored
     }
 
     #[cfg(feature = "embeddings")]
     fn find_similar_embedding(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+        self.embed_rank_indices(finding_title, category, top_k)
+            .into_iter()
+            .filter_map(|(idx, sim)| {
+                self.entries.get(idx).map(|e| SimilarEntry { entry: e.clone(), similarity: sim })
+            })
+            .collect()
+    }
+
+    /// Rank entries by embedding cosine similarity, returning (entry_index, sim)
+    /// pairs. Preserving indices (rather than looking them up by field match
+    /// later) is load-bearing for RRF: duplicate (title, category, timestamp)
+    /// entries would otherwise collapse to the first match.
+    #[cfg(feature = "embeddings")]
+    fn embed_rank_indices(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<(usize, f32)> {
         let pattern = patterns::classify_pattern(finding_title, "", category);
         let query_text = patterns::embedding_text(finding_title, category, pattern.as_deref());
 
-        let query_vec = match self.embedder.as_mut().unwrap().embed(&query_text) {
+        let embedder = self
+            .embedder
+            .as_mut()
+            .expect("embed_rank_indices requires an initialized embedder");
+        let query_vec = match embedder.embed(&query_text) {
             Ok(v) => v,
-            Err(_) => return self.find_similar_jaccard(finding_title, category, top_k),
+            Err(_) => {
+                // Jaccard fallback preserves indices directly — no .position() lookup.
+                return self.jaccard_rank_indices(finding_title, category, top_k);
+            }
         };
 
-        let mut scored: Vec<SimilarEntry> = self.entries.iter()
-            .zip(self.vectors.iter())
-            .map(|(entry, vec)| {
-                let sim = crate::embeddings::cosine_similarity(&query_vec, vec);
-                SimilarEntry { entry: entry.clone(), similarity: sim }
-            })
+        let mut scored: Vec<(usize, f32)> = self
+            .vectors
+            .iter()
+            .enumerate()
+            .map(|(i, vec)| (i, crate::embeddings::cosine_similarity(&query_vec, vec)))
             .collect();
-        scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
         scored
     }
@@ -320,8 +348,12 @@ impl FeedbackIndex {
 
 fn word_jaccard(a: &str, b: &str) -> f64 {
     if a.is_empty() || b.is_empty() { return 0.0; }
-    let wa: std::collections::HashSet<&str> = a.split_whitespace().collect();
-    let wb: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    // Lowercase so equivalent titles like "SQL Injection" / "sql injection"
+    // don't split into disjoint token sets.
+    let al = a.to_lowercase();
+    let bl = b.to_lowercase();
+    let wa: std::collections::HashSet<&str> = al.split_whitespace().collect();
+    let wb: std::collections::HashSet<&str> = bl.split_whitespace().collect();
     let inter = wa.intersection(&wb).count() as f64;
     let union = wa.union(&wb).count() as f64;
     if union == 0.0 { 0.0 } else { inter / union }
@@ -493,6 +525,44 @@ mod tests {
         assert!(similar.is_empty());
     }
 
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn rrf_preserves_distinct_duplicate_entries() {
+        // Two entries with identical title/category/timestamp but different
+        // verdicts (TP vs FP) must both be retrievable. The old .position()
+        // lookup would misattribute both embed ranks to index 0, silently
+        // dropping the FP entry's contribution.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let ts = Utc::now();
+        // Two near-duplicates: same title/category/ts, opposite verdicts.
+        let e_tp = FeedbackEntry {
+            file_path: "a.rs".into(),
+            finding_title: "SQL injection in auth path".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "confirmed".into(),
+            model: None,
+            timestamp: ts,
+            provenance: Provenance::Human,
+        };
+        let e_fp = FeedbackEntry { verdict: Verdict::Fp, reason: "false alarm".into(), ..e_tp.clone() };
+        store.record(&e_tp).unwrap();
+        store.record(&e_fp).unwrap();
+        // Unrelated filler
+        store.record(&make_entry("Unused import", "style", Verdict::Fp)).unwrap();
+
+        let mut index = FeedbackIndex::build(&store).unwrap();
+        let similar = index.find_similar("SQL injection risk", "security", 5);
+        // Both near-duplicate rows should survive RRF, not collapse to one.
+        let sql_count = similar.iter().filter(|s| s.entry.finding_title.contains("SQL")).count();
+        assert_eq!(sql_count, 2,
+            "duplicate-title entries with opposite verdicts must both be returned; got {}", sql_count);
+        let has_tp = similar.iter().any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Tp);
+        let has_fp = similar.iter().any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Fp);
+        assert!(has_tp && has_fp, "both TP and FP copies must be preserved");
+    }
+
     #[test]
     fn word_jaccard_identical_strings() {
         assert!((word_jaccard("SQL injection", "SQL injection") - 1.0).abs() < 0.001);
@@ -509,5 +579,13 @@ mod tests {
         let sim = word_jaccard("SQL injection in auth", "SQL injection via f-string");
         assert!(sim > 0.0);
         assert!(sim < 1.0);
+    }
+
+    #[test]
+    fn word_jaccard_case_insensitive() {
+        // Retrieval must treat title casing as equivalent; "SQL Injection" and
+        // "sql injection" represent the same finding and should fully overlap.
+        let sim = word_jaccard("SQL Injection in auth", "sql injection in auth");
+        assert!((sim - 1.0).abs() < 1e-6, "case-insensitive overlap expected, got {}", sim);
     }
 }

@@ -586,10 +586,55 @@ rule:
     }
 
     #[test]
+    fn ha_template_none_fallback_matches_despite_unrelated_default_call() {
+        // A filter like `my_default(0)` should NOT suppress the finding --
+        // only the real `| default(...)` filter should. Anchor to pipe.
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo') | my_default(0) }}%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1, "my_default() is not the Jinja default filter");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_negative_default_with_spaces() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.foo') |  default (0) }}%\"\n";
+        assert_eq!(yaml_matches(src, &rules), 0, "spaced `| default (` is still the default filter");
+    }
+
+    #[test]
     fn ha_template_none_fallback_matches_celsius_suffix() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.temp') }} C\"\n";
         assert_eq!(yaml_matches(src, &rules), 1);
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_degree_c() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.temp') }}°C\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1, "°C suffix is a common HA unit");
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_watt_unit() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.power') }} W\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1);
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_kilowatt_unit() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        let src = "state: \"{{ states('sensor.load') }} kW\"\n";
+        assert_eq!(yaml_matches(src, &rules), 1);
+    }
+
+    #[test]
+    fn ha_template_none_fallback_matches_block_scalar() {
+        let rules = load_yaml_rule("ha-template-none-fallback");
+        // Multi-line block scalar: common in HA for templates.
+        let src = "state: |\n  {{ states('sensor.foo') }}%\n";
+        assert_eq!(yaml_matches(src, &rules), 1, "block scalar template must match");
     }
 
     // ── Parity: all bundled rules match their test fixtures ──

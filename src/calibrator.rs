@@ -86,10 +86,13 @@ pub fn calibrate(
     for mut finding in findings {
         let input_severity = finding.severity.clone();
 
-        // Find similar feedback entries
+        // Find similar feedback entries, filtering out metric-incompatible
+        // precedents (e.g. CC=5 FP vs CC=11 finding) so they don't pollute
+        // fp_weight/tp_weight.
         let similar: Vec<&&FeedbackEntry> = filtered
             .iter()
             .filter(|e| finding_feedback_similarity(&finding, e) >= config.similarity_threshold)
+            .filter(|e| precedent_metric_compatible(&finding.title, &e.finding_title))
             .collect();
 
         if similar.is_empty() {
@@ -246,7 +249,7 @@ pub fn extract_complexity_metric(title: &str) -> Option<u32> {
     let lower = title.to_lowercase();
     let key = "complexity ";
     let pos = lower.find(key)?;
-    let tail = &title[pos + key.len()..];
+    let tail = &lower[pos + key.len()..];
     let num: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
     num.parse().ok()
 }
@@ -263,8 +266,7 @@ pub fn precedent_metric_compatible(finding_title: &str, precedent_title: &str) -
     let p = extract_complexity_metric(precedent_title);
     match (f, p) {
         (Some(fn_), Some(pn)) => {
-            let gap = if fn_ > pn { fn_ - pn } else { pn - fn_ };
-            gap <= 2
+            fn_.abs_diff(pn) <= 2
         }
         _ => true,
     }
@@ -1247,6 +1249,18 @@ mod tests {
     }
 
     #[test]
+    fn extract_complexity_metric_handles_non_ascii() {
+        // Title contains multi-byte chars; must not panic even if lowercasing
+        // shifts byte offsets (e.g. Turkish `İ` -> `i̇` changes length).
+        assert_eq!(
+            extract_complexity_metric("İstanbul function has cyclomatic complexity 11"),
+            Some(11)
+        );
+        // Non-ASCII without the keyword -> None, still no panic.
+        assert_eq!(extract_complexity_metric("函数 has no metric"), None);
+    }
+
+    #[test]
     fn precedent_metric_close_values_compatible() {
         // CC=11 vs CC=10 -- 9% gap, well within window
         assert!(precedent_metric_compatible(
@@ -1375,5 +1389,29 @@ mod tests {
             trace.matched_precedents.is_empty(),
             "metric-incompatible precedents should be filtered out before weighting"
         );
+    }
+
+    #[test]
+    fn legacy_calibrate_ignores_metric_incompatible_fp_precedent() {
+        // Legacy calibrate() path (no embedding index) must also drop
+        // metric-incompatible precedents. CC=11 finding vs CC=5/6/4 FPs.
+        let feedback = vec![
+            fb("Function `simple` has cyclomatic complexity 5", "complexity", Verdict::Fp),
+            fb("Function `tiny` has cyclomatic complexity 6", "complexity", Verdict::Fp),
+            fb("Function `tiny2` has cyclomatic complexity 4", "complexity", Verdict::Fp),
+        ];
+        let finding = FindingBuilder::new()
+            .title("Function `bigfn` has cyclomatic complexity 11")
+            .category("complexity")
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        let result = calibrate(vec![finding], &feedback, &CalibratorConfig::default());
+        let trace = &result.traces[0];
+        assert_eq!(
+            trace.fp_weight, 0.0,
+            "legacy calibrate must reject CC=5/6/4 precedents for CC=11 finding"
+        );
+        assert_eq!(result.findings[0].severity, crate::finding::Severity::Medium,
+            "metric-incompatible FPs must not downgrade severity");
     }
 }

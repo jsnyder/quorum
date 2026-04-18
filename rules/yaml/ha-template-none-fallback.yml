@@ -2,21 +2,26 @@ id: ha-template-none-fallback
 language: Yaml
 severity: warning
 message: "Jinja template concatenated with unit suffix has no `| default(...)` filter. When the source sensor returns `None`, the template renders e.g. 'None%' or 'None K' instead of being unavailable."
-note: "Feedback: 4+ confirmed TPs ('Status sensor None% @ NoneK'). Add `| default(0)` or `| default('unknown')` before the unit."
+note: "Feedback: 4+ confirmed TPs ('Status sensor None% @ NoneK'). Add `| default(0)` or `| default('unknown')` before the unit. Known limitation: the `not:` check scans the whole scalar, so scalars containing multiple Jinja blocks where only one uses `default(...)` will not warn on the unprotected block."
 rule:
   any:
     - all:
         - kind: plain_scalar
-        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - regex: '\{\{[^}]*\}\}\s?(%|°C|°F|\s(K|C|F|W|kW|V|A|Wh|kWh|hPa|mbar|mm|%RH))'
         - not:
-            regex: 'default\s*\('
+            regex: '\|\s*default\s*\('
     - all:
         - kind: double_quote_scalar
-        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - regex: '\{\{[^}]*\}\}\s?(%|°C|°F|\s(K|C|F|W|kW|V|A|Wh|kWh|hPa|mbar|mm|%RH))'
         - not:
-            regex: 'default\s*\('
+            regex: '\|\s*default\s*\('
     - all:
         - kind: single_quote_scalar
-        - regex: '\{\{[^}]*\}\}\s?(%|K|C|F)'
+        - regex: '\{\{[^}]*\}\}\s?(%|°C|°F|\s(K|C|F|W|kW|V|A|Wh|kWh|hPa|mbar|mm|%RH))'
         - not:
-            regex: 'default\s*\('
+            regex: '\|\s*default\s*\('
+    - all:
+        - kind: block_scalar
+        - regex: '\{\{[^}]*\}\}\s?(%|°C|°F|\s(K|C|F|W|kW|V|A|Wh|kWh|hPa|mbar|mm|%RH))'
+        - not:
+            regex: '\|\s*default\s*\('
