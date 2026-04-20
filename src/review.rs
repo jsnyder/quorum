@@ -62,7 +62,10 @@ impl LlmFinding {
 pub fn build_review_prompt(req: &ReviewRequest) -> String {
     let mut prompt = format!(
         "Review the following {} code from `{}` for bugs, security vulnerabilities, logic errors, and architectural flaws.\n\
-         Do NOT flag stylistic preferences, naming conventions, formatting issues, or missing documentation.\n\n",
+         Prioritize correctness, security, and reliability. Deprioritize pure stylistic preferences, naming conventions, \
+         formatting, and missing documentation — but do report style issues when they cause real bugs (e.g. misleading \
+         identifiers that hide a defect, naming that makes an API genuinely unsafe, or comments that contradict or no \
+         longer match the code and risk misleading readers).\n\n",
         req.language, req.file_path
     );
 
@@ -622,7 +625,11 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_excludes_stylistic_findings() {
+    fn build_prompt_deprioritizes_stylistic_findings_without_hard_reject() {
+        // Previously this prompt hard-rejected "stylistic preferences, naming, formatting,
+        // docs" — over-filtering legitimate correctness findings that happened to touch
+        // naming (e.g. "misleading identifier hides bug"). New contract: deprioritize
+        // style, don't hard-reject.
         let req = ReviewRequest {
             file_path: "test.rs".into(),
             language: "rust".into(),
@@ -636,8 +643,17 @@ mod tests {
         assert!(prompt.contains("bugs"), "prompt should mention bugs");
         assert!(prompt.contains("security"), "prompt should mention security");
         assert!(!prompt.contains("code quality problems"), "prompt should NOT mention code quality problems");
-        assert!(prompt.contains("Do NOT flag"), "prompt should contain Do NOT flag instruction");
-        assert!(prompt.contains("stylistic"), "prompt should mention stylistic as excluded");
+        assert!(!prompt.contains("Do NOT flag"),
+            "prompt should NOT hard-reject via 'Do NOT flag' — softened to preference");
+        let lower = prompt.to_lowercase();
+        assert!(lower.contains("prioriti") || lower.contains("prefer") || lower.contains("focus"),
+            "prompt should express a priority/preference, not a hard rule");
+        assert!(prompt.contains("stylistic") || prompt.contains("style"),
+            "prompt should still mention style as lower priority");
+        // Stale or contradictory comments hide bugs just like misleading identifiers —
+        // they should be reportable even though they live in "documentation" territory.
+        assert!(prompt.contains("comment") && prompt.contains("code"),
+            "prompt should allow flagging comments that don't match the code");
     }
 
     #[test]

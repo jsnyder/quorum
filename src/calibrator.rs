@@ -18,8 +18,6 @@ pub struct CalibratorConfig {
     pub similarity_threshold: f64,
     /// Minimum similarity for embedding-based matching (higher because BGE clusters tightly)
     pub embedding_similarity_threshold: f64,
-    /// Number of FP precedents needed to suppress a finding
-    pub fp_suppress_count: usize,
     /// Whether to boost severity when strong TP precedent exists
     pub boost_tp: bool,
     /// Whether to include auto-calibrate feedback in precedent matching
@@ -30,8 +28,7 @@ impl Default for CalibratorConfig {
     fn default() -> Self {
         Self {
             similarity_threshold: 0.5,
-            embedding_similarity_threshold: 0.80,
-            fp_suppress_count: 2,
+            embedding_similarity_threshold: 0.72,
             boost_tp: true,
             use_auto_feedback: true,
         }
@@ -142,7 +139,9 @@ pub fn calibrate(
         for e in similar.iter().filter(|e| e.verdict == Verdict::Wontfix) {
             wontfix_weight += verdict_weight(e);
         }
-        let soft_fp_weight = fp_weight + wontfix_weight;
+        // Wontfix is inert: pre-existing issues the user chose not to fix carry no
+        // signal about finding validity. Excluded from both soft and full suppression.
+        let soft_fp_weight = fp_weight;
 
         // Build precedent traces for this finding
         let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
@@ -172,8 +171,8 @@ pub fn calibrate(
             ));
         }
 
-        // Full suppress: FP weight + wontfix at 50% contribution
-        let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
+        // Full suppress: FP weight only. Wontfix no longer contributes.
+        let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             traces.push(crate::calibrator_trace::CalibratorTraceEntry {
@@ -353,7 +352,9 @@ pub fn calibrate_with_index(
             let w = verdict_weight(&s.entry) * s.similarity as f64;
             wontfix_weight += w;
         }
-        let soft_fp_weight = fp_weight + wontfix_weight;
+        // Wontfix is inert: pre-existing issues the user chose not to fix carry no
+        // signal about finding validity. Excluded from both soft and full suppression.
+        let soft_fp_weight = fp_weight;
 
         // Build precedent traces for this finding
         let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
@@ -380,8 +381,8 @@ pub fn calibrate_with_index(
             ));
         }
 
-        // Full suppress: FP weight + wontfix at 50% contribution
-        let full_suppress_weight = fp_weight + (wontfix_weight * 0.5);
+        // Full suppress: FP weight only. Wontfix no longer contributes.
+        let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             traces.push(crate::calibrator_trace::CalibratorTraceEntry {
@@ -513,6 +514,18 @@ mod tests {
         let config = CalibratorConfig::default();
         assert!(config.embedding_similarity_threshold > config.similarity_threshold,
             "Embedding threshold should be higher than Jaccard threshold");
+    }
+
+    #[test]
+    fn embedding_threshold_admits_moderately_similar_precedents() {
+        // bge-small-en cosine routinely sits in 0.72-0.78 for paraphrased-but-semantically-identical
+        // findings (e.g. "SQL injection via f-string" vs "SQL injection using string formatting").
+        // A threshold of 0.80 was empirically too strict — real precedents kept missing their
+        // matches, leading to the March→April precision regression.
+        let config = CalibratorConfig::default();
+        assert!(config.embedding_similarity_threshold <= 0.75,
+            "embedding threshold {} excludes legitimate paraphrases — should be <= 0.75",
+            config.embedding_similarity_threshold);
     }
 
     #[test]
@@ -710,7 +723,6 @@ mod tests {
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
-            fp_suppress_count: 2,
             use_auto_feedback: false,
             ..Default::default()
         };
@@ -1057,7 +1069,10 @@ mod tests {
     }
 
     #[test]
-    fn wontfix_only_soft_suppresses_not_full() {
+    fn wontfix_alone_is_inert_no_suppression() {
+        // Wontfix often means "real issue but we're not touching it" — carrying no signal
+        // about whether the finding itself is valid. So it must be inert: no full-suppress,
+        // no soft-suppress, no severity change.
         let finding = FindingBuilder::new()
             .title("console.log debug artifact")
             .severity(Severity::Medium)
@@ -1073,7 +1088,8 @@ mod tests {
 
         assert_eq!(result.suppressed, 0, "wontfix should NOT fully suppress");
         assert_eq!(result.findings.len(), 1);
-        assert_eq!(result.findings[0].severity, Severity::Info, "wontfix should soft-suppress to INFO");
+        assert_eq!(result.findings[0].severity, Severity::Medium,
+            "wontfix should not change severity — it's inert like Partial");
     }
 
     #[test]
@@ -1116,7 +1132,10 @@ mod tests {
     }
 
     #[test]
-    fn wontfix_contributes_to_full_suppress_with_fp() {
+    fn wontfix_does_not_help_fp_reach_full_suppress() {
+        // One FP alone is below the 1.5 threshold. Wontfix must NOT tip it over —
+        // previously wontfix contributed at 50%, which was the bug: pre-existing
+        // untouched issues shouldn't vote for suppression.
         let finding = FindingBuilder::new()
             .title("Missing explicit mode")
             .category("quality")
@@ -1131,12 +1150,15 @@ mod tests {
 
         let config = CalibratorConfig::default();
         let result = calibrate(vec![finding], &feedback, &config);
-        assert_eq!(result.suppressed, 1);
-        assert!(result.findings.is_empty());
+        assert_eq!(result.suppressed, 0, "1 FP + wontfix should NOT reach full suppress threshold");
+        assert_eq!(result.findings.len(), 1);
     }
 
     #[test]
-    fn wontfix_alone_insufficient_for_full_suppress() {
+    fn wontfix_alone_is_inert_even_with_many_entries() {
+        // Even a large pile of wontfix precedents must not suppress or downgrade —
+        // they only tell us "the user isn't fixing this right now", not that the
+        // finding itself is wrong or noise.
         let finding = FindingBuilder::new()
             .title("No explicit mode")
             .category("quality")
@@ -1154,7 +1176,8 @@ mod tests {
         let result = calibrate(vec![finding], &feedback, &config);
         assert_eq!(result.suppressed, 0);
         assert_eq!(result.findings.len(), 1);
-        assert_eq!(result.findings[0].severity, Severity::Info);
+        assert_eq!(result.findings[0].severity, Severity::Medium,
+            "wontfix is inert — must not downgrade severity");
     }
 
     #[test]

@@ -685,4 +685,53 @@ rule:
         }
         assert!(tested > 0, "should have tested at least one fixture");
     }
+
+    // ── cors-wildcard-origin (TypeScript/JavaScript) ──
+    //
+    // Setting Access-Control-Allow-Origin to '*' is almost always wrong on an
+    // authenticated API — per CORS spec it's incompatible with credentials, and
+    // even without credentials it leaks same-origin trust. Frequent finding on
+    // home-assistant-mcp; previously miscategorized as "style" by calibrator.
+
+    #[test]
+    fn cors_wildcard_origin_rule_parses() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let parsed: Result<Vec<RuleConfig<SupportLang>>, _> =
+            from_yaml_string(&yaml, &GlobalRules::default());
+        parsed.expect("cors-wildcard-origin.yml must parse without errors");
+    }
+
+    #[test]
+    fn cors_wildcard_origin_flags_wildcard_acao() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+
+        let setheader = "res.setHeader('Access-Control-Allow-Origin', '*');";
+        let findings = scan_file(setheader, "ts", &rules);
+        assert!(!findings.is_empty(),
+            "should flag setHeader('Access-Control-Allow-Origin', '*')");
+
+        let header_fn = "res.header('Access-Control-Allow-Origin', '*');";
+        let findings2 = scan_file(header_fn, "ts", &rules);
+        assert!(!findings2.is_empty(),
+            "should flag res.header('Access-Control-Allow-Origin', '*')");
+    }
+
+    #[test]
+    fn cors_wildcard_origin_ignores_unrelated() {
+        // Dynamic/echoed origin is a different vulnerability (still reviewable by LLM),
+        // but this rule targets only the unambiguous literal '*' case.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+
+        let unrelated = "res.setHeader('X-Custom-Flag', '*');";
+        let findings = scan_file(unrelated, "ts", &rules);
+        assert!(findings.is_empty(),
+            "should NOT flag unrelated header with '*' value");
+    }
 }
