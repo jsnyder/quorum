@@ -389,6 +389,35 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
 
+    // Linter coverage discovery, scoped to whichever project the first
+    // reviewed file lives in. Nothing here runs the linters -- only reports
+    // what would or would not engage given current project config. Flows
+    // into compact header, JSON _meta, and the human tail summary below.
+    let project_root = opts
+        .files
+        .first()
+        .map(|p| pipeline::find_project_root(p))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let review_file_refs: Vec<&std::path::Path> = opts.files.iter().map(|p| p.as_path()).collect();
+    let linter_hints = linter::detect_unconfigured_linters(&project_root, &review_file_refs);
+    let enabled_linters: Vec<linter::LinterKind> = {
+        let all_enabled = linter::detect_linters(&project_root);
+        let exts: std::collections::HashSet<String> = review_file_refs
+            .iter()
+            .filter_map(|p| p.extension().and_then(|e| e.to_str()).map(str::to_lowercase))
+            .collect();
+        all_enabled
+            .into_iter()
+            .filter(|k| linter_kind_is_relevant(k, &exts))
+            .collect()
+    };
+
+    if use_compact {
+        if let Some(header) = output::format_compact_linter_header(&enabled_linters, &linter_hints) {
+            println!("{}", header);
+        }
+    }
+
     if opts.parallel == 1 || opts.files.len() <= 1 {
         // === SEQUENTIAL PATH ===
         // Clear semaphore: no concurrency control needed, and block_on panics
@@ -727,16 +756,40 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     if use_json {
-        match output::format_json_grouped(&file_results) {
+        match output::format_json_grouped_with_meta(&file_results, &enabled_linters, &linter_hints) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error: JSON serialization failed: {}", e);
                 return 3;
             }
         }
+    } else if !use_compact {
+        // Human mode: surface coverage gaps on stderr after the summary line.
+        for line in output::format_hints_human(&linter_hints) {
+            eprintln!("{}", line);
+        }
     }
 
     output::compute_exit_code(&all_findings)
+}
+
+/// Relevance gate: a detected linter is only worth surfacing in this review's
+/// status when its language is present in `exts`. Avoids dragging clippy into
+/// a review of only Python files just because Cargo.toml exists at the root.
+fn linter_kind_is_relevant(
+    kind: &linter::LinterKind,
+    exts: &std::collections::HashSet<String>,
+) -> bool {
+    use linter::LinterKind::*;
+    match kind {
+        Ruff => exts.contains("py"),
+        Clippy => exts.contains("rs"),
+        Eslint => ["ts", "tsx", "js", "jsx", "mjs", "cjs"].iter().any(|e| exts.contains(*e)),
+        Yamllint => exts.contains("yaml") || exts.contains("yml"),
+        Shellcheck => ["sh", "bash", "zsh", "bats"].iter().any(|e| exts.contains(*e)),
+        Hadolint => exts.iter().any(|e| e == "dockerfile") || exts.contains(""),
+        Tflint => exts.contains("tf") || exts.contains("tfvars"),
+    }
 }
 
 async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {

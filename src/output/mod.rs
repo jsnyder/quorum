@@ -165,6 +165,85 @@ pub fn format_json(findings: &[Finding]) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(findings)?)
 }
 
+/// Human-readable linter coverage hints, one per unconfigured linter.
+/// Intended for stderr under TTY + non-agent, non-JSON, non-compact conditions.
+pub fn format_hints_human(hints: &[crate::linter::LinterHint]) -> Vec<String> {
+    hints
+        .iter()
+        .map(|h| {
+            let noun = if h.file_count == 1 { "file" } else { "files" };
+            format!(
+                "hint: {n} {lang} {noun} in this review — {linter} not configured. {inst} to enable.",
+                n = h.file_count,
+                lang = h.language,
+                noun = noun,
+                linter = h.linter.name(),
+                inst = h.enable_instruction,
+            )
+        })
+        .collect()
+}
+
+/// Compact single-line linter status header. Returns None if there is nothing
+/// to report (no enabled linters relevant to this review and no hints).
+pub fn format_compact_linter_header(
+    enabled: &[crate::linter::LinterKind],
+    hints: &[crate::linter::LinterHint],
+) -> Option<String> {
+    if enabled.is_empty() && hints.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for k in enabled {
+        parts.push(format!("{}=on", k.name()));
+    }
+    for h in hints {
+        parts.push(format!("{}=off({})", h.linter.name(), h.enable_instruction));
+    }
+    Some(format!("# linters: {}", parts.join(" ")))
+}
+
+/// JSON output grouped by file, optionally prefixed with a `_meta` entry
+/// describing linter coverage. The `_meta` entry is omitted when both
+/// `enabled` and `hints` are empty, preserving the legacy list shape.
+pub fn format_json_grouped_with_meta(
+    results: &[crate::pipeline::FileReviewResult],
+    enabled: &[crate::linter::LinterKind],
+    hints: &[crate::linter::LinterHint],
+) -> anyhow::Result<String> {
+    use serde_json::{json, Value};
+    let mut out: Vec<Value> = Vec::new();
+    if !enabled.is_empty() || !hints.is_empty() {
+        let enabled_names: Vec<&str> = enabled.iter().map(|k| k.name()).collect();
+        let unconfigured: Vec<Value> = hints
+            .iter()
+            .map(|h| {
+                json!({
+                    "name": h.linter.name(),
+                    "language": h.language,
+                    "file_count": h.file_count,
+                    "hint": h.enable_instruction,
+                })
+            })
+            .collect();
+        out.push(json!({
+            "_meta": {
+                "linters": {
+                    "enabled": enabled_names,
+                    "available_unconfigured": unconfigured,
+                }
+            }
+        }));
+    }
+    for r in results.iter().filter(|r| !r.findings.is_empty()) {
+        out.push(json!({
+            "file": r.file_path,
+            "findings": r.findings,
+        }));
+    }
+    Ok(serde_json::to_string_pretty(&out)?)
+}
+
 /// JSON output grouped by file -- includes file_path so findings can be traced back.
 pub fn format_json_grouped(results: &[crate::pipeline::FileReviewResult]) -> anyhow::Result<String> {
     #[derive(serde::Serialize)]
@@ -263,6 +342,100 @@ fn is_env_set(var: &str) -> bool {
 mod tests {
     use super::*;
     use crate::finding::FindingBuilder;
+    use crate::linter::{LinterHint, LinterKind};
+
+    fn hint(linter: LinterKind, lang: &'static str, n: usize, inst: &'static str) -> LinterHint {
+        LinterHint {
+            linter,
+            language: lang,
+            file_count: n,
+            enable_instruction: inst,
+        }
+    }
+
+    // -- format_hint_human --
+
+    #[test]
+    fn human_hint_includes_file_count_linter_and_instruction() {
+        let hints = vec![hint(LinterKind::Ruff, "Python", 3, "add [tool.ruff] to pyproject.toml")];
+        let lines = format_hints_human(&hints);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(line.contains("hint:"), "missing hint prefix: {line}");
+        assert!(line.contains("3"), "missing count: {line}");
+        assert!(line.contains("Python"), "missing language: {line}");
+        assert!(line.contains("ruff"), "missing linter name: {line}");
+        assert!(line.contains("[tool.ruff]"), "missing instruction: {line}");
+    }
+
+    #[test]
+    fn human_hint_singular_vs_plural_file() {
+        let one = format_hints_human(&[hint(LinterKind::Ruff, "Python", 1, "x")]);
+        let many = format_hints_human(&[hint(LinterKind::Ruff, "Python", 5, "x")]);
+        assert!(one[0].contains("1 Python file"), "singular: {}", one[0]);
+        assert!(many[0].contains("5 Python files"), "plural: {}", many[0]);
+    }
+
+    #[test]
+    fn human_hint_empty_when_no_hints() {
+        assert!(format_hints_human(&[]).is_empty());
+    }
+
+    // -- format_compact_linter_header --
+
+    #[test]
+    fn compact_header_lists_enabled_and_unconfigured() {
+        let enabled = vec![LinterKind::Clippy];
+        let hints = vec![hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml")];
+        let header = format_compact_linter_header(&enabled, &hints).unwrap();
+        assert!(header.starts_with('#'), "no comment prefix: {header}");
+        assert!(header.contains("clippy=on"), "enabled missing: {header}");
+        assert!(header.contains("ruff=off"), "unconfigured missing: {header}");
+        assert!(header.contains("[tool.ruff]"), "instruction missing: {header}");
+    }
+
+    #[test]
+    fn compact_header_none_when_nothing_to_report() {
+        assert!(format_compact_linter_header(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn compact_header_single_line_no_newlines() {
+        let enabled = vec![LinterKind::Clippy, LinterKind::Eslint];
+        let hints = vec![
+            hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml"),
+            hint(LinterKind::Yamllint, "YAML", 2, "add .yamllint"),
+        ];
+        let header = format_compact_linter_header(&enabled, &hints).unwrap();
+        assert!(!header.contains('\n'), "header wraps: {header}");
+    }
+
+    // -- JSON _meta --
+
+    #[test]
+    fn json_meta_entry_prepended_when_hints_present() {
+        use crate::pipeline::FileReviewResult;
+        let results: Vec<FileReviewResult> = vec![];
+        let enabled = vec![LinterKind::Clippy];
+        let hints = vec![hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml")];
+        let out = format_json_grouped_with_meta(&results, &enabled, &hints).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let arr = parsed.as_array().expect("top-level array");
+        assert!(!arr.is_empty());
+        let meta = &arr[0]["_meta"]["linters"];
+        assert_eq!(meta["enabled"][0], "clippy");
+        assert_eq!(meta["available_unconfigured"][0]["name"], "ruff");
+        assert!(meta["available_unconfigured"][0]["hint"].as_str().unwrap().contains("[tool.ruff]"));
+    }
+
+    #[test]
+    fn json_meta_omits_entry_when_nothing_to_report() {
+        use crate::pipeline::FileReviewResult;
+        let results: Vec<FileReviewResult> = vec![];
+        let out = format_json_grouped_with_meta(&results, &[], &[]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed.as_array().unwrap().iter().all(|e| e.get("_meta").is_none()));
+    }
 
     // -- severity_icon --
 
