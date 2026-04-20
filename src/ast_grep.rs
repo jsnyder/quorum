@@ -734,4 +734,39 @@ rule:
         assert!(findings.is_empty(),
             "should NOT flag unrelated header with '*' value");
     }
+
+    #[test]
+    fn cors_wildcard_origin_matches_case_insensitively() {
+        // HTTP header names are case-insensitive. setHeader('access-control-allow-origin', '*')
+        // and setHeader('Access-Control-Allow-Origin', '*') are equivalent on the wire.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+
+        for lowered in &[
+            "res.setHeader('access-control-allow-origin', '*');",
+            "res.setHeader(\"ACCESS-CONTROL-ALLOW-ORIGIN\", \"*\");",
+            "res.setHeader('Access-control-allow-Origin', '*');",
+        ] {
+            let findings = scan_file(lowered, "ts", &rules);
+            assert!(!findings.is_empty(),
+                "should flag case variant: {}", lowered);
+        }
+    }
+
+    #[test]
+    fn cors_wildcard_origin_covers_writehead_and_next_style() {
+        // Node's response.writeHead(code, {headers}) and Next.js-style
+        // headers.set(...) are just as common as setHeader/header.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let yaml = std::fs::read_to_string(path).unwrap();
+        let rules: Vec<RuleConfig<SupportLang>> =
+            from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
+
+        let next_style = "response.headers.set('Access-Control-Allow-Origin', '*');";
+        let findings = scan_file(next_style, "ts", &rules);
+        assert!(!findings.is_empty(),
+            "should flag Next.js/Fetch-style headers.set(..., '*')");
+    }
 }

@@ -134,7 +134,8 @@ pub fn calibrate(
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
-        // Wontfix weight (soft suppression at 100%, full suppression at 50%)
+        // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
+        // contributes to soft or full suppression (see inertness rationale below).
         let mut wontfix_weight: f64 = 0.0;
         for e in similar.iter().filter(|e| e.verdict == Verdict::Wontfix) {
             wontfix_weight += verdict_weight(e);
@@ -192,7 +193,7 @@ pub fn calibrate(
             continue; // don't add to output
         }
 
-        // Soft suppress: FP + wontfix combined, or auto-only FP
+        // Soft suppress: FP weight only (wontfix is inert), or auto-only FP
         // This preserves the finding for human review while reducing noise
         // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
         if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
@@ -346,7 +347,8 @@ pub fn calibrate_with_index(
         }
         let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
 
-        // Wontfix weight (soft suppression at 100%, full suppression at 50%)
+        // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
+        // contributes to soft or full suppression (see inertness rationale below).
         let mut wontfix_weight: f64 = 0.0;
         for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Wontfix) {
             let w = verdict_weight(&s.entry) * s.similarity as f64;
@@ -402,7 +404,7 @@ pub fn calibrate_with_index(
             continue;
         }
 
-        // Soft suppress: FP + wontfix combined, or auto-only FP
+        // Soft suppress: FP weight only (wontfix is inert), or auto-only FP
         // This preserves the finding for human review while reducing noise
         // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
         if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)

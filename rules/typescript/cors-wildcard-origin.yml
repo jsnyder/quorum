@@ -2,10 +2,14 @@ id: cors-wildcard-origin
 language: TypeScript
 severity: warning
 message: "Access-Control-Allow-Origin: '*' is almost always wrong. Per CORS spec it's incompatible with Access-Control-Allow-Credentials, and on authenticated APIs it leaks same-origin trust. Use an explicit allowlist."
-note: "Previously miscategorized as style by calibrator; captured as local deterministic check."
+note: "Previously miscategorized as style by calibrator; captured as local deterministic check. HTTP header names are case-insensitive — rule matches any case."
 rule:
-  any:
-    - pattern: $X.setHeader('Access-Control-Allow-Origin', '*')
-    - pattern: $X.setHeader("Access-Control-Allow-Origin", "*")
-    - pattern: $X.header('Access-Control-Allow-Origin', '*')
-    - pattern: $X.header("Access-Control-Allow-Origin", "*")
+  kind: call_expression
+  pattern: $CALLER.$METHOD($HEADER, $VALUE)
+constraints:
+  METHOD:
+    regex: "^(setHeader|header|set)$"
+  HEADER:
+    regex: "(?i)['\"]access-control-allow-origin['\"]"
+  VALUE:
+    regex: "^['\"]\\*['\"]$"
