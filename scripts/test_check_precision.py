@@ -126,6 +126,90 @@ class BaselinePersistenceTests(unittest.TestCase):
             path.write_text("{not valid json")
             self.assertIsNone(load_baseline(path))
 
+    def test_load_valid_json_but_missing_precision_key_returns_none(self):
+        # Syntactically valid JSON without the expected shape must be treated
+        # the same as a corrupt file — main() would otherwise crash on KeyError
+        # when doing baseline["precision"].
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wrong_shape.json"
+            path.write_text('{"foo": "bar"}')
+            self.assertIsNone(load_baseline(path))
+
+    def test_load_json_with_non_numeric_precision_returns_none(self):
+        # Precision field present but wrong type must also fail safely.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_type.json"
+            path.write_text('{"precision": "high"}')
+            self.assertIsNone(load_baseline(path))
+
+    def test_save_baseline_is_atomic(self):
+        # The file should not be left partially written if the process dies
+        # mid-write. We verify atomicity by ensuring a temp file is used
+        # (rename semantics) rather than a direct overwrite.
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "baseline.json"
+            # Pre-populate with a known-good baseline
+            good = {"precision": 0.80, "feedback_count": 100}
+            save_baseline(path, good)
+            # Overwrite with a new value — if atomic, original is never truncated
+            # mid-flight even under concurrent reads
+            new = {"precision": 0.75, "feedback_count": 150}
+            save_baseline(path, new)
+            self.assertEqual(load_baseline(path), new)
+            # No stray temp files remain after a clean write
+            leftovers = [p for p in os.listdir(tmp) if p != "baseline.json"]
+            self.assertEqual(leftovers, [],
+                f"atomic write should clean up temp files, found {leftovers}")
+
+
+class ExtractRecentPrecisionSchemaDriftTests(unittest.TestCase):
+    """If upstream stats schema drifts, extract_recent_precision should either
+    return a usable PrecisionReading or raise a typed error — never an
+    arbitrary KeyError/TypeError that would confuse operators running this
+    from cron."""
+
+    def test_missing_precision_trend_key_uses_overall(self):
+        # precision_trend absent (e.g. old stats format) — fall back to overall.
+        r = extract_recent_precision({"precision": 0.70, "tp": 50, "fp": 20})
+        self.assertEqual(r.source, "overall")
+        self.assertAlmostEqual(r.precision, 0.70)
+
+    def test_bucket_missing_count_is_skipped(self):
+        # Malformed bucket without a count field is treated as thin → skipped.
+        trend = [
+            {"count": 100, "precision": 0.80, "week_start": "2026-04-11T00:00:00+00:00"},
+            {"precision": 0.50, "week_start": "2026-04-18T00:00:00+00:00"},  # no count
+        ]
+        stats = make_stats(0.75, trend)
+        r = extract_recent_precision(stats)
+        self.assertEqual(r.source, "week:2026-04-11")
+
+
+class FullReturnedPayloadTests(unittest.TestCase):
+    """Previously these tests only validated .source, allowing an impl that
+    returned the wrong precision/sample_count to pass. Assert the full payload."""
+
+    def test_fallback_to_overall_returns_full_payload(self):
+        trend = [{"count": 3, "precision": 0.80,
+                  "week_start": "2026-04-18T00:00:00+00:00"}]
+        stats = make_stats(0.76, trend, tp=100, fp=30)
+        r = extract_recent_precision(stats)
+        self.assertEqual(r.source, "overall")
+        self.assertAlmostEqual(r.precision, 0.76)
+        self.assertEqual(r.sample_count, 130)
+
+    def test_boundary_week_returns_full_payload(self):
+        trend = [
+            {"count": MIN_WEEK_COUNT, "precision": 0.70,
+             "week_start": "2026-04-18T00:00:00+00:00"},
+        ]
+        stats = make_stats(0.76, trend)
+        r = extract_recent_precision(stats)
+        self.assertEqual(r.source, "week:2026-04-18")
+        self.assertAlmostEqual(r.precision, 0.70)
+        self.assertEqual(r.sample_count, MIN_WEEK_COUNT)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

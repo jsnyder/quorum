@@ -77,32 +77,78 @@ def classify_drop(baseline: float, current: float) -> tuple[int, str]:
 
 
 def load_baseline(path: Path) -> Optional[dict]:
+    """Load baseline, returning None if missing, corrupt, or shape-invalid.
+
+    Downstream code relies on `baseline["precision"]` being a finite float,
+    so we validate that shape here instead of crashing at the call site.
+    Anything that fails validation is treated like a missing baseline —
+    operator sees NO_BASELINE and can reset with --set-baseline.
+    """
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(data, dict):
+        return None
+    precision = data.get("precision")
+    if not isinstance(precision, (int, float)) or isinstance(precision, bool):
+        return None
+    return data
 
 
 def save_baseline(path: Path, data: dict) -> None:
+    """Atomically write the baseline file.
+
+    Direct writes can leave a truncated file if the process is interrupted
+    or disk fills mid-write. os.replace is atomic within a single filesystem,
+    so readers see either the old file or the new one — never partial.
+    """
+    import os
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+    finally:
+        # Clean up the tempfile if os.replace didn't consume it (e.g. on error
+        # between write_text and replace). Safe no-op if already moved.
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def fetch_stats() -> dict:
-    """Invoke quorum stats and parse JSON."""
-    result = subprocess.run(
-        ["quorum", "stats", "--json"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Invoke quorum stats and parse JSON.
+
+    Raises RuntimeError with a clear message for all common external-failure
+    modes: binary missing, non-zero exit, malformed stdout. Callers should
+    treat RuntimeError uniformly (reported to stderr, exit code 3).
+    """
+    try:
+        result = subprocess.run(
+            ["quorum", "stats", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError) as e:
+        raise RuntimeError(
+            f"could not run quorum binary (is it on PATH?): {e}"
+        ) from e
     if result.returncode != 0:
         raise RuntimeError(
             f"quorum stats failed (exit {result.returncode}): {result.stderr.strip()}"
         )
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"quorum stats returned non-JSON output: {e}"
+        ) from e
 
 
 def main() -> int:
