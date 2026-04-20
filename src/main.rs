@@ -421,6 +421,10 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         if let Some(header) = output::format_compact_linter_header(&enabled_linters, &linter_hints) {
             println!("{}", header);
         }
+    } else if !use_json {
+        // Human mode: one-line severity-symbol key so readers don't have to
+        // infer from context. Always cheap; printed before any finding output.
+        println!("{}", output::format_legend());
     }
 
     if opts.parallel == 1 || opts.files.len() <= 1 {

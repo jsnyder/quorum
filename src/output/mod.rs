@@ -165,6 +165,13 @@ pub fn format_json(findings: &[Finding]) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(findings)?)
 }
 
+/// One-line severity legend for human review output. The same characters
+/// appear inline at the start of every finding line, so surfacing the key
+/// once avoids readers having to infer meaning from context.
+pub fn format_legend() -> String {
+    "Legend:  ! high/critical   ~ medium   - low/info".to_string()
+}
+
 /// Human-readable linter coverage hints, one per unconfigured linter.
 /// Intended for stderr under TTY + non-agent, non-JSON, non-compact conditions.
 pub fn format_hints_human(hints: &[crate::linter::LinterHint]) -> Vec<String> {
@@ -452,6 +459,25 @@ mod tests {
         let out = format_json_grouped_with_meta(&results, &[], &[]).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.as_array().unwrap().iter().all(|e| e.get("_meta").is_none()));
+    }
+
+    // -- format_legend --
+
+    #[test]
+    fn legend_explains_all_three_severity_icons() {
+        let out = format_legend();
+        assert!(out.contains("!"));
+        assert!(out.contains("~"));
+        assert!(out.contains("-"));
+        assert!(out.to_lowercase().contains("critical") || out.to_lowercase().contains("high"));
+        assert!(out.to_lowercase().contains("medium"));
+        assert!(out.to_lowercase().contains("low") || out.to_lowercase().contains("info"));
+    }
+
+    #[test]
+    fn legend_is_single_line() {
+        let out = format_legend();
+        assert!(!out.contains('\n'), "legend wraps: {out}");
     }
 
     // -- severity_icon --
