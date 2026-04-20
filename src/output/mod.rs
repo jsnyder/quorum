@@ -338,6 +338,23 @@ fn is_env_set(var: &str) -> bool {
     std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
+/// Whether the current terminal environment can render Unicode glyphs.
+/// Shared across main and stats so sparklines degrade consistently.
+pub fn unicode_ok_default() -> bool {
+    if std::env::var_os("NO_UNICODE").is_some() {
+        return false;
+    }
+    if let Some(term) = std::env::var_os("TERM") {
+        if term == "dumb" {
+            return false;
+        }
+    }
+    if let Ok(lang) = std::env::var("LANG") {
+        return lang.to_uppercase().contains("UTF-8") || lang.to_uppercase().contains("UTF8");
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

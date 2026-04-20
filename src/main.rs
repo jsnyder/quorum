@@ -100,8 +100,9 @@ async fn main() -> anyhow::Result<()> {
 
             let feedback_store = feedback::FeedbackStore::new(home_path.join(".quorum/feedback.jsonl"));
             let telemetry_store = telemetry::TelemetryStore::new(home_path.join(".quorum/telemetry.jsonl"));
+            let review_log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
 
-            match stats::compute_report(&feedback_store, &telemetry_store) {
+            match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
                 Ok(report) => {
                     if opts.json {
                         match stats::format_json(&report) {
@@ -115,7 +116,11 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", stats::format_compact(&report));
                     } else {
                         let style = output::Style::detect(false);
-                        print!("{}", stats::format_human(&report, &style));
+                        if opts.minimal {
+                            print!("{}", stats::format_human_minimal(&report, &style));
+                        } else {
+                            print!("{}", stats::format_human(&report, &style));
+                        }
                     }
                 }
                 Err(e) => {

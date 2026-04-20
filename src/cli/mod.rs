@@ -49,6 +49,11 @@ pub struct StatsOpts {
     /// Show rolling N-review windows (e.g. --rolling 50)
     #[arg(long, value_parser = parse_rolling_n)]
     pub rolling: Option<usize>,
+
+    /// Hide dimensional highlights (top repos/callers/rolling) from the
+    /// default dashboard. Restores the pre-highlights output shape.
+    #[arg(long)]
+    pub minimal: bool,
 }
 
 fn parse_rolling_n(s: &str) -> Result<usize, String> {
