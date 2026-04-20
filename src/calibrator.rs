@@ -144,16 +144,21 @@ pub fn calibrate(
         // signal about finding validity. Excluded from both soft and full suppression.
         let soft_fp_weight = fp_weight;
 
-        // Build precedent traces for this finding
+        // Build precedent traces for this finding. Each trace records the actual
+        // Jaccard similarity (recomputed cheaply here — the filter above also uses
+        // it) so operators debugging suppression see the real precedent strength.
         let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
             .iter()
-            .map(|e| crate::calibrator_trace::PrecedentTrace {
-                finding_title: e.finding_title.clone(),
-                verdict: e.verdict.clone(),
-                similarity: 1.0, // Jaccard doesn't expose per-entry similarity
-                weight: verdict_weight(e),
-                provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
-                file_path: e.file_path.clone(),
+            .map(|e| {
+                let sim = finding_feedback_similarity(&finding, e);
+                crate::calibrator_trace::PrecedentTrace {
+                    finding_title: e.finding_title.clone(),
+                    verdict: e.verdict.clone(),
+                    similarity: sim,
+                    weight: verdict_weight(e),
+                    provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
+                    file_path: e.file_path.clone(),
+                }
             })
             .collect();
 
@@ -365,7 +370,10 @@ pub fn calibrate_with_index(
                 finding_title: s.entry.finding_title.clone(),
                 verdict: s.entry.verdict.clone(),
                 similarity: s.similarity as f64,
-                weight: verdict_weight(&s.entry),
+                // Must match decision math: verdict_weight * similarity (see TP/FP/wontfix
+                // accumulation above). Storing verdict_weight alone silently under-reports
+                // near-miss precedents during debugging.
+                weight: verdict_weight(&s.entry) * s.similarity as f64,
                 provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
                 file_path: s.entry.file_path.clone(),
             })
@@ -477,14 +485,16 @@ fn word_jaccard(a: &str, b: &str) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
-    let words_a: std::collections::HashSet<&str> = a.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| !w.is_empty())
-        .collect();
-    let words_b: std::collections::HashSet<&str> = b.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| !w.is_empty())
-        .collect();
+    // Case-insensitive: feedback reasons are typed inconsistently ("SQL" vs "sql").
+    // Lowering here keeps the set tokens equivalent without affecting display.
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        s.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+    let words_a = tokens(a);
+    let words_b = tokens(b);
     let intersection = words_a.intersection(&words_b).count() as f64;
     let union = words_a.union(&words_b).count() as f64;
     if union == 0.0 { 0.0 } else { intersection / union }
@@ -660,6 +670,19 @@ mod tests {
     }
 
     // -- Similarity matching --
+
+    #[test]
+    fn word_jaccard_is_case_insensitive() {
+        // HTTP/framework terminology is typed inconsistently in feedback reasons —
+        // "SQL injection" vs "sql injection" vs "SQL Injection". Case-sensitive
+        // matching silently drops precedent matches that humans would treat as
+        // identical. Gemini 3 Pro flagged this as a calibrator leak.
+        let a = "SQL Injection via f-string formatting";
+        let b = "sql injection via f-string formatting";
+        let score = word_jaccard(a, b);
+        assert!((score - 1.0).abs() < 1e-9,
+            "case-only difference should score 1.0, got {}", score);
+    }
 
     #[test]
     fn similarity_exact_match() {
@@ -1414,6 +1437,65 @@ mod tests {
             trace.matched_precedents.is_empty(),
             "metric-incompatible precedents should be filtered out before weighting"
         );
+    }
+
+    #[test]
+    fn legacy_trace_records_per_entry_similarity_not_one() {
+        // Legacy (non-index) path was recording similarity=1.0 for every precedent,
+        // masking whether a near-miss or exact match drove the calibration decision.
+        // Paired bug with the embedding-path weight fix.
+        let finding = FindingBuilder::new()
+            .title("Missing input validation on webhook handler")
+            .category("security")
+            .severity(Severity::High)
+            .build();
+        let feedback = vec![
+            fb("Missing input validation", "security", Verdict::Fp),
+        ];
+        let config = CalibratorConfig::default();
+        let result = calibrate(vec![finding], &feedback, &config);
+        let trace = &result.traces[0];
+        let prec = trace.matched_precedents.first()
+            .expect("should have a matched precedent");
+        assert!(prec.similarity < 1.0,
+            "legacy trace similarity should reflect actual Jaccard, got {}",
+            prec.similarity);
+    }
+
+    #[test]
+    fn embedding_trace_weight_matches_decision_math() {
+        // Decisions in calibrate_with_index use `verdict_weight(entry) * similarity`
+        // (lines ~328/341/354). The trace output must record that SAME value — not
+        // just verdict_weight(entry) without similarity — so operators debugging a
+        // suppression can see the actual contribution. Flagged by Gemini 3 Pro as
+        // a calibrator observability bug.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Jaccard-only index avoids fastembed flakiness: with deliberately
+        // non-overlapping titles, similarity stays well below 1.0 so the
+        // multiplier matters.
+        store.record(&fb("Missing input validation on endpoint", "security", Verdict::Tp)).unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+
+        let finding = FindingBuilder::new()
+            .title("Missing input validation on webhook handler endpoint")
+            .category("security")
+            .severity(crate::finding::Severity::High)
+            .build();
+        let mut config = CalibratorConfig::default();
+        // Lower threshold for this test so the sub-1.0 Jaccard similarity clears the gate.
+        config.embedding_similarity_threshold = 0.3;
+        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let trace = &result.traces[0];
+        let prec = trace.matched_precedents.first()
+            .expect("precedent should be present when index has a matching entry");
+        assert!(prec.similarity < 1.0,
+            "test fixture should yield a sub-1.0 similarity, got {}", prec.similarity);
+        let expected = prec.similarity * verdict_weight(&store.load_all().unwrap()[0]);
+        assert!((prec.weight - expected).abs() < 1e-6,
+            "trace weight {} must equal verdict_weight * similarity ({}); \
+             decisions use the product, trace must match",
+            prec.weight, expected);
     }
 
     #[test]
