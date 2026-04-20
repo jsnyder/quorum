@@ -1451,6 +1451,65 @@ mod tests {
     }
 
     #[test]
+    fn enrichment_separates_jwt_validation_from_generic_input_validation() {
+        // The exact conflation Gemini 3 Pro flagged: generic-validation FP in
+        // the feedback store must NOT suppress a new JWT-signature-validation
+        // finding. Before enrichment (v0.13.2), these two patterns clustered
+        // in bge-small cosine space because the title-only embedding dropped
+        // the distinguishing tokens. Now corpus carries `reason` and query
+        // carries `description + evidence + based_on_excerpt`, so they
+        // should separate without needing a discriminator gate.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+
+        // Two FP entries about generic API input validation — enough weight to
+        // fully suppress IF they match.
+        let mut fp1 = fb("Missing input validation", "security", Verdict::Fp);
+        fp1.reason = "API endpoint parameters not validated before DB write — \
+                      handled by pydantic models downstream".into();
+        let mut fp2 = fb("Missing input validation", "security", Verdict::Fp);
+        fp2.reason = "request body type checks missing — already covered by \
+                      FastAPI response_model".into();
+        store.record(&fp1).unwrap();
+        store.record(&fp2).unwrap();
+
+        // New finding: JWT signature validation — completely different concern.
+        let jwt_finding = FindingBuilder::new()
+            .title("Missing input validation")
+            .description("decode_token() does not verify the JWT signature \
+                          algorithm claim, allowing HS256 tokens signed with \
+                          untrusted keys to bypass jwt.verify checks")
+            .category("security")
+            .severity(Severity::High)
+            .evidence("jwt.verify(token, secret, { algorithms: ['HS256'] })")
+            .build();
+
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let config = CalibratorConfig::default();
+        let result = calibrate_with_index(vec![jwt_finding], &mut index, &config);
+
+        // Diagnostic trace output (visible with --nocapture).
+        let trace = &result.traces[0];
+        eprintln!("\n=== enrichment probe ===");
+        eprintln!("TP weight: {:.3}  FP weight: {:.3}  full_suppress: {:.3}",
+            trace.tp_weight, trace.fp_weight, trace.full_suppress_weight);
+        for p in &trace.matched_precedents {
+            eprintln!("  precedent: sim={:.3} weight={:.3} verdict={:?} reason={}",
+                p.similarity, p.weight, p.verdict, p.finding_title);
+        }
+        eprintln!("action: {:?}", trace.action);
+        eprintln!("output severity: {:?} (input High)\n", result.findings.get(0).map(|f| f.severity.clone()));
+
+        // Core assertion: JWT finding must not be suppressed (output or disputed).
+        assert_eq!(result.suppressed, 0,
+            "JWT finding must NOT be suppressed by generic input-validation FPs. \
+             full_suppress_weight={:.3}", trace.full_suppress_weight);
+        // And severity should stay High (not downgraded to Info).
+        assert_eq!(result.findings[0].severity, Severity::High,
+            "severity must stay High; was downgraded, indicating FP precedent match");
+    }
+
+    #[test]
     fn legacy_trace_records_per_entry_similarity_not_one() {
         // Legacy (non-index) path was recording similarity=1.0 for every precedent,
         // masking whether a near-miss or exact match drove the calibration decision.
