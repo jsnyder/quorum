@@ -47,6 +47,37 @@ pub fn embedding_text(finding_title: &str, category: &str, canonical_pattern: Op
     }
 }
 
+/// Format a finding for embedding with additional discriminator tokens appended.
+///
+/// Discriminators are free-text fragments (user reason, LLM finding description,
+/// evidence snippets, function signatures, framework names) that carry
+/// token-level information the base title+category lacks. The goal is to push
+/// unrelated-but-lexically-similar findings apart in embedding space — e.g.
+/// "Missing input validation" (api args) vs "Missing input validation" (jwt
+/// signature) — which at bge-small-en's 384 dims cluster too tightly without
+/// additional signal.
+///
+/// Empty/whitespace-only fragments are filtered so absent fields do not perturb
+/// the embedding vs the base representation.
+pub fn embedding_text_enriched(
+    finding_title: &str,
+    category: &str,
+    canonical_pattern: Option<&str>,
+    discriminators: &[&str],
+) -> String {
+    let base = embedding_text(finding_title, category, canonical_pattern);
+    let extras: Vec<&str> = discriminators.iter()
+        .copied()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if extras.is_empty() {
+        base
+    } else {
+        format!("{} {}", base, extras.join(" "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +112,42 @@ mod tests {
         let text = embedding_text("Random finding", "misc", None);
         assert!(text.starts_with("misc"));
         assert!(!text.contains("sql_injection"));
+    }
+
+    #[test]
+    fn embedding_text_with_discriminators_includes_them() {
+        // Enrichment: free-text discriminators (user reason, LLM description, evidence)
+        // should flow into the embedded string so paraphrased titles can still be
+        // disambiguated by their concrete tokens (jwt.verify, cursor.execute, etc.).
+        // External review (Gemini 3 Pro + GPT-5.2) flagged that the base
+        // "{pattern} {category} {title}" representation is too abstract — unrelated
+        // findings conflate on generic programming vocabulary.
+        let text = embedding_text_enriched(
+            "Missing input validation",
+            "security",
+            None,
+            &["jwt.verify", "HS256", "algorithm"],
+        );
+        assert!(text.contains("jwt.verify"), "discriminator tokens must be in embed text");
+        assert!(text.contains("HS256"));
+        assert!(text.contains("algorithm"));
+        assert!(text.contains("security"));
+        assert!(text.contains("Missing input validation"));
+    }
+
+    #[test]
+    fn embedding_text_enriched_with_empty_discriminators_matches_base() {
+        let base = embedding_text("X", "y", Some("p"));
+        let enriched = embedding_text_enriched("X", "y", Some("p"), &[]);
+        assert_eq!(base, enriched);
+    }
+
+    #[test]
+    fn embedding_text_enriched_filters_empty_strings() {
+        // Free-text fields are frequently empty/whitespace; must not inject extra spaces.
+        let with_empties = embedding_text_enriched("T", "c", None, &["", "  ", "real"]);
+        let without = embedding_text_enriched("T", "c", None, &["real"]);
+        assert_eq!(with_empties, without);
     }
 
     #[test]

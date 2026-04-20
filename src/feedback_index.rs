@@ -22,6 +22,23 @@ pub struct FeedbackIndex {
     bm25_engine: Option<bm25::SearchEngine<u32>>,
 }
 
+/// Produce the indexable document text for a feedback entry.
+///
+/// Joins title + reason so BM25 and embeddings can disambiguate entries whose
+/// titles alone share generic programming vocabulary (e.g. two "Missing input
+/// validation" entries where one reason mentions JWT and the other mentions
+/// API body types). Empty reasons degrade to title-only so legacy entries
+/// without a reason are unaffected. See docs/ notes from Gemini/GPT review
+/// (2026-04-20) on why corpus enrichment beats model upgrade for our scale.
+fn bm25_doc_text(entry: &FeedbackEntry) -> String {
+    let reason = entry.reason.trim();
+    if reason.is_empty() {
+        entry.finding_title.clone()
+    } else {
+        format!("{} {}", entry.finding_title, reason)
+    }
+}
+
 impl FeedbackIndex {
     /// Build a Jaccard-only index without initializing fastembed.
     /// Used as a last-resort fallback when both embeddings and BM25 are unavailable.
@@ -47,7 +64,7 @@ impl FeedbackIndex {
         let bm25_engine = if entries.is_empty() {
             None
         } else {
-            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            let corpus: Vec<String> = entries.iter().map(bm25_doc_text).collect();
             Some(
                 bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
                     .build(),
@@ -63,10 +80,11 @@ impl FeedbackIndex {
                             "",
                             &e.finding_category,
                         );
-                        patterns::embedding_text(
+                        patterns::embedding_text_enriched(
                             &e.finding_title,
                             &e.finding_category,
                             pattern.as_deref(),
+                            &[&e.reason],
                         )
                     })
                     .collect();
@@ -102,7 +120,7 @@ impl FeedbackIndex {
         let bm25_engine = if entries.is_empty() {
             None
         } else {
-            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            let corpus: Vec<String> = entries.iter().map(bm25_doc_text).collect();
             Some(
                 bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
                     .build(),
@@ -129,7 +147,7 @@ impl FeedbackIndex {
         let bm25_engine = if entries.is_empty() || rrf_disabled {
             None
         } else {
-            let corpus: Vec<String> = entries.iter().map(|e| e.finding_title.clone()).collect();
+            let corpus: Vec<String> = entries.iter().map(bm25_doc_text).collect();
             Some(
                 bm25::SearchEngineBuilder::<u32>::with_corpus(bm25::Language::English, corpus)
                     .build(),
@@ -143,7 +161,12 @@ impl FeedbackIndex {
                     let texts: Vec<String> = entries.iter()
                         .map(|e| {
                             let pattern = patterns::classify_pattern(&e.finding_title, "", &e.finding_category);
-                            patterns::embedding_text(&e.finding_title, &e.finding_category, pattern.as_deref())
+                            patterns::embedding_text_enriched(
+                                &e.finding_title,
+                                &e.finding_category,
+                                pattern.as_deref(),
+                                &[&e.reason],
+                            )
                         })
                         .collect();
                     let vectors = if texts.is_empty() {
@@ -172,6 +195,32 @@ impl FeedbackIndex {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Like `find_similar` but appends free-text discriminators to the query so
+    /// paraphrased findings can be disambiguated by concrete tokens (function
+    /// signatures, framework names, sink keywords, etc.). Empty/whitespace-only
+    /// discriminators are filtered to match corpus-side behavior.
+    pub fn find_similar_enriched(
+        &mut self,
+        finding_title: &str,
+        category: &str,
+        discriminators: &[&str],
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
+        // Build an enriched query once. Downstream methods that need plain title
+        // (e.g. BM25 tokenization) accept the whole string; BM25 tokenizes and
+        // IDF self-weights so the extra tokens don't hurt rare-title matches.
+        let extras: Vec<&str> = discriminators.iter()
+            .copied()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if extras.is_empty() {
+            return self.find_similar(finding_title, category, top_k);
+        }
+        let enriched_query = format!("{} {}", finding_title, extras.join(" "));
+        self.find_similar(&enriched_query, category, top_k)
     }
 
     pub fn find_similar(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
@@ -454,6 +503,107 @@ mod tests {
             similar[0].entry.finding_title
         );
         assert!(similar[1].entry.finding_title.contains("SQL"));
+    }
+
+    #[test]
+    fn bm25_corpus_includes_reason_for_discriminator_retrieval() {
+        // Two entries with IDENTICAL titles/categories but different reasons.
+        // A query containing tokens from Entry B's reason should rank Entry B
+        // higher — even though the title alone is ambiguous — because the
+        // corpus is indexed with the reason text, not just the title. This
+        // is the enrichment Gemini 3 Pro + GPT-5.2 recommended for fixing
+        // the "Missing input validation" / "Missing JWT validation" conflation.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+
+        // Insert entry A FIRST so if the corpus is title-only, identical BM25 scores
+        // tie and insertion order wins — which would put A ahead of B. The test then
+        // only passes if B is actively elevated by reason-matching.
+        let mut e_a = make_entry("Missing input validation", "security", Verdict::Fp);
+        e_a.reason = "API endpoint does not check request body types".into();
+        let mut e_b = make_entry("Missing input validation", "security", Verdict::Fp);
+        e_b.reason = "JWT verification uses algorithm=none allowing signature bypass".into();
+        store.record(&e_a).unwrap();
+        store.record(&e_b).unwrap();
+
+        let mut index = FeedbackIndex::build_bm25(&store).unwrap();
+        let similar = index.find_similar(
+            "Missing input validation jwt signature algorithm",
+            "security",
+            2,
+        );
+        assert_eq!(similar.len(), 2);
+        assert_eq!(similar[0].entry.reason, e_b.reason,
+            "JWT-reason entry must rank ahead despite being inserted second; \
+             if you see the API-body reason here, the corpus is not enriched with reason text. \
+             got top reason: {:?}", similar[0].entry.reason);
+        // And B's similarity should exceed A's, not tie.
+        assert!(similar[0].similarity > similar[1].similarity,
+            "top sim {} must exceed second {}, else the ranking was an insertion-order tie",
+            similar[0].similarity, similar[1].similarity);
+    }
+
+    #[test]
+    fn find_similar_enriched_uses_discriminators_without_them_in_title() {
+        // Entry has a generic title but a discriminative reason. A caller with
+        // hydration context (JWT/signature tokens from the finding's description
+        // and evidence) should reach this entry via discriminators, NOT by having
+        // to cram those tokens into the raw title. This is how calibrator.rs /
+        // pipeline.rs will eventually pass hydration context through.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+
+        let mut e_api = make_entry("Missing input validation", "security", Verdict::Fp);
+        e_api.reason = "request body parameters not validated before DB write".into();
+        let mut e_jwt = make_entry("Missing input validation", "security", Verdict::Fp);
+        e_jwt.reason = "JWT verify uses algorithm none allowing signature bypass".into();
+        store.record(&e_api).unwrap();
+        store.record(&e_jwt).unwrap();
+
+        let mut index = FeedbackIndex::build_bm25(&store).unwrap();
+
+        // JWT-flavored discriminators must rank the JWT-reason entry first.
+        let with_jwt = index.find_similar_enriched(
+            "Missing input validation",
+            "security",
+            &["jwt", "signature", "algorithm"],
+            2,
+        );
+        assert_eq!(with_jwt.len(), 2);
+        assert_eq!(with_jwt[0].entry.reason, e_jwt.reason,
+            "JWT discriminators must rank JWT-reason first; got: {:?}",
+            with_jwt[0].entry.reason);
+
+        // API-flavored discriminators must flip the ranking — API-reason first.
+        // Proves the discriminators are actually steering retrieval, not just
+        // matching the lexically-richer JWT reason always.
+        let with_api = index.find_similar_enriched(
+            "Missing input validation",
+            "security",
+            &["request", "body", "DB", "parameters"],
+            2,
+        );
+        assert_eq!(with_api.len(), 2);
+        assert_eq!(with_api[0].entry.reason, e_api.reason,
+            "API discriminators must rank API-reason first; got: {:?}",
+            with_api[0].entry.reason);
+    }
+
+    #[test]
+    fn find_similar_enriched_empty_discriminators_matches_plain() {
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for t in &["SQL injection in query", "Unused import"] {
+            store.record(&make_entry(t, "security", Verdict::Fp)).unwrap();
+        }
+        let mut index = FeedbackIndex::build_bm25(&store).unwrap();
+        let plain = index.find_similar("SQL injection risk", "security", 2);
+        let enriched = index.find_similar_enriched("SQL injection risk", "security", &[], 2);
+        assert_eq!(plain.len(), enriched.len());
+        for (p, e) in plain.iter().zip(enriched.iter()) {
+            assert_eq!(p.entry.finding_title, e.entry.finding_title);
+            assert!((p.similarity - e.similarity).abs() < 1e-6);
+        }
     }
 
     #[test]

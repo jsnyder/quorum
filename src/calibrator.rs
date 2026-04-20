@@ -293,7 +293,18 @@ pub fn calibrate_with_index(
 
     for mut finding in findings {
         let input_severity = finding.severity.clone();
-        let similar_entries = index.find_similar(&finding.title, &finding.category, 10);
+        // Feed hydration-rich discriminators to the index so paraphrased
+        // precedents disambiguate on concrete tokens (function names, sink
+        // keywords, framework references) instead of just title overlap.
+        let first_evidence = finding.evidence.first().map(String::as_str).unwrap_or("");
+        let excerpt = finding.based_on_excerpt.as_deref().unwrap_or("");
+        let discriminators: [&str; 3] = [&finding.description, first_evidence, excerpt];
+        let similar_entries = index.find_similar_enriched(
+            &finding.title,
+            &finding.category,
+            &discriminators,
+            10,
+        );
 
         // Filter by similarity threshold, provenance, and metric compatibility.
         // Metric filter: complexity findings must match precedents with a
