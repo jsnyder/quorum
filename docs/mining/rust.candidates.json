@@ -1,0 +1,129 @@
+{
+  "language": "rust",
+  "total_tps_analyzed": 130,
+  "clusters": [
+    {
+      "name": "Silent Error Conversion on Fallible Operations",
+      "tp_count": 4,
+      "example_titles": [
+        "read_token_file converts fs::read_to_string failures into None",
+        "pretty-print branch uses unwrap_or_default()",
+        "compact JSON branch uses unwrap_or_default()",
+        "Malformed `/search` responses are silently treated as empty result sets"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "silent-error-conversion-on-fallible-op",
+        "severity": "warning",
+        "yaml": "id: silent-error-conversion-on-fallible-op\nlanguage: rust\nseverity: warning\nmessage: \"This operation converts a Result into an Option or a default value, discarding specific error information. This can hide important bugs or security issues (e.g., distinguishing 'not found' from 'permission denied').\"\nrule:\n  kind: call_expression\n  pattern:\n    any:\n      - $CALL.ok()\n      - $CALL.unwrap_or_default()\n  has:\n    kind: call_expression\n    pattern: $FQN($$$)\n    constraints:\n      FQN:\n        regex: \"^(std::fs::read_to_string|serde_json::to_string|serde_json::to_string_pretty)$\"",
+        "positive_fixture": "use serde::Serialize;\n\n#[derive(Serialize)]\nstruct User {\n    name: String,\n}\n\nfn get_config() -> String {\n    let user = User { name: \"Alice\".to_string() };\n    // This will produce an empty string if serialization fails, hiding the error.\n    serde_json::to_string(&user).unwrap_or_default()\n}\n\nfn read_file() -> Option<String> {\n    // This converts any file read error (permissions, etc.) into None, same as not found.\n    std::fs::read_to_string(\"config.txt\").ok()\n}",
+        "negative_fixture": "use std::io::ErrorKind;\n\nfn read_config() -> Result<Option<String>, std::io::Error> {\n    match std::fs::read_to_string(\"config.json\") {\n        Ok(s) => Ok(Some(s)),\n        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None), // Explicitly handle NotFound\n        Err(e) => Err(e), // Propagate other errors\n    }\n}",
+        "fp_cross_check": "PASS: No FPs mention `.ok()` or `.unwrap_or_default()` in a way that would conflict with this rule.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 4
+      }
+    },
+    {
+      "name": "Ignoring Result of I/O Operations",
+      "tp_count": 3,
+      "example_titles": [
+        "cmd_add ignores result of create_reminder",
+        "Parent directory creation failures are silently ignored",
+        "Failed memory saves silently ignored"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ignored-io-result",
+        "severity": "error",
+        "yaml": "id: ignored-io-result\nlanguage: rust\nseverity: error\nmessage: \"The Result of this I/O operation is being ignored. This can lead to silent failures where files are not written or directories are not created. The error should be handled or propagated with `?`.\"\nrule:\n  kind: expression_statement\n  has:\n    kind: call_expression\n    pattern: $FQN($$$)\n    constraints:\n      FQN:\n        regex: \"^(std::fs|tokio::fs)::(create_dir_all|write|remove_file|remove_dir_all|copy|rename|set_permissions)$\"",
+        "positive_fixture": "use std::fs;\nuse std::path::Path;\n\nfn setup_dir() {\n    let path = Path::new(\"/tmp/my_app\");\n    // BUG: The result of create_dir_all is ignored. If it fails, no one will know.\n    fs::create_dir_all(path);\n}",
+        "negative_fixture": "use std::fs;\nuse std::path::Path;\n\nfn setup_dir() -> std::io::Result<()> {\n    let path = Path::new(\"/tmp/my_app\");\n    // CORRECT: The result is propagated.\n    fs::create_dir_all(path)?;\n    Ok(())\n}\n\nfn setup_dir_explicit_ignore() {\n    let path = Path::new(\"/tmp/my_app\");\n    // OK: The result is explicitly ignored, showing intent.\n    let _ = fs::create_dir_all(path);\n}",
+        "fp_cross_check": "PASS: No FPs describe ignoring I/O results. The rule correctly avoids matching `let _ = ...` which is the idiomatic way to show intent to ignore.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 3
+      }
+    },
+    {
+      "name": "Unsafe UTF-8 String Slicing",
+      "tp_count": 6,
+      "example_titles": [
+        "Potential panic when truncating non-UTF-8-boundary error text",
+        "UTF-8 unsafe truncation can panic on non-ASCII titles",
+        "UTF-8 slicing can panic when truncating memory",
+        "UTF-8 slicing can panic when shortening the displayed id",
+        "UTF-8 unsafe string slicing in content type abbreviation"
+      ],
+      "decision": "covered",
+      "covered_by": "string-byte-slice.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Unwrap on Fallible Time Calculation",
+      "tp_count": 1,
+      "example_titles": [
+        "chrono_offset calls duration_since(UNIX_EPOCH).unwrap()"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "unwrap-on-duration-since",
+        "severity": "warning",
+        "yaml": "id: unwrap-on-duration-since\nlanguage: rust\nseverity: warning\nmessage: \"`duration_since()` returns a Result because it can fail if the start time is earlier than the provided time. Calling `.unwrap()` on it can cause a panic if the system clock is set incorrectly or the input is unexpected.\"\nrule:\n  kind: call_expression\n  pattern: $CALL.unwrap()\n  has:\n    kind: call_expression\n    pattern: $TIME.duration_since($$$)",
+        "positive_fixture": "use std::time::{SystemTime, UNIX_EPOCH};\n\nfn get_offset() -> u64 {\n    let now = SystemTime::now();\n    // This will panic if the system clock is set to a time before the Unix epoch.\n    now.duration_since(UNIX_EPOCH).unwrap().as_secs()\n}",
+        "negative_fixture": "use std::time::{SystemTime, UNIX_EPOCH, SystemTimeError};\n\nfn get_offset() -> Result<u64, SystemTimeError> {\n    let now = SystemTime::now();\n    let duration = now.duration_since(UNIX_EPOCH)?;\n    Ok(duration.as_secs())\n}",
+        "fp_cross_check": "PASS: No FPs are related to `chrono` or `duration_since`.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Panics from Unchecked Zero/Edge Values",
+      "tp_count": 5,
+      "example_titles": [
+        "truncate panics when max is 0",
+        "Zero max_review_lines produces an empty review payload and invalid notice text",
+        "precision_trend can loop forever when window_days is zero or negative",
+        "format_numeric_summary divides by zero on empty input",
+        "Missing validation for `chunk_size` may trigger panics or invalid chunking behavior"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "This class of bugs involves logical errors related to numeric edge cases (e.g., division by zero, subtraction causing underflow, infinite loops on zero input). Detecting these syntactically requires data flow analysis to track potential variable values and understanding the semantics of operations (e.g., `x - 1` is only dangerous for `x=0`). A static syntax rule cannot reliably identify the missing precondition checks without an unacceptable number of false positives.",
+      "rule": null
+    },
+    {
+      "name": "Missing or Inadequate Input Validation",
+      "tp_count": 4,
+      "example_titles": [
+        "api_timeout parsed without range or finiteness validation",
+        "Threshold is not validated, allowing all findings to collapse into one",
+        "No CLI-level bounds checking for chunk_size and max_exchanges",
+        "The `since` date parameter is free-form and not validated"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "This pattern concerns the absence of validation code at system boundaries (e.g., CLI arguments, config file parsing). Syntactically, it is impossible for a rule to distinguish between a value that needs validation and one that doesn't. This requires semantic understanding of the program's inputs, trust boundaries, and data invariants.",
+      "rule": null
+    },
+    {
+      "name": "Concurrency and Race Conditions",
+      "tp_count": 3,
+      "example_titles": [
+        "Cache hit detection is racy and can report false positives/negatives under concurrent requests",
+        "Temporary cache file name can collide across concurrent writes from the same process",
+        "Cache reads can observe partially written files because writes are not durably flushed before rename"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "Concurrency bugs are defined by the interaction of multiple threads or processes over time. Their signature is not contained within a single static AST. Detecting them requires a deep understanding of the execution model, shared state, and non-atomic sequences of operations, which is far beyond the capabilities of syntactic pattern matching.",
+      "rule": null
+    }
+  ],
+  "notes": "The most fruitful patterns for `ast-grep` in Rust involve specific, known-fallible function calls where developers commonly misuse error handling (e.g., ignoring Results, using `unwrap()`, or silently converting errors to default values). General bug patterns like 'missing input validation' or 'race conditions' are semantic and remain `llm_only`. The `string-byte-slice.yml` rule appears to be a high-value one, covering a significant cluster of real-world panic risks."
+}

@@ -769,4 +769,56 @@ rule:
         assert!(!findings.is_empty(),
             "should flag Next.js/Fetch-style headers.set(..., '*')");
     }
+
+    /// Test harness for new rules added in 2026-04 mining push.
+    /// Each entry: (fixture path, file ext, rule id, expected match count).
+    /// Fixture files embed both positive and negative cases; this asserts the
+    /// positive cases fire and the negatives don't.
+    #[test]
+    fn mining_2026_04_rules_scan_correctly() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let rules = load_rules(&project_dir, fake_home.path());
+
+        let cases: &[(&str, &str, &str, usize)] = &[
+            ("rules/python/tests/bind-all-interfaces.py",            "py",   "bind-all-interfaces", 2),
+            ("rules/python/tests/eval-exec-non-literal.py",          "py",   "eval-exec-non-literal", 3),
+            ("rules/python/tests/flask-debug-true.py",               "py",   "flask-debug-true", 2),
+            ("rules/python/tests/blocking-call-in-async.py",         "py",   "blocking-call-in-async", 3),
+            ("rules/python/tests/fastapi-unbounded-pagination.py",   "py",   "fastapi-unbounded-pagination", 2),
+            ("rules/typescript/tests/sql-template-injection.ts",     "ts",   "sql-template-injection", 2),
+            ("rules/typescript/tests/tls-reject-unauthorized-false.ts","ts", "tls-reject-unauthorized-false", 2),
+            ("rules/typescript/tests/eval-non-literal.ts",           "ts",   "eval-non-literal", 3),
+            ("rules/typescript/tests/json-parse-as-type.ts",         "ts",   "json-parse-as-type", 1),
+            ("rules/typescript/tests/unsafe-url-concat.ts",          "ts",   "unsafe-url-concat", 2),
+            ("rules/javascript/tests/bind-all-interfaces.js",        "js",   "bind-all-interfaces", 2),
+            ("rules/yaml/tests/ha-jinja-loop-scoped-reassignment.yaml","yaml","ha-jinja-loop-scoped-reassignment", 1),
+            ("rules/bash/tests/unsafe-grep-variable.sh",             "sh",   "unsafe-grep-variable", 2),
+            ("rules/bash/tests/toctou-lock-touch.sh",                "sh",   "toctou-lock-touch", 1),
+            ("rules/rust/tests/ignored-io-result.rs",                "rs",   "ignored-io-result", 2),
+            ("rules/rust/tests/silent-error-conversion.rs",          "rs",   "silent-error-conversion", 2),
+            ("rules/hcl/tests/iam-wildcard-action.tf",               "tf",   "iam-wildcard-action", 1),
+            ("rules/hcl/tests/iam-wildcard-resource.tf",             "tf",   "iam-wildcard-resource", 1),
+            // merged rule: bind-in-event-listener replaces bind-in-add-event-listener
+            ("rules/javascript/tests/bind-in-event-listener.js",     "js",   "bind-in-event-listener", 2),
+        ];
+
+        let mut failures = Vec::new();
+        for (path, ext, rule_id, expected) in cases {
+            let src_path = project_dir.join(path);
+            let source = std::fs::read_to_string(&src_path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", src_path.display()));
+            let findings = scan_file(&source, ext, &rules);
+            let matches = findings.iter().filter(|f| f.title.contains(rule_id)).count();
+            if matches != *expected {
+                failures.push(format!(
+                    "{rule_id} [{path}]: expected {expected} matches, got {matches}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(),
+            "{} rule(s) failed expected-match assertion:\n  {}",
+            failures.len(),
+            failures.join("\n  "));
+    }
 }

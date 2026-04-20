@@ -1,0 +1,16 @@
+id: json-parse-as-type
+language: TypeScript
+severity: warning
+message: "`JSON.parse(...) as T` asserts a type without runtime validation. Malformed input becomes undefined behavior. Validate with a schema library (Zod, io-ts) or a type-guard."
+note: "Mining: 8 confirmed true positives. Excludes `as unknown` (intentional widening) and `as any` (covered by as-any-cast.yml)."
+rule:
+  kind: as_expression
+  has:
+    stopBy: end
+    kind: call_expression
+    has:
+      stopBy: end
+      field: function
+      regex: "^JSON\\.parse$"
+  not:
+    regex: "\\bas\\s+(unknown|any)\\s*$"

@@ -1,0 +1,100 @@
+{
+  "language": "javascript",
+  "existing_astgrep_rules": [
+    "bind-in-add-event-listener.yml",
+    "console-log-artifact.yml",
+    "as-any-cast.yml",
+    "bare-catch.yml",
+    "cors-wildcard-origin.yml",
+    "non-literal-regexp.yml",
+    "non-null-assertion.yml",
+    "nullish-coalescing-preferred.yml",
+    "path-traversal-join.yml",
+    "promise-async-executor.yml",
+    "sync-in-async.yml",
+    "tautological-length.yml"
+  ],
+  "tp_count": 13,
+  "fp_count": 0,
+  "tps": [
+    {
+      "file": "src/plugins/biomes/index.js",
+      "title": "Event listener is never unsubscribed because `.bind(this)` creates a new function",
+      "reason": "Real pattern issue. The ECS plugin already fixed this by storing bound references. Biomes, crafting, daynight, interaction, particles, sound plugins all have the same bug.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/crafting/index.js",
+      "title": "Event listeners are never removed because bound handler references differ",
+      "reason": "Same .bind(this) pattern issue as biomes plugin. ECS plugin shows the correct pattern with stored bound references.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/daynight/index.js",
+      "title": "Event listener is not removed because `bind(this)` creates a different function reference",
+      "reason": "Same .bind(this) leak pattern across all plugins.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/interaction/index.js",
+      "title": "Update listener cannot be removed because `bind()` creates a new function",
+      "reason": "Same .bind(this) leak pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/particles/index.js",
+      "title": "Event listeners cannot be removed because `.bind(this)` creates new function instances",
+      "reason": "Same .bind(this) leak pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/sound/index.js",
+      "title": "Event listeners cannot be removed because `.bind(this)` creates new function objects",
+      "reason": "Same .bind(this) leak pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/core/engine/Engine.js",
+      "title": "Engine can be left in a broken running state if startup async work fails",
+      "reason": "start() sets running=true before awaiting enableAll(). If that rejects, running stays true but animation loop never started. Real state management bug.",
+      "category": ""
+    },
+    {
+      "file": "src/systems/world/TerrainWorkerManager.js",
+      "title": "Chunk completion path is not exception-safe and can strand jobs as permanently busy",
+      "reason": "If onmessage handler throws after receiving chunk data, the worker stays marked busy forever. Real resource leak.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/world/index.js",
+      "title": "Errors during async world generation leave the promise unresolved and player state inconsistent",
+      "reason": "initializeWorld has no try/catch around generateInitialTerrain/updateChunkMeshes. If they throw, player stays frozen at y=120 and promise never resolves.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/textureGenerator.js",
+      "title": "ASCII parser strips leading and trailing spaces from every row",
+      "reason": "If pixel art uses spaces for transparent/white pixels at row edges, trim() removes them, corrupting the texture. Real rendering bug.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/biomes/index.js",
+      "title": "Lake generation uses undefined `this.waterLevel`, producing invalid heights",
+      "reason": "Water level is 75 (defined in CLAUDE.md) but if this.waterLevel is undefined in the biome plugin context, lake generation would produce NaN heights. Real bug.",
+      "category": ""
+    },
+    {
+      "file": "src/plugins/player/index.js",
+      "title": "Wall-sliding logic loses the attempted Z movement due to aliasing `camera.position`",
+      "reason": "If collision code modifies camera.position.x in the X-check, then the Z-check uses the already-modified position instead of the original attempted position. Real physics bug causing janky wall sliding.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/textureGenerator.js",
+      "title": "Transparent pixels are forced opaque because alpha uses `|| 255`",
+      "reason": "If color lookup returns alpha=0 for transparency, `|| 255` coerces it to 255 (opaque). Glass and water textures would lose transparency. Real rendering bug.",
+      "category": ""
+    }
+  ],
+  "fps": []
+}

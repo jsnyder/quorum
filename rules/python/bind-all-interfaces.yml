@@ -1,0 +1,29 @@
+id: bind-all-interfaces
+language: Python
+severity: warning
+message: "Binding a server to `0.0.0.0` exposes it on every network interface. Bind to `127.0.0.1` for local-only, or use a deliberate allowlist."
+note: "Prophylactic baseline: Flask/FastAPI/uvicorn/socket binds to all interfaces."
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        any:
+          - regex: "^(app|application|server)\\.run$"
+          - regex: "^uvicorn\\.run$"
+          - regex: "^socket\\.bind$"
+        stopBy: end
+    - any:
+        - has:
+            kind: keyword_argument
+            all:
+              - has: { field: name, regex: "^host$" }
+              - has: { field: value, regex: "^['\"]0\\.0\\.0\\.0['\"]$" }
+            stopBy: end
+        - has:
+            kind: argument_list
+            has:
+              kind: string
+              regex: "^['\"]0\\.0\\.0\\.0['\"]$"
+              stopBy: end
+            stopBy: end

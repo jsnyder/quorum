@@ -1,0 +1,27 @@
+id: fastapi-unbounded-pagination
+language: Python
+severity: warning
+message: "Pagination parameter (`limit`/`offset`/`page`/`size`) accepted without bounds on a FastAPI/Flask handler. Use `Query(default, le=...)` or `Annotated[int, Query(le=...)]` to cap the page size."
+note: "Mining: 6 confirmed true positives. Covers bare `limit: int` and defaulted `limit: int = 100` forms. Scoped to decorators that resemble HTTP routes (app/router/blueprint.verb)."
+rule:
+  any:
+    - kind: typed_parameter
+      regex: "^(limit|offset|page|size|page_size|per_page)\\s*:\\s*(int|Optional\\[int\\])$"
+      inside:
+        stopBy: end
+        kind: decorated_definition
+        has:
+          stopBy: end
+          kind: decorator
+          regex: "\\.(get|post|put|delete|patch)\\b"
+    - kind: default_parameter
+      regex: "^(limit|offset|page|size|page_size|per_page)\\s*:\\s*(int|Optional\\[int\\])\\s*="
+      not:
+        regex: "Query\\s*\\("
+      inside:
+        stopBy: end
+        kind: decorated_definition
+        has:
+          stopBy: end
+          kind: decorator
+          regex: "\\.(get|post|put|delete|patch)\\b"

@@ -1,0 +1,1390 @@
+{
+  "language": "typescript",
+  "existing_astgrep_rules": [
+    "as-any-cast.yml",
+    "bare-catch.yml",
+    "cors-wildcard-origin.yml",
+    "non-literal-regexp.yml",
+    "non-null-assertion.yml",
+    "nullish-coalescing-preferred.yml",
+    "path-traversal-join.yml",
+    "promise-async-executor.yml",
+    "sync-in-async.yml",
+    "tautological-length.yml",
+    "bind-in-add-event-listener.yml",
+    "console-log-artifact.yml"
+  ],
+  "tp_count": 182,
+  "fp_count": 55,
+  "tps": [
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "Telemetry is enabled by default",
+      "reason": "Valid concern, changed to opt-in",
+      "category": "security"
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "append() reads the full session file, mutates session.messages, and writes the whole JSON back. If two requests append to the same session at nearly the same time, both can read the same pre-update st",
+      "reason": "Real race condition - read-modify-write with no locking. Needs file locking or atomic write pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "get() catches all exceptions from readFileSync/JSON.parse and returns null with no logging.",
+      "reason": "Silent swallowing makes corrupted sessions indistinguishable from missing ones. Should at least log.",
+      "category": ""
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "All public methods are async, but they use blocking APIs such as existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, and unlinkSync.",
+      "reason": "Real issue - sync I/O in async functions blocks event loop. Should use fs.promises.",
+      "category": ""
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "The code updates session.updatedAt on every append(), but both get() and cleanup() enforce TTL using session.createdAt + this.ttlMs.",
+      "reason": "updatedAt is written but never used for TTL. Either implement sliding expiration or remove updatedAt.",
+      "category": ""
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "Unlike get() and cleanup(), append() does not catch read/parse/write errors.",
+      "reason": "Inconsistent error handling - append throws while get silently returns null. Should be consistent.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-calibrator.ts",
+      "title": "Calibration results are correlated back to findings using free-form original_message text instead of a stable identifier.",
+      "reason": "Core architectural issue - model paraphrase breaks matching. Need stable finding IDs.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-calibrator.ts",
+      "title": "handleAxCalibration() does not validate that the model returned one evaluation per input finding.",
+      "reason": "Missing cardinality check - model can omit or duplicate evaluations silently.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-calibrator.ts",
+      "title": "For adjusted verdicts, the code only increments adjusted if adjustedSeverity is one of critical|high|medium|low|info; otherwise the evaluation is dropped silently.",
+      "reason": "Should fallback to original severity or log when model returns invalid severity string.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "When replaying session history, the code casts arbitrary persisted roles with msg.role as user | assistant.",
+      "reason": "Should validate role at runtime. A system or tool role from corrupted storage could alter model behavior.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Session persistence is split into two sequential append() calls. If the first succeeds and the second throws, the function rejects after partially persisting.",
+      "reason": "Should wrap persistence in try/catch so primary result is still returned on storage failure.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/branch-review.ts",
+      "title": "buildSynthesisPrompt() embeds fr.summary and each finding message verbatim into the system prompt. Those fields come from prior model output rather than trusted constants, so they can contain instruct",
+      "reason": "Real cross-stage prompt injection risk. Model output from Pass 1 injected into Pass 2 system prompt without isolation.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/branch-review.ts",
+      "title": "After the synthesis call, the code assumes synthesisResult.usage.totalTokens always exists.",
+      "reason": "Some providers return partial or missing usage objects. Should use optional chaining.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/branch-review.ts",
+      "title": "The code parses provider JSON and directly assigns parsed.crossFileFindings without validating that it is actually an array of Finding objects.",
+      "reason": "Should validate synthesized findings through normalizeFindings() like other paths do.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "All aspect passes are executed through Promise.all(passPromises). If one model request rejects, Promise.all rejects and discards all other completed pass results.",
+      "reason": "Should use Promise.allSettled to preserve completed results. Multi-pass design explicitly expects independent passes.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "Synthesis findings are appended after the main deduplication pass and are never deduplicated against existing findings.",
+      "reason": "Real duplication risk - synthesis can repeat findings from earlier passes.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "The synthesis gate uses if (runSynthesis && deduplicated.length >= 0), but deduplicated.length >= 0 is always true for arrays.",
+      "reason": "Likely meant > 0. Dead condition that should be fixed.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "loadOptimizedProgram() reads optimized-signature.json and passes data.demos directly to program.setDemos() after only checking that data.demos.length > 0.",
+      "reason": "Should validate demo structure - at minimum check each demo has expected fields.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "Two catch blocks suppress errors without any logging: loadOptimizedProgram() and logReviewTelemetry().",
+      "reason": "Both should log warnings. Silent suppression makes debugging optimization and telemetry issues impossible.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "The session persistence path suppresses all errors without any logging or telemetry.",
+      "reason": "Silent catch swallowing session errors. Should log warning.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "Calibration requests are not fully reflected in the returned metadata. metadata.model is still populated from resolvedModel.",
+      "reason": "Real metadata accuracy issue - calibration model and tokens not properly tracked on partial failure.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "Diff scoping relies on an exact map lookup. If parseDiff stores paths in a normalized form that does not exactly equal filePath, changedLines remains null.",
+      "reason": "Path normalization mismatch between diff parser output and file paths is a real edge case.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "Model-produced line numbers are accepted verbatim and shifted by chunk.startLine - 1. There is no validation that the line is positive or within the chunk.",
+      "reason": "Should clamp to valid range. Models occasionally return line 0 or out-of-bounds lines.",
+      "category": ""
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "doFetch() constructs the endpoint with raw string concatenation. If baseUrl already ends with / or includes a path suffix such as /v1, this can generate doubled slashes.",
+      "reason": "Real URL construction bug. Should normalize with new URL().",
+      "category": ""
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "The timeout is implemented via AbortController, but doFetch() catches all fetch errors and wraps them as Network error. AbortError is indistinguishable from other network failures.",
+      "reason": "Should check for AbortError specifically to report timeout vs network failure.",
+      "category": ""
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "The Ollama branch appends /v1 with simple string concatenation that can produce double slashes.",
+      "reason": "Same URL construction bug as OpenAICompatClient. Should normalize.",
+      "category": ""
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "THIRD_OPINION_BASE_URL and OLLAMA_BASE_URL are accepted verbatim without any validation.",
+      "reason": "Should validate URL format at config load time rather than failing later at request time.",
+      "category": ""
+    },
+    {
+      "file": "src/context/ContextEngine.ts",
+      "title": "Chunk.startLine is documented as 1-based line number where this chunk starts in the original file, but chunking is done on the redacted text.",
+      "reason": "If redaction changes line count, chunk boundaries are wrong. In practice SecretRedactor does inline replacement so line count is preserved, but the contract is fragile.",
+      "category": ""
+    },
+    {
+      "file": "src/context/ContextEngine.ts",
+      "title": "fetchFrameworkDocs() returns result.content verbatim with no length cap.",
+      "reason": "Should truncate to a reasonable limit. Large docs can blow up context windows.",
+      "category": ""
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "load() sets this.loaded = true before any file reads/parsing occur, then swallows parse/read errors.",
+      "reason": "Bug - loaded flag should be set after successful loading, not before. Failure leaves store permanently empty.",
+      "category": ""
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "The comment says user examples are merged with bundled ones (user takes precedence), but the implementation simply appends both arrays.",
+      "reason": "No dedup/override logic exists. Comment is misleading.",
+      "category": ""
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "Parsed JSON is accepted whenever Array.isArray(data.examples) is true, but individual entries are never validated.",
+      "reason": "Should validate example structure - at minimum check features and findings arrays exist.",
+      "category": ""
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "Both file-loading blocks use bare catch {} with only comments.",
+      "reason": "Should log warnings for debuggability.",
+      "category": ""
+    },
+    {
+      "file": "src/context/DomainDetector.ts",
+      "title": "EXTENSION_TO_LANGUAGE maps .vue to vue and .svelte to svelte, while the same detector separately reports framework.",
+      "reason": "Inconsistency - .vue and .svelte are component formats, not languages. Should map to javascript/typescript.",
+      "category": ""
+    },
+    {
+      "file": "src/cli/cli-v2.ts",
+      "title": "Path boundary enforcement is inconsistent. In the review branch-review path, file reads go through resolveSafePath, but other commands read user-supplied paths directly.",
+      "reason": "Real inconsistency - chat --file and review --diff-file bypass path safety. Should apply resolveSafePath consistently.",
+      "category": ""
+    },
+    {
+      "file": "src/cli/cli-v2.ts",
+      "title": "--depth is documented as standard or deep, but the code does not validate it.",
+      "reason": "Should validate against allowed values.",
+      "category": ""
+    },
+    {
+      "file": "src/cli/cli-v2.ts",
+      "title": "The feedback command does JSON.parse(opts.findings) without local validation.",
+      "reason": "Should validate array structure before passing to handler.",
+      "category": ""
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "The feedback tool parses user-controlled JSON with JSON.parse(a.findings as string) and passes the result directly to handleFeedback without any schema validation.",
+      "reason": "Should validate findings array structure with Zod like other tools in the same file.",
+      "category": ""
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "The review handler splits comma-separated strings but never filters empty entries.",
+      "reason": "Easy fix - filter(Boolean) after split/trim.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/feedback.ts",
+      "title": "Neither fs.mkdirSync nor fs.appendFileSync is wrapped in error handling.",
+      "reason": "Should wrap in try/catch to return structured error instead of throwing.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/feedback.ts",
+      "title": "The function is declared async, but it uses fs.mkdirSync and fs.appendFileSync.",
+      "reason": "Should use fs.promises for consistency with async signature.",
+      "category": ""
+    },
+    {
+      "file": "src/cli/index.ts",
+      "title": "The error handler is attached only to createProgram().parseAsync, not to the surrounding dynamic import.",
+      "reason": "Import rejection bypasses error handler. Should chain .catch on the import() call too.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/json-parser.ts",
+      "title": "The last-resort extraction uses a greedy regex which matches from the first { to the last }.",
+      "reason": "Real issue - greedy match captures too much in mixed prose. Should use balanced brace matching or try multiple candidates.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/json-parser.ts",
+      "title": "Only the initial JSON.parse is wrapped in try/catch. The later parses are unguarded.",
+      "reason": "Fallback paths should also catch and continue to next strategy.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/json-parser.ts",
+      "title": "The prose fallback only searches for { ... }, not [ ... ].",
+      "reason": "Should handle top-level arrays too.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/diff-parser.ts",
+      "title": "Both functions derive the file key from the +++ header and treat /dev/null as unusable. Deleted files are silently dropped.",
+      "reason": "Should represent deleted files under their original path from the --- header.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/diff-parser.ts",
+      "title": "parseDiff() treats any line that starts with + or - as an added/removed source line. Git diffs can contain other metadata lines like No newline at end of file.",
+      "reason": "Real line counting bug. Metadata lines inside hunks will shift line numbers.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Role casting without runtime validation - msg.role cast as 'user' | 'assistant' without checking",
+      "reason": "Fixed by extracting SessionContinuation helper with VALID_ROLES set filtering",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Session persistence uses two sequential append() calls - partial persist on failure",
+      "reason": "Fixed in SessionContinuation.persistSessionExchange with try/catch isolation",
+      "category": "reliability"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Missing-session handling returns empty array silently",
+      "reason": "Fixed - SessionContinuation.loadSessionHistory gracefully returns [] for missing sessions",
+      "category": "error-handling"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Primary result lost when auxiliary persistence throws",
+      "reason": "Fixed - persistSessionExchange catches errors and returns undefined, never throws",
+      "category": "reliability"
+    },
+    {
+      "file": "src/tools/debug.ts",
+      "title": "Duplicated session continuation logic identical to chat.ts",
+      "reason": "Fixed by replacing with shared SessionContinuation helpers",
+      "category": "maintainability"
+    },
+    {
+      "file": "src/tools/debug.ts",
+      "title": "Role casting without validation",
+      "reason": "Fixed via SessionContinuation VALID_ROLES filtering",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/testgen.ts",
+      "title": "Duplicated session continuation logic identical to chat.ts",
+      "reason": "Fixed by replacing with shared SessionContinuation helpers",
+      "category": "maintainability"
+    },
+    {
+      "file": "src/tools/testgen.ts",
+      "title": "Role casting without validation",
+      "reason": "Fixed via SessionContinuation VALID_ROLES filtering",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "Promise.all discards completed pass results when one pass fails",
+      "reason": "Fixed by switching to Promise.allSettled with fulfilled result filtering",
+      "category": "reliability"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "deduplicated.length >= 0 is always true, synthesis always runs",
+      "reason": "Fixed to > 0 so synthesis skips when no findings exist",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "Synthesis findings bypass deduplication against existing findings",
+      "reason": "Fixed with deduplicateFindings merge of synthesis results",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "fetchAspectDocs bare catch swallows errors silently",
+      "reason": "Fixed by adding console.warn with error context",
+      "category": "observability"
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "URL string concatenation produces doubled slashes when baseUrl has trailing slash",
+      "reason": "Fixed with replace(/\\/+$/, '') before concatenation",
+      "category": "correctness"
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "Ollama URL construction produces doubled slashes with trailing slash input",
+      "reason": "Fixed with replace(/\\/+$/, '') before /v1 append",
+      "category": "correctness"
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "this.loaded = true set before file reads - failure leaves store permanently empty",
+      "reason": "Fixed by tracking loadedAny flag, only setting loaded after successful parse",
+      "category": "correctness"
+    },
+    {
+      "file": "src/context/FewShotStore.ts",
+      "title": "Bare catch blocks swallow file read errors silently",
+      "reason": "Fixed by adding console.warn with descriptive messages",
+      "category": "observability"
+    },
+    {
+      "file": "src/tools/ax-calibrator.ts",
+      "title": "Free-form original_message matching breaks when model paraphrases",
+      "reason": "Fixed by adding finding_index for stable 1-based positional matching with message fallback",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "loadOptimizedProgram bare catch swallows parse errors",
+      "reason": "Fixed by adding console.warn - corrupt optimized signature was invisible",
+      "category": "observability"
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "logReviewTelemetry bare catch swallows write errors",
+      "reason": "Fixed by adding console.warn - telemetry failures were invisible",
+      "category": "observability"
+    },
+    {
+      "file": "src/context/ProjectContext.ts",
+      "title": "Three bare catch blocks for package.json, tsconfig.json, .third-opinion.yaml reads",
+      "reason": "Fixed by adding console.warn to all three - malformed config files were invisible failures",
+      "category": "observability"
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "Three bare catch blocks in get(), cleanup() list, and cleanup() per-file",
+      "reason": "Fixed by adding console.warn with session ID/file context to all three",
+      "category": "observability"
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "Feedback JSON.parse result not validated as array",
+      "reason": "Fixed by adding Array.isArray check with descriptive error",
+      "category": "validation"
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "Empty strings from comma-split files and focus not filtered",
+      "reason": "Fixed by adding .filter(Boolean) after split and trim",
+      "category": "correctness"
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "Session persistence bare catch swallows create errors",
+      "reason": "Fixed by adding console.warn with error context",
+      "category": "observability"
+    },
+    {
+      "file": "src/sessions/SessionContinuation.ts",
+      "title": "Both loadSessionHistory and persistSessionExchange swallow all errors silently",
+      "reason": "Already fixed in Phase 7 by adding console.warn - but SessionContinuation itself catches and returns defaults by design",
+      "category": "error-handling"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Accesses result.usage.totalTokens without verifying usage exists",
+      "reason": "Real - provider may not return usage object. Should use optional chaining",
+      "category": "robustness"
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "crypto.randomBytes(3) generates only 24 bits of entropy, birthday collision possible",
+      "reason": "Valid - 16.7M possible values means ~4K sessions before 50% collision probability. Should increase to 8 bytes",
+      "category": "correctness"
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "get() and cleanup() swallow errors with bare catch blocks",
+      "reason": "Already fixed in Phase 7 - added console.warn to all three catch blocks",
+      "category": "error-handling"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "Synthesis pass calls synthesisProgram.forward() without try/catch",
+      "reason": "Real - synthesis failure would crash the whole review, losing all per-aspect findings",
+      "category": "error-handling"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "Rejected aspect promises silently filtered with no logging",
+      "reason": "Real - should log which aspects failed so users know results are partial",
+      "category": "observability"
+    },
+    {
+      "file": "src/context/ProjectContext.ts",
+      "title": "JSON.parse fails on tsconfig.json with comments (common with tsc --init)",
+      "reason": "Real bug - tsconfig often has // comments. Should use a comment-stripping parser or catch gracefully",
+      "category": "correctness"
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "If consumer breaks out of chatStream for-await loop, finally block cleanup incomplete",
+      "reason": "Real - AbortController should be signaled on early break to clean up underlying connection",
+      "category": "resource-lifecycle"
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "SSE parser strictly requires space after colon",
+      "reason": "Real - SSE spec allows data:value without space. Some providers may omit the space",
+      "category": "correctness"
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "Base URLs for OpenRouter and Google AI have trailing /v1 that may cause double /v1/v1",
+      "reason": "Real concern - if OpenAICompatClient also appends /v1, we get /v1/v1. URL normalization partially addresses this but not fully",
+      "category": "robustness"
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "The changeset removes the only assertions covering investigation-context behavior",
+      "reason": "Valid concern but intentional architecture change - investigation context moved from calibrator to Pass 1b in ax-review.ts. New tests in ax-review.test.ts cover the moved behavior.",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "The new investigation-context assertion assumes a fixed call order",
+      "reason": "Fixed by matching calls by content (investigation_context tag) instead of index",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "src/tools/ax-review.ts now potentially invokes two review passes against the same injected axProgram instance",
+      "reason": "Fixed by always creating a fresh createAxReviewProgram() for Pass 1b instead of reusing options.axProgram",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "the test may pass or fail depending on scheduling rather than behavior",
+      "reason": "Fixed the call-order brittleness in the test by matching on content",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "In the display lambda, the selected temperature/humidity values are initialized to zero",
+      "reason": "This was a finding about the reviewed ESPHome file, not about our code changes - but it is a real bug in the fixture",
+      "category": ""
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "The custom ZE08 polling logic only checks available >= 9",
+      "reason": "Real protocol bug in the ESPHome fixture file",
+      "category": ""
+    },
+    {
+      "file": "homeassist-cli-compact-mode.ts",
+      "title": "`index.ts` ends with a bare `program.parse()`",
+      "reason": "Valid point \u2014 startup failures like missing package.json or bad module imports would emit stack traces instead of JSON errors. Worth wrapping in parseAsync with a catch handler.",
+      "category": "error handling"
+    },
+    {
+      "file": "homeassist-cli-compact-mode.ts",
+      "title": "the `list` command advertises `--area <area>` with description `Filter by area name`",
+      "reason": "Correct \u2014 --area is just a regex alias matching entity_id/friendly_name, not actual HA area membership. The help text is misleading. Should rename to --name or fix the description.",
+      "category": "correctness"
+    },
+    {
+      "file": "homeassist-cli-compact-mode.ts",
+      "title": "centralizing regex validation is the right pattern",
+      "reason": "Agreed \u2014 safeRegex is the correct approach. Good to have this noted as a positive.",
+      "category": "security"
+    },
+    {
+      "file": "tests/unit/services/session-queue.test.ts",
+      "title": "The test case waits for a fixed duration of 200ms using setTimeout",
+      "reason": "Fixed by replacing setTimeout(200) with vi.waitFor on the actual assertion",
+      "category": "reliability"
+    },
+    {
+      "file": "src/services/mem0.ts",
+      "title": "Unified search omits the user_id tenant filter",
+      "reason": "Real gap \u2014 searchUnified was missing the user_id filter that other search methods had. Fixed by adding tenant filter to must array.",
+      "category": ""
+    },
+    {
+      "file": "src/services/mem0.ts",
+      "title": "getPoint retrieves arbitrary IDs without validating ownership",
+      "reason": "Valid security finding. Added user_id ownership check on returned point payload.",
+      "category": ""
+    },
+    {
+      "file": "src/services/mem0.ts",
+      "title": "getCollectionName fallback points to a different default collection than config creation",
+      "reason": "Correct \u2014 fallback was 'house_memory' but production uses 'house_memory_v2'. Would cause silent data misses if config was absent.",
+      "category": ""
+    },
+    {
+      "file": "src/routes/federated-search.ts",
+      "title": "Unbounded `limit` query parameter can trigger expensive searches",
+      "reason": "Valid \u2014 no max was enforced. Capped at 100 with Math.min().",
+      "category": ""
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Server startup hard-requires OPENROUTER_API_KEY despite fallback logic for other API keys",
+      "reason": "Real bug \u2014 requireEnv would throw even when OPENAI_API_KEY was set. Fixed with either-or fallback.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/routes/federated-search-detail.test.ts",
+      "title": "Test does not validate the real route definition",
+      "reason": "Correct \u2014 test only asserted against a local object literal, not the actual Fastify route. Rewrote with proper injection tests.",
+      "category": ""
+    },
+    {
+      "file": "src/services/mem0.ts",
+      "title": "getPoint masks backend failures by converting all errors to null",
+      "reason": "Valid \u2014 swallowing errors silently made debugging impossible. Added error logging while keeping null return for callers.",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation-enrichment.ts",
+      "title": "Session locking is not actually atomic and allows duplicate concurrent processing",
+      "reason": "Fixed with UPDATE...RETURNING to atomically claim and return rows in one query.",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation-enrichment.ts",
+      "title": "Database row is marked enriched before embedding and Qdrant update complete",
+      "reason": "Fixed by reordering: Qdrant upsert now happens before PG status update to enriched.",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation-enrichment.ts",
+      "title": "Unknown LLM item IDs are silently treated as successful enrichments",
+      "reason": "Fixed: applyEnrichment now throws on unknown IDs instead of returning early.",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation-enrichment.ts",
+      "title": "Model output validation does not verify facts and concepts contain strings",
+      "reason": "Fixed: added .every(f => typeof f === 'string') validation for both arrays.",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation-enrichment.ts",
+      "title": "Items retried by moving back to pending are counted as failures",
+      "reason": "Fixed: now uses skipped counter for retriable items, failed only for permanent failures.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/services/observation-enrichment.test.ts",
+      "title": "Test claims to verify PG and Qdrant updates but never asserts those side effects",
+      "reason": "Fixed: added assertions for mockQdrant.upsert and mockOpenAI.embeddings.create call counts.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/services/observation-enrichment.test.ts",
+      "title": "Unused imported type adds noise and suggests stale test code",
+      "reason": "Fixed: removed unused EnrichmentResult import.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/routes/observation-compress.test.ts",
+      "title": "Shared mock state can leak between tests",
+      "reason": "Fixed: added beforeEach with mockReset() for the shared mock.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/routes/observation-compress.test.ts",
+      "title": "Test does not verify that async compression was actually triggered",
+      "reason": "Fixed: added setImmediate await + assertion that compressSession was called with the expected session_id.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/routes/observation-compress.test.ts",
+      "title": "Shared `app` instance is not cleared after teardown",
+      "reason": "Minor but real \u2014 should set app = undefined after close.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Empty query triggers blanket penalty on all observations",
+      "reason": "Real bug. \"\".includes(\"\") is true in JS. Fixed with query.trim() guard and added blank-query unit test. PAL also caught this independently.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Whitespace in query not normalized before echo detection",
+      "reason": "Valid. Fixed by the same query.trim().toLowerCase() guard that addressed the empty query bug.",
+      "category": ""
+    },
+    {
+      "file": "src/routes/session-extract.ts",
+      "title": "Bare catch suppresses all LLM/parse errors",
+      "reason": "Valid. Fixed by adding app.log.warn in the route when extraction returns empty from a non-trivial transcript (>100 chars). The pure function itself can't log but the route surfaces the issue. PAL also caught this.",
+      "category": ""
+    },
+    {
+      "file": "src/routes/session-extract.ts",
+      "title": "LLM response validation incomplete",
+      "reason": "Valid. Fixed by adding typeof c.text === 'string' and typeof c.category === 'string' checks. PAL also caught this. Regression test added for missing category.",
+      "category": ""
+    },
+    {
+      "file": "src/services/embedding.ts",
+      "title": "embed() dereferences the first result without validating the response",
+      "reason": "Fixed: added guard checking response.data?.[0]?.embedding before access",
+      "category": ""
+    },
+    {
+      "file": "src/services/embedding.ts",
+      "title": "embedBatch() does not verify output count matches input count",
+      "reason": "Fixed: added length check comparing response.data.length to texts.length",
+      "category": ""
+    },
+    {
+      "file": "src/services/embedding.ts",
+      "title": "Type safety is bypassed with double as any casting around SDK call",
+      "reason": "Fixed: improved typing in createEmbeddingClient factory to avoid as any",
+      "category": ""
+    },
+    {
+      "file": "src/services/fact-extraction.ts",
+      "title": "Non-user message roles are incorrectly relabeled as Assistant",
+      "reason": "Fixed: now preserves actual role name via charAt(0).toUpperCase() + slice(1)",
+      "category": ""
+    },
+    {
+      "file": "src/services/fact-extraction.ts",
+      "title": "All LLM and parsing failures are silently swallowed",
+      "reason": "Fixed: added console.warn logging when JSON parsing fails",
+      "category": ""
+    },
+    {
+      "file": "src/services/fact-extraction.ts",
+      "title": "Parser is overly fragile for typical LLM responses",
+      "reason": "Fixed: added markdown code fence stripping before JSON.parse",
+      "category": ""
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "scrollAll ignores the requested total limit and can read the entire collection",
+      "reason": "Fixed: added maxResults parameter with 10000 default cap",
+      "category": ""
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "Unvalidated limit values are forwarded directly to Qdrant",
+      "reason": "Fixed: clamped limit to Math.max(1, Math.min(limit, 100))",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "Deduplication search is not scoped to the target namespace",
+      "reason": "Fixed: added namespace filter to dedup search query",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "Caller-supplied metadata can override reserved fields",
+      "reason": "Fixed: spread metadata first, reserved fields (source, userId, namespace) after so they always win",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "Invalid DEDUP_THRESHOLD values silently disable deduplication",
+      "reason": "Fixed: added range validation (0-1) with fallback to 0.92 and warning log",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "Logs include raw user input and extracted memory content",
+      "reason": "Fixed: all logged content truncated to 60 chars",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "Deduplication log exposes matched stored memory text",
+      "reason": "Fixed: truncated to 60 chars in dedup log",
+      "category": ""
+    },
+    {
+      "file": "src/services/general-memory.ts",
+      "title": "console.log debug artifact left in code",
+      "reason": "Fixed: changed to console.info \u2014 these are intentional operational logs, not debug",
+      "category": ""
+    },
+    {
+      "file": "src/services/claude-session.ts",
+      "title": "Search does not default to the service namespace used for ingestion",
+      "reason": "Fixed: search now defaults to this.namespace when options.namespace is not provided",
+      "category": ""
+    },
+    {
+      "file": "src/services/claude-session.ts",
+      "title": "File type detection misclassifies Python files containing from ... import",
+      "reason": "Fixed: reordered detection to check JS first (import+from), then Python requires def+(import|class)",
+      "category": ""
+    },
+    {
+      "file": "src/services/claude-session.ts",
+      "title": "console.log debug artifact left in code",
+      "reason": "Fixed: changed to console.info \u2014 intentional operational monitoring log",
+      "category": ""
+    },
+    {
+      "file": "src/services/session-queue.ts",
+      "title": "Session stats are deleted even when database logging fails",
+      "reason": "Fixed: moved sessionStats.delete inside try block after successful DB write. Stats retained for retry on failure.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Unvalidated limit can produce negative or excessively large searches",
+      "reason": "Fixed: clamped limit to Math.max(1, Math.min(limit, 100))",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Recency sort is applied only after top-N truncation, so it does not return the most recent items",
+      "reason": "Fixed: recency sort now applied before truncation to preserve most-recent items",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Invalid timestamps can corrupt score ordering via NaN decay values",
+      "reason": "Fixed: added isNaN guard in applyTemporalDecay \u2014 invalid dates skip decay",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Invalid createdAt values are not handled in recency sorting",
+      "reason": "Fixed: added isNaN guard in sortByRecency \u2014 invalid dates sorted to end",
+      "category": ""
+    },
+    {
+      "file": "src/services/knowledge.ts",
+      "title": "Vector metadata is not refreshed when only category changes",
+      "reason": "Fixed: updateFact now re-upserts vector payload when category changes",
+      "category": ""
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Startup listeners can trigger duplicate shutdown execution",
+      "reason": "Fixed: added shuttingDown guard to prevent re-entrant shutdown",
+      "category": ""
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Process exits immediately on listen/startup failure without closing initialized services",
+      "reason": "Fixed: added db.disconnect() in catch block before process.exit",
+      "category": ""
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Empty catch block silently swallows errors",
+      "reason": "Fixed: added descriptive comment explaining best-effort nature",
+      "category": ""
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Repeated Qdrant client instantiation increases connection/config duplication",
+      "reason": "Fixed: consolidated to single sharedQdrantClient used by VectorStoreService, EpisodeStoreService, and ObservationEnrichmentService",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/server.ts",
+      "title": "search_sessions advertises a domain filter but never applies it",
+      "reason": "Fixed: domain parameter now passed through to federatedSearch.search options",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/standalone.ts",
+      "title": "Type safety is bypassed by injecting an undefined VectorStoreService",
+      "reason": "Fixed: federatedSearch is now undefined when no vectorStore, consistent with optional handling pattern",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/standalone.ts",
+      "title": "Database connection is leaked on startup failures after connect()",
+      "reason": "Fixed: added db cleanup in error handling path",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/standalone.ts",
+      "title": "Shutdown path does not close the MCP server/transport before exiting",
+      "reason": "Fixed: MCP transport close added to shutdown handler",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/standalone.ts",
+      "title": "Signal handler can run multiple times concurrently",
+      "reason": "Fixed: added shuttingDown guard",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "SSRF protection for OpenMemory import is bypassed when OPENMEMORY_URL is unset",
+      "reason": "Fixed: endpoint now returns 400 when OPENMEMORY_URL is not configured",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "Secret cleanup endpoint leaks sensitive content back to the caller",
+      "reason": "Fixed: entries now return [REDACTED \u2014 matched credential pattern] instead of memory.slice(0,100)",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "Unvalidated query parameters on /admin/jobs can cause errors",
+      "reason": "Fixed: added jobsQuerySchema with status enum and limit pattern validation",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "/admin/retry-jobs lacks body validation and can crash on missing body",
+      "reason": "Fixed: added retryJobsSchema body validation",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "Empty catch block silently swallows errors",
+      "reason": "Fixed: added descriptive comment explaining best-effort collection existence check",
+      "category": ""
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "Deleted count is incorrect when secret deletion failures occur",
+      "reason": "Fixed: now tracks actual successful deletes instead of using flagged.length",
+      "category": ""
+    },
+    {
+      "file": "src/utils/search-keywords.ts",
+      "title": "Tokenizer leaves many punctuation characters attached to keywords",
+      "reason": "Fixed: expanded split regex to cover brackets, quotes, slashes, and other punctuation",
+      "category": ""
+    },
+    {
+      "file": "src/utils/search-keywords.ts",
+      "title": "Extracted keywords are not deduplicated before boosting",
+      "reason": "Fixed: wrapped in Set for deduplication",
+      "category": ""
+    },
+    {
+      "file": "src/prompts/extraction.ts",
+      "title": "Legacy extraction prompt does not forbid credential extraction",
+      "reason": "Fixed: added credential exclusion rule to CLAUDE_SESSION_EXTRACTION_PROMPT",
+      "category": ""
+    },
+    {
+      "file": "src/prompts/extraction.ts",
+      "title": "Example injects a fabricated absolute date that is not present in the input",
+      "reason": "Fixed: removed fabricated date from example output",
+      "category": ""
+    },
+    {
+      "file": "src/utils/sparse-tokenizer.ts",
+      "title": "Punctuation removal concatenates adjacent words into incorrect tokens",
+      "reason": "Fixed: changed replace(/[^a-z0-9\\s]/g, '') to replace with space instead of empty string. \"hello.world\" now correctly tokenizes to [\"hello\", \"world\"].",
+      "category": ""
+    },
+    {
+      "file": "src/services/observation.ts",
+      "title": "FOR UPDATE SKIP LOCKED is ineffective without an explicit transaction",
+      "reason": "Fixed: wrapped reconcile() in db.withTransaction() so row locks persist across the embed+upsert+update cycle, matching the camera-event.ts pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/services/camera-event.ts",
+      "title": "Falsy check drops valid priority_max=0 filters",
+      "reason": "Fixed: changed both Qdrant and SQL paths from `if (options.priority_max)` to `if (options.priority_max != null)` so priority_max=0 is correctly applied.",
+      "category": ""
+    },
+    {
+      "file": "scripts/backfill-sparse-vectors.ts",
+      "title": "Upsert may overwrite existing point data instead of adding a sparse vector",
+      "reason": "Fixed: switched from client.upsert() to client.updateVectors() which only updates specified named vectors, preserving existing dense vectors.",
+      "category": ""
+    },
+    {
+      "file": "scripts/backfill-sparse-vectors.ts",
+      "title": "Uses point ID as scroll cursor instead of Qdrant's next-page offset",
+      "reason": "Fixed: now uses result.next_page_offset and terminates when offset is null.",
+      "category": ""
+    },
+    {
+      "file": "scripts/backfill-sparse-vectors.ts",
+      "title": "Top-level error handler logs failure but does not exit non-zero",
+      "reason": "Fixed: now calls process.exit(1) after logging.",
+      "category": ""
+    },
+    {
+      "file": "src/routes/federated-search.ts",
+      "title": "Chronological neighbors are selected without server-side ordering",
+      "reason": "Fixed: extracted getTimeline() to VectorStoreService that over-fetches 200 candidates then sorts chronologically, instead of returning first matches in collection order.",
+      "category": ""
+    },
+    {
+      "file": "src/routes/federated-search.ts",
+      "title": "Catch blocks swallow errors and drop diagnostics",
+      "reason": "Fixed: added request.log.error with anchor ID before returning 500.",
+      "category": ""
+    },
+    {
+      "file": "src/mcp/server.ts",
+      "title": "Fallback session search ignores the documented domain filter",
+      "reason": "Valid pre-existing issue. The fallback ClaudeSessionService.search() doesn't accept domain. Low priority since federatedSearch is always available in production.",
+      "category": ""
+    },
+    {
+      "file": "src/main.ts",
+      "title": "Negative or invalid recording durations are accepted and passed to recorder/ffmpeg",
+      "reason": "parseInt can produce NaN or negative values from crafted query params, which would be passed to the recorder. Fixed by adding duration validation with 400 error.",
+      "category": ""
+    },
+    {
+      "file": "src/main.ts",
+      "title": "Filename in Content-Disposition is built from unsanitized deviceId",
+      "reason": "Device IDs from Scrypted could contain special chars. Fixed by sanitizing with replace(/[^a-zA-Z0-9_-]/g, '_') before embedding in Content-Disposition.",
+      "category": ""
+    },
+    {
+      "file": "src/main.ts",
+      "title": "Audio export uses ffmpeg inputArguments without ensuring an input source is present",
+      "reason": "If the ffmpeg input spec returned empty inputArguments, ffmpeg would launch with no input and hang until the 120s timeout. Fixed by checking inputArguments.length before spawning.",
+      "category": ""
+    },
+    {
+      "file": "src/main.ts",
+      "title": "ffmpeg timeout is never cleared, causing late reject/kill after successful completion",
+      "reason": "The setTimeout was never cleared on normal exit. Fixed by storing the timer ref and calling clearTimeout in both the close and error handlers.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Async search logging is not awaited, so failures can escape the try/catch",
+      "reason": "Pre-existing but valid \u2014 logQuery calls db.logSearchQuery synchronously (it's a SQLite synchronous write wrapped in try/catch). The method isn't actually async so the concern doesn't apply in practice, but the pattern could become a bug if logging becomes async later.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Reranker branch does not enforce the requested result limit after post-processing",
+      "reason": "Valid \u2014 dedup can reduce results but also the reranker path wasn't slicing to limit after dedup. Fixed by adding .slice(0, limit) after deduplicateResults.",
+      "category": ""
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Empty sources array is misclassified as episode-only and can suppress all search",
+      "reason": "Pre-existing but valid edge case. An empty sources array would trigger the episode-only branch skipping graph expansion. Low risk since the CLI and MCP tools never send empty arrays, but worth a guard.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/services/federated-search-timings.test.ts",
+      "title": "Reranker timing test only checks positivity and would miss incorrect timing property",
+      "reason": "Real gap. An impl bug that assigned a different stage's value into rerank_ms would pass the original > 0 assertion. Fixed by making the reranker mock sleep 25ms and asserting rerank_ms >= 15ms, which catches misassignment from qdrant_ms (~2ms) or dense_embed_ms (~3ms). Commit afe09f9.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/routes/federated-search-timing-log.test.ts",
+      "title": "Tests do not verify the route actually forwards request parameters to the federated search service",
+      "reason": "Real gap. The test mocked the service and observed the log, but never asserted the service was called with the actual query. A regression that hardcoded search('') or dropped the limit param would still produce a log and pass. Fixed with toHaveBeenCalledWith('hello', expect.objectContaining({ limit: 3 })). Commit 8edf27b-range.",
+      "category": ""
+    },
+    {
+      "file": "tests/unit/services/federated-search-rerank-param.test.ts",
+      "title": "Enabled-path assertion does not verify the reranker was actually invoked",
+      "reason": "Real test-quality gap. The tau==1.0 parity check and idsEnabled!=idsEnv sanity check could both pass if the reranker silently no-op'd in the default path. Added explicit toHaveBeenCalledTimes(1) assertion on reversedReranker.rerank.",
+      "category": ""
+    },
+    {
+      "file": "src/utils/canary-projection.ts",
+      "title": "Non-finite numeric inputs bypass validation and can corrupt projection results",
+      "reason": "Real bug. NaN comparisons silently return false so `NaN <= 0` wouldn't trip the positivity check, disabling the abort gate entirely. Fixed with Number.isFinite + Number.isInteger checks on corpusCount and nonzeroDims, Number.isFinite on abortBytes. Added 8 table-driven tests covering NaN/Infinity/fractional inputs for all three fields. Commit 8be3c9d.",
+      "category": ""
+    },
+    {
+      "file": "src/services/sparse-embedder.ts",
+      "title": "Malformed 200 JSON responses are retried instead of failing fast",
+      "reason": "Real bug. resp.json() throws generic SyntaxError which the outer retry loop treated as transient, defeating the documented fail-fast-on-contract-bug intent. Fixed by wrapping resp.json() in try/catch and re-throwing as ContractError. Added regression test (fetchMock called once, not 3x).",
+      "category": ""
+    },
+    {
+      "file": "src/services/sparse-embedder.ts",
+      "title": "Successful responses are not validated beyond top-level array shape",
+      "reason": "Legitimate defensive gap. A missing `index` or non-finite `value` in a TEI entry would produce { indices: [undefined], values: [NaN] } and fail later at the Qdrant upsert with a less actionable error. Added per-entry Number.isInteger(index) + Number.isFinite(value) validation at the contract boundary, throwing ContractError with entry index + payload excerpt. Added regression test.",
+      "category": ""
+    },
+    {
+      "file": "scripts/diff-samples.ts",
+      "title": "Duplicate captures for the same query and mode are silently overwritten",
+      "reason": "Real silent-failure. loadByQuery used Map.set without dup check \u2014 a duplicate (mode, query) means capture ran twice and the second overwrites the first, invalidating comparison semantics. Fixed by throwing on duplicate with mode + query + file in the error message.",
+      "category": ""
+    },
+    {
+      "file": "scripts/diff-samples.ts",
+      "title": "Failed captures are diffed as if they were valid results",
+      "reason": "Real data-quality issue. A capture with ok:false has an empty results array, which when diffed against a successful capture inflates the \"dropped from top-K\" count with noise. Fixed by checking both b.ok and a.ok before diffing, counting capturedFailures, and reporting the count in the summary.",
+      "category": ""
+    },
+    {
+      "file": "scripts/diff-samples.ts",
+      "title": "Summary metrics use the wrong query denominator when captures are missing on one side",
+      "reason": "Real metric-dilution bug. Summary printed \"top-1 flips=N/queries.length\" and \"mean overlap=avg/10\" where queries.length includes skipped (missing + failed) captures, masking the actual flip rate. Fixed to use matched query count (overlaps.length) as the denominator and to explicitly report compared/missing/failed counts separately.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home-assistant-mcp/src/transport/AuthMiddleware.ts",
+      "title": "API key validation mishandles repeated headers",
+      "reason": "Real bug (Node headers can be string[]); confirmed by both third-opinion and PAL.",
+      "category": "manual"
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home-assistant-mcp/src/transport/AuthMiddleware.ts",
+      "title": "Basic auth parsing breaks when the password contains a colon",
+      "reason": "Confirmed by TP and PAL; fix is indexOf(':') + slice.",
+      "category": "manual"
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home-assistant-mcp/src/transport/AuthMiddleware.ts",
+      "title": "Authorization scheme matching is incorrectly case-sensitive",
+      "reason": "Confirmed by PAL; RFC 7235 spec issue; TP didn't surface it (gap).",
+      "category": "manual"
+    }
+  ],
+  "fps": [
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "The primary branch only checks process.env.THIRD_OPINION_BASE_URL, but the header comment states priority 1 requires THIRD_OPINION_BASE_URL + THIRD_OPINION_API_KEY + THIRD_OPINION_MODEL. Any non-empty",
+      "reason": "By design - allows keyless providers like local Ollama behind THIRD_OPINION_BASE_URL. API key is optional for some setups. The comment is slightly misleading but the behavior is intentional."
+    },
+    {
+      "file": "src/context/ContextEngine.ts",
+      "title": "User-influenced metadata from domain detection is interpolated directly into logs without sanitization.",
+      "reason": "Framework names come from our own regex matches against static patterns, not user-controlled strings. The set of possible framework values is bounded by FRAMEWORK_PATTERNS."
+    },
+    {
+      "file": "src/cli/cli-v2.ts",
+      "title": "The file mixes TypeScript import syntax with a CommonJS require for package.json.",
+      "reason": "Standard pattern in Node.js TypeScript projects. Build targets CJS. Works reliably."
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "createToolDefinitions() eagerly constructs clients and engines inside the function body.",
+      "reason": "Called once in main(). Export is for testing. Not a real issue."
+    },
+    {
+      "file": "src/cli/index.ts",
+      "title": "The direct-execution guard uses require.main === module, which is a CommonJS-only idiom.",
+      "reason": "Build targets CJS. This is standard Node.js pattern and works correctly."
+    },
+    {
+      "file": "src/server-v2.ts",
+      "title": "CJS require for package.json is anti-pattern",
+      "reason": "Project targets CJS output - require is the correct idiom here"
+    },
+    {
+      "file": "src/tools/review.ts",
+      "title": "Regex patterns could cause ReDoS with user-controlled input",
+      "reason": "Regex input is bounded LLM output, not user-controlled - no ReDoS risk"
+    },
+    {
+      "file": "src/sessions/SessionContinuation.ts",
+      "title": "PersistOptions requires sessionManager to implement SessionWriter & SessionReader",
+      "reason": "This is intentional - the helper needs both capabilities for create-or-append flow"
+    },
+    {
+      "file": "src/sessions/SessionContinuation.ts",
+      "title": "persistSessionExchange assigns Date.now() to both messages with same timestamp",
+      "reason": "Timestamps are for ordering/TTL, not precise timing. Same-millisecond is fine for sequential append"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "The code parameter is used for context enrichment but never validated or sanitized",
+      "reason": "Code is passed through SecretRedactor before LLM call - validation happens at that layer"
+    },
+    {
+      "file": "src/tools/chat.ts",
+      "title": "Session persistence call lacks try/catch despite non-fatal comment",
+      "reason": "persistSessionExchange already catches internally and returns undefined on failure"
+    },
+    {
+      "file": "src/tools/debug.ts",
+      "title": "persistSessionExchange call awaited without try/catch",
+      "reason": "persistSessionExchange catches internally - never throws"
+    },
+    {
+      "file": "src/sessions/SessionManager.ts",
+      "title": "TTL check uses <= instead of < for expiration",
+      "reason": "Off-by-one on millisecond boundary is negligible"
+    },
+    {
+      "file": "src/tools/focused-review.ts",
+      "title": "deduplicateFindings matching on same line requires overlap threshold",
+      "reason": "The overlap check is intentional - prevents false dedup of unrelated findings on same line"
+    },
+    {
+      "file": "src/context/ProjectContext.ts",
+      "title": "If package.json parses as null, accessing pkg.name throws",
+      "reason": "JSON.parse of a valid file never returns null for an object. Empty file throws SyntaxError caught by try/catch"
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "doFetch clears timeout in finally block which executes as soon as fetch promise settles",
+      "reason": "That's correct behavior - timer should be cleared when response arrives"
+    },
+    {
+      "file": "src/providers/OpenAICompatClient.ts",
+      "title": "throwProviderError fails if response body is not valid JSON",
+      "reason": "Already handled - JSON.parse is in a try/catch that falls back to statusText"
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "Default model names gpt-5.4 and gemini-2.5-pro appear fictional",
+      "reason": "These are real models available on our litellm proxy"
+    },
+    {
+      "file": "src/config/ProviderConfig.ts",
+      "title": "Nullish coalescing for default model selection",
+      "reason": "Standard pattern - empty string env vars are intentionally treated as unset"
+    },
+    {
+      "file": "src/tools/ax-review.ts",
+      "title": "deduplicateFindings keys only on line+category, which can erase valid investigation-pass findings",
+      "reason": "This is by design - same line+category across passes IS the same bug described differently. We keep higher severity. A/B testing validates this approach."
+    },
+    {
+      "file": "src/server.ts",
+      "title": "@fastify/cors is registered with no options, which defaults to origin *",
+      "reason": "Pre-existing code, not introduced by our diff. Internal API behind VPN, not internet-facing."
+    },
+    {
+      "file": "src/server.ts",
+      "title": "process.env values are accessed directly without validation",
+      "reason": "Pre-existing pattern, not introduced by our diff. Env vars validated at startup by existing config layer."
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "The import statement resolves to a path that does not exist (ENOENT)",
+      "reason": "ESM .js extension imports are standard for TypeScript ESM projects. The build compiles .ts to .js, so the import path is correct at runtime."
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Global authentication hook may unintentionally protect health and readiness endpoints",
+      "reason": "createAuthMiddleware already exempts /health \u2014 this is handled in the middleware implementation."
+    },
+    {
+      "file": "src/routes/observation-compress.ts",
+      "title": "Unbounded fire-and-forget execution can exhaust server resources",
+      "reason": "Endpoint is behind auth middleware and only called by the session-end hook (one call per session). The atomic UPDATE...RETURNING ensures concurrent calls for the same session_id are safe \u2014 second caller gets 0 rows. Not exposed to untrusted clients."
+    },
+    {
+      "file": "src/routes/observation-compress.ts",
+      "title": "Querystring schema does not reject unexpected parameters",
+      "reason": "Standard Fastify convention. Extra query params are harmless and ignored. No other route in this codebase uses additionalProperties:false on querystrings."
+    },
+    {
+      "file": "src/routes/health.ts",
+      "title": "Health endpoint fails with 500 when Neo4j health check throws",
+      "reason": "Pre-existing behavior, not introduced by this change. Neo4j health check is conditional and was not modified."
+    },
+    {
+      "file": "src/routes/health.ts",
+      "title": "Health response discloses application version",
+      "reason": "Internal service on private network. Version disclosure is intentional for diagnostics."
+    },
+    {
+      "file": "src/services/claude-session.ts",
+      "title": "Assistant responses are never ingested, dropping half of each exchange",
+      "reason": "By design: we extract facts from user messages which contain conversation context. Assistant responses are LLM-generated output, not source knowledge."
+    },
+    {
+      "file": "src/services/claude-session.ts",
+      "title": "Error-only ingestion for logs/tool output checks only userMessage",
+      "reason": "Correct behavior: assistant response is our LLM output. Errors in tool output appear in the user-turn content (tool results)."
+    },
+    {
+      "file": "src/services/session-queue.ts",
+      "title": "stop() abandons queued work instead of draining it",
+      "reason": "stop() awaits in-flight processing via while(this.processing) loop. Queued-but-not-started items are intentionally dropped on graceful shutdown."
+    },
+    {
+      "file": "src/services/session-queue.ts",
+      "title": "Session aggregation is keyed only by sessionId, allowing cross-project stat mixing",
+      "reason": "Session IDs are UUIDs, globally unique. Cross-project collision is impossible."
+    },
+    {
+      "file": "src/server.ts",
+      "title": "Authentication hook is attached globally and may block health or preflight requests",
+      "reason": "Auth middleware explicitly exempts /health and OPTIONS preflight. See src/middleware/auth.ts."
+    },
+    {
+      "file": "src/routes/admin.ts",
+      "title": "Admin routes are missing authentication/authorization enforcement",
+      "reason": "Auth middleware is global \u2014 registered via server.addHook('preHandler', createAuthMiddleware(db)) in server.ts. All routes including admin are protected."
+    },
+    {
+      "file": "src/utils/qdrant-setup.ts",
+      "title": "Non-idempotent check-then-create/update can fail under concurrent initialization",
+      "reason": "Single-process startup. No concurrent initialization possible. The check-then-act pattern is safe here."
+    },
+    {
+      "file": "src/types.ts",
+      "title": "ApiKeyInfo exposes raw API keys in the type system",
+      "reason": "Type definition, not runtime exposure. API keys are hashed (SHA-256 prefix matching) before storage. The type represents the DB row shape."
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "Search results are not filtered by tenant ownership",
+      "reason": "Single-tenant internal service. Auth is enforced at the route/middleware layer (createAuthMiddleware). VectorStoreService is only called by other services, never directly by external users. getPoint() has ALLOWED_USER_IDS check for the one path that exposes raw points."
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "deletePoint allows deleting arbitrary IDs without ownership validation",
+      "reason": "Same as above \u2014 single-tenant internal service. deletePoint is only called by dedup service and admin routes, both behind auth middleware. No external user can reach this directly."
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "scrollAll exposes unfiltered collection contents",
+      "reason": "Single-tenant internal service behind auth middleware. scrollAll is used by admin/maintenance endpoints only. Accepts optional filter parameter for scoping."
+    },
+    {
+      "file": "src/services/vector-store.ts",
+      "title": "upsert overwrites createdAt on every update",
+      "reason": "By design \u2014 each upsert represents a new fact with a new ID. The deterministic ID pattern (episode-store) is a separate concern handled there. VectorStoreService.upsert always creates new points."
+    },
+    {
+      "file": "src/services/episode-store.ts",
+      "title": "Empty catch block silently swallows errors",
+      "reason": "The catch at L132-134 is for title generation \u2014 documented as \"non-fatal, episode still stored without title\". The empty catch is intentional best-effort behavior."
+    },
+    {
+      "file": "src/main.ts",
+      "title": "Auth token comparison is not constant-time",
+      "reason": "This is a LAN-only Scrypted plugin behind Scrypted's own auth layer. The bearer token is an optional convenience for local network access. Timing side-channel attacks are not a realistic threat in this context."
+    },
+    {
+      "file": "src/main.ts",
+      "title": "Snapshot handler ignores query parameters despite accepting them",
+      "reason": "The handler signature accepts params for consistency with other route handlers and to allow future extension (e.g. width/height). The params argument is part of the routing contract, not a bug."
+    },
+    {
+      "file": "src/utils/sparse-tokenizer.ts",
+      "title": "ASCII-only tokenization drops non-English words entirely",
+      "reason": "Pre-existing behavior from original tokenizer (regex [^a-z0-9\\s] was already there before our change). The compound token extraction didn't introduce this. The corpus is English-only personal knowledge base \u2014 non-English tokenization is not a current requirement."
+    },
+    {
+      "file": "src/utils/sparse-tokenizer.ts",
+      "title": "No input or token-count bound allows expensive processing on very large strings",
+      "reason": "Observations are capped at ingest (MIN_TEXT_LENGTH check, LLM extraction produces bounded output). Regex on sub-KB strings is negligible cost. Adding bounds here would be defensive complexity with no real-world payoff."
+    },
+    {
+      "file": "src/services/federated-search.ts",
+      "title": "Graph-based query expansion trusts unbounded entity text from storage",
+      "reason": "Pre-existing, not from our changes. Entity names are inserted by the system (HA sync, LLM extraction), not user-supplied. maxEntities cap (default 5) bounds the expansion. Internal trusted data."
+    },
+    {
+      "file": "tests/unit/services/federated-search-timings.test.ts",
+      "title": "Use of non-null assertion operator `!` bypasses type safety",
+      "reason": "Test code after expect(response.timings).toBeDefined() \u2014 the non-null assertion is the idiomatic TS testing pattern in this codebase and the type guard is proven by the preceding assertion. Flagging this globally would suppress a correct pattern."
+    },
+    {
+      "file": "tests/unit/services/vector-store.test.ts",
+      "title": "Use of non-null assertion operator `!` bypasses type safety",
+      "reason": "Same as above \u2014 test code after a null guard. Idiomatic and safe."
+    },
+    {
+      "file": "src/routes/federated-search.ts",
+      "title": "Analytics logging call is fired without awaiting or handling failures",
+      "reason": "Pre-existing logSearchQuery call on line 158 that predates this diff (see git log). Quorum flagged it because it was within the diff-scoped hydration window, but the --diff-file does not exclude untouched code from findings. Skipping per skill rule: don't record feedback for pre-existing issues outside the diff."
+    },
+    {
+      "file": "tests/unit/services/federated-search-rerank-param.test.ts",
+      "title": "Function kendallTau has cyclomatic complexity 10",
+      "reason": "Inherent complexity of Kendall tau \u2014 nested loops + ordering comparisons. The plan explicitly said \"Write a tiny kendallTau helper \u2014 do not import a library for one test\". Flagging algorithmic complexity in test helpers adds noise without signal."
+    },
+    {
+      "file": "tests/unit/services/federated-search-rerank-param.test.ts",
+      "title": "Baseline test does not exercise the claimed \"env-disabled reranker\" code path",
+      "reason": "The test DOES exercise the env-disabled path: `noRerankerService` is constructed without a reranker (reranker: undefined), which is the env-disabled code path. The parity assertion is between that and the param-disabled path on a service that HAS a reranker configured."
+    },
+    {
+      "file": "tests/unit/services/federated-search-rerank-param.test.ts",
+      "title": "Use of non-null assertion operator `!` bypasses type safety",
+      "reason": "Idiomatic in vitest test code \u2014 the service always returns response.timings per the new Phase 1 contract. Adding toBeDefined() before would be noise since the type is structurally guaranteed by our impl."
+    },
+    {
+      "file": "src/utils/canary-projection.ts",
+      "title": "Projection arithmetic can exceed JavaScript safe integer precision",
+      "reason": "Not reachable in practice. Our corpus is 72k docs \u00d7 max ~1000 nonzero dims \u00d7 8 bytes = 5.76e8 bytes, 7 orders of magnitude below Number.MAX_SAFE_INTEGER (9e15). The integer validation on corpusCount + the Qdrant 250 MiB abort threshold both cap this well before precision matters. Using BigInt here would add complexity without a real-world failure mode."
+    },
+    {
+      "file": "src/services/sparse-embedder.ts",
+      "title": "Constructor does not validate `baseUrl`, causing pointless retries on invalid configuration",
+      "reason": "fetch() surfaces a clear, immediate TypeError on malformed URLs (\"Failed to parse URL from ...\"), which falls through the retry loop as a non-ContractError/non-PermanentHttpError and does retry \u2014 but only once per call site startup since it's a config issue caught at first use. The retry overhead (3x * backoff) is ~1.5s, acceptable for a deployment misconfig. Adding URL validation in the constructor is defensive without meaningful risk reduction \u2014 config issues surface on first query either way."
+    },
+    {
+      "file": "src/services/sparse-embedder.ts",
+      "title": "Non-OK responses fully buffer the body before truncating",
+      "reason": "TEI error responses are bounded JSON envelopes (a few hundred bytes \u2014 {\"error\":\"...\",\"error_type\":\"...\"}), not large streams. Full buffering + slice-to-200 in the error path is negligible cost and produces a cleaner diagnostic message than chunked reading. Not a performance or memory concern at this scale."
+    }
+  ]
+}

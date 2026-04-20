@@ -1,0 +1,20 @@
+id: flask-debug-true
+language: Python
+severity: error
+message: "`debug=True` in a Flask `app.run()` / `Flask(...)` call exposes Werkzeug's interactive debugger (RCE if reachable) and disables production safeguards. Use environment-driven config."
+note: "Mining: 3 confirmed true positives. Targets Flask's debug flag specifically; FastAPI/uvicorn do not have an equivalent `debug=True` gate. The `.run$` regex is narrow enough to avoid firing on arbitrary `.run()` calls by also requiring `debug=True` as a sibling kwarg."
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        any:
+          - regex: "\\.run$"
+          - regex: "^Flask$"
+        stopBy: end
+    - has:
+        kind: keyword_argument
+        all:
+          - has: { field: name, regex: "^debug$" }
+          - has: { field: value, regex: "^True$" }
+        stopBy: end

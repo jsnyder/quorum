@@ -1,0 +1,66 @@
+{
+  "language": "javascript",
+  "total_tps_analyzed": 13,
+  "clusters": [
+    {
+      "name": "Incorrect listener removal with .bind()",
+      "tp_count": 6,
+      "example_titles": [
+        "Event listener is never unsubscribed because `.bind(this)` creates a new function",
+        "Event listeners are never removed because bound handler references differ",
+        "Event listener is not removed because `bind(this)` creates a different function reference"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "bind-in-remove-event-listener",
+        "severity": "warning",
+        "yaml": "id: bind-in-remove-event-listener\nlanguage: javascript\nseverity: warning\nmessage: \"Using .bind() in removeEventListener creates a new function that doesn't match the one added, preventing listener removal and causing memory leaks. Bind the handler once in the constructor and store it in a property.\"\nnote: \"This pattern was found across 6 plugins, indicating a recurring issue where event listeners were intended to be cleaned up but were not.\"\nrule:\n  kind: call_expression\n  has:\n    all:\n      - field: function\n        kind: member_expression\n        has:\n          field: property\n          kind: property_identifier\n          regex: \"^(removeEventListener|off)$\"\n      - field: arguments\n        has:\n          kind: call_expression\n          has:\n            field: function\n            kind: member_expression\n            has:\n              field: property\n              kind: property_identifier\n              text: \"bind\"\n",
+        "positive_fixture": "class MyComponent {\n  constructor(emitter) {\n    this.emitter = emitter;\n    this.emitter.on('data', this.handleData.bind(this));\n  }\n\n  destroy() {\n    // BUG: This creates a new function, doesn't remove the listener.\n    this.emitter.off('data', this.handleData.bind(this));\n  }\n\n  handleData(data) {\n    console.log(data);\n  }\n}",
+        "negative_fixture": "class MyComponent {\n  constructor(emitter) {\n    this.emitter = emitter;\n    // CORRECT: Bind once and store the reference.\n    this.boundHandleData = this.handleData.bind(this);\n    this.emitter.on('data', this.boundHandleData);\n  }\n\n  destroy() {\n    // CORRECT: Use the stored reference to remove the listener.\n    this.emitter.off('data', this.boundHandleData);\n  }\n\n  handleData(data) {\n    console.log(data);\n  }\n}",
+        "fp_cross_check": "verified against FP list: PASS (list is empty)",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 6
+      }
+    },
+    {
+      "name": "Unhandled async errors causing state corruption",
+      "tp_count": 3,
+      "example_titles": [
+        "Engine can be left in a broken running state if startup async work fails",
+        "Chunk completion path is not exception-safe and can strand jobs as permanently busy",
+        "Errors during async world generation leave the promise unresolved and player state inconsistent"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "The bug is not the absence of `try/catch` itself, but the semantic consequence of an unhandled rejection on application state (e.g., a resource remains locked, a state flag is not reset). Detecting which state changes are critical before an `await` requires understanding the program's logic and state machine, which is beyond syntactic analysis.",
+      "rule": null
+    },
+    {
+      "name": "High-context logic bugs",
+      "tp_count": 3,
+      "example_titles": [
+        "ASCII parser strips leading and trailing spaces from every row",
+        "Lake generation uses undefined `this.waterLevel`, producing invalid heights",
+        "Wall-sliding logic loses the attempted Z movement due to aliasing `camera.position`"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "These bugs are highly dependent on context not available in the AST. The `.trim()` bug requires knowing that whitespace is significant data. The `this.waterLevel` bug requires scope and type analysis to know a property is undefined. The wall-sliding bug requires complex data-flow analysis to track object mutations.",
+      "rule": null
+    },
+    {
+      "name": "Falsy `0` incorrectly handled by logical OR",
+      "tp_count": 1,
+      "example_titles": [
+        "Transparent pixels are forced opaque because alpha uses `|| 255`"
+      ],
+      "decision": "covered",
+      "covered_by": "nullish-coalescing-preferred.yml",
+      "llm_only_reason": null,
+      "rule": null
+    }
+  ],
+  "notes": "The most significant finding is the recurring bug with `.bind()` inside `removeEventListener`, which is a perfect candidate for a high-precision static analysis rule. Other true positives were highly semantic, demonstrating the value of LLM-based review for logic and state management bugs that are difficult to catch with syntactic patterns."
+}

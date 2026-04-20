@@ -1,0 +1,14 @@
+id: ignored-io-result
+language: Rust
+severity: warning
+message: "I/O `Result` discarded as a statement. If the operation fails (disk full, permission denied, missing parent) the error is silently lost. Handle with `?`, `.expect(\"…\")`, or a `let _ = …` acknowledgement."
+note: "Mining: 3 confirmed true positives. Matches fs::create_dir_all, fs::write, fs::remove_file, File::create called as bare statements."
+rule:
+  kind: expression_statement
+  has:
+    kind: call_expression
+    has:
+      field: function
+      any:
+        - regex: "^(std::)?fs::(create_dir|create_dir_all|write|remove_file|remove_dir|remove_dir_all|rename|copy|set_permissions)$"
+        - regex: "^(std::fs::)?File::(create|open)$"

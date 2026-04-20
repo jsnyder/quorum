@@ -1,0 +1,990 @@
+{
+  "language": "yaml",
+  "existing_astgrep_rules": [
+    "float-zero-fallback.yml",
+    "ha-template-none-fallback.yml"
+  ],
+  "tp_count": 92,
+  "fp_count": 85,
+  "tps": [
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "this.attributes.last_triggered unreliable in automation conditions",
+      "reason": "Fixed to use state_attr() for consistent behavior",
+      "category": ""
+    },
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Silent defaults mask sensor failures with plausible values",
+      "reason": "Added availability templates to HR/O2 baselines and room temp alert",
+      "category": ""
+    },
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Room temperature float(0) silently disables alerts",
+      "reason": "Added availability template so sensor goes unavailable instead of false",
+      "category": ""
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "PIR effectively disabled - radar_available never goes false",
+      "reason": "Fixed: changed from state check to label_entities() configuration check",
+      "category": ""
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "Comment says 2min cooldown, code uses 5sec threshold",
+      "reason": "Fixed comment to say debounce/5 seconds, matching actual code",
+      "category": ""
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "Privacy mode reads nonexistent open_sensors attribute",
+      "reason": "Added active_sensors attribute and updated reference",
+      "category": ""
+    },
+    {
+      "file": "packages/hvac_monitoring_enhanced.yaml",
+      "title": "Short cycling detection broken - runtime = 0 when idle",
+      "reason": "Fixed: now uses trigger.from_state.last_changed for runtime calculation",
+      "category": ""
+    },
+    {
+      "file": "packages/hvac_monitoring_enhanced.yaml",
+      "title": "Delta T 30-day average is hardcoded placeholder 18.5",
+      "reason": "Made placeholder explicit with clear YAML comment",
+      "category": ""
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Availability vs state health check inconsistency",
+      "reason": "Fixed: added flue_temp_available check to availability template to match state template",
+      "category": ""
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "HVAC lockout restore overwrites manual thermostat changes",
+      "reason": "Added condition to skip restore if user manually adjusted thermostat during lockout",
+      "category": ""
+    },
+    {
+      "file": "packages/dog_daily_timesheet.yaml",
+      "title": "as_datetime() not guarded against malformed timestamps",
+      "reason": "Added None check for as_datetime() return value before passing to as_local()",
+      "category": ""
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "max_tokens increase from 500 to 2000",
+      "reason": "Real fix \u2014 Gemini 2.5 Flash uses ~500 thinking tokens from budget, leaving only 2 visible tokens at max_tokens=500. Verified via LiteLLM spend logs showing completion_tokens=496 with truncated output.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/dog_outing_tracking.yaml",
+      "title": "Outing start automation triggers when either tracker leaves home without stabilizing guard",
+      "reason": "Valid concern confirmed by real-world data \u2014 GPS bounces and StatZon states from iCloud can cause false triggers. Adding a for: duration on the trigger is a good suggestion.",
+      "category": "best-practices"
+    },
+    {
+      "file": "packages/audio_classifier.yaml",
+      "title": "Media suppression treats unavailable as active via not is_state off",
+      "reason": "Fixed all instances to check explicit playback states instead of not-off",
+      "category": ""
+    },
+    {
+      "file": "packages/daily_activity_summary.yaml",
+      "title": "Calendar response indexing fragile - dict key lookup raises before default runs",
+      "reason": "Fixed to use .get() with fallback empty dict",
+      "category": ""
+    },
+    {
+      "file": "packages/daily_activity_summary.yaml",
+      "title": "LLM call missing continue_on_error",
+      "reason": "Added continue_on_error: true to prevent 60s timeout from blocking entire report",
+      "category": ""
+    },
+    {
+      "file": "packages/daily_activity_summary.yaml",
+      "title": "motion_only can go negative",
+      "reason": "Fixed with [v, 0] | max clamp in both locations",
+      "category": ""
+    },
+    {
+      "file": "packages/sustained_barking_detection.yaml",
+      "title": "Buzzer not guaranteed off if tier3 interrupted",
+      "reason": "Added defensive switch.turn_off in episode_end cleanup",
+      "category": ""
+    },
+    {
+      "file": "packages/connectivity_monitoring.yaml",
+      "title": "stale_list Jinja loop variable scoping bug",
+      "reason": "Fixed with namespace() pattern",
+      "category": ""
+    },
+    {
+      "file": "packages/connectivity_monitoring.yaml",
+      "title": "notify.persistent_notification vs persistent_notification.create inconsistency",
+      "reason": "Standardized to persistent_notification.create",
+      "category": ""
+    },
+    {
+      "file": "packages/water_meter_monitoring.yaml",
+      "title": "Leak alert throttle uses .last_changed instead of stored datetime value",
+      "reason": "Fixed to use states() value with unknown/unavailable guard",
+      "category": ""
+    },
+    {
+      "file": "packages/water_meter_monitoring.yaml",
+      "title": "current_threshold attribute does not exist on binary_sensor",
+      "reason": "Fixed to reference min_threshold which exists",
+      "category": ""
+    },
+    {
+      "file": "packages/water_meter_monitoring.yaml",
+      "title": "Monthly summary reads post-reset meter on day 1",
+      "reason": "Added snapshot automation at 23:59:50 on last day of month and input_number helper",
+      "category": ""
+    },
+    {
+      "file": "packages/water_meter_monitoring.yaml",
+      "title": "Leak volume can go negative after meter reset",
+      "reason": "Fixed with [v, 0] | max clamp",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "Both calendar update automations try to build a list inside a Jinja for loop using dates = dates + [event_date]",
+      "reason": "Fixed with namespace(dates=[]) pattern in both garbage and recycling automations",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "The task-count and task-list templates use the same loop-local reassignment pattern",
+      "reason": "Fixed with namespace(count=0) and namespace(tasks=[]) patterns",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "Both date-update automations index directly into the response object",
+      "reason": "Fixed with .get() guard pattern: calendar_events.get('calendar.minneapolis_mn_usa', {}).get('events', [])",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "The weekly_activity_counter_reset automation startup condition restricts to 00:01 window",
+      "reason": "Fixed with idempotency check using existing reset date helpers instead of time window",
+      "category": ""
+    },
+    {
+      "file": "packages/epa_corrected_pm25_sensors.yaml",
+      "title": "The automation references sensor.fresh_air_available but the sensor is named Fresh Air Available Optimized",
+      "reason": "Fixed both references to sensor.fresh_air_available_optimized",
+      "category": ""
+    },
+    {
+      "file": "packages/epa_corrected_pm25_sensors.yaml",
+      "title": "Fresh Air Available Optimized converts indoor PM2.5 with float(0) treating unavailable as clean air",
+      "reason": "Fixed to filter out unavailable values using reject('in', ['unknown', 'unavailable']) before taking max",
+      "category": ""
+    },
+    {
+      "file": "packages/epa_corrected_pm25_sensors.yaml",
+      "title": "Outdoor PM2.5 EPA Corrected availability only checks timestamps not state validity",
+      "reason": "Fixed availability to check both state validity and timestamp freshness",
+      "category": ""
+    },
+    {
+      "file": "packages/epa_corrected_pm25_sensors.yaml",
+      "title": "Unused variable current_state in alert_level attribute",
+      "reason": "Removed dead variable",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_tasks.yaml",
+      "title": "All three automations dereference the calendar response with direct indexing without guard",
+      "reason": "Fixed all 3 automations with guarded events variable and updated 6 references",
+      "category": ""
+    },
+    {
+      "file": "packages/pm25_exposure_tracking.yaml",
+      "title": "Per-room attributes coerce unavailable to 0.0 with float(0)",
+      "reason": "Fixed all 8 per-room attributes across both sensors to return none for unavailable values",
+      "category": ""
+    },
+    {
+      "file": "packages/dog_behavior_gamification.yaml",
+      "title": "Template list accumulation inside loop will not persist",
+      "reason": "Real bug: Jinja loop scoping. Need namespace() to accumulate across iterations.",
+      "category": "bug"
+    },
+    {
+      "file": "packages/dog_behavior_gamification.yaml",
+      "title": "Leaderboard renders negative winning scores with a malformed plus sign",
+      "reason": "Real formatting bug, easy fix.",
+      "category": "quality"
+    },
+    {
+      "file": "packages/litter_box_monitoring.yaml",
+      "title": "Malformed or missing AI output is treated as a real litter visit",
+      "reason": "Real bug: should fallback to no_detection or skip counting on malformed LLM response.",
+      "category": "logic"
+    },
+    {
+      "file": "packages/comfort_suggestions.yaml",
+      "title": "Fresh-air suggestion unreachable when all windows closed",
+      "reason": "Real logic bug in condition ordering.",
+      "category": "logic"
+    },
+    {
+      "file": "packages/connectivity_monitoring.yaml",
+      "title": "Stale device list attribute is serialized as a string, breaking report iteration",
+      "reason": "Real bug: string serialization breaks downstream template iteration.",
+      "category": "bug"
+    },
+    {
+      "file": "packages/smart_thermostat_pid.yaml",
+      "title": "Trigger-based template sensors do not initialize on Home Assistant startup",
+      "reason": "Real bug: need homeassistant start trigger for PID sensors.",
+      "category": "reliability"
+    },
+    {
+      "file": "packages/dog_behavior_gamification.yaml",
+      "title": "Unmapped behaviors are never logged if they score as zero",
+      "reason": "Real bug: defeats the purpose of tracking unmapped behaviors.",
+      "category": "observability"
+    },
+    {
+      "file": "packages/dog_behavior_gamification.yaml",
+      "title": "Misleading notification can report Both Dogs/Cats when only one pet had a negative event",
+      "reason": "Real logic error in notification template.",
+      "category": "logic"
+    },
+    {
+      "file": "packages/bathroom_fan_co2_control.yaml",
+      "title": "CO2 control comparisons use float(0) fallbacks, which can turn fans off on sensor unavailability",
+      "reason": "Real safety issue: unavailable sensors treated as 0 CO2, suppressing ventilation.",
+      "category": "logic"
+    },
+    {
+      "file": "packages/bathroom_fan_co2_control.yaml",
+      "title": "Sensor failures are treated as safe values and can incorrectly suppress ventilation",
+      "reason": "Same root cause as above -- real safety concern.",
+      "category": "reliability"
+    },
+    {
+      "file": "packages/bathroom_fan_co2_control.yaml",
+      "title": "Basement CO2 control also treats unavailable readings as zero",
+      "reason": "Same pattern, different sensor. Real bug.",
+      "category": "logic"
+    },
+    {
+      "file": "packages/bthome_button_control.yaml",
+      "title": "Template condition can fail when `event_type` is missing",
+      "reason": "Valid concern. During HA startup/restore, event entities may have incomplete attributes. Using attributes.get('event_type') would be more defensive.",
+      "category": ""
+    },
+    {
+      "file": "packages/bthome_button_control.yaml",
+      "title": "Input boolean forces enabled state on every restart",
+      "reason": "Valid. If someone disables buttons intentionally, a restart would silently re-enable them. Removing initial: true lets HA restore the previous state.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Conditional card can render an empty secondary field when done timestamp is unavailable",
+      "reason": "Valid \u2014 the washer done alert card shows blank secondary if input_datetime.washer_cycle_done_at hasn't been populated yet. Fixing with an else fallback.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Conditional card can render an empty secondary field when dryer done timestamp is unavailable",
+      "reason": "Same issue on dryer card. Fixing both with else fallback text.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/14_ottilie_monitor.yaml",
+      "title": "Missing alert cards for heart rate conditions",
+      "reason": "Real issue \u2014 when high/low HR alerts fired, All Clear disappeared but no replacement card showed. Fixed by adding conditional mushroom-template-cards for both states.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/14_ottilie_monitor.yaml",
+      "title": "Heart rate gauge min=60 hides sub-60 readings",
+      "reason": "Real issue \u2014 low HR alert could fire below 60 BPM but gauge couldn't display it. Fixed by changing min to 40.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/14_ottilie_monitor.yaml",
+      "title": "No complementary cards for sock/base station disconnect states",
+      "reason": "Real issue \u2014 device disconnect left blank section. Fixed by adding grey mushroom-template-cards with actionable guidance text.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/07_fountain_water.yaml",
+      "title": "Garden color logic prioritizes dry-run states over lockout, potentially masking lockout state",
+      "reason": "Real issue \u2014 lockout is higher-priority than power status. Fixed by reordering conditions in all 3 fountain tiles (Garden, Back Porch, Stairwell) to check lockout first.",
+      "category": ""
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "float(50) default masks unavailable sensors as healthy in health gate state template",
+      "reason": "Real bug. Unavailable position sensors defaulted to 50 (above all warning thresholds), silently hiding offline plants as healthy. Fixed by checking for unknown/unavailable/none before evaluating.",
+      "category": ""
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "float(50) default masks unavailable sensors in all_needing_water attribute template",
+      "reason": "Same bug as state template \u2014 unavailable sensors default to 50 and get silently skipped. Fixed with unavailable guard and continue.",
+      "category": ""
+    },
+    {
+      "file": "dashboards/production/04_plant_monitoring.yaml",
+      "title": "Threshold boundary inconsistency: Today's Actions uses <= while per-plant cards use strict <",
+      "reason": "Real logic bug. Today's Actions used pos <= limits.crit / pos <= limits.warn while health gate and all per-plant cards used strict <. A plant at exactly the threshold value would show differently in different parts of the dashboard. Fixed to use < consistently.",
+      "category": ""
+    },
+    {
+      "file": "packages/appliance_monitoring.yaml",
+      "title": "Hardcoded secret in `password`",
+      "reason": "Real hardcoded password for OpenObserve ingest. Fixed by moving to !secret reference.",
+      "category": ""
+    },
+    {
+      "file": "packages/appliance_monitoring.yaml",
+      "title": "Sensitive credential appears embedded in YAML configuration",
+      "reason": "Duplicate of hardcoded secret finding. Fixed by moving to !secret reference.",
+      "category": ""
+    },
+    {
+      "file": "packages/grow_tent_monitoring.yaml",
+      "title": "Humidity automations treat unavailable sensor readings as valid low values",
+      "reason": "Real concern. float(50) when sensor unavailable means emergency exhaust won't fire (50 < 85 ceiling). Should be addressed in a follow-up \u2014 either gate on sensor availability or use a default above the ceiling to fail-safe.",
+      "category": ""
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "Watering detection can repeatedly fire on every state update after a watering event",
+      "reason": "Real issue. After watering, current - 2h_min > threshold stays true for up to 2 hours, causing repeated writes to input_datetime and duplicate log entries on each sensor update. Needs debounce.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_core.yaml",
+      "title": "Task UID lookup never persists match inside Jinja loop",
+      "reason": "{% set found_uid %} inside {% for %} is loop-scoped in Jinja2 3.x. No namespace() used, so found_uid always empty \u2014 upsert always creates duplicates.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_core.yaml",
+      "title": "Completion-by-name uses the same broken loop-scoped UID search",
+      "reason": "Same Jinja loop-scoping bug as upsert. task_to_complete_uid always empty, complete_by_name never matches.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_core.yaml",
+      "title": "Shared task cache is not keyed by todo list entity",
+      "reason": "Single input_text cache always populated from default list. Callers passing different list_entity get stale/wrong results.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_core.yaml",
+      "title": "Task cache storage is too small for JSON item lists",
+      "reason": "input_text max: 255. Single todo item is 100+ chars JSON. Cache fits 1-2 items, effectively dead code for real lists.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_core.yaml",
+      "title": "Priority input is accepted but never used",
+      "reason": "Priority field accepted by scripts but never passed to todo.add_item or todo.update_item calls. Dead configuration.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_plants.yaml",
+      "title": "Consolidated plant state is capped at 255 characters and will overflow",
+      "reason": "13 plants \u00d7 ~60-70 chars each = 713-947 chars. input_text max 255 silently truncates, producing invalid JSON.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_plants.yaml",
+      "title": "Parallel read-modify-write updates can lose plant state changes",
+      "reason": "mode: parallel with read-modify-write on shared input_text. Classic TOCTOU race \u2014 concurrent plant updates overwrite each other.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_plants.yaml",
+      "title": "Inactive-state script repeats the same unsafe parallel state update pattern",
+      "reason": "Same mode: parallel + read-modify-write race on same input_text entity. Can also race against set_active script.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_plants.yaml",
+      "title": "Shared state mutation script is explicitly configured for parallel execution",
+      "reason": "mode: parallel is the root cause enabling the race. Comments claim independence but all scripts share the same input_text entity.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_voice.yaml",
+      "title": "Task creation runs even when no task text was recognized",
+      "reason": "Service call fires unconditionally before {% if task %} guard in speech template. Creates tasks with empty names.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_voice.yaml",
+      "title": "Unsafe indexing into todo.get_items response can break the voice response flow",
+      "reason": "Dict key lookup fails before default() can catch it if entity ID is invalid. Jinja default only catches undefined, not KeyError.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_voice.yaml",
+      "title": "Task completion service is invoked even when the spoken task slot is missing",
+      "reason": "Same unconditional-action pattern as task creation. Service fires with empty input before speech checks the slot.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_testing.yaml",
+      "title": "State injector does not actually modify entity state, so tests won't exercise automation triggers",
+      "reason": "Script only calls system_log.write and input_text.set_value. Comment says \"for now, log what we would inject.\" Never sets target entity state.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_testing.yaml",
+      "title": "Mock API assertion payload can be truncated by 255-character input_text limit",
+      "reason": "9-key JSON dict via to_json easily exceeds input_text max: 255. Silent truncation produces broken JSON.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_testing.yaml",
+      "title": "Test results log is prone to truncation and loss of assertions",
+      "reason": "Same 255-char limit with cumulative append pattern. After 2-3 state injections, accumulated string truncates.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_testing.yaml",
+      "title": "Parallel result appends can race and overwrite each other",
+      "reason": "mode: parallel, max: 10 with read-modify-write on input_text. Textbook TOCTOU race.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_vacuum_maintenance.yaml",
+      "title": "Resume success check runs immediately after vacuum.start and can misclassify successes as failures",
+      "reason": "No delay or wait_template between vacuum.start and state check. Service returns on dispatch, not when vacuum transitions. Will almost always see old state.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_vacuum_maintenance.yaml",
+      "title": "Recovery automation ignores the global Donetick enable switch",
+      "reason": "No condition block checking input_boolean.donetick_system_enabled, unlike other automations in the same package.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_mailbox.yaml",
+      "title": "Placeholder NFC tag ID leaves the automation non-functional",
+      "reason": "Literal PLACEHOLDER_MAILBOX_NFC_TAG_ID will never match an actual NFC scan event. Automation is dead code.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_mailbox.yaml",
+      "title": "Automation writes to an entity that is not declared in this package",
+      "reason": "Writes to input_datetime.mailbox_last_delivery declared in smart_mailbox_detection.yaml. Valid coupling concern.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_mailbox.yaml",
+      "title": "Streak logic does not implement the documented 4-hour grace period",
+      "reason": "Comment documents 4-hour grace period but code does simple date comparison. Doc and implementation disagree.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_mailbox.yaml",
+      "title": "Eligibility binary sensor uses an inappropriate device class",
+      "reason": "device_class: connectivity for a scan-cooldown sensor is semantically wrong. Affects icon/display in HA frontend.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_fountain.yaml",
+      "title": "Dry-run duration note is computed from the recovery timestamp, not the incident start",
+      "reason": "relative_time(last_changed) on sensor that just flipped to off gives ~2 min (the for: delay), not actual incident duration.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_fountain.yaml",
+      "title": "Back porch completion note has the same incorrect duration calculation",
+      "reason": "Same relative_time(last_changed) pattern on kitchen_fountain_dry_run_detected. Same issue as garden fountain.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_fountain.yaml",
+      "title": "Stairwell completion note has the same incorrect duration calculation",
+      "reason": "Same relative_time(last_changed) pattern on stairwell_fountain_dry_run_detected.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_inputs.yaml",
+      "title": "Auto-reset checks yesterday instead of the actual collection day",
+      "reason": "Fires at noon on collection day but checks yesterday's date in calendar. Should check today since trucks come today. Resets one day late.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_inputs.yaml",
+      "title": "Undo action does not clear the completion guard, preventing re-completion after undo",
+      "reason": "Undo turns off bin status but doesn't reset activity_reset datetime. Guard blocks re-completion via NFC after undo.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "Weekly reset idempotency guard only checks the garbage reset marker",
+      "reason": "Only checks garbage marker. If garbage reset succeeds but recycling fails, re-run is blocked. Should check both markers.",
+      "category": ""
+    },
+    {
+      "file": "packages/donetick_waste_collection_core.yaml",
+      "title": "Next collection date helper is never cleared when no calendar event is found",
+      "reason": "Choose block only writes when next_date is not none. No else/default branch to clear stale value.",
+      "category": ""
+    },
+    {
+      "file": "rules/typescript/cors-wildcard-origin.yml",
+      "title": "Rule misses lowercase and mixed-case header names despite HTTP being case-insensitive",
+      "reason": "Correct \u2014 HTTP header names are case-insensitive. Rewrote rule to use regex constraint (?i)['\\\"]access-control-allow-origin['\\\"] so any case variant matches. Added 3 case-variant tests.",
+      "category": ""
+    },
+    {
+      "file": "rules/typescript/cors-wildcard-origin.yml",
+      "title": "Detection is limited to setHeader and header missing common response APIs",
+      "reason": "Valid \u2014 expanded METHOD constraint to include 'set' (covers Next.js/Fetch Response.headers.set style). Added fixture test.",
+      "category": ""
+    },
+    {
+      "file": "rules/typescript/cors-wildcard-origin.yml",
+      "title": "Rule misses common object-based and header-map forms that also set Access-Control-Allow-Origin",
+      "reason": "Real coverage gap for object-literal forms like res.set({'Access-Control-Allow-Origin': '*'}). Deferring to a follow-up issue \u2014 ast-grep object-key matching requires more complex rule syntax.",
+      "category": ""
+    }
+  ],
+  "fps": [
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Entity IDs do not match aliases defined earlier",
+      "reason": "All entity IDs verified to match slugified names in actual HA registry"
+    },
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Folded multiline Jinja blocks may emit extra whitespace",
+      "reason": "HA normalizes template output whitespace consistently"
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "open_sensors parsing assumes mapping, Alarmo may send list",
+      "reason": "Alarmo always sends dict mapping, code already handles three formats defensively"
+    },
+    {
+      "file": "packages/hvac_monitoring_enhanced.yaml",
+      "title": "now() causes unnecessary 1-min refresh cycles",
+      "reason": "By design - runtime counter needs live-updating display, 1-min refresh is appropriate"
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Entity ID cross-references may not match slugified names",
+      "reason": "All entity IDs verified against actual HA registry - all match"
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Alert automations lack deduplication on startup/reload",
+      "reason": "mode:single + state change triggers already handle this - no duplication on restart"
+    },
+    {
+      "file": "packages/dog_daily_timesheet.yaml",
+      "title": "is match() not supported in HA Jinja",
+      "reason": "HA Jinja DOES support is match() as a test - this is a known HA extension"
+    },
+    {
+      "file": "packages/dog_daily_timesheet.yaml",
+      "title": "truncate(3500) conflicts with 2800 char instruction",
+      "reason": "Different purposes: 2800 is LLM soft guideline, 3500 is Slack hard safety cap"
+    },
+    {
+      "file": "packages/slack_notifications.yaml",
+      "title": "No target allowlist in Slack link construction",
+      "reason": "By design - callers are trusted internal scripts, not user input"
+    },
+    {
+      "file": "packages/slack_notifications.yaml",
+      "title": "No url validation in Slack link construction",
+      "reason": "All URLs are fixed internal HA paths, not user-controlled"
+    },
+    {
+      "file": "packages/dog_behavior_gamification.yaml",
+      "title": "notification script calls pass scalar target inside data instead of target mapping",
+      "reason": "Calibration correctly disputed this \u2014 target is a parameter OF the script.notify_mobile script, not a HA service call target mapping. This is idiomatic HA usage."
+    },
+    {
+      "file": "packages/dog_daily_timesheet.yaml",
+      "title": "REST fetch + JSON parse + 200 events + prompt build + second REST call concentrates processing",
+      "reason": "Runs once daily at 8pm. 200 events is trivially small for Jinja iteration. The 'two REST calls' are fetch data + send to LLM, which is the minimum for this workflow. No performance issue exists."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "Camera event data forwarded to multiple external sinks without masking or minimization",
+      "reason": "This is a personal home automation system. All 'external' sinks are self-hosted and private: Slack is a private workspace, housemem is a local service, mobile push goes to the homeowner's phone, calendar is local HA. There are no third-party services receiving this data. Privacy controls are inappropriate here."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "Cross-file pattern of collecting rich behavior/event data and forwarding to external destinations without clear minimization boundaries",
+      "reason": "All destinations are self-hosted private services (local Slack workspace, local housemem, homeowner's phone, local HA calendar). No third-party data exposure. Privacy controls would add complexity with zero benefit for a personal home system."
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "from_json({}) may not be valid Jinja2 syntax",
+      "reason": "Context7 HA docs confirm from_json accepts a default parameter directly. This is the documented pattern for HA 2025.x+."
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "Calendar entity renamed from llm_vision_timeline to llmvision_activity_log",
+      "reason": "Intentional rename \u2014 old entity was wrong name. Already deployed and verified working."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "Cross-file from_json pattern consistency concern",
+      "reason": "All packages were updated in the same commit (4e63dc5) to use from_json(default) pattern consistently."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "Calendar entity rename may break existing data",
+      "reason": "Intentional change, old entity name was incorrect. New calendar entity created and verified."
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/dog_daily_timesheet.yaml",
+      "title": "The automation sends four Slack notifications sequentially with one-second delays between them. This design adds at least several seconds of avoidable latency.",
+      "reason": "The 4-message split was explicitly designed to solve a 5500-char Slack truncation problem. Combining back into fewer messages recreates the original bug. The 1-second delays prevent Slack rate limiting and ensure message ordering. This is intentional, not a performance issue."
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/dog_behavior_gamification.yaml",
+      "title": "logbook.log service calls target entities by setting entity_id inside data instead of using a target block",
+      "reason": "logbook.log is a special service that does not support the target: block pattern. The entity_id in data is used to associate the log entry with an entity for display purposes, not to target the service call. This is the correct and documented usage for logbook.log."
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/llmvision_camera_events.yaml",
+      "title": "silently swallows JSON parse failures from AI output",
+      "reason": "The calibration review correctly disputed this. The code has explicit fallback handling with safe defaults \u2014 this is intentional defensive programming, not silent failure."
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/llmvision_camera_events.yaml",
+      "title": "mis-normalizes single mapping objects as iterables",
+      "reason": "Calibration correctly identified this as based on a hallucinated line of code. The actual implementation handles this correctly."
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "Package detection debounce 15s may miss slow-moving intruders",
+      "reason": "The debounce is on the notification cooldown (last_triggered check), not on detection. Alarmo itself handles detection instantly. The cooldown just prevents notification spam for the same package sitting there."
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "JSON trim in notification may produce invalid JSON",
+      "reason": "Line 795 uses truncate(255) on sensor_name which is a plain text string (friendly names joined with commas), not JSON. No JSON parsing downstream."
+    },
+    {
+      "file": "packages/alarmo_security.yaml",
+      "title": "Notification device validation - notify service could fail silently",
+      "reason": "script.notify_mobile is a wrapper script that handles device routing, target validation, and channel selection internally. It's not a raw notify service call."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "notify_mobile failure blocks entire pipeline",
+      "reason": "P1 critical alerts intentionally do NOT have continue_on_error on notify_mobile \u2014 if mobile push fails for a security alert, the pipeline SHOULD stop so it's visible. Slack already has continue_on_error:true as secondary channel. Other priority levels route through script wrappers that handle failures internally."
+    },
+    {
+      "file": "packages/llmvision_camera_events.yaml",
+      "title": "Person dedup 60s window may miss re-entries",
+      "reason": "The dedup window is actually 1800 seconds (30 minutes), not 60 seconds. Line 215: (now() - as_datetime(last_notified_time)).total_seconds() < 1800. 30 min is appropriate for suppressing repeated detections of the same person at the same camera."
+    },
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Entity IDs may not exist (phantom references)",
+      "reason": "All entities reference _2 suffix which is documented at lines 5-11 as replacement device. Comments explicitly state: 'Base Entities from Owlet Integration (replacement device, _2 suffix)'. These are real entities from the Owlet integration."
+    },
+    {
+      "file": "packages/ottilie_owlette_monitoring.yaml",
+      "title": "Naming mismatches between sensors",
+      "reason": "The 'mismatches' are intentional aliasing \u2014 the entire purpose of Section 1 (lines 29-108) is to create standardized names (e.g., sensor.ottilie_heart_rate) that reference the integration's auto-generated names (e.g., sensor.ottilie_s_owlet_heart_rate_2). This is by design."
+    },
+    {
+      "file": "packages/appliance_monitoring.yaml",
+      "title": "Laundry peak deviation race condition between peak_power and deviation_pct",
+      "reason": "The trigger-based template sensor (lines 825-848) reads input_select.washer_laundry_state and axis sensor states atomically in a single Jinja template evaluation. There is no race \u2014 HA evaluates the entire template as one unit when the trigger fires. The peak tracking uses this.state (previous value) which is also atomic."
+    },
+    {
+      "file": "packages/appliance_monitoring.yaml",
+      "title": "Fridge entity IDs may not exist",
+      "reason": "sensor.kitchen_refrigerator_power and sensor.basement_refrigerator_power are ESPHome Sonoff S31 devices explicitly listed in the file header (lines 16-17). They are real hardware with stable entity IDs."
+    },
+    {
+      "file": "packages/appliance_monitoring.yaml",
+      "title": "No global monitoring disable check in templates",
+      "reason": "All automations already check input_boolean.appliance_monitoring_enabled (e.g., line 1183). Template sensors intentionally do NOT check this toggle because they need to remain available for Energy Dashboard integration and history stats even when notifications are suppressed."
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Entity ID mismatches in sensor references",
+      "reason": "All referenced sensors (living_room_temperature, living_room_stove_left_temperature, etc.) are real entities from Zigbee temperature sensors and the ecobee. The flue sensor entity (sensor.wood_stove_flue_monitor_wood_stove_flue_temperature) has a verbose name because ESPHome auto-generates it from device name + sensor name."
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "HVAC lockout setpoint overwrite clobbers user changes",
+      "reason": "Lines 1067-1075 already guard against this. The restore automation checks: abs(current_setpoint - expected_lockout_setpoint) < 1. If the user manually changed the setpoint during lockout, the condition fails and the automation does NOT restore, respecting the user's manual override."
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Circulation fan should not run during HVAC heat",
+      "reason": "climate.set_fan_mode to 'on' only controls the blower fan, not the heating mode. The ecobee continues to manage heating independently. Running the fan during stove use distributes heat \u2014 it doesn't conflict with HVAC heating. If furnace kicks in, fan was already on, which is fine."
+    },
+    {
+      "file": "packages/wood_stove_monitoring.yaml",
+      "title": "Ecobee preset interaction concerns",
+      "reason": "Speculative concern. The ecobee presets (comfort profiles) operate on schedules. The lockout automation saves/restores the numerical setpoint, which is orthogonal to preset names. If a preset changes the setpoint, the lockout captures the new value. No conflict."
+    },
+    {
+      "file": "packages/daily_activity_summary.yaml",
+      "title": "Sensitive data to external services",
+      "reason": "Both LiteLLM and housemem are self-hosted on local LAN with TLS/bearer auth"
+    },
+    {
+      "file": "packages/connectivity_monitoring.yaml",
+      "title": "Stale report mixes offline vs stale counts",
+      "reason": "Report clearly labels both sections separately"
+    },
+    {
+      "file": "packages/donetick_waste_collection_tasks.yaml",
+      "title": "calendar.get_events uses target entity_id which matches HA style guidance",
+      "reason": "Not a finding, just a positive observation"
+    },
+    {
+      "file": "esphome/basement-refrigerator-s31.yaml",
+      "title": "Relay is configured to always turn on after reboot",
+      "reason": "Intentional: refrigerator relay MUST default on after power loss to keep food safe"
+    },
+    {
+      "file": "esphome/basement-refrigerator-s31.yaml",
+      "title": "Relay restore mode 'ALWAYS_ON' can cause unexpected activation",
+      "reason": "Same as above -- intentional for refrigerator appliance monitoring"
+    },
+    {
+      "file": "esphome/backyard-lights--gutter-heater.yaml",
+      "title": "Fallback AP is configured without captive_portal component",
+      "reason": "Fallback AP activates only when WiFi fails -- that's its intended purpose. Not a security issue."
+    },
+    {
+      "file": "esphome/backyard-lights--gutter-heater.yaml",
+      "title": "Boot-strap pin GPIO0 is used as a button input",
+      "reason": "Standard Sonoff/Tuya ESP8266 design. Every off-the-shelf relay board uses GPIO0 for button."
+    },
+    {
+      "file": "packages/adaptive_lighting_utility_room.yaml",
+      "title": "Hard-coded sunrise and sunset times break true circadian behavior",
+      "reason": "Intentional for ADHD-friendly consistent scheduling. Not a bug."
+    },
+    {
+      "file": "packages/adaptive_lighting_utility_room.yaml",
+      "title": "Hard-coded sunrise and sunset times will drift from actual daylight conditions",
+      "reason": "Same as above -- intentional design choice for predictable lighting schedule."
+    },
+    {
+      "file": "configuration/configuration.yaml",
+      "title": "homeassistant.debug: false key",
+      "reason": "Silently ignored by HA, no validation failure. Not a real bug."
+    },
+    {
+      "file": "esphome/backyard-lights--gutter-heater.yaml",
+      "title": "Fallback AP enabled permanently",
+      "reason": "That's literally how ESPHome fallback AP works - only activates when WiFi fails"
+    },
+    {
+      "file": "esphome/backyard-lights--gutter-heater.yaml",
+      "title": "GPIO15 on front-porch-air-quality",
+      "reason": "Not present in this file - false positive, wrong file referenced"
+    },
+    {
+      "file": "packages/shower_heating_boost.yaml",
+      "title": "Shower-ended humidity recheck is incorrect",
+      "reason": "Logic is correct: shower_ended checks threshold at entry"
+    },
+    {
+      "file": "packages/bathroom_fan_co2_control.yaml",
+      "title": "Basement shower not triggering fan immediately",
+      "reason": "Shower activity IS highest-priority choose branch. Triggers correctly."
+    },
+    {
+      "file": "packages/smart_thermostat_pid.yaml",
+      "title": "HVAC re-enable watching hvac_mode attribute",
+      "reason": "Valid trigger: climate entities expose hvac_mode as attribute. Works correctly."
+    },
+    {
+      "file": "configuration/configuration.yaml",
+      "title": "wifi.domain .5745.house",
+      "reason": "Correct DNS domain for network. Not mDNS .local issue."
+    },
+    {
+      "file": "esphome/dishwasher-s31.yaml",
+      "title": "Daily energy depends on HA time",
+      "reason": "Standard ESPHome pattern using homeassistant.time. Correct approach."
+    },
+    {
+      "file": "packages/front_closet_lighting.yaml",
+      "title": "Cross-package helper dependencies",
+      "reason": "Defined in core config, working as designed. Not undeclared."
+    },
+    {
+      "file": "esphome/basement-refrigerator-s31.yaml",
+      "title": "Unused homeassistant_time",
+      "reason": "Confirmed used by total_daily_energy sensor. Not unused."
+    },
+    {
+      "file": "packages/water_meter_monitoring.yaml",
+      "title": "Leak detection may be permanently disabled by checking a non-existent statistics attribute",
+      "reason": "source_value_valid is a real HA statistics sensor attribute. Confirmed it exists on sensor.water_flow_rate_1hr_avg (currently false with age_coverage_ratio 0.64). The guard is working as intended to prevent false alarms on stale data."
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Fold-entity-row is used to wrap non-entity cards, which is likely unsupported",
+      "reason": "custom:fold-entity-row is the de facto HA community standard for collapsible sections in a grid/sections layout. While technically designed for use inside an entities card, it renders reliably standalone in Lovelace sections views. All HA dashboard guides and HACS documentation show this usage pattern. Not a real runtime issue."
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Same non-portable `%-d` date format repeated in diagnostics view",
+      "reason": "Home Assistant runs exclusively on Linux (the HA OS is Alpine/Debian-based). The %-d strftime flag is a GNU/Linux extension and always works in this context. Cross-platform portability to Windows is not a concern for HA dashboard templates."
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Settings section also misuses fold-entity-row outside an entities card context",
+      "reason": "Same as the first finding \u2014 standalone fold-entity-row in a grid section is the accepted HA community pattern and renders correctly."
+    },
+    {
+      "file": "dashboards/production/24_laundry.yaml",
+      "title": "Additional fold-entity-row usages in diagnostics likely break card rendering",
+      "reason": "Same as above \u2014 accepted HA community pattern, not a rendering issue in practice."
+    },
+    {
+      "file": "dashboards/production/14_ottilie_monitor.yaml",
+      "title": "Jinja templates in tile color field",
+      "reason": "HA tile cards support Jinja templates in the color field since 2023.x. This works correctly in production."
+    },
+    {
+      "file": "dashboards/production/14_ottilie_monitor.yaml",
+      "title": "Platform-specific strftime directive may break on non-Unix environments",
+      "reason": "HA runs on Linux/Docker. %-d is supported. Not a real portability concern for this deployment."
+    },
+    {
+      "file": "dashboards/production/13_wood_stove_monitoring.yaml",
+      "title": "Template used in tile card color may not be supported",
+      "reason": "HA tile cards support Jinja templates in the color field since 2023.x. Works correctly in production."
+    },
+    {
+      "file": "dashboards/production/07_fountain_water.yaml",
+      "title": "Power Monitoring section title and layout suggest multiple gauges, but only Garden is implemented",
+      "reason": "Quorum reviewed a truncated excerpt. The full file has gauges for all 3 fountains (Garden, Porch, Stairwell)."
+    },
+    {
+      "file": "dashboards/production/07_fountain_water.yaml",
+      "title": "Management section exposes reset action for only one fountain despite dashboard covering three",
+      "reason": "Same truncation issue \u2014 the full file has reset buttons for all 3 fountains (Reset Garden, Reset Porch, Reset Stair)."
+    },
+    {
+      "file": "dashboards/production/18_refrigerator_monitoring.yaml",
+      "title": "Unsupported Jinja templating used in tile color field",
+      "reason": "HA tile cards support Jinja templates in the color field since 2023.x. Works correctly in production."
+    },
+    {
+      "file": "dashboards/production/18_refrigerator_monitoring.yaml",
+      "title": "Repeated unsupported Jinja templating in second tile color field",
+      "reason": "Same as above \u2014 HA tile cards support Jinja in color. Duplicate of first finding."
+    },
+    {
+      "file": "dashboards/production/18_refrigerator_monitoring.yaml",
+      "title": "Markdown card content uses Jinja date template that may not render",
+      "reason": "HA markdown cards fully support Jinja templates including now().strftime(). This is core HA functionality."
+    },
+    {
+      "file": "dashboards/production/18_refrigerator_monitoring.yaml",
+      "title": "Platform-specific strftime directive may break on non-Unix environments",
+      "reason": "HA runs on Linux/Docker. %-d is supported. Not a portability concern."
+    },
+    {
+      "file": "dashboards/production/03_equipment_maintenance.yaml",
+      "title": "Platform-specific strftime directives may break date rendering",
+      "reason": "HA runs on Linux/Docker. %-d and %-I are supported. Not a portability concern for this deployment."
+    },
+    {
+      "file": "dashboards/production/10_entertainment_fan_control.yaml",
+      "title": "Use of state_not in conditional card is not valid Lovelace syntax",
+      "reason": "state_not IS valid in HA conditional cards, supported since 2022.x. Works correctly in production."
+    },
+    {
+      "file": "dashboards/production/10_entertainment_fan_control.yaml",
+      "title": "Broken navigation path to Diagnostics view",
+      "reason": "The path /entertainment-fan-control/diagnostics matches the dashboard slug exactly. Navigation works correctly."
+    },
+    {
+      "file": "dashboards/production/10_entertainment_fan_control.yaml",
+      "title": "Broken back navigation path to Fan Control view",
+      "reason": "Same as above \u2014 /entertainment-fan-control/fan-control matches the dashboard slug. Navigation works correctly."
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "backyard_tree_enabled toggle gates both front and back yard trees",
+      "reason": "Intentional. Both outdoor trees are on the same watering circuit and monitored as a pair. The toggle controls whether outdoor tree monitoring is active at all, not individual trees."
+    },
+    {
+      "file": "dashboards/production/04_plant_monitoring.yaml",
+      "title": "Only 3 plant cards visible, missing cards for remaining plants",
+      "reason": "Quorum only saw a truncated excerpt of the dashboard file. All 12+ plant cards exist with correct per-category thresholds \u2014 the review just didn't see the full file."
+    },
+    {
+      "file": "packages/grow_tent_monitoring.yaml",
+      "title": "Invalid `if` condition syntax in automations likely prevents startup delay logic from working",
+      "reason": "HA 2023.x+ supports trigger matching in if actions \u2014 `platform: homeassistant` / `event: start` is valid syntax to check which trigger fired. This pattern is used across many automations in this codebase."
+    },
+    {
+      "file": "packages/grow_tent_monitoring.yaml",
+      "title": "Same invalid `if` trigger-style condition appears in PID exhaust automation",
+      "reason": "Same as above \u2014 valid HA trigger matching syntax in if actions."
+    },
+    {
+      "file": "packages/grow_tent_monitoring.yaml",
+      "title": "Deprecated singular `trigger:` -- use `triggers:` instead",
+      "reason": "trigger: is the standard, supported HA automation key. It has not been deprecated in favor of triggers:. 100% FP rate in quorum precedent history."
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "Top-level sensor platforms are missing the required parent key",
+      "reason": "Review saw code excerpt, not actual file. Real file has proper sensor: parent key \u2014 filter and statistics entries are correctly nested under the existing sensor: block."
+    },
+    {
+      "file": "packages/plant_intelligence.yaml",
+      "title": "Comment claims all 4 PLT-1B watering automations exist, but only one is defined",
+      "reason": "Review only saw one example automation in the excerpt. All 4 PLT-1B automations (beetle_peperomia, watermelon_peperomia, lime_tree, spider_plant_hanging) exist in the actual file."
+    },
+    {
+      "file": "packages/donetick_voice.yaml",
+      "title": "Cache freshness check reads last_changed as an attribute instead of entity metadata",
+      "reason": "Wrong line range cited (L189-199 is fountain handler, not cache logic). state_attr returning None is handled gracefully by cache_age=999 fallback \u2014 cache just always misses, no breakage."
+    },
+    {
+      "file": "packages/donetick_vacuum_maintenance.yaml",
+      "title": "User attribution relies on brittle device_id substring matching",
+      "reason": "device_id in mobile_app_notification_action events is the standard and only practical approach for HA companion app attribution. Stable IDs, graceful fallback to \"Unknown User\"."
+    },
+    {
+      "file": "packages/donetick_testing.yaml",
+      "title": "Test runner leaves previous system flags enabled across runs",
+      "reason": "Cleanup happens in donetick_test_automation_runner automation (L583-588) which turns off both system-specific flag and global test mode after completion."
+    },
+    {
+      "file": "packages/donetick_waste_collection_tasks.yaml",
+      "title": "Task due time is hard-coded instead of using the calendar event start",
+      "reason": "7 AM is a reasonable fixed pickup time. Municipal calendar events are all-day with no meaningful start time to use. Intentional design choice."
+    },
+    {
+      "file": "rules/typescript/cors-wildcard-origin.yml",
+      "title": "Pattern is too broad and can flag unrelated .set() calls outside HTTP response context",
+      "reason": "The HEADER constraint regex (?i)['\\\"]access-control-allow-origin['\\\"] limits this very strongly \u2014 theoretical FP requires someone to call myMap.set('Access-Control-Allow-Origin', '*') on a non-response object, which does not appear in real code. Accepted breadth cost for catching Fetch Response.headers.set."
+    }
+  ]
+}

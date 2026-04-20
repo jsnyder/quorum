@@ -1,0 +1,20 @@
+id: blocking-call-in-async
+language: Python
+severity: warning
+message: "Blocking call inside `async def` stalls the event loop. Use `asyncio.sleep`, `httpx.AsyncClient`, or `asyncio.to_thread()` for CPU-bound work."
+note: "Mining: 8 confirmed true positives. Python sibling of rust/block-on-in-async."
+rule:
+  inside:
+    kind: function_definition
+    regex: "^\\s*async\\s+def\\b"
+    stopBy: end
+  kind: call
+  has:
+    field: function
+    any:
+      - regex: "^time\\.sleep$"
+      - regex: "^requests\\.(get|post|put|delete|patch|head|options|request)$"
+      - regex: "^urllib\\.request\\.urlopen$"
+      - regex: "^subprocess\\.(run|call|check_call|check_output|Popen)$"
+      - regex: "^os\\.system$"
+    stopBy: end

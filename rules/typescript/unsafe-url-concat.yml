@@ -1,0 +1,20 @@
+id: unsafe-url-concat
+language: TypeScript
+severity: hint
+message: "Building a URL with string concatenation can produce malformed or ambiguous paths (double slashes, missing separators, query-string collisions). Use `new URL(path, base)` or a router builder."
+note: "Mining: 4 confirmed true positives. Scoped to identifier + string with leading slash to avoid flagging literal-only concatenations."
+rule:
+  kind: binary_expression
+  all:
+    - has:
+        field: operator
+        regex: "^\\+$"
+    - has:
+        field: left
+        any:
+          - kind: identifier
+          - kind: member_expression
+    - has:
+        field: right
+        kind: string
+        regex: "^['\"]\\/"

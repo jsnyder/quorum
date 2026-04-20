@@ -1,0 +1,171 @@
+{
+  "language": "yaml",
+  "total_tps_analyzed": 92,
+  "clusters": [
+    {
+      "name": "float(0) Default Masks Sensor Unavailability",
+      "tp_count": 6,
+      "example_titles": [
+        "Room temperature float(0) silently disables alerts",
+        "Fresh Air Available Optimized converts indoor PM2.5 with float(0) treating unavailable as clean air",
+        "Per-room attributes coerce unavailable to 0.0 with float(0)",
+        "CO2 control comparisons use float(0) fallbacks, which can turn fans off on sensor unavailability"
+      ],
+      "decision": "covered",
+      "covered_by": "float-zero-fallback.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Jinja Loop Variable Scoping Bug",
+      "tp_count": 6,
+      "example_titles": [
+        "stale_list Jinja loop variable scoping bug",
+        "Both calendar update automations try to build a list inside a Jinja for loop using dates = dates + [event_date]",
+        "Template list accumulation inside loop will not persist",
+        "Task UID lookup never persists match inside Jinja loop"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ha-jinja-loop-scoped-reassignment",
+        "severity": "warning",
+        "yaml": "id: ha-jinja-loop-scoped-reassignment\nlanguage: yaml\nseverity: warning\nmessage: \"Variable reassigned inside a for-loop will not persist across iterations in standard Jinja. Use the `namespace` object to share state. Example: `{% set ns = namespace(my_list=[]) %}{% for i in range(5) %}{% set ns.my_list = ns.my_list + [i] %}{% endfor %}`\"\nrule:\n  kind: block_scalar\n  # Matches: {% set var = ... %} ... {% for ... %} ... {% set var = ... %}\n  regex: '(?s)\\{%\\s*set\\s+([a-zA-Z0-9_]+)\\s*=.+?%\\}.*?\\{%\\s*for\\s+.+?in.+?%\\}.*?\\{%\\s*set\\s+\\1\\s*='\n",
+        "positive_fixture": "template:\n  sensor:\n    - name: \"Failing Counter\"\n      state: >\n        {% set my_list = [] %}\n        {% for i in range(5) %}\n          {% set my_list = my_list + [i] %}\n        {% endfor %}\n        {{ my_list | count }}",
+        "negative_fixture": "template:\n  sensor:\n    - name: \"Working Counter\"\n      state: >\n        {% set ns = namespace(my_list=[]) %}\n        {% for i in range(5) %}\n          {% set ns.my_list = ns.my_list + [i] %}\n        {% endfor %}\n        {{ ns.my_list | count }}",
+        "fp_cross_check": "PASS: This pattern is highly specific to a known Jinja scoping issue and does not appear in the FPs. The fix mentioned in TPs (using namespace) is the standard solution, which the negative fixture demonstrates.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 6
+      }
+    },
+    {
+      "name": "Unsafe Dictionary/Attribute Access",
+      "tp_count": 5,
+      "example_titles": [
+        "Calendar response indexing fragile - dict key lookup raises before default runs",
+        "Both date-update automations index directly into the response object",
+        "All three automations dereference the calendar response with direct indexing without guard",
+        "Unsafe indexing into todo.get_items response can break the voice response flow",
+        "Template condition can fail when `event_type` is missing"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ha-unsafe-dict-index-before-default",
+        "severity": "error",
+        "yaml": "id: ha-unsafe-dict-index-before-default\nlanguage: yaml\nseverity: error\nmessage: \"Unsafe dictionary indexing `['key']` occurs before `| default()`. If the key is missing, the template will raise an error instead of using the default. Use `(variable.key | default(''))` or `variable.get('key', '')` instead.\"\nrule:\n  kind: block_scalar\n  regex: '\\[\\s*[''\"][^\\],''\"]+[''\"]\\s*\\]\\s*\\|\\s*default\\s*\\('\n",
+        "positive_fixture": "template:\n  sensor:\n    - name: \"Event Title\"\n      state: >\n        {{ trigger.event.data['details']['title'] | default('No title') }}",
+        "negative_fixture": "template:\n  sensor:\n    - name: \"Event Title\"\n      state: >\n        {{ trigger.event.data.get('details', {}).get('title', 'No title') }}",
+        "fp_cross_check": "PASS: This pattern is a specific and well-known Jinja templating error. It does not overlap with any logic described in the FP list.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "input_text 255 Character Limit Overflow",
+      "tp_count": 4,
+      "example_titles": [
+        "Task cache storage is too small for JSON item lists",
+        "Consolidated plant state is capped at 255 characters and will overflow",
+        "Mock API assertion payload can be truncated by 255-character input_text limit",
+        "Test results log is prone to truncation and loss of assertions"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ha-input-text-potential-overflow",
+        "severity": "warning",
+        "yaml": "id: ha-input-text-potential-overflow\nlanguage: yaml\nseverity: warning\nmessage: \"Using `input_text.set_value` to store complex or concatenated data can lead to silent truncation, as `input_text` is limited to 255 characters. Using `| to_json` or appending to the existing state are common causes of overflow. Consider using a custom sensor with attributes or a different storage method.\"\nrule:\n  kind: block_mapping\n  has:\n    all:\n      - pair:\n          key: \"service\"\n          value: \"input_text.set_value\"\n      - pair:\n          key: any\n          value:\n            has:\n              pair:\n                key: \"value\"\n                value:\n                  kind: block_scalar\n                  regex: '(\\|\\s*to_json)|(states\\s*\\(\\s*[''\\\"]input_text\\.)'\n",
+        "positive_fixture": "action:\n  - service: input_text.set_value\n    target:\n      entity_id: input_text.plant_data\n    data:\n      value: >\n        {{ all_plants | to_json }}",
+        "negative_fixture": "action:\n  - service: input_text.set_value\n    target:\n      entity_id: input_text.last_action\n    data:\n      value: \"User triggered automation\"",
+        "fp_cross_check": "PASS: The rule is heuristic but targets specific patterns (`to_json`, `states('input_text...`) that directly correspond to the TPs. The FPs do not involve `input_text` service calls in this manner.",
+        "estimated_precision": 0.8,
+        "estimated_tp_coverage": 4
+      }
+    },
+    {
+      "name": "Parallel Read-Modify-Write Race Condition",
+      "tp_count": 4,
+      "example_titles": [
+        "Parallel read-modify-write updates can lose plant state changes",
+        "Inactive-state script repeats the same unsafe parallel state update pattern",
+        "Shared state mutation script is explicitly configured for parallel execution",
+        "Parallel result appends can race and overwrite each other"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "Detecting this requires identifying three components: 1) `mode: parallel`, 2) a service call that writes to an entity, and 3) a template that reads from the *same* entity. Syntactically identifying that the entity in `states('input_text.foo')` is the same one targeted by `service: input_text.set_value` with `entity_id: input_text.foo` requires data flow analysis beyond the scope of AST matching.",
+      "rule": null
+    },
+    {
+      "name": "Plausible but Incorrect `float` Default",
+      "tp_count": 3,
+      "example_titles": [
+        "float(50) default masks unavailable sensors as healthy in health gate state template",
+        "float(50) default masks unavailable sensors in all_needing_water attribute template",
+        "Humidity automations treat unavailable sensor readings as valid low values"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "This is a semantic issue. The problem is not the use of `float(default)` itself, but that the chosen default value (e.g., 50) represents a 'healthy' or 'safe' state. Determining whether a default value is plausible but incorrect requires understanding the domain (e.g., plant moisture levels, humidity) and the logic of the automation. A syntactic rule cannot distinguish between a safe default like `float(999)` for an upper-bound check and an unsafe one like `float(50)`.",
+      "rule": null
+    },
+    {
+      "name": "Hardcoded Secrets",
+      "tp_count": 2,
+      "example_titles": [
+        "Hardcoded secret in `password`",
+        "Sensitive credential appears embedded in YAML configuration"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ha-hardcoded-secret",
+        "severity": "error",
+        "yaml": "id: ha-hardcoded-secret\nlanguage: yaml\nseverity: error\nmessage: \"A hardcoded secret was found. Use `!secret <secret_name>` to reference secrets from your `secrets.yaml` file.\"\nrule:\n  kind: pair\n  pattern: $KEY: $VALUE\n  constraints:\n    KEY:\n      regex: '(?i)password|api_key|bearer_token|authorization|auth_key|secret_key'\n    VALUE:\n      # A plain scalar value indicates a hardcoded secret.\n      # A !secret tag would make the value a `flow_node` or `block_node`, not a direct scalar.\n      any:\n        - kind: flow_scalar\n        - kind: block_scalar\n      # Exclude empty strings or known placeholders\n      not:\n        regex: '^(|''|\"\")$|(?i)(placeholder|none|example|\\{\\{.*\\}\\})'\n",
+        "positive_fixture": "rest_command:\n  my_command:\n    url: \"https://example.com/api\"\n    headers:\n      Authorization: \"Bearer sk-12345abcdeFGHIjklm\"\n    password: \"my-super-secret-password\"",
+        "negative_fixture": "rest_command:\n  my_command:\n    url: \"https://example.com/api\"\n    headers:\n      Authorization: !secret my_api_token\n    password: \"{{ some_variable }}\"",
+        "fp_cross_check": "PASS: The key regex is crafted to avoid generic terms like 'token' which could match 'max_tokens'. The value constraint correctly identifies literal strings while ignoring `!secret` tags (which are not scalar values at the pair level) and template variables. This avoids FPs.",
+        "estimated_precision": 0.9,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "Unconditional Service Call Before Guard",
+      "tp_count": 2,
+      "example_titles": [
+        "Task creation runs even when no task text was recognized",
+        "Task completion service is invoked even when the spoken task slot is missing"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "This pattern involves a service call that uses a template variable (e.g., `item: \"{{ task }}\"`) followed by a separate template (e.g., in a `speech` block) that contains a guard for that same variable (e.g., `{% if task %}`). Detecting this requires tracking variable names across different keys in a YAML mapping and understanding the logical dependency, which is beyond the capabilities of a purely syntactic AST checker.",
+      "rule": null
+    },
+    {
+      "name": "as_datetime() without None check",
+      "tp_count": 1,
+      "example_titles": [
+        "as_datetime() not guarded against malformed timestamps"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ha-unhandled-as-datetime-none",
+        "severity": "warning",
+        "yaml": "id: ha-unhandled-as-datetime-none\nlanguage: yaml\nseverity: warning\nmessage: \"The `as_datetime()` function can return `None` on invalid input, which will cause an error when piped to another filter like `as_local`. Guard the operation with an `if` check. Example: `{% set dt = as_datetime(my_input) %}{% if dt %}{{ dt | as_local }}{% endif %}`\"\nrule:\n  kind: block_scalar\n  regex: 'as_datetime\\s*\\([^)]+\\)\\s*\\|\\s*(as_local|timestamp_custom|relative_time)'\n",
+        "positive_fixture": "template:\n  sensor:\n    - name: \"Last Seen Local\"\n      state: >\n        {{ as_datetime(states('input_datetime.last_seen')) | as_local }}",
+        "negative_fixture": "template:\n  sensor:\n    - name: \"Last Seen Local\"\n      state: >\n        {% set dt = as_datetime(states('input_datetime.last_seen')) %}\n        {% if dt is not none %}\n          {{ dt | as_local }}\n        {% else %}\n          'Unknown'\n        {% endif %}",
+        "fp_cross_check": "PASS: This is a specific, known pitfall in HA templating. The regex is precise and does not overlap with any patterns in the FP list.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    }
+  ],
+  "notes": "Several significant TP clusters were identified as `llm_only` because they require semantic understanding or data-flow analysis that is not possible with static AST rules. These include race conditions in `mode: parallel` scripts and logical errors where actions are performed before their guard conditions. The proposed `astgrep` rules focus on high-precision, syntactic patterns with clear anti-patterns, such as Jinja scoping bugs and unsafe filter chaining."
+}

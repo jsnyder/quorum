@@ -1,0 +1,147 @@
+{
+  "language": "bash",
+  "total_tps_analyzed": 15,
+  "clusters": [
+    {
+      "name": "Unsafe grep with variable pattern",
+      "tp_count": 2,
+      "example_titles": [
+        "Regex injection in grep project check",
+        "Broad grep matching for project coverage"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "unsafe-grep-variable",
+        "severity": "warning",
+        "yaml": "id: unsafe-grep-variable\nlanguage: bash\nseverity: warning\nmessage: \"A variable is used in a `grep` command. If this variable is the search pattern and is not intended as a regular expression, `grep` may interpret special characters in the variable's value, leading to unexpected behavior or errors. For literal matching, use the `-F` flag (e.g., `grep -F \\\"$VAR\\\"`).\"\nnote: \"Based on 2 confirmed true positives where user input was incorrectly treated as a regex.\"\nrule:\n  all:\n    - kind: command\n    - has:\n        kind: command_name\n        pattern: grep\n    - has:\n        # Find an argument that is a string containing a variable expansion.\n        kind: string\n        has: { kind: variable_expansion }\n    - not:\n        # And it's not using flags that specify the pattern type as fixed.\n        has:\n          kind: word\n          regex: '^-.*F'",
+        "positive_fixture": "PROJECT_NAME=\"foo.bar\"\ngrep -q \"$PROJECT_NAME\" file.txt",
+        "negative_fixture": "PROJECT_NAME=\"foo.bar\"\ngrep -Fq \"$PROJECT_NAME\" file.txt",
+        "fp_cross_check": "verified against FP list: PASS. No FPs involve the `grep` command.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "Non-atomic file-based locking (TOCTOU)",
+      "tp_count": 2,
+      "example_titles": [
+        "Idempotency check is race-prone and can trigger duplicate ingestions",
+        "Lock file creation is non-atomic and allows concurrent checkpoint runs"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "toctou-lock-touch",
+        "severity": "warning",
+        "yaml": "id: toctou-lock-touch\nlanguage: bash\nseverity: warning\nmessage: \"Using `if [ ! -f ... ]; then touch ...; fi` to create a lock file is not atomic. A race condition can occur between the check and the creation, allowing multiple processes to acquire the lock. Use `mkdir` for atomic lock file creation.\"\nnote: \"Based on 2 confirmed true positives. `mkdir /path/to/lock.dir` will atomically succeed for only one process.\"\nrule:\n  kind: if_statement\n  pattern: if [ ! -f $LOCKFILE ]; then $$$BODY; fi\n  has:\n    kind: compound_statement\n    has:\n      kind: command\n      pattern: touch $LOCKFILE",
+        "positive_fixture": "LOCK_FILE=/tmp/my.lock\nif [ ! -f \"$LOCK_FILE\" ]; then\n  touch \"$LOCK_FILE\"\n  echo \"doing work\"\n  rm \"$LOCK_FILE\"\nfi",
+        "negative_fixture": "LOCK_DIR=/tmp/my.lock\nif mkdir \"$LOCK_DIR\"; then\n  trap 'rmdir \"$LOCK_DIR\"' EXIT\n  echo \"doing work\"\nfi",
+        "fp_cross_check": "verified against FP list: PASS. FPs mention temporary files but do not show this specific non-atomic locking pattern. The rule is narrow enough to avoid flagging general temp file usage.",
+        "estimated_precision": 0.9,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "Predictable temporary file",
+      "tp_count": 2,
+      "example_titles": [
+        "Predictable /tmp filenames derived from untrusted session_id enable file clobbering/symlink attacks",
+        "Predictable files in /tmp create symlink and race-condition risks"
+      ],
+      "decision": "covered",
+      "covered_by": "predictable-tmp.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Manual JSON construction with echo",
+      "tp_count": 1,
+      "example_titles": [
+        "Manual JSON string concatenation is brittle to quotes in URL/query_file/captured_at"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "manual-json-echo",
+        "severity": "hint",
+        "yaml": "id: manual-json-echo\nlanguage: bash\nseverity: hint\nmessage: \"Manually constructing JSON with `echo` and string interpolation is brittle and unsafe. Special characters (quotes, backslashes) in variables will break the JSON structure. Use a tool like `jq` to safely generate JSON.\"\nnote: \"Based on a true positive where quotes in variables broke the output. `jq -n --arg key \\\"$VALUE\\\" '{key: $key}'` is a robust alternative.\"\nrule:\n  kind: command\n  pattern: echo $ARG\n  where:\n    ARG:\n      kind: string\n      regex: '^\"\\\\{.*\\\\}\"$' # Starts with \"{ and ends with }\"\n      has:\n        kind: variable_expansion",
+        "positive_fixture": "URL=\"http://example.com?q=foo&bar=baz\"\n# This is buggy if URL contains quotes\necho \"{\\\"url\\\": \\\"$URL\\\"}\"",
+        "negative_fixture": "URL=\"http://example.com?q=foo&bar=baz\"\njq -n --arg url \"$URL\" '{\n  \"url\": $url\n}'",
+        "fp_cross_check": "verified against FP list: PASS. No FPs involve `echo` or JSON construction.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Non-portable grep -P",
+      "tp_count": 1,
+      "example_titles": [
+        "grep -oP not portable on macOS"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "non-portable-grep-p",
+        "severity": "warning",
+        "yaml": "id: non-portable-grep-p\nlanguage: bash\nseverity: warning\nmessage: \"The `grep -P` flag for PCRE regex is a GNU extension and not available on all systems, such as macOS/BSD. For better portability, use `grep -E` for extended regular expressions (ERE) if possible.\"\nnote: \"Based on a true positive where a script failed on macOS. ERE is widely available and covers many use cases.\"\nrule:\n  kind: command\n  has:\n    - kind: command_name\n      pattern: grep\n    - kind: word\n      regex: ^-.*P",
+        "positive_fixture": "grep -oP '\\b[0-9]{1,3}(\\.[0-9]{1,3}){3}\\b' access.log",
+        "negative_fixture": "grep -oE '\\b[0-9]{1,3}(\\.[0-9]{1,3}){3}\\b' access.log",
+        "fp_cross_check": "verified against FP list: PASS. No FPs involve the `grep` command.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Silent error suppression in loop",
+      "tp_count": 1,
+      "example_titles": [
+        "Silent `|| continue` hides failed queries; no skip count surfaced"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "silent-error-suppression-loop",
+        "severity": "warning",
+        "yaml": "id: silent-error-suppression-loop\nlanguage: bash\nseverity: warning\nmessage: \"A command's failure is silently ignored with `|| continue`. This can hide bugs or transient issues. Consider logging the error or using a counter for failed attempts before continuing.\"\nnote: \"Based on a true positive where silent failures in a loop caused data quality issues. At a minimum, consider `|| { echo '...' >&2; continue; }`.\"\nrule:\n  kind: binary_expression\n  has:\n    operator: '||'\n    right:\n      kind: command\n      pattern: continue\n  inside:\n    stopBy: end\n    any:\n      - kind: for_statement\n      - kind: while_statement\n      - kind: c_style_for_statement",
+        "positive_fixture": "for url in $(cat urls.txt); do\n  curl -sS --fail \"$url\" || continue\n  echo \"Processed $url\"\ndone",
+        "negative_fixture": "for url in $(cat urls.txt); do\n  if ! curl -sS --fail \"$url\"; then\n    echo \"Failed to fetch $url\" >&2\n    continue\n  fi\n  echo \"Processed $url\"\ndone",
+        "fp_cross_check": "verified against FP list: PASS. No FPs use the `|| continue` pattern.",
+        "estimated_precision": 0.9,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Missing resource cleanup on exit",
+      "tp_count": 1,
+      "example_titles": [
+        "Lock file is leaked on early exits, blocking future ingestion for the session"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "Detecting a leaked resource requires understanding its intended lifecycle. A syntactic rule to check for file creation (`touch`, `mkdir`) and a later `exit` without a corresponding `rm` would be extremely noisy. The proper fix is a `trap`, but flagging every script that creates a file and has an `exit` but no `trap` would generate many false positives. This requires semantic understanding of which created files are temporary resources that must be cleaned up.",
+      "rule": null
+    },
+    {
+      "name": "Miscellaneous semantic issues",
+      "tp_count": 5,
+      "example_titles": [
+        "Unused LOG_FILE variable indicates dead code or incomplete logging",
+        "session_id is interpolated into URL without encoding",
+        "Full-directory find on every hook invocation can violate the never block goal",
+        "Relative path to backfill-episodes.sh",
+        "Percentile formula int(n*q) is off-by-one; use nearest-rank ceil(q*n)-1"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "These issues require semantic understanding beyond syntactic patterns:\n- **Unused variable**: Requires full scope and usage analysis, which is complex for a simple AST rule.\n- **Missing URL encoding**: Requires identifying URL contexts and knowing which variables need encoding.\n- **Performance**: Judging `find` as a performance issue is entirely context-dependent.\n- **Relative paths**: The problem is not the path itself, but the assumed Current Working Directory, which is an execution context issue.\n- **Incorrect formula**: This is a bug in mathematical logic, not in code structure.",
+      "rule": null
+    }
+  ],
+  "notes": "The provided TPs cover a good range of common shell scripting pitfalls. Several high-precision rules were identified. A significant portion of the findings are semantic in nature (e.g., resource lifecycle, performance, logical errors), confirming the value of LLM-based review for issues that are difficult to capture with purely syntactic rules."
+}

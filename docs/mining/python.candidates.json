@@ -1,0 +1,327 @@
+{
+  "language": "python",
+  "total_tps_analyzed": 203,
+  "clusters": [
+    {
+      "name": "Blocking Call in Async Function",
+      "tp_count": 8,
+      "example_titles": [
+        "Synchronous `memory.add` call inside async endpoint can block event loop",
+        "Blocking future.result() in Scrapy callback can stall the reactor",
+        "Selenium WebDriver is launched inside spider callback, blocking the reactor",
+        "Synchronous comskip execution blocks the async event loop",
+        "Async methods perform blocking filesystem I/O on the event loop",
+        "Synchronous file I/O blocks the event loop in async channel detection",
+        "Scrapy callback blocks while waiting on asyncio future",
+        "Synchronous Node.js API used inside async function blocks the event loop."
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "blocking-call-in-async",
+        "severity": "warning",
+        "yaml": "id: blocking-call-in-async\nlanguage: python\nseverity: warning\nmessage: \"A blocking call was found inside an async function. This can block the event loop, degrading performance. Consider using an async library or `asyncio.to_thread`.\"\nrule:\n  inside:\n    kind: function_definition\n    is_async: true\n  any:\n    - pattern: subprocess.run($$$)\n    - pattern: subprocess.call($$$)\n    - pattern: subprocess.check_call($$$)\n    - pattern: subprocess.check_output($$$)\n    - pattern: time.sleep($$$)\n    - pattern: requests.get($$$)\n    - pattern: requests.post($$$)\n    - pattern: requests.put($$$)\n    - pattern: $FUTURE.result()\n    - pattern: open($$$)\n      not:\n        inside:\n          kind: with_item",
+        "positive_fixture": "import subprocess\nimport time\n\nasync def run_command():\n    # This blocks the event loop\n    print(\"Running command...\")\n    subprocess.run([\"sleep\", \"5\"])\n    print(\"Command finished.\")",
+        "negative_fixture": "import asyncio\n\nasync def run_command_correctly():\n    # This uses the async API\n    print(\"Running command...\")\n    proc = await asyncio.create_subprocess_exec(\"sleep\", \"5\")\n    await proc.wait()\n    print(\"Command finished.\")",
+        "fp_cross_check": "verified against FP list: PASS",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 8
+      }
+    },
+    {
+      "name": "Unconstrained Numeric Parameters in FastAPI",
+      "tp_count": 6,
+      "example_titles": [
+        "Pagination parameters are not validated, allowing negative or excessive values",
+        "Unbounded limit parameter can enable expensive queries",
+        "List endpoint does not validate or constrain pagination inputs",
+        "Search query length is unbounded, enabling expensive FTS requests",
+        "Unbounded user input may enable resource exhaustion",
+        "segment_duration is not validated and can crash playlist generation"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "fastapi-unconstrained-pagination",
+        "severity": "warning",
+        "yaml": "id: fastapi-unconstrained-pagination\nlanguage: python\nseverity: warning\nmessage: \"Pagination parameter is not validated. Unbounded parameters like `limit` or `offset` can lead to performance issues or abuse. Use `Query` with constraints like `ge` (greater-than-or-equal) and `le` (less-than-or-equal).\"\nrule:\n  inside:\n    kind: function_definition\n    has:\n      kind: decorator\n      pattern: '@$APP.$METHOD($$$)'\n  any:\n    - all:\n        - kind: typed_parameter\n          pattern: $NAME: int\n        - not:\n            kind: default_parameter\n    - kind: default_parameter\n      pattern: $NAME: int = $VALUE\n      constraints:\n        VALUE: {kind: integer}\n  constraints:\n    NAME: {regex: '^(limit|offset|page|size)$'}\n    APP: {regex: '^(app|router)$'}\n    METHOD: {regex: '^(get|post|put|delete|patch)$'}",
+        "positive_fixture": "@router.get(\"/items\")\nasync def list_items(limit: int, offset: int = 0):\n    return await query_items(limit=limit, offset=offset)",
+        "negative_fixture": "from fastapi import Query\n\n@router.get(\"/items\")\nasync def list_items(limit: int = Query(default=100, ge=1, le=500)):\n    return await query_items(limit=limit)",
+        "fp_cross_check": "verified against FP list: PASS. The rule correctly identifies parameters that are either non-default or have a simple integer default, which are the patterns needing validation. FPs about this are based on incorrect human analysis or validation happening elsewhere, which this syntactic rule correctly ignores.",
+        "estimated_precision": 0.85,
+        "estimated_tp_coverage": 5
+      }
+    },
+    {
+      "name": "Database Connection Leak",
+      "tp_count": 5,
+      "example_titles": [
+        "Database connections are never closed",
+        "Database connections are never closed in admin endpoint",
+        "Database connection is not protected by a finally block or context manager",
+        "Database connections are not closed if status or verify raises an exception",
+        "Browser tabs can leak on exceptions in fetch_with_nodriver"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "db-connection-no-context-manager",
+        "severity": "warning",
+        "yaml": "id: db-connection-no-context-manager\nlanguage: python\nseverity: warning\nmessage: \"A database connection was opened but not within a `with` statement. This can lead to connection leaks if exceptions occur. Use a context manager (`with ... as conn:`) to ensure connections are closed.\"\nrule:\n  kind: assignment\n  pattern: $VAR = $LIB.connect($$$)\n  not:\n    inside:\n      kind: with_item\n  constraints:\n    LIB:\n      regex: '^(sqlite3|psycopg2|mysql\\.connector)$'",
+        "positive_fixture": "import sqlite3\n\ndef get_user(user_id):\n    conn = sqlite3.connect(\"app.db\")\n    cursor = conn.cursor()\n    cursor.execute(\"SELECT * FROM users WHERE id = ?\", (user_id,))\n    user = cursor.fetchone()\n    # conn.close() is missing or may not be reached\n    return user",
+        "negative_fixture": "import sqlite3\n\ndef get_user(user_id):\n    with sqlite3.connect(\"app.db\") as conn:\n        cursor = conn.cursor()\n        cursor.execute(\"SELECT * FROM users WHERE id = ?\", (user_id,))\n        return cursor.fetchone()",
+        "fp_cross_check": "verified against FP list: PASS. This rule is a subset of the existing `resource-no-context-manager` but targets specific, high-value database libraries mentioned in TPs. It correctly avoids FPs by being specific.",
+        "estimated_precision": 0.9,
+        "estimated_tp_coverage": 4
+      }
+    },
+    {
+      "name": "Flask Debug Mode Enabled",
+      "tp_count": 3,
+      "example_titles": [
+        "Application runs with Flask debug mode enabled",
+        "Using Flask's built-in server in debug mode is unsafe for production",
+        "Service enables Flask debug mode from runtime configuration"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "flask-debug-true",
+        "severity": "error",
+        "yaml": "id: flask-debug-true\nlanguage: python\nseverity: error\nmessage: \"The Flask application is running with debug mode enabled. This is a security risk in production as it can expose a debugger and leak sensitive information.\"\nrule:\n  pattern: $APP.run(debug=True)",
+        "positive_fixture": "from flask import Flask\n\napp = Flask(__name__)\n\nif __name__ == '__main__':\n    app.run(host='0.0.0.0', port=5000, debug=True)",
+        "negative_fixture": "from flask import Flask\nimport os\n\napp = Flask(__name__)\n\nif __name__ == '__main__':\n    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'\n    app.run(host='0.0.0.0', port=5000, debug=debug_mode)",
+        "fp_cross_check": "verified against FP list: PASS",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "SQL Injection via f-string",
+      "tp_count": 2,
+      "example_titles": [
+        "SQL injection in login query via username interpolation",
+        "SQL injection in admin token lookup"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "f-string-in-db-execute",
+        "severity": "error",
+        "yaml": "id: f-string-in-db-execute\nlanguage: python\nseverity: error\nmessage: \"A SQL query is being constructed with an f-string. This is a high-risk vector for SQL injection. Use parameterized queries (e.g., `execute('... WHERE name = ?', (name,))`) instead.\"\nrule:\n  kind: call_expression\n  pattern: $CURSOR.execute($QUERY)\n  constraints:\n    QUERY:\n      kind: string\n      regex: '^(f|F)[\"'''|''']'\n    CURSOR:\n      regex: '(?i)(cursor|connection|conn|db|session|engine)$'",
+        "positive_fixture": "def get_user(cursor, username):\n    query = f\"SELECT * FROM users WHERE username = '{username}'\"\n    cursor.execute(query)",
+        "negative_fixture": "def get_user(cursor, username):\n    query = \"SELECT * FROM users WHERE username = ?\"\n    cursor.execute(query, (username,))",
+        "fp_cross_check": "verified against FP list: PASS. This is distinct from the existing `sqlalchemy-raw-query` which targets `text()`.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 2
+      }
+    },
+    {
+      "name": "Unsafe Dictionary Access on Request Object",
+      "tp_count": 2,
+      "example_titles": [
+        "Use of direct form indexing can raise unhandled KeyError",
+        "Graph relation formatting can raise KeyError if relation dicts are incomplete"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "flask-unsafe-form-access",
+        "severity": "warning",
+        "yaml": "id: flask-unsafe-form-access\nlanguage: python\nseverity: warning\nmessage: \"Directly accessing `request.form['key']` can raise a `KeyError` if the key is missing. Use `request.form.get('key')` to handle missing keys gracefully.\"\nrule:\n  kind: subscript_expression\n  pattern: request.form['$KEY']",
+        "positive_fixture": "from flask import request\n\n@app.route('/login', methods=['POST'])\ndef login():\n    username = request.form['username']\n    password = request.form['password']\n    # ...",
+        "negative_fixture": "from flask import request\n\n@app.route('/login', methods=['POST'])\ndef login():\n    username = request.form.get('username')\n    password = request.form.get('password')\n    # ...",
+        "fp_cross_check": "verified against FP list: PASS",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Insecure `numpy.load`",
+      "tp_count": 1,
+      "example_titles": [
+        "np.load without disabling pickle support"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "numpy-load-allow-pickle-true",
+        "severity": "error",
+        "yaml": "id: numpy-load-allow-pickle-true\nlanguage: python\nseverity: error\nmessage: \"Loading numpy archives with `allow_pickle=True` (the default before NumPy 1.16.3) can execute arbitrary code and is a security risk. Explicitly set `allow_pickle=False` if you are not loading object arrays.\"\nrule:\n  any:\n    - pattern: numpy.load($$$ARGS)\n    - pattern: np.load($$$ARGS)\n  not:\n    has:\n      kind: keyword_argument\n      pattern: allow_pickle=False",
+        "positive_fixture": "import numpy as np\n\ndef load_data(path):\n    # This is insecure if the .npy file is untrusted.\n    return np.load(path)",
+        "negative_fixture": "import numpy as np\n\ndef load_data(path):\n    # This is the secure way to load numerical data.\n    return np.load(path, allow_pickle=False)",
+        "fp_cross_check": "verified against FP list: PASS",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Bare `except` with Logic",
+      "tp_count": 3,
+      "example_titles": [
+        "Broad bare except blocks suppress real failures",
+        "Broad exception catch masks cancellation/disconnect behavior",
+        "Broad exception handling hides operational failures and uses print instead of logging"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "bare-except-with-logic",
+        "severity": "warning",
+        "yaml": "id: bare-except-with-logic\nlanguage: python\nseverity: warning\nmessage: \"A bare `except:` with logic inside catches all exceptions, including SystemExit and KeyboardInterrupt. This can hide bugs and make it hard to stop the program. Specify the exception type(s) you intend to catch (e.g., `except Exception:`).\"\nrule:\n  kind: except_clause\n  not:\n    has:\n      any:\n        - kind: type\n        - kind: as_pattern\n  has:\n    kind: block\n    has:\n      not:\n        kind: pass_statement",
+        "positive_fixture": "try:\n    dangerous_operation()\nexcept:\n    print(\"An unspecified error occurred.\")",
+        "negative_fixture": "try:\n    dangerous_operation()\nexcept ValueError as e:\n    print(f\"Caught a specific error: {e}\")",
+        "fp_cross_check": "verified against FP list: PASS. This rule complements the existing `bare-except-pass` by catching bare excepts that contain logic, which is a common pattern in the TPs.",
+        "estimated_precision": 0.9,
+        "estimated_tp_coverage": 3
+      }
+    },
+    {
+      "name": "Using `exit()` in Scripts",
+      "tp_count": 1,
+      "example_titles": [
+        "Use sys.exit instead of exit() in a script"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "use-sys-exit",
+        "severity": "hint",
+        "yaml": "id: use-sys-exit\nlanguage: python\nseverity: hint\nmessage: \"`exit()` is intended for use in the interactive interpreter. In scripts, `sys.exit()` is preferred as it is always available and more conventional.\"\nrule:\n  pattern: exit($$$)",
+        "positive_fixture": "if __name__ == \"__main__\":\n    if some_error_condition:\n        print(\"Error! Exiting.\")\n        exit(1)",
+        "negative_fixture": "import sys\n\nif __name__ == \"__main__\":\n    if some_error_condition:\n        print(\"Error! Exiting.\")\n        sys.exit(1)",
+        "fp_cross_check": "verified against FP list: PASS",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Server-Side Request Forgery (SSRF)",
+      "tp_count": 4,
+      "example_titles": [
+        "SSRF risk from downloading arbitrary candidate URLs without validation",
+        "Server-side request forgery risk from unvalidated image URLs",
+        "No input validation on image URL schemes",
+        "Unvalidated candidate URLs can trigger SSRF to internal services"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "Detecting SSRF requires taint analysis to track data flow from an untrusted source (e.g., a web request parameter) to a sensitive sink (e.g., a call to `requests.get`). A purely syntactic rule would either be too narrow (missing most cases) or too broad (flagging all dynamic URL fetches), resulting in high false positives. For example, fetching an internally-generated URL is safe, but syntactically identical to fetching a user-provided one.",
+      "rule": null
+    },
+    {
+      "name": "Semantic Logic Bugs",
+      "tp_count": 15,
+      "example_titles": [
+        "Zero-norm division in normalization",
+        "Scoring formula mismatch between _compute_events and _get_top_stressor",
+        "Model fallback check compares against wrong identifier",
+        "Falsy corrected timestamps are discarded in favor of detected values",
+        "Filtering short breaks before merging can discard valid combined breaks",
+        "Independent boundary snapping can create zero- or negative-length breaks",
+        "RRF rank calculation uses zero-based positions instead of one-based ranks"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "These findings relate to incorrect business logic, algorithmic flaws, or misinterpretation of data semantics (e.g., treating `0.0` as a falsy 'missing' value when it's a valid timestamp). These errors are not visible at the syntactic level and require a deep, semantic understanding of the code's intent and the data it operates on. No AST pattern can reliably distinguish a correct formula from an incorrect one.",
+      "rule": null
+    },
+    {
+      "name": "Unused Code (Imports, Variables, Parameters)",
+      "tp_count": 8,
+      "example_titles": [
+        "Unused imports increase noise",
+        "Unused dependency parameter `graph_service` indicates dead code",
+        "Unused form field `description` in blob upload endpoint",
+        "Unused logger instance adds dead code",
+        "Unused import and unused parsed YAML variable"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "Detecting unused code requires scope analysis and tracking variable usage throughout a file or project. While this is a standard feature for linters like `flake8` and `pylint`, `ast-grep` operates on local AST patterns and does not maintain the state required for robust scope analysis. A syntactic rule would be unable to determine if a variable or import is used elsewhere in the file.",
+      "rule": null
+    },
+    {
+      "name": "Assert for Runtime Check",
+      "tp_count": 2,
+      "example_titles": [
+        "assert for runtime integrity check — disabled under python -O",
+        "Batch size check uses assert, which can be disabled in production"
+      ],
+      "decision": "covered",
+      "covered_by": "assert-in-prod-code.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Non-Thread-Safe Singleton",
+      "tp_count": 5,
+      "example_titles": [
+        "Singleton initialization is not thread-safe",
+        "Lazy singleton model initialization is not thread-safe",
+        "Singleton cache initialization is racy under concurrent access",
+        "Non-atomic read/modify/write can lose or corrupt optimization history",
+        "ProgressTracker counters are not thread-safe"
+      ],
+      "decision": "covered",
+      "covered_by": "non-threadsafe-singleton.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "open() without encoding",
+      "tp_count": 4,
+      "example_titles": [
+        "open() without explicit encoding parameter",
+        "Files are opened without an explicit encoding",
+        "File reading can crash on encoding and I/O errors"
+      ],
+      "decision": "covered",
+      "covered_by": "open-no-encoding.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Insecure MD5 Usage",
+      "tp_count": 2,
+      "example_titles": [
+        "Truncated MD5 identifiers increase collision risk for products and files",
+        "Cache lookup uses MD5(url) while stored checksum uses SHA256(file content)"
+      ],
+      "decision": "covered",
+      "covered_by": "md5-usage.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Mutation During Iteration",
+      "tp_count": 1,
+      "example_titles": [
+        "Mutating coa_candidates while iterating over it"
+      ],
+      "decision": "covered",
+      "covered_by": "mutation-during-iteration.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Broad Exception Catch",
+      "tp_count": 0,
+      "example_titles": [],
+      "decision": "covered",
+      "covered_by": "broad-exception-catch.yml",
+      "llm_only_reason": null,
+      "rule": null
+    }
+  ],
+  "notes": "The analysis identified several high-value clusters suitable for ast-grep rules, particularly around async programming, web framework security (Flask/FastAPI), and resource management. Many TPs fall into semantic or logic-bug categories that are correctly identified as `llm_only`. A number of findings are also well-covered by the existing rule set, confirming their value. The proposed rules are designed for high precision, targeting clear syntactic anti-patterns seen in the true positives while avoiding patterns observed in the false positives."
+}

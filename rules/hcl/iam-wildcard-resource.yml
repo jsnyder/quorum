@@ -1,0 +1,8 @@
+id: iam-wildcard-resource
+language: Hcl
+severity: warning
+message: "`Resource` / `resources` contains `\"*\"` — this applies the policy to every ARN in scope. Restrict to specific ARNs unless this is deliberate administrative access."
+note: "Prophylactic baseline. Matches singleton `resources = [\"*\"]` and mixed lists where `\"*\"` appears alongside other entries."
+rule:
+  kind: attribute
+  regex: "^(Resource|resources?)\\s*=\\s*(\"\\*\"|\\[[^\\]]*\"\\*\"[^\\]]*\\])"

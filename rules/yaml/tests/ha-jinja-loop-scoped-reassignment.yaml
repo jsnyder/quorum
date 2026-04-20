@@ -1,0 +1,22 @@
+# Fixture: ha-jinja-loop-scoped-reassignment
+# match: reassign inside for-loop loses state each iteration
+template:
+  sensor:
+    - name: "Failing Counter"
+      state: >
+        {% set total = 0 %}
+        {% for x in states.sensor %}
+          {% set total = total + 1 %}
+        {% endfor %}
+        {{ total }}
+
+# no-match: uses namespace() for mutable state
+good_template:
+  sensor:
+    - name: "Working Counter"
+      state: >
+        {% set ns = namespace(total=0) %}
+        {% for x in states.sensor %}
+          {% set ns.total = ns.total + 1 %}
+        {% endfor %}
+        {{ ns.total }}

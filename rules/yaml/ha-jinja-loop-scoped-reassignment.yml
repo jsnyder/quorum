@@ -1,0 +1,22 @@
+id: ha-jinja-loop-scoped-reassignment
+language: Yaml
+severity: warning
+message: "Variable reassigned inside a `{% for %}` loop does not persist across iterations in Jinja. Use `{% set ns = namespace(x=...) %}` and mutate `ns.x`."
+note: "Mining: 6 confirmed true positives. Heuristic: flags for-loops containing {% set %} without a `namespace(` in the same scalar. Narrow enough for HA automations; may need tuning outside HA."
+rule:
+  any:
+    - all:
+        - kind: block_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+\\s*=[\\s\\S]*?\\{%\\s*endfor"
+        - not:
+            regex: "namespace\\("
+    - all:
+        - kind: plain_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+\\s*=[\\s\\S]*?\\{%\\s*endfor"
+        - not:
+            regex: "namespace\\("
+    - all:
+        - kind: double_quote_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+\\s*=[\\s\\S]*?\\{%\\s*endfor"
+        - not:
+            regex: "namespace\\("

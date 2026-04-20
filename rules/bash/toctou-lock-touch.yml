@@ -1,0 +1,16 @@
+id: toctou-lock-touch
+language: Bash
+severity: warning
+message: "`if [ ! -f $lock ]; then touch $lock` is a TOCTOU race — two processes can both pass the check before either writes. Use `mkdir $lockdir` (atomic) or `flock(1)`."
+note: "Mining: 2 confirmed true positives. Catches the classic check-then-touch idiom."
+rule:
+  kind: if_statement
+  all:
+    - has:
+        kind: test_command
+        regex: "^\\[\\s+!\\s+-f\\s+"
+        stopBy: end
+    - has:
+        kind: command
+        regex: "^touch\\s"
+        stopBy: end

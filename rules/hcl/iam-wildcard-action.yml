@@ -1,0 +1,8 @@
+id: iam-wildcard-action
+language: Hcl
+severity: error
+message: "`Action` / `actions` contains `\"*\"` — this grants every AWS API action. Scope to a least-privilege allowlist."
+note: "Prophylactic baseline. Matches singleton `actions = [\"*\"]` and mixed lists where `\"*\"` appears alongside other entries."
+rule:
+  kind: attribute
+  regex: "^(Action|actions?)\\s*=\\s*(\"\\*\"|\\[[^\\]]*\"\\*\"[^\\]]*\\])"

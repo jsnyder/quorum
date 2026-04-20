@@ -1,0 +1,214 @@
+{
+  "language": "typescript",
+  "total_tps_analyzed": 182,
+  "clusters": [
+    {
+      "name": "Silent Catch Block",
+      "tp_count": 15,
+      "example_titles": [
+        "get() catches all exceptions from readFileSync/JSON.parse and returns null with no logging.",
+        "Two catch blocks suppress errors without any logging: loadOptimizedProgram() and logReviewTelemetry().",
+        "The session persistence path suppresses all errors without any logging or telemetry.",
+        "Both file-loading blocks use bare catch {} with only comments.",
+        "Bare catch blocks swallow file read errors silently",
+        "fetchAspectDocs bare catch swallows errors silently"
+      ],
+      "decision": "covered",
+      "covered_by": "bare-catch.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Unvalidated JSON Parse with Type Assertion",
+      "tp_count": 8,
+      "example_titles": [
+        "The code parses provider JSON and directly assigns parsed.crossFileFindings without validating that it is actually an array of Finding objects.",
+        "The feedback command does JSON.parse(opts.findings) without local validation.",
+        "The feedback tool parses user-controlled JSON with JSON.parse(a.findings as string) and passes the result directly to handleFeedback without any schema validation.",
+        "Parsed JSON is accepted whenever Array.isArray(data.examples) is true, but individual entries are never validated.",
+        "Model output validation does not verify facts and concepts contain strings"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-json-parse-as-type",
+        "severity": "warning",
+        "yaml": "id: ts-json-parse-as-type\nlanguage: typescript\nseverity: warning\nmessage: \"Result of JSON.parse() is cast to a type without runtime validation. This can lead to runtime errors if the parsed JSON does not match the asserted type. Consider using a schema validation library like Zod.\"\nrule:\n  kind: as_expression\n  has:\n    kind: call_expression\n    has:\n      pattern: JSON.parse($$$)",
+        "positive_fixture": "const data = JSON.parse(userInput) as UserData;",
+        "negative_fixture": "const data = JSON.parse(userInput);\nif (isValidUserData(data)) {\n  const validData = data as UserData;\n  // use validData\n}",
+        "fp_cross_check": "PASS: No FPs involve this pattern. It's a strong indicator of missing runtime validation.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 5
+      }
+    },
+    {
+      "name": "Synchronous I/O in Async Function",
+      "tp_count": 4,
+      "example_titles": [
+        "All public methods are async, but they use blocking APIs such as existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, and unlinkSync.",
+        "The function is declared async, but it uses fs.mkdirSync and fs.appendFileSync."
+      ],
+      "decision": "covered",
+      "covered_by": "sync-in-async.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Unsafe URL Concatenation",
+      "tp_count": 4,
+      "example_titles": [
+        "doFetch() constructs the endpoint with raw string concatenation. If baseUrl already ends with / or includes a path suffix such as /v1, this can generate doubled slashes.",
+        "The Ollama branch appends /v1 with simple string concatenation that can produce double slashes.",
+        "URL string concatenation produces doubled slashes when baseUrl has trailing slash"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-unsafe-url-concat",
+        "severity": "warning",
+        "yaml": "id: ts-unsafe-url-concat\nlanguage: typescript\nseverity: warning\nmessage: \"URL construction via string concatenation can lead to double slashes if the base URL already has a trailing slash. Use the `URL` constructor or a path joining utility for robust URL construction.\"\nrule:\n  any:\n    - pattern: $BASE + $PATH\n      constraints:\n        BASE:\n          not: { kind: string }\n        PATH:\n          kind: string\n          regex: \"^(['\\\"`])/.*\"\n    - pattern: \"`${$BASE}/$$$`\"\n      constraints:\n        BASE:\n          not: { kind: string }",
+        "positive_fixture": "const endpoint = baseUrl + '/v1/chat';",
+        "negative_fixture": "const fullPath = '/home/user' + '/.config.json';",
+        "fp_cross_check": "PASS: The constraint that the base is not a string literal avoids flagging legitimate path joining. No FPs match this pattern.",
+        "estimated_precision": 0.85,
+        "estimated_tp_coverage": 4
+      }
+    },
+    {
+      "name": "Semantic Logic and Data Flow Errors",
+      "tp_count": 20,
+      "example_titles": [
+        "append() reads the full session file, mutates session.messages, and writes the whole JSON back. If two requests append to the same session at nearly the same time, both can read the same pre-update st",
+        "The code updates session.updatedAt on every append(), but both get() and cleanup() enforce TTL using session.createdAt + this.ttlMs.",
+        "Promise.all discards completed pass results when one pass fails",
+        "Session locking is not actually atomic and allows duplicate concurrent processing",
+        "Database row is marked enriched before embedding and Qdrant update complete",
+        "Recency sort is applied only after top-N truncation, so it does not return the most recent items"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "These bugs are not in the syntax but in the program's logic, intent, or interaction between components. Detecting them requires understanding the developer's goal (e.g., 'partial results should be preserved'), data flow (e.g., 'this value is written but never read'), or concurrency semantics (e.g., 'this read-modify-write is not atomic'). These are beyond the scope of purely syntactic analysis.",
+      "rule": null
+    },
+    {
+      "name": "Missing Input Validation",
+      "tp_count": 10,
+      "example_titles": [
+        "Unbounded `limit` query parameter can trigger expensive searches",
+        "Negative or invalid recording durations are accepted and passed to recorder/ffmpeg",
+        "Model-produced line numbers are accepted verbatim and shifted by chunk.startLine - 1. There is no validation that the line is positive or within the chunk.",
+        "Unvalidated limit values are forwarded directly to Qdrant",
+        "Unvalidated query parameters on /admin/jobs can cause errors"
+      ],
+      "decision": "llm_only",
+      "covered_by": null,
+      "llm_only_reason": "This requires identifying a data source as 'untrusted' (e.g., a request body, query parameter) and tracing its flow to a 'sensitive sink' (e.g., a database query, command execution) without intervening validation. While some specific cases can be caught (like `ts-json-parse-as-type`), the general case requires data flow analysis which is a semantic task.",
+      "rule": null
+    },
+    {
+      "name": "Fixed-duration Wait in Test",
+      "tp_count": 1,
+      "example_titles": [
+        "The test case waits for a fixed duration of 200ms using setTimeout"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-test-fixed-wait",
+        "severity": "warning",
+        "yaml": "id: ts-test-fixed-wait\nlanguage: typescript\nseverity: warning\nmessage: \"Avoid fixed-duration waits with setTimeout in tests. They lead to flaky and slow tests. Use async utilities from your test framework to wait for specific events or conditions.\"\nrule:\n  pattern: setTimeout($$$)\n  inside:\n    stopBy: end\n    kind: call_expression\n    has:\n      field: \"function\"\n      regex: \"^(it|test|beforeEach|afterEach)$\"",
+        "positive_fixture": "it('should do something async', async () => {\n  doSomething();\n  await new Promise(resolve => setTimeout(resolve, 200));\n  expect(something).toBe(true);\n});",
+        "negative_fixture": "function myHelper() {\n  // not in a test case\n  setTimeout(work, 1000);\n}",
+        "fp_cross_check": "PASS: No FPs are related to testing. The `inside` clause scopes the rule effectively to test files.",
+        "estimated_precision": 0.98,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Weak Cryptography",
+      "tp_count": 1,
+      "example_titles": [
+        "crypto.randomBytes(3) generates only 24 bits of entropy, birthday collision possible"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-weak-crypto-random",
+        "severity": "error",
+        "yaml": "id: ts-weak-crypto-random\nlanguage: typescript\nseverity: error\nmessage: \"crypto.randomBytes() called with less than 8 bytes (64 bits) of entropy. This is insufficient for generating secure random identifiers, as it may lead to collisions.\"\nrule:\n  pattern: crypto.randomBytes($BYTES)\n  constraints:\n    BYTES:\n      kind: number\n      regex: \"^[0-7]$\"",
+        "positive_fixture": "const id = crypto.randomBytes(4).toString('hex');",
+        "negative_fixture": "const key = crypto.randomBytes(16).toString('hex');",
+        "fp_cross_check": "PASS: No FPs are related to cryptography. This is a highly specific and precise rule.",
+        "estimated_precision": 1.0,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "Tautological `length` Check",
+      "tp_count": 1,
+      "example_titles": [
+        "The synthesis gate uses if (runSynthesis && deduplicated.length >= 0), but deduplicated.length >= 0 is always true for arrays."
+      ],
+      "decision": "covered",
+      "covered_by": "tautological-length.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "`console.log` Debug Artifact",
+      "tp_count": 2,
+      "example_titles": [
+        "console.log debug artifact left in code"
+      ],
+      "decision": "covered",
+      "covered_by": "console-log-artifact.yml",
+      "llm_only_reason": null,
+      "rule": null
+    },
+    {
+      "name": "Incorrect Regex-based Tokenization",
+      "tp_count": 1,
+      "example_titles": [
+        "Punctuation removal concatenates adjacent words into incorrect tokens"
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-regex-word-merge",
+        "severity": "warning",
+        "yaml": "id: ts-regex-word-merge\nlanguage: typescript\nseverity: warning\nmessage: \"This regex replaces punctuation with an empty string, which can incorrectly merge adjacent words (e.g., 'hello.world' becomes 'helloworld'). Consider replacing with a space ' ' instead of an empty string '' to preserve word boundaries.\"\nrule:\n  pattern: $S.replace($REGEX, '')\n  constraints:\n    REGEX:\n      kind: regex\n      regex: \"/[^\\\\]]*\\\\s[^\\\\]]*/\"",
+        "positive_fixture": "const tokens = text.replace(/[^a-z0-9\\s]/gi, '');",
+        "negative_fixture": "const clean = text.replace(/[^a-z0-9\\s]/gi, ' ');",
+        "fp_cross_check": "PASS: This is a very specific pattern targeting a subtle bug. No FPs are related.",
+        "estimated_precision": 0.95,
+        "estimated_tp_coverage": 1
+      }
+    },
+    {
+      "name": "split() without Filtering Empty Results",
+      "tp_count": 1,
+      "example_titles": [
+        "The review handler splits comma-separated strings but never filters empty entries."
+      ],
+      "decision": "astgrep",
+      "covered_by": null,
+      "llm_only_reason": null,
+      "rule": {
+        "id": "ts-split-without-filter",
+        "severity": "hint",
+        "yaml": "id: ts-split-without-filter\nlanguage: typescript\nseverity: hint\nmessage: \"A call to `.split()` with a string delimiter can produce empty strings from consecutive or trailing delimiters. Consider adding `.filter(Boolean)` to remove empty strings from the result.\"\nrule:\n  kind: call_expression\n  has:\n    field: function\n    pattern: $S.split\n  # and this call is the receiver of another call expression\n  inside:\n    kind: call_expression\n    has:\n      field: function\n      # which is a member expression like `(...).map`\n      kind: member_expression\n      not:\n        has:\n          field: property\n          pattern: filter\n  constraints:\n    S:\n      not: { pattern: \"\" }",
+        "positive_fixture": "const values = 'a,b,,c'.split(',').map(s => s.trim());",
+        "negative_fixture": "const values = 'a,b,,c'.split(',').filter(Boolean).map(s => s.trim());",
+        "fp_cross_check": "PASS: This may have some FPs where empty strings are desired, but as a `hint` it is acceptable. The refined rule targets chains like `.map()` after `.split()` which are common places for this bug.",
+        "estimated_precision": 0.7,
+        "estimated_tp_coverage": 1
+      }
+    }
+  ],
+  "notes": "A significant portion of the true positives fall into categories requiring semantic understanding, such as business logic flaws, race conditions, and missing data validation, which are well-suited for LLM-based review but difficult to capture with purely syntactic rules. The proposed AST rules focus on high-precision, syntactically distinct patterns like unsafe type assertions after JSON parsing, weak crypto parameters, and anti-patterns in testing and URL construction."
+}

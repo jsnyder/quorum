@@ -1,0 +1,33 @@
+id: bind-all-interfaces
+language: JavaScript
+severity: warning
+message: "Binding a server to `0.0.0.0` exposes it on every network interface. Bind to `127.0.0.1` for local-only, or make the bind address explicit via config."
+note: "Prophylactic baseline. Matches server.listen(port, '0.0.0.0') and { host: '0.0.0.0' } option objects."
+rule:
+  any:
+    - kind: call_expression
+      all:
+        - has:
+            field: function
+            kind: member_expression
+            has:
+              field: property
+              regex: "^listen$"
+            stopBy: end
+        - has:
+            field: arguments
+            has:
+              kind: string
+              regex: "^['\"]0\\.0\\.0\\.0['\"]$"
+              stopBy: end
+            stopBy: end
+    - kind: pair
+      all:
+        - has:
+            field: key
+            regex: "^(host|hostname|['\"]host['\"]|['\"]hostname['\"])$"
+            stopBy: end
+        - has:
+            field: value
+            kind: string
+            regex: "^['\"]0\\.0\\.0\\.0['\"]$"

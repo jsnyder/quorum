@@ -45,17 +45,18 @@ QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 | Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
 
-### ast-grep custom rules (20 bundled)
+### ast-grep custom rules (53 bundled)
 
 Bundled rules live in `rules/<language>/`. Users can add custom rules to `~/.quorum/rules/<language>/` (e.g. `~/.quorum/rules/typescript/my-rule.yml`). Both directories are scanned automatically when ast-grep is in PATH.
 
 Bundled rules by language:
-- **Python** (7): bare-except-pass, broad-exception-catch, open-no-encoding, re-compile-in-loop, resource-no-context-manager, subprocess-no-check, subprocess-shell-true, urlopen-no-context-manager
-- **TypeScript** (5): as-any-cast, bare-catch, nullish-coalescing-preferred, promise-async-executor, sync-in-async, tautological-length
-- **JavaScript** (2): bind-in-add-event-listener, console-log-artifact
-- **Rust** (2): block-on-in-async, string-byte-slice
-- **Bash** (1): predictable-tmp
-- **YAML** (1): float-zero-fallback
+- **Python** (21): assert-in-prod-code, bare-except-pass, bind-all-interfaces, blocking-call-in-async, broad-exception-catch, eval-exec-non-literal, fastapi-unbounded-pagination, flask-debug-true, insecure-file-permissions, md5-usage, mutation-during-iteration, naive-url-blacklist, non-threadsafe-singleton, open-no-encoding, re-compile-in-loop, requests-verify-false, resource-no-context-manager, sqlalchemy-raw-query, subprocess-no-check, subprocess-shell-true, urlopen-no-context-manager
+- **TypeScript** (15): as-any-cast, bare-catch, cors-wildcard-origin, eval-non-literal, json-parse-as-type, non-literal-regexp, non-null-assertion, nullish-coalescing-preferred, path-traversal-join, promise-async-executor, sql-template-injection, sync-in-async, tautological-length, tls-reject-unauthorized-false, unsafe-url-concat
+- **JavaScript** (3): bind-all-interfaces, bind-in-event-listener (covers add+remove), console-log-artifact
+- **Rust** (5): block-on-in-async, expect-empty-message, ignored-io-result, silent-error-conversion, string-byte-slice
+- **Bash** (4): predictable-tmp, toctou-lock-touch, unquoted-variable, unsafe-grep-variable
+- **YAML** (3): float-zero-fallback, ha-jinja-loop-scoped-reassignment, ha-template-none-fallback
+- **HCL/Terraform** (2): iam-wildcard-action, iam-wildcard-resource
 
 Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-pattern-mining.md`.
 

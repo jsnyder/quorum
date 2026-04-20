@@ -1,0 +1,47 @@
+id: eval-non-literal
+language: TypeScript
+severity: error
+message: "`eval()` / `new Function()` execute arbitrary code. If the source can be influenced by user input this is RCE."
+note: "Prophylactic baseline. Covers both `eval(x)` (call_expression with field: function) and `new Function(x)` (new_expression with field: constructor). Literal strings and parameter-less templates are allowed."
+rule:
+  any:
+    - kind: call_expression
+      all:
+        - has:
+            field: function
+            any:
+              - regex: "^eval$"
+              - regex: "^Function$"
+        - has:
+            field: arguments
+            has:
+              stopBy: end
+              any:
+                - kind: identifier
+                - kind: member_expression
+                - kind: subscript_expression
+                - kind: binary_expression
+                - kind: call_expression
+                - kind: new_expression
+                - kind: ternary_expression
+                - kind: template_substitution
+    - kind: new_expression
+      all:
+        - has:
+            field: constructor
+            any:
+              - regex: "^eval$"
+              - regex: "^Function$"
+        - has:
+            field: arguments
+            has:
+              stopBy: end
+              any:
+                - kind: identifier
+                - kind: member_expression
+                - kind: subscript_expression
+                - kind: binary_expression
+                - kind: call_expression
+                - kind: new_expression
+                - kind: ternary_expression
+                - kind: template_substitution

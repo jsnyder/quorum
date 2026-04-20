@@ -1,0 +1,24 @@
+id: sql-template-injection
+language: TypeScript
+severity: error
+message: "SQL built with a template literal containing an interpolation is a SQL injection vector. Use parameterized queries (placeholders like `?` / `$1` / `:name`) or a query builder."
+note: "Prophylactic baseline. Fires on db/conn/pool/client .query/.execute/.raw with any template containing ${...}."
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: member_expression
+        has:
+          field: property
+          regex: "^(query|execute|executeSql|raw|unsafe)$"
+        stopBy: end
+    - has:
+        field: arguments
+        has:
+          kind: template_string
+          has:
+            kind: template_substitution
+            stopBy: end
+          stopBy: end
+        stopBy: end

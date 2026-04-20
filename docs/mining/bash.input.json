@@ -1,0 +1,133 @@
+{
+  "language": "bash",
+  "existing_astgrep_rules": [
+    "predictable-tmp.yml",
+    "unquoted-variable.yml"
+  ],
+  "tp_count": 15,
+  "fp_count": 6,
+  "tps": [
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-tool-observe.sh",
+      "title": "Unused LOG_FILE variable indicates dead code or incomplete logging",
+      "reason": "Fixed \u2014 removed the unused variable.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-session-summary.sh",
+      "title": "Idempotency check is race-prone and can trigger duplicate ingestions",
+      "reason": "Fixed \u2014 added .ingesting lock file created before backgrounding, removed after completion.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-session-summary.sh",
+      "title": "session_id is interpolated into URL without encoding",
+      "reason": "Fixed \u2014 now URL-encodes via jq @uri before interpolation.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-tool-observe.sh",
+      "title": "Lock file creation is non-atomic and allows concurrent checkpoint runs",
+      "reason": "Real issue. Changed from touch to mkdir for atomic locking. Also caught by Gemini 3.1 Pro review.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-tool-observe.sh",
+      "title": "Full-directory find on every hook invocation can violate the never block goal",
+      "reason": "Real performance issue. Replaced find with direct path construction from CWD, with heartbeat cache fallback.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-session-summary.sh",
+      "title": "Lock file is leaked on early exits, blocking future ingestion for the session",
+      "reason": "Real bug. Gates 4 and 5 exited without removing the .ingesting lock file, permanently blocking re-ingestion. Added rm -f before early exits.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-session-summary.sh",
+      "title": "Predictable /tmp filenames derived from untrusted session_id enable file clobbering/symlink attacks",
+      "reason": "Valid security concern. Moved all state files from /tmp to ~/.claude/housemem-run/ which is user-owned and restricted.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-context.sh",
+      "title": "Predictable files in /tmp create symlink and race-condition risks",
+      "reason": "Same as session-summary finding. Moved all state to ~/.claude/housemem-run/.",
+      "category": ""
+    },
+    {
+      "file": "scripts/coverage-audit.sh",
+      "title": "grep -oP not portable on macOS",
+      "reason": "BSD grep on macOS lacks -P (PCRE). Fixed by switching to grep -oE with ERE pattern. Verified working on macOS.",
+      "category": ""
+    },
+    {
+      "file": "scripts/coverage-audit.sh",
+      "title": "Relative path to backfill-episodes.sh",
+      "reason": "Valid. Fixed by resolving SCRIPT_DIR and REPO_DIR from the script's location, then using absolute paths for all references to backfill-episodes.sh.",
+      "category": ""
+    },
+    {
+      "file": "scripts/coverage-audit.sh",
+      "title": "Regex injection in grep project check",
+      "reason": "Valid. Project names like -Users-jsnyder-foo.bar would cause regex issues with grep -q. Fixed with grep -Fq for literal string matching.",
+      "category": ""
+    },
+    {
+      "file": "scripts/coverage-audit.sh",
+      "title": "Broad grep matching for project coverage",
+      "reason": "Fixed as part of the grep -Fq change. Literal matching prevents substring/regex confusion.",
+      "category": ""
+    },
+    {
+      "file": "scripts/latency-snapshot.sh",
+      "title": "Percentile formula int(n*q) is off-by-one; use nearest-rank ceil(q*n)-1",
+      "reason": "Verified RED with synthetic xs=1..100: old formula returned index 95 for p95 (=96th item). New formula returns index 94 (=95th item). Fixed and verified GREEN.",
+      "category": ""
+    },
+    {
+      "file": "scripts/quality-snapshot.sh",
+      "title": "Manual JSON string concatenation is brittle to quotes in URL/query_file/captured_at",
+      "reason": "URL and file paths embedded via shell echo would break if they contained double quotes or backslashes. Replaced with `jq -n --arg` \u2014 proper JSON encoding regardless of input.",
+      "category": ""
+    },
+    {
+      "file": "scripts/quality-snapshot.sh",
+      "title": "Silent `|| continue` hides failed queries; no skip count surfaced",
+      "reason": "Real observability gap. If the reranker or API degrades, the snapshot would silently lose queries and drift the \"quality fingerprint\" without warning. Added TOTAL/SUCCEEDED/SKIPPED tracking with stderr summary and JSON fields.",
+      "category": ""
+    }
+  ],
+  "fps": [
+    {
+      "file": "run.sh",
+      "title": "YAML uses = syntax for passwords and placeholder instead of real secret",
+      "reason": "Tool secret redaction replaced actual values with [REDACTED_SECRET], then flagged the redacted output. Actual file uses correct YAML password: syntax."
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-prompt-capture.sh",
+      "title": "Unsanitized session ID is used in a /tmp path",
+      "reason": "Claude Code session IDs are always UUIDs (hex + hyphens). No path traversal possible."
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-prompt-capture.sh",
+      "title": "Predictable /tmp counter file is vulnerable to symlink and tampering attacks",
+      "reason": "Single-user dev machine, not multi-tenant. Counter is informational only \u2014 tampered value has zero security impact."
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-tool-observe.sh",
+      "title": "Observation data is sent over plaintext HTTP by default",
+      "reason": "Local network traffic to Docker VM on same subnet. All other hooks and services in this project use the same HTTP endpoint. HTTPS is unnecessary for LAN-only traffic."
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-tool-observe.sh",
+      "title": "Rate limit file in /tmp is vulnerable to symlink clobbering",
+      "reason": "Single-user dev machine. Worst case a symlink causes rate limit to misfire \u2014 one extra or skipped observation. Zero security impact."
+    },
+    {
+      "file": "/Users/jsnyder/.claude/hooks/housemem-session-summary.sh",
+      "title": "Authentication header may be sent over insecure HTTP by default",
+      "reason": "Same as tool-observe \u2014 local network to Docker VM. All services use HTTP on LAN."
+    }
+  ]
+}

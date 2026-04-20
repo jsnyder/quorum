@@ -1,0 +1,18 @@
+id: unsafe-grep-variable
+language: Bash
+severity: warning
+message: "`grep` with a shell-variable pattern treats regex metacharacters in the variable literally — user input can inject arbitrary regex. Use `grep -F` for literal match or sanitize input."
+note: "Mining: 2 confirmed true positives. Heuristic: flags grep with any shell expansion AND no -F/-G/--fixed-strings/--basic-regexp flag. May false-positive when the expansion is in the file argument rather than the pattern; deliberate trade-off for simplicity."
+rule:
+  kind: command
+  regex: "^grep\\b"
+  has:
+    stopBy: end
+    any:
+      - kind: expansion
+      - kind: simple_expansion
+  not:
+    has:
+      stopBy: end
+      kind: word
+      regex: "^-([a-zA-Z]*[FG]|-fixed-strings|-basic-regexp)$"

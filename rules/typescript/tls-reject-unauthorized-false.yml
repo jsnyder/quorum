@@ -1,0 +1,17 @@
+id: tls-reject-unauthorized-false
+language: TypeScript
+severity: error
+message: "`rejectUnauthorized: false` disables TLS certificate validation, enabling man-in-the-middle attacks. Remove it or use `NODE_EXTRA_CA_CERTS` for self-signed certs in development only."
+note: "Prophylactic baseline. Case-sensitive key; identifier and literal false values both caught."
+rule:
+  kind: pair
+  all:
+    - has:
+        field: key
+        any:
+          - regex: "^rejectUnauthorized$"
+          - regex: "^['\"]rejectUnauthorized['\"]$"
+        stopBy: end
+    - has:
+        field: value
+        regex: "^(false|0|!1)$"

@@ -1,0 +1,1535 @@
+{
+  "language": "python",
+  "existing_astgrep_rules": [
+    "assert-in-prod-code.yml",
+    "bare-except-pass.yml",
+    "broad-exception-catch.yml",
+    "insecure-file-permissions.yml",
+    "md5-usage.yml",
+    "mutation-during-iteration.yml",
+    "naive-url-blacklist.yml",
+    "non-threadsafe-singleton.yml",
+    "open-no-encoding.yml",
+    "re-compile-in-loop.yml",
+    "requests-verify-false.yml",
+    "resource-no-context-manager.yml",
+    "sqlalchemy-raw-query.yml",
+    "subprocess-no-check.yml",
+    "subprocess-shell-true.yml",
+    "urlopen-no-context-manager.yml"
+  ],
+  "tp_count": 203,
+  "fp_count": 58,
+  "tps": [
+    {
+      "file": "src/voice_profiles.py",
+      "title": "np.load without disabling pickle support",
+      "reason": "Added allow_pickle=False",
+      "category": ""
+    },
+    {
+      "file": "src/voice_profiles.py",
+      "title": "Path traversal in profile filenames",
+      "reason": "Added _safe_filename sanitizer",
+      "category": ""
+    },
+    {
+      "file": "src/voice_profiles.py",
+      "title": "Zero-norm division in normalization",
+      "reason": "Added _normalize helper with check",
+      "category": ""
+    },
+    {
+      "file": "src/voice_profiles.py",
+      "title": "meta.json load crash with no error handling",
+      "reason": "Added try/except with fallback",
+      "category": ""
+    },
+    {
+      "file": "src/voice_profiles.py",
+      "title": "Name handling inconsistent across persistence path",
+      "reason": "Fixed via _safe_filename canonical form",
+      "category": ""
+    },
+    {
+      "file": "src/main.py",
+      "title": "DiarizedSegment with start=0.0 end=0.0 fake timestamps",
+      "reason": "Fixed: now stores real diarization timestamps on TranscriptionResult and uses them",
+      "category": ""
+    },
+    {
+      "file": "src/config.py",
+      "title": "Threshold fields not range-validated",
+      "reason": "Added Field(ge=0.0, le=1.0) to match existing pattern",
+      "category": ""
+    },
+    {
+      "file": "src/item_router.py",
+      "title": "Assignee normalization inconsistency",
+      "reason": "Now sends lowercase normalized value",
+      "category": ""
+    },
+    {
+      "file": "src/event_consolidator.py",
+      "title": "SAFETY_GROUPS bypass is documented but not implemented",
+      "reason": "Fixed: safety groups now bypass dedup window and fire immediately",
+      "category": ""
+    },
+    {
+      "file": "src/llm_judge.py",
+      "title": "IndexError on empty results via results_by_group.get fallback",
+      "reason": "Fixed: use conditional fallback with continue on None",
+      "category": ""
+    },
+    {
+      "file": "src/audio_pipeline.py",
+      "title": "ffmpeg process leak on timeout \u2014 returns None without killing subprocess",
+      "reason": "Fixed: process.kill() called on timeout path",
+      "category": ""
+    },
+    {
+      "file": "src/config.py",
+      "title": "yaml.safe_load(None) crash on empty config file",
+      "reason": "Fixed: explicit None check with clear ValueError",
+      "category": ""
+    },
+    {
+      "file": "src/config.py",
+      "title": "LLMJudgeConfig allows enabled=true without api_key",
+      "reason": "Fixed: added validation in __post_init__",
+      "category": ""
+    },
+    {
+      "file": "src/config.py",
+      "title": "NoiseStressConfig has no range validation for divisors",
+      "reason": "Fixed: added __post_init__ checks for half_life, saturation, interval > 0",
+      "category": ""
+    },
+    {
+      "file": "src/confounder_monitor.py",
+      "title": "Serialized per-entity HTTP polling \u2014 O(n) latency scaling",
+      "reason": "Fixed: concurrent polling with ThreadPoolExecutor",
+      "category": ""
+    },
+    {
+      "file": "src/confounder_monitor.py",
+      "title": "Poll interval drift \u2014 sleeps after cycle instead of targeting monotonic deadline",
+      "reason": "Fixed: monotonic deadline-based polling loop",
+      "category": ""
+    },
+    {
+      "file": "src/confounder_monitor.py",
+      "title": "start()/stop() lifecycle \u2014 non-idempotent start, stale task ref after stop",
+      "reason": "Fixed: idempotent start guard, task ref cleared in stop()",
+      "category": ""
+    },
+    {
+      "file": "src/noise_stress.py",
+      "title": "Event buffer grows unbounded between compute() calls",
+      "reason": "Fixed: inline prune in record_event() when buffer exceeds 1000",
+      "category": ""
+    },
+    {
+      "file": "src/noise_stress.py",
+      "title": "Scoring formula mismatch between _compute_events and _get_top_stressor",
+      "reason": "Fixed: _get_top_stressor now includes confidence and camera_factor to match _compute_events",
+      "category": ""
+    },
+    {
+      "file": "src/weather_prior.py",
+      "title": "start() not idempotent \u2014 duplicate polling tasks on repeated calls",
+      "reason": "Fixed: guard against double-start, clear task ref in stop()",
+      "category": ""
+    },
+    {
+      "file": "src/main.py",
+      "title": "Unhandled wave.open exception on malformed WAV upload",
+      "reason": "Fixed: try/except wave.Error returns 400 instead of 500",
+      "category": ""
+    },
+    {
+      "file": "src/classifier.py",
+      "title": "No error handling around inference pipeline",
+      "reason": "Fixed: try/except returns empty list on inference failure",
+      "category": ""
+    },
+    {
+      "file": "src/labels.py",
+      "title": "assert for runtime integrity check \u2014 disabled under python -O",
+      "reason": "Fixed: replaced with if/raise RuntimeError",
+      "category": ""
+    },
+    {
+      "file": "src/main.py",
+      "title": "The MQTT client shutdown order is reversed",
+      "reason": "Should call disconnect() before loop_stop() so the disconnect packet is sent",
+      "category": ""
+    },
+    {
+      "file": "src/conversation.py",
+      "title": "speech_on() reuses the existing session until check_expired() closes it",
+      "reason": "Real correctness bug, should check merge window in speech_on()",
+      "category": ""
+    },
+    {
+      "file": "src/voice_profiles.py",
+      "title": "The save/load path does not preserve the canonical profile name",
+      "reason": "Real bug for multi-word names: Mary Jane -> mary_jane.npy -> Mary_Jane on reload. meta.json should store canonical name",
+      "category": ""
+    },
+    {
+      "file": "src/whisper_transcriber.py",
+      "title": "The comment states INFO logging but implementation uses debug",
+      "reason": "Comment should be updated to match debug level",
+      "category": ""
+    },
+    {
+      "file": "src/spoof_detector.py",
+      "title": "dynamic_range_db is computed but not used in scoring",
+      "reason": "Dead code, should be removed or wired into scoring",
+      "category": ""
+    },
+    {
+      "file": "src/ha_context.py",
+      "title": "_fetch_one returns None on non-200 without logging",
+      "reason": "Should log non-200 responses for debugging",
+      "category": ""
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "SQL injection in login query via username interpolation",
+      "reason": "Classic SQL injection via f-string interpolation",
+      "category": "security"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "SQL injection in admin token lookup",
+      "reason": "Classic SQL injection via f-string interpolation",
+      "category": "security"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "Hardcoded secret key in source code",
+      "reason": "SECRET_KEY should be loaded from env var",
+      "category": "security"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "Application runs with Flask debug mode enabled",
+      "reason": "debug=True exposes Werkzeug debugger in production",
+      "category": "security"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "Database connections are never closed",
+      "reason": "Resource leak, should use context manager or with statement",
+      "category": "resource-management"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "Database connections are never closed in admin endpoint",
+      "reason": "Resource leak, should use context manager or with statement",
+      "category": "resource-management"
+    },
+    {
+      "file": "/tmp/sample_auth.py",
+      "title": "Use of direct form indexing can raise unhandled KeyError",
+      "reason": "Should use request.form.get() with default",
+      "category": "robustness"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Broken OpenAI client initialization and redacted placeholders make fallback pipeline non-functional",
+      "reason": "Critical - broken code path in production pipeline",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "SSRF risk from downloading arbitrary candidate URLs without validation",
+      "reason": "Real - scraper downloads user-discovered URLs without origin checks",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Browser tabs can leak on exceptions in fetch_with_nodriver",
+      "reason": "Real resource leak - tabs not closed in exception paths",
+      "category": ""
+    },
+    {
+      "file": "glm-ocr-sdk/glmocr/server.py",
+      "title": "Server-side request forgery risk from unvalidated image URLs",
+      "reason": "Real SSRF - server fetches arbitrary user-provided URLs",
+      "category": ""
+    },
+    {
+      "file": "glm-ocr-sdk/glmocr/server.py",
+      "title": "Using Flask's built-in server in debug mode is unsafe for production",
+      "reason": "Real - Flask debug mode in production OCR server",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/dspy_optimizer.py",
+      "title": "Redacted API key lines leave setup_dspy_environment syntactically broken",
+      "reason": "Critical - our secret redaction may have broken this code path in the review output, but the finding about broken initialization is real",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Disabling web security weakens browser isolation",
+      "reason": "Real security issue - disable_web_security=True on a scraper visiting arbitrary sites",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Event loop target is started incorrectly in background thread",
+      "reason": "Real - asyncio.set_event_loop not called in thread, can cause issues with get_running_loop",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Blocking future.result() in Scrapy callback can stall the reactor",
+      "reason": "Real concurrency issue - blocks Twisted reactor for up to 60s per request",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Broad bare except blocks suppress real failures",
+      "reason": "Real - multiple bare excepts hide failures in verification, age gate, shutdown",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Closing logic skips stopping the event loop when browser was never created",
+      "reason": "Real resource leak - loop thread left running if browser creation fails",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Logger instance shadows Scrapy's built-in spider logger",
+      "reason": "Real - overrides Scrapy's logger, loses framework logging integration",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Cloudflare detection is case-sensitive and fragile",
+      "reason": "Real - Cloudflare pages may use different casing",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/nodriver_spider.py",
+      "title": "Unused imports increase noise",
+      "reason": "Real - urljoin unused at module scope, duplicate random imports",
+      "category": ""
+    },
+    {
+      "file": "glm-ocr-sdk/glmocr/server.py",
+      "title": "No input validation on image URL schemes",
+      "reason": "Real SSRF - accepts arbitrary URLs including file:// and internal IPs",
+      "category": ""
+    },
+    {
+      "file": "glm-ocr-sdk/glmocr/server.py",
+      "title": "Service enables Flask debug mode from runtime configuration",
+      "reason": "Critical - debug mode in production OCR service",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/dspy_optimizer.py",
+      "title": "Model fallback check compares against wrong identifier",
+      "reason": "Real logic bug - comparing wrong model name in fallback",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/dspy_optimizer.py",
+      "title": "Singleton initialization is not thread-safe",
+      "reason": "Real - concurrent Scrapy pipelines could create multiple instances",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/enhanced_coa_spider.py",
+      "title": "Selenium WebDriver is launched inside spider callback, blocking the reactor",
+      "reason": "Critical - launches full browser in Scrapy callback, blocks Twisted reactor",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/enhanced_coa_spider.py",
+      "title": "403 retry path does not actually disable duplicate filtering",
+      "reason": "Real logic bug - dont_filter=True intended but not working as expected",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/ask_service.py",
+      "title": "Unbounded prompt construction can exceed model limits and amplify latency/cost",
+      "reason": "Real issue. Large captures + many graph relations can blow past token limits. Should add truncation.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/ask_service.py",
+      "title": "Graph relation formatting can raise KeyError if relation dicts are incomplete",
+      "reason": "Valid \u2014 upstream graph service could return partial data. Should use .get() with defaults.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/ask_service.py",
+      "title": "Potential duplicate graph relations degrade answer quality and inflate prompt size",
+      "reason": "Real issue. Relations from multiple sources get appended without dedup. Should deduplicate.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/ask_service.py",
+      "title": "LLM response access can crash on empty or malformed completions",
+      "reason": "Valid. Should handle empty choices or None content defensively.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/config.py",
+      "title": "Sensitive secrets are stored as plain strings instead of SecretStr",
+      "reason": "Good practice to use SecretStr for passwords and API keys to prevent accidental log exposure.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/chat.py",
+      "title": "Unbounded user input may enable resource exhaustion",
+      "reason": "Should add max_length to ChatRequest.message to prevent abuse.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/chat.py",
+      "title": "Database session lifetime may extend for entire SSE stream",
+      "reason": "Valid concern. Should do DB work before streaming starts.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/chat.py",
+      "title": "Broad exception catch masks cancellation/disconnect behavior",
+      "reason": "Should re-raise asyncio.CancelledError instead of catching it.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/chat.py",
+      "title": "Error logging drops stack trace information",
+      "reason": "Should use exc_info=True or logger.exception() for debugging.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/chat.py",
+      "title": "Missing SSE cache-control headers may cause proxy/client buffering issues",
+      "reason": "Should add Cache-Control: no-cache and X-Accel-Buffering: no headers.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/inbox.py",
+      "title": "Inbox listing fetches all records into memory before pagination",
+      "reason": "Real issue. Should push pagination to DB queries instead of in-memory slicing.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/inbox.py",
+      "title": "Pagination parameters are not validated, allowing negative or excessive values",
+      "reason": "Should add Query(ge=0, le=100) constraints.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/inbox.py",
+      "title": "Sorting by ISO-formatted strings instead of datetimes is fragile",
+      "reason": "Should sort by actual datetime objects before converting to ISO strings.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Synchronous `memory.add` call inside async endpoint can block event loop",
+      "reason": "Should wrap in run_in_executor like the ask_service does for graph calls.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "List endpoint does not validate or constrain pagination inputs",
+      "reason": "Should add Query constraints like the search endpoint does.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Unused dependency parameter `graph_service` indicates dead code",
+      "reason": "Should remove unused dependency injection.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Unused form field `description` in blob upload endpoint",
+      "reason": "Dead parameter, should remove.",
+      "category": ""
+    },
+    {
+      "file": "src/audio_pipeline.py",
+      "title": "Using `StreamReader.read(CHUNK_BYTES)` can return partial frames and break PCM decoding",
+      "reason": "asyncio StreamReader.read() can return fewer bytes than requested. Should use readexactly() or accumulate to CHUNK_BYTES. This could cause numpy frombuffer to fail or produce misaligned PCM frames.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "go2rtc-only cameras may connect directly to the camera instead of the proxy",
+      "reason": "If go2rtc fallback fails, the original RTSP URL (direct to camera) is used. This bypasses the proxy and can consume a camera's limited RTSP session slots. The backyard camera config relies on go2rtc_stream with no direct fallback intended.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Background LLM judge tasks are not tracked or cancelled on shutdown",
+      "reason": "Fire-and-forget LLM judge tasks could be mid-HTTP-request when the addon shuts down, causing warnings. Should be tracked and cancelled in shutdown handler.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "No URL scheme/host validation on extracted hrefs before following with Request()",
+      "reason": "Third-opinion and PAL both caught this. urljoin'd URLs from scraped HTML are followed without validating scheme (could be non-http) or host (could go off-domain). allowed_domains doesn't protect manually created Requests unless OffsiteMiddleware is enabled.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "Event loop shutdown race - parse_with_nodriver submits work to loop that may be closed",
+      "reason": "PAL and third-opinion caught this. In closed(), the loop is stopped then closed, but callbacks may still be in-flight. run_coroutine_threadsafe can raise if the loop is closed. Need loop state check or shutdown flag.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "Browser tabs are leaked when fetch_with_nodriver fails before normal close",
+      "reason": "All 3 tools caught this. Tab created with new_tab() only closed on success path. Exceptions after tab creation leak browser tabs. Need finally block.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "Scrapy callback blocks while waiting on asyncio future",
+      "reason": "Quorum and PAL caught this. future.result(timeout=60) blocks Twisted reactor for up to 60s per request, defeating Scrapy concurrency.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "Spider performs duplicate network fetches for every URL",
+      "reason": "All 3 tools caught this. No deduplication of expensive nodriver requests. dont_filter=True plus no visited set means same URL can be fetched multiple times via browser.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/coa_scraper_project/coa-scraper/coa_scraper/spiders/nodriver_spider.py",
+      "title": "disable_web_security weakens browser isolation and can alter site behavior",
+      "reason": "Quorum and PAL caught this. Disabling web security broadens cross-origin access unnecessarily for COA scraping.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Search queries are logged in plaintext, risking PHI disclosure",
+      "reason": "Health queries contain PHI (symptoms, medications, provider names). Should truncate or hash in logs.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "total reports only the over-fetched subset, not the real match count",
+      "reason": "total should reflect post-filter count, not pre-limit count from repo. Misleading for pagination.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Empty query matches every document and inflates relevance scores",
+      "reason": "Empty or whitespace-only query should return empty results, not match everything via ILIKE.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/search.py",
+      "title": "Search query length is unbounded, enabling expensive FTS requests",
+      "reason": "Should cap query length. Very long queries could be expensive for FTS/ILIKE.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Portal message metadata is dropped from GET/list responses",
+      "reason": "provider_name and subject not included in GET /captures/{id} response, only in POST response. Need to update _capture_to_response helper.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "RRF rank calculation uses zero-based positions instead of one-based ranks",
+      "reason": "Standard RRF uses 1-based ranks. enumerate(start=1) is the correct fix.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/embedding.py",
+      "title": "Lazy singleton model initialization is not thread-safe",
+      "reason": "FastAPI uses async but could have multiple workers. Add threading.Lock.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/embedding.py",
+      "title": "embed_texts does not verify output count matches input count",
+      "reason": "Should assert len(embeddings) == len(texts) for safety.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/embedding.py",
+      "title": "embed_text dereferences first embedding without validating model output",
+      "reason": "Should check embeddings is non-empty before indexing [0].",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/embedding.py",
+      "title": "Batch size check uses assert, which can be disabled in production",
+      "reason": "Should use a runtime check, not assert. Quick fix.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/context.py",
+      "title": "Provider contacts may return non-latest messages because no ordering is enforced",
+      "reason": "repo.list returns captured_at DESC by default, but we should be explicit. Also should filter test sources consistently.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/context.py",
+      "title": "Pending items do not filter excluded test sources",
+      "reason": "Should apply _EXCLUDED_SOURCES to pending section too.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/context.py",
+      "title": "Unused logger instance adds dead code",
+      "reason": "Remove unused import.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/routers/search.py",
+      "title": "Unused logger declaration adds dead code",
+      "reason": "Remove unused import.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/circuit_breaker.py",
+      "title": "HALF_OPEN state allows multiple concurrent trial calls",
+      "reason": "Fixed: added _trial_lock with blocking=False (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Unvalidated candidate URLs can trigger SSRF to internal services",
+      "reason": "Fixed: added validate_url_safety check before fetching (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/security.py",
+      "title": "Naive URL blacklist can be bypassed for SSRF/local-address checks",
+      "reason": "Fixed: replaced with ipaddress stdlib resolution (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/auto_optimizer.py",
+      "title": "Zero or negative optimization interval can crash should_optimize",
+      "reason": "Fixed: added validation in __init__ (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/auto_optimizer.py",
+      "title": "Non-atomic read/modify/write can lose or corrupt optimization history",
+      "reason": "Fixed: added threading.Lock (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/auto_optimizer.py",
+      "title": "Optimization result is discarded, so reported prompt optimization never takes effect",
+      "reason": "Fixed: result now assigned back to extractor (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/browser_strategy.py",
+      "title": "Domain extraction fails for schemeless URLs and preserves port numbers",
+      "reason": "Fixed: using urlparse with scheme fallback and .hostname (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/browser_strategy.py",
+      "title": "Average response time calculation is mathematically incorrect when some updates omit response_time",
+      "reason": "Fixed: separate response_time_count counter (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/browser_strategy.py",
+      "title": "Configured JavaScript snippet uses top-level await and may be invalid in many evaluate contexts",
+      "reason": "Pre-existing design choice, valid finding (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/cache.py",
+      "title": "Truncated MD5 identifiers increase collision risk for products and files",
+      "reason": "Fixed: replaced with SHA256 (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/cache.py",
+      "title": "ProgressTracker counters are not thread-safe",
+      "reason": "Fixed: added threading.Lock (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/cache.py",
+      "title": "Singleton cache initialization is racy under concurrent access",
+      "reason": "Fixed: double-checked locking (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/cache.py",
+      "title": "Cleanup assumes cascading deletes, but foreign keys are not enforced or configured to cascade",
+      "reason": "Fixed: explicit child deletes + PRAGMA foreign_keys (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/cache.py",
+      "title": "Product upserts can delete and recreate rows, breaking related cache records",
+      "reason": "Fixed: INSERT OR REPLACE pattern (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/circuit_breaker.py",
+      "title": "Configured call timeout is never enforced",
+      "reason": "Fixed: time.monotonic() measurement + TimeoutError (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/dspy_integration.py",
+      "title": "Cost tier matching contains overlapping substrings that misclassify model prices",
+      "reason": "Fixed: longest-match-first ordered lookup (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Mutating coa_candidates while iterating over it",
+      "reason": "Fixed: iterate over list() copy (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Cache lookup uses MD5(url) while stored checksum uses SHA256(file content)",
+      "reason": "Fixed: SHA256 everywhere (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/security.py",
+      "title": "Unknown or misspelled providers silently fall back to weak API key validation",
+      "reason": "Fixed: unknown providers return False (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/schemas.py",
+      "title": "pages_analyzed allows negative page indices despite 0-indexed contract",
+      "reason": "Fixed: added field_validator (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/camoufox_middleware.py",
+      "title": "Blocked/failed bypass pages are still returned as successful Camoufox responses",
+      "reason": "Fixed: added _is_blocked_page detection (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Terpene range validation is disabled for concentrates due to incorrect max-value selection",
+      "reason": "Fixed: added TERPENE_MAX_CONCENTRATE constant (post_fix)",
+      "category": "manual"
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "Validation passes even when the dashboard directory is missing or empty",
+      "reason": "Real bug. Silent success on missing/empty directory means deploys pass with zero files validated.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "File reading can crash on encoding and I/O errors",
+      "reason": "One bad file shouldn't abort the entire validation run. Wrapping in try/except is correct approach.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "String-based rule checks produce false positives from comments and values",
+      "reason": "Best finding. YAML is parsed via safe_load but the result is never used \u2014 all validation uses raw string matching which hits comments and quoted values. Core design flaw.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "numeric_state detection uses a brittle regex that misses valid cases",
+      "reason": "Regex assumes specific key ordering and uses entity: instead of entity_id:. Should validate structurally from parsed YAML.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "Unused import and unused parsed YAML variable",
+      "reason": "os is unused. More importantly, data from yaml.safe_load() is unused \u2014 smoking gun that validations were meant to be structural but aren't. Connects to the string-matching finding.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "numeric-input comment filtering is unreliable",
+      "reason": "The .split().split() chain on L42 is genuinely fragile \u2014 only checks line before first occurrence, misses later ones, and can misread inline comments.",
+      "category": ""
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "Use sys.exit instead of exit() in a script",
+      "reason": "Correct. exit() is for interactive use, sys.exit() is standard for scripts.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Falsy corrected timestamps are discarded in favor of detected values",
+      "reason": "Real bug. corrected_start of 0.0 (valid timestamp at video start) is falsy and falls back to detected_start. Fixed to use `is not None` check.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Batch optimization stops completely if one channel optimization fails",
+      "reason": "Real issue. No try/except around per-channel optimization in the loop. One failure kills all remaining channels. Fixed with try/except recording error result.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Empty recordings list causes division by zero in optimization objective",
+      "reason": "Real bug. Although callers check min_recordings, the function itself has no guard. Added ValueError guard at function entry.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "No timeout on ffprobe/ffmpeg subprocesses can hang requests indefinitely",
+      "reason": "Real issue. Added asyncio.wait_for with 30s timeout on ffprobe and 120s on ffmpeg transcoding.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "Cache population has a race condition that can cause duplicate transcoding or partial writes",
+      "reason": "Real TOCTOU issue. Two concurrent requests for the same uncached segment could both transcode. Fixed with atomic write-to-tmp-then-rename pattern.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "Async methods perform blocking filesystem I/O on the event loop",
+      "reason": "Real issue. read_bytes() and write_bytes() are blocking. Fixed with asyncio.to_thread().",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Synchronous comskip execution blocks the async event loop",
+      "reason": "Real issue. subprocess.run() in run_comskip_with_params blocks the event loop. Fixed with asyncio.to_thread().",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Unbounded limit parameter can enable expensive queries",
+      "reason": "Valid concern. No max cap on limit param. Fixed with min(limit, 500) clamp.",
+      "category": ""
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "Deleting a recording may leave orphaned EDL entries or fail due to missing cascade",
+      "reason": "Real issue. No cascade on relationship. Fixed by adding cascade=\"all, delete-orphan\" to the edl_entries relationship.",
+      "category": ""
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "JSON is stored as plain Text despite importing SQLAlchemy JSON type",
+      "reason": "Valid. JSON was imported but unused. Changed params_json and features_json columns to use JSON type, removed json.dumps() calls in worker.py.",
+      "category": ""
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "Unused SQLAlchemy JSON import",
+      "reason": "Was unused before fix. Now used \u2014 changed params_json and features_json to JSON type.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Negative break durations can produce negative loss values",
+      "reason": "Real edge case. If end < start, duration is negative, rewarding bad predictions. Fixed with max(0.0, ...) guard.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Unused imports and variable add noise and suggest stale code",
+      "reason": "json import was unused. Removed it.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "FFmpeg option -movflags +faststart is irrelevant for MPEG-TS output",
+      "reason": "Correct \u2014 faststart is for MP4 container (moves moov atom). Irrelevant for mpegts. Removed.",
+      "category": ""
+    },
+    {
+      "file": "src/postproc/smoother.py",
+      "title": "Filtering short breaks before merging can discard valid combined breaks",
+      "reason": "Real algorithmic issue. Two 50s breaks close together should merge into 100s+ valid break, but each was filtered individually first. Fixed by merging before filtering.",
+      "category": ""
+    },
+    {
+      "file": "src/postproc/smoother.py",
+      "title": "Independent boundary snapping can create zero- or negative-length breaks",
+      "reason": "Real issue. If snap moves start forward and end backward, result can be invalid. Fixed by checking snapped duration before applying snap.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Regular timers overwrite the more reliable series timer mapping",
+      "reason": "Real logic issue. Series timers loaded first, then regular timers overwrote them. Fixed by loading regular timers first so series timers take precedence.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Naive datetimes are stored despite timezone-aware worker configuration",
+      "reason": "Real inconsistency. Worker uses timezone-aware config (enable_utc=True) but stores datetime.now() without timezone. Fixed to use datetime.now(timezone.utc).",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Correction detection only checks corrected_start, missing valid reviewed state",
+      "reason": "Valid observation \u2014 a \"keep\" correction with null corrected_start won't count as reviewed. Low priority but real gap in review tracking.",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Internal exception details are returned to API clients",
+      "reason": "Real but low risk \u2014 this is a home DVR tool on a local network, not a public API.",
+      "category": ""
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "Timestamp columns use naive DateTime values",
+      "reason": "Real but low priority for a single-timezone home tool. Worker datetime.now() calls were fixed to use UTC.",
+      "category": ""
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "Model comments describe constrained values, but no database constraints enforce them",
+      "reason": "Valid \u2014 correction_type has no CHECK constraint for valid values. Low priority since app logic handles this.",
+      "category": ""
+    },
+    {
+      "file": "src/db/database.py",
+      "title": "Default SQLite path may fail when parent directory does not exist",
+      "reason": "Valid edge case. Docker volume mount and local dev usually ensure ./data/ exists, but no mkdir guard.",
+      "category": ""
+    },
+    {
+      "file": "src/db/database.py",
+      "title": "Shared session dependency commits implicitly after every use",
+      "reason": "Intentional design pattern, but fragile. The auto-commit-on-exit pattern is what makes the \"not committed\" findings on main.py false positives \u2014 it works, but it's implicit.",
+      "category": ""
+    },
+    {
+      "file": "src/db/database.py",
+      "title": "Engine is never disposed during application shutdown",
+      "reason": "Valid observation. SQLite handles this gracefully but it's technically a resource leak.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "INI content generation allows config injection through unvalidated keys and values",
+      "reason": "Valid in principle. Params come from Optuna suggest_int so they're always numeric in practice, but no sanitization exists.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Comskip execution failures are silently treated as valid empty predictions",
+      "reason": "Real concern. Non-zero return code silently returns empty list, skewing optimization toward configs that crash comskip.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "Unused parameter in generate_playlist suggests missing cache namespace usage",
+      "reason": "recording_id is passed but unused in generate_playlist. Likely intended for future cache key usage.",
+      "category": ""
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "segment_duration is not validated and can crash playlist generation",
+      "reason": "Valid \u2014 0 or negative segment_duration would cause division by zero or infinite loop in generate_playlist.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Synchronous file I/O blocks the event loop in async channel detection",
+      "reason": "Valid \u2014 load_jellyfin_timers() does sync file reads and is called from async detect_channel(). Small files in practice but technically blocking.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Channel ID conversion removes hdhr_ anywhere in the string instead of validating prefix",
+      "reason": "Valid \u2014 str.replace replaces all occurrences, not just prefix. Should use removeprefix() or lstrip. Low risk since hdhr_ is unlikely to appear elsewhere.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Per-recording EDL lookup creates an N+1 query pattern",
+      "reason": "Real N+1 pattern. Each recording triggers a separate EDL query. Could be joined. Low impact with small dataset sizes typical of home DVR.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Database changes rely on implicit session behavior instead of an explicit transaction",
+      "reason": "Same pattern as the get_db dependency \u2014 auto-commit on context exit. Works but fragile if error handling changes.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Unused AsyncSession import",
+      "reason": "AsyncSession is imported but never used directly in worker.py.",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Function analyze_recording has cyclomatic complexity 5",
+      "reason": "Accurate measurement but complexity 5 is fine \u2014 well within acceptable range.",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Function get_task_status has cyclomatic complexity 5",
+      "reason": "Accurate but acceptable. Simple state dispatch \u2014 doesn't warrant refactoring.",
+      "category": ""
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Function get_channel has cyclomatic complexity 5",
+      "reason": "Accurate but acceptable complexity for an endpoint with a few queries.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Function parse_edl has cyclomatic complexity 5",
+      "reason": "Accurate. Simple file parser \u2014 complexity is inherent to the parsing logic.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "Function boundary_loss has cyclomatic complexity 9",
+      "reason": "Accurate. The matching algorithm has inherent complexity. Could be refactored but readable as-is.",
+      "category": ""
+    },
+    {
+      "file": "src/optimizer/tune.py",
+      "title": "open() without explicit encoding parameter",
+      "reason": "Valid pedantic finding. EDL files are ASCII so the default works, but explicit encoding is better practice.",
+      "category": ""
+    },
+    {
+      "file": "src/postproc/smoother.py",
+      "title": "Function smooth_boundaries has cyclomatic complexity 6",
+      "reason": "Accurate but acceptable for the smoothing logic.",
+      "category": ""
+    },
+    {
+      "file": "src/postproc/smoother.py",
+      "title": "Hard-coded 30-second minimum in apply_conservative_trim is inconsistent with configurable min_break_duration",
+      "reason": "Valid observation \u2014 the 30s hardcoded minimum should ideally be a parameter or derived from min_break_duration.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Function load_jellyfin_timers has cyclomatic complexity 9",
+      "reason": "Accurate. Two similar loading blocks could be extracted into a helper, but readable as-is.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Broad exception handling hides operational failures and uses print instead of logging",
+      "reason": "Valid \u2014 bare except with print() instead of logger.warning(). Should use proper logging.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Malformed lineup entries with missing guide numbers are cached under an empty-string key",
+      "reason": "Valid \u2014 if GuideNumber is missing, entry is cached as \"\" key. Should skip entries with empty guide numbers.",
+      "category": ""
+    },
+    {
+      "file": "src/services/channel_detector.py",
+      "title": "Files are opened without an explicit encoding",
+      "reason": "Valid. Fixed in the timer loading reorder \u2014 added encoding=\"utf-8\" to both open() calls.",
+      "category": ""
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Function optimize_channel_task has cyclomatic complexity 8",
+      "reason": "Accurate. The task has inherent complexity from DB queries + optimization + result storage. Readable as-is.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Hybrid search ignores user-supplied filters when adding vector results",
+      "reason": "Real bug \u2014 vector_search and image_vector_search were not passing content_type, source, provider, after, before filters to the SQL query. Fixed by adding filter parameters to both methods and building WHERE clauses matching the FTS approach. Confirmed by test_content_type_filter which was failing before the fix.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Image vector results bypass low-content filtering",
+      "reason": "Valid observation \u2014 image results skip _filter_low_content in the search() method. Low priority since image captures typically have substantive content from vision extraction, but the inconsistency is real.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Abbreviation expansion fails for tokens with punctuation",
+      "reason": "Pre-existing but valid \u2014 query \"GLP-1\" splits on space and checks \"GLP-1\" against MEDICAL_ALIASES which stores \"GLP1\" without hyphen. Low priority, workaround is users can type without hyphen.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/ecwid_scraper.py",
+      "title": "JavaScript interpolation of ecwid_id can break page evaluation and enable script injection in browser context",
+      "reason": "Valid security finding. ecwid_id comes from scraped page data and could contain special characters. Fixed by passing as argument to page.evaluate.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/ecwid_scraper.py",
+      "title": "Using `go_back()` after hash-route click can leave scraper on the wrong page or fail entirely",
+      "reason": "Real bug. Ecwid hash-route navigation doesn't always create proper history entries. Fixed by saving grid_url and navigating back explicitly.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/ecwid_scraper.py",
+      "title": "WooCommerce extractor only reads the first ld+json script and misses common array/@graph layouts",
+      "reason": "Valid. Horn Creek and other WooCommerce themes emit multiple JSON-LD blocks. Fixed by iterating all scripts and handling arrays/@graph.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/spiders/ecwid_scraper.py",
+      "title": "`open()` without explicit `encoding` parameter",
+      "reason": "Fixed by adding encoding='utf-8'.",
+      "category": ""
+    },
+    {
+      "file": "archive_coas.py",
+      "title": "Verification can misclassify every archive file as orphaned due to invalid relative path calculation",
+      "reason": "High-severity bug. The relative_to('.') approach fails with absolute ARCHIVE_DIR and produces mismatched path strings. Fixed by resolving all paths to absolute before comparison.",
+      "category": ""
+    },
+    {
+      "file": "archive_coas.py",
+      "title": "Database connections are not closed if status or verify raises an exception",
+      "reason": "Fixed by switching to context managers (with get_db() as conn).",
+      "category": ""
+    },
+    {
+      "file": "archive_coas.py",
+      "title": "Status command performs full recursive archive scan twice, causing avoidable slowdown on large archives",
+      "reason": "Fixed with single-pass scan that counts files, sums sizes, and tracks per-vendor counts simultaneously.",
+      "category": ""
+    },
+    {
+      "file": "archive_coas.py",
+      "title": "Unused imports increase noise and suggest incomplete cleanup",
+      "reason": "hashlib and json were unused. Removed.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/reranker.py",
+      "title": "Unvalidated negative or zero config values can corrupt slicing and request behavior",
+      "reason": "Real issue. Negative RERANKER_TOP_N would turn items[:top_n] into a backwards slice. Fixed with __post_init__ clamps (top_n >= 1, topk_fetch >= 1, timeout_ms >= 100).",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/reranker.py",
+      "title": "Duplicate indices from reranker response can produce duplicate results and drop items",
+      "reason": "Real edge case. Infinity could theoretically return the same index twice; original code would have included the same document twice in the output. Fixed with seen_indices set dedup, keeping the highest-scored occurrence.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/reranker.py",
+      "title": "A new HTTP client is created for every rerank call, preventing connection reuse",
+      "reason": "Real perf issue. httpx.AsyncClient was instantiated per-request, meaning TCP+TLS setup cost on every search. Fixed with shared module-level AsyncClient owned by RerankerService, exposed aclose() for shutdown.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Medical abbreviation expansion fails for punctuated tokens",
+      "reason": "Real pre-existing bug: _expand_query does word.upper() lookups in MEDICAL_ALIASES, so \"MCAS,\" or \"SIBO?\" won't match. Not fixing in this PR (out of scope) but worth tracking \u2014 simple fix is to strip trailing punctuation before lookup.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Detached LLM judge tasks are never tracked or cancelled",
+      "reason": "Real resource lifecycle bug. Fixed by adding _judge_tasks set, done-callback cleanup, and cancel+drain in stop(). Three new passing tests in TestJudgeTaskLifecycle cover the invariants. Commit 664a1a0.",
+      "category": ""
+    },
+    {
+      "file": "src/audio_pipeline.py",
+      "title": "Audio reader assumes `read(CHUNK_BYTES)` returns a full PCM chunk",
+      "reason": "Real bug. StreamReader.read(n) returns at-most-n bytes; partial reads would fail np.frombuffer on odd lengths and skew dB/clip accounting. Fixed by switching to readexactly(n) with IncompleteReadError handling for EOF.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Recovery path publishes camera online while the stream is actually offline",
+      "reason": "Legit bug. The stuck-recovery branch fired publish_camera_online immediately after the finally block had published camera_offline, and before reconnecting. External consumers saw false online state during reconnect window. Removed the redundant publish \u2014 the next successful connect publishes online correctly.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Function `_stream_loop` has cyclomatic complexity 29",
+      "reason": "Real complexity. The function handles a lot: dB gating, pre-trigger buffer, clip capture, threshold resolution, ambient tracking, classification dispatch, CLAP verification, confounder tagging, MQTT publishing, LLM judge dispatch. Refactoring is on the roadmap (split pipeline stages) but not in scope for the current stream-reliability work. Accepted debt.",
+      "category": ""
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Function `_run` has cyclomatic complexity 18",
+      "reason": "Real complexity. _run is the main per-camera loop managing connect/stream/reconnect/backoff/stuck-detection/fast-reconnect state machine. Refactor target \u2014 state machine could be extracted \u2014 but stable and tested. Accepted debt.",
+      "category": ""
+    },
+    {
+      "file": "src/audio_pipeline.py",
+      "title": "Function `read_audio_clip` has cyclomatic complexity 11",
+      "reason": "Barely over threshold (11 vs 10). Combines PCM read, dB gating, adaptive threshold, pre-trigger buffering, clip duration tracking. Marginal case \u2014 would be cleaner with small helper for pre-trigger ring, but not urgent.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Unparenthesized OR clauses change query semantics when combined with other terms",
+      "reason": "Fixed per quorum's suggestion: emit `(primary_text:X OR primary_text:Y)` wrapped in parens. Verified via TDD \u2014 test_builder_emits_grouped_expanded_clause asserts the grouped form. Even though the deeper bug was in temporal_parser (dateparser hijacking numeric 'or' patterns), quorum's concern about precedence-fragility was independently correct and worth hardening the BM25 emitter against future AND/OR mixing.",
+      "category": ""
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Phrase detection misses phrases adjacent to punctuation",
+      "reason": "Real bug. Pre-existing code, not introduced by this PR \u2014 space-padded phrase matching in _build_paradedb_query indeed misses phrases followed/preceded by punctuation (e.g. 'MCAS,' would not trigger the 'mast cell activation syndrome' boost). Calibrator's precedent (sim=1.00 tokenization bugs) is accurate. Not fixed in this PR to keep disjunction scope tight; will file as a follow-up and fix with TDD in its own PR. Regex-boundary-based detection (quorum's suggested fix) is the right approach.",
+      "category": ""
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/prompt_health/sync_health_memories.py",
+      "title": "Database connection is not protected by a finally block or context manager",
+      "reason": "Confirmed by TP (MED) and PAL (HIGH). Severity more aligned with medium than critical, but the bug is real.",
+      "category": "manual"
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/prompt_health/sync_health_memories.py",
+      "title": "Placeholder diagnosis text is inserted as real medical memory",
+      "reason": "Confirmed by TP and PAL. Quorum severity Critical is appropriate \u2014 placeholder text poisons medical data store.",
+      "category": "manual"
+    },
+    {
+      "file": "/Users/jsnyder/Sources/github.com/jsnyder/prompt_health/sync_health_memories.py",
+      "title": "Sync is not idempotent and will duplicate memories on every run",
+      "reason": "Confirmed by PAL (MED). Quorum was one of only two tools to catch this.",
+      "category": "manual"
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Cyclomatic complexity of auto_correct_mg_g_confusion is 15",
+      "reason": "Valid finding. Refactored pattern checks to use independent corrected_this flag instead of elif chain, improving readability while keeping CC manageable for a method that inherently needs multiple correction paths.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Falsey checks on pct/mg skip zero values \u2014 use isinstance instead",
+      "reason": "Critical bug. 0.0 is a valid measurement (e.g., ND cannabinoids stored as 0.0). Changed to isinstance(pct, (int, float)) checks throughout auto_correct_mg_g_confusion.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Comment claims plausibility guard but code doesn't implement it",
+      "reason": "Pattern 2 comment said it checks plausibility but just blindly divided by 10. Added pct_limit guard using MINOR_CANN_MAX_FLOWER dict to ensure the correction only fires when the corrected value would be plausible.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Pattern 3 blocked by elif chain \u2014 never fires after Pattern 1/2",
+      "reason": "Structural bug. Pattern 3 (minor cannabinoid ceiling) was in an elif after Pattern 1 and 2, so it could never trigger for compounds that didn't match those patterns. Restructured to independent if blocks with corrected_this flag.",
+      "category": ""
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "import copy is local instead of module-level",
+      "reason": "Minor style issue but valid per PEP 8. Moved import copy to module level with other imports.",
+      "category": ""
+    }
+  ],
+  "fps": [
+    {
+      "file": "src/llm_extractor.py",
+      "title": "memory_category vs type overlap",
+      "reason": "Orthogonal: type=observation/preference, memory_category=durability class"
+    },
+    {
+      "file": "src/ha_context.py",
+      "title": "%-I platform-specific strftime",
+      "reason": "Runs only in Docker on Linux where %-I is supported"
+    },
+    {
+      "file": "src/main.py",
+      "title": "TimeoutError vs asyncio.TimeoutError",
+      "reason": "In Python 3.11+, TimeoutError IS asyncio.TimeoutError \u2014 same class"
+    },
+    {
+      "file": "src/main.py",
+      "title": "The shutdown path uses two different synchronization patterns for the same asyncio state",
+      "reason": "Signal handler runs on main thread which is the event loop thread; same-thread asyncio.Event.set() is safe"
+    },
+    {
+      "file": "src/conversation.py",
+      "title": "The assembler accepts timing configuration without validation",
+      "reason": "Config comes from own YAML file, not user input"
+    },
+    {
+      "file": "src/audio_retrieval.py",
+      "title": "The URL builder interpolates device_id directly into the request path without URL-encoding",
+      "reason": "device_id values come from internal config (camera names like living_room), not user input"
+    },
+    {
+      "file": "src/audio_retrieval.py",
+      "title": "audio_url() assembles the query string manually",
+      "reason": "Query params are integers from internal computation, no encoding risk"
+    },
+    {
+      "file": "src/audio_retrieval.py",
+      "title": "get_audio() accepts end <= start",
+      "reason": "Caller always passes clip_start/clip_end from assembler which enforces ordering"
+    },
+    {
+      "file": "src/audio_retrieval.py",
+      "title": "The time inputs are only partially validated",
+      "reason": "Inputs are computed internally from epoch timestamps, not user-facing"
+    },
+    {
+      "file": "src/audio_retrieval.py",
+      "title": "The logger writes the full request URL",
+      "reason": "URL contains camera name and timestamps, not sensitive data"
+    },
+    {
+      "file": "src/ha_context.py",
+      "title": "formats timestamps with dt.strftime(%-I:%M %p) which is not portable",
+      "reason": "Runs in Docker on Linux only, Windows portability not relevant"
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Undefined background task function `_auto_analyze_image` causes runtime failure",
+      "reason": "Function is defined at line 333 in the full file. Quorum only reviewed partial code submission."
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Missing import for `FileResponse` breaks blob retrieval endpoint",
+      "reason": "FileResponse is imported on line 10 of the full file via `from fastapi.responses import FileResponse`. Quorum only reviewed partial code."
+    },
+    {
+      "file": "health-api/app/config.py",
+      "title": "Mutable list used as class-level default for CORS origins",
+      "reason": "Pydantic BaseModel/BaseSettings copies defaults per instance \u2014 mutable default sharing is not an issue here unlike plain Python classes."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Calling `start()` multiple times spawns duplicate stream tasks",
+      "reason": "The StreamManager._run() method is only called once from create_app's startup handler. There's no code path that calls start() multiple times."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Discovery silently ignores `ScryptedUrlResolver` despite accepting it in the type signature",
+      "reason": "ScryptedApiResolver is the preferred resolver and is used first. ScryptedUrlResolver (go2rtc-based) is used as a fallback in the stream loop, not in _attempt_discovery. The type signature correctly reflects both pathways."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Credential-redaction regex is malformed and can leak RTSP credentials to logs",
+      "reason": "Regex r\"://([^:]+):([^@]+)@\" with replacement r\"://\\1:***@\" correctly masks passwords. \\1 captures username, *** replaces the password between : and @. This is correct behavior."
+    },
+    {
+      "file": "src/url_resolver.py",
+      "title": "Credential redaction regex does not actually mask passwords",
+      "reason": "Same regex pattern as stream_manager. r\"://([^:]+):([^@]+)@\" replaced with r\"://\\1:***@\" correctly masks password with ***. \\1 is username, not password."
+    },
+    {
+      "file": "src/url_resolver.py",
+      "title": "Same broken redaction logic leaks credentials for single_url streams",
+      "reason": "Same regex, same correct behavior. Masks password with *** while preserving username."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Recovery path marks camera online before reconnection succeeds",
+      "reason": "This fires after a stream that lasted >= STABLE_STREAM_SECONDS and was previously stuck. It's recovering FROM stuck state and re-publishing online status, which is correct \u2014 the stream was just alive for 30+ seconds."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Result source is hardcoded to PostgreSQL even though the service claims SQLite fallback",
+      "reason": "SQLite is only for unit tests. Production always uses Postgres. source=postgres is correct."
+    },
+    {
+      "file": "health-api/app/routers/search.py",
+      "title": "Injected dependency is typed as required but defaults to None",
+      "reason": "Standard FastAPI Depends() pattern. The default None is overridden by the dependency injection."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "total reports only the over-fetched subset, not the real match count",
+      "reason": "total=len(scored) already reports full match count. results=scored[:limit] returns truncated set. Test confirms this is correct behavior."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Search query length is unbounded before hitting repository search",
+      "reason": "Already fixed in router - max_length=500 on the query parameter. Service is only called via router."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Unvalidated limit allows negative or extremely large values",
+      "reason": "Router constrains limit to ge=1, le=100. Service is only called via router."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Returned total is inaccurate because results are over-fetched and truncated",
+      "reason": "Already verified with test - total=len(scored) is the full post-filter count, results=scored[:limit] is the truncated set. Test test_search_total_matches_result_count confirms this. Duplicate finding from prior review."
+    },
+    {
+      "file": "health-api/app/routers/search.py",
+      "title": "Dependency-injected search service is incorrectly declared with a None default",
+      "reason": "Standard FastAPI Depends() pattern. Duplicate from prior review."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Search query length is unbounded, allowing expensive repository searches",
+      "reason": "Already capped at max_length=500 in router. Service only called via router. Third time this has been flagged."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "total undercounts matches because it reports only the over-fetched working set",
+      "reason": "Already verified with test. total=len(scored) is post-filter count. Fourth time flagged."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Search query length is unbounded, enabling expensive backend searches",
+      "reason": "Router caps at max_length=500. Fifth time flagged. Please stop."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "User-controlled limit is not validated before being multiplied and passed to the backend",
+      "reason": "Router validates limit ge=1 le=100. Max overfetch is 300 rows."
+    },
+    {
+      "file": "health-api/app/routers/search.py",
+      "title": "Filter parameters are unbounded in size",
+      "reason": "Single-user VPN-only system. content_type and source are short enum-like strings. Already addressed as partial in prior review."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Vector search results ignore caller-supplied filters",
+      "reason": "Pre-existing pattern \u2014 text vector search also doesn't apply filters in SQL. Filters are applied post-hoc in the search() method. Image vector search follows the same pattern."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Function search has cyclomatic complexity 13",
+      "reason": "Pre-existing. Adding the image vector block increased it by ~2. The function is linear and readable despite the complexity score."
+    },
+    {
+      "file": "health-api/app/routers/captures.py",
+      "title": "Function patch_image_embedding has cyclomatic complexity 5",
+      "reason": "Complexity 5 is low and the function is straightforward \u2014 validate dims, resolve capture, update DB."
+    },
+    {
+      "file": "coa_scraper/auto_optimizer.py",
+      "title": "Function optimize_prompts_by_format has cyclomatic complexity 12",
+      "reason": "Moderate complexity is acceptable for optimization logic"
+    },
+    {
+      "file": "coa_scraper/auto_optimizer.py",
+      "title": "Function extraction_quality_metric has cyclomatic complexity 5",
+      "reason": "Complexity 5 is not actionable"
+    },
+    {
+      "file": "coa_scraper/dspy_integration.py",
+      "title": "Function build_optimized_prompt has cyclomatic complexity 6",
+      "reason": "Low complexity, not actionable"
+    },
+    {
+      "file": "coa_scraper/dspy_optimizer.py",
+      "title": "Function optimize_extraction_prompt has cyclomatic complexity 5",
+      "reason": "Low complexity, not actionable"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Function get_extraction_rate has cyclomatic complexity 6",
+      "reason": "Low complexity, not actionable"
+    },
+    {
+      "file": "coa_scraper/pipelines.py",
+      "title": "Function handle_data_url has cyclomatic complexity 6",
+      "reason": "Low complexity, not actionable"
+    },
+    {
+      "file": "coa_scraper/security.py",
+      "title": "Function validate_api_key has cyclomatic complexity 7",
+      "reason": "Moderate complexity is acceptable for validation"
+    },
+    {
+      "file": "coa_scraper/validation.py",
+      "title": "Function validate_totals_consistency has cyclomatic complexity 12",
+      "reason": "Moderate complexity is acceptable for validation logic"
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "Function validate_file has cyclomatic complexity 6",
+      "reason": "CC=6 barely over threshold of 5. Function is 30 lines and perfectly readable. Noise for an 84-line utility script."
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "Function validate_all has cyclomatic complexity 7",
+      "reason": "It's a print-report function. CC thresholds are meaningless for straightforward output formatting code."
+    },
+    {
+      "file": "validate_all_dashboards.py",
+      "title": "open() without explicit encoding parameter",
+      "reason": "Duplicate of the I/O error finding which already covers encoding. Shouldn't be a separate finding."
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Recording updates are never committed to the database",
+      "reason": "The get_db() dependency auto-commits after yield (database.py L27-35). All mutations within the request are committed when the dependency context exits."
+    },
+    {
+      "file": "src/api/main.py",
+      "title": "Submitted boundary corrections are not persisted",
+      "reason": "Same as update_recording \u2014 the get_db() dependency auto-commits after yield. The correction IS persisted."
+    },
+    {
+      "file": "src/db/models.py",
+      "title": "Declared optimistic locking version is not actually enforced",
+      "reason": "Optimistic locking IS enforced manually in submit_correction (main.py L307-312) which checks entry.version against the submitted version and returns 409 on mismatch. Not using SQLAlchemy's version_id_col doesn't mean it's unenforced."
+    },
+    {
+      "file": "src/worker.py",
+      "title": "Directly invoking a Celery task from another task bypasses Celery execution features",
+      "reason": "Intentional design \u2014 comment on L187 explains: \"Run sequentially (intentional \u2014 SQLite doesn't support concurrent writes)\". Direct call is correct here."
+    },
+    {
+      "file": "src/services/transcoder.py",
+      "title": "Whole segments are buffered in memory instead of streamed",
+      "reason": "This is inherent to using pipe:1 with ffmpeg \u2014 the segment must be fully generated before it can be cached or returned. No practical streaming alternative for HLS segments that also need caching."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Broad exception handling hides database/query failures",
+      "reason": "By design \u2014 graceful degradation is the core pattern. BM25 falls back to tsvector, tsvector falls back to ILIKE, vector search falls back to empty. Errors are logged as warnings with structlog. Narrowing exceptions would break the fallback chain."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Search query and limit are not bounded before hitting FTS/vector backends",
+      "reason": "Pre-existing. The router layer (search.py) already caps limit to 100 via query parameter validation. The service receives pre-validated inputs."
+    },
+    {
+      "file": "health-api/app/services/fts_search.py",
+      "title": "Date filters incorrectly include records with NULL occurred_at",
+      "reason": "By design. Captures without occurred_at (e.g., imported documents with unknown dates) should not be excluded when the user filters by date range. Excluding them would hide relevant clinical content that lacks a precise timestamp."
+    },
+    {
+      "file": "coa_scraper/spiders/ecwid_scraper.py",
+      "title": "Function `extract_product_detail` has cyclomatic complexity 5",
+      "reason": "CC=5 is at threshold boundary and the function is a straightforward sequential extraction flow. Not worth refactoring."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Credential-redaction regex is malformed and can leak secrets into logs/events",
+      "reason": "Hallucinated description. The LLM claimed the pattern was `[^:[REDACTED]@]+` but the actual code uses two separate correct character classes: `r\"://([^:]+):([^@]+)@\"`. The `***@` in the replacement string confused the model into thinking it was part of the match pattern. Regex is correct and redaction works."
+    },
+    {
+      "file": "src/audio_pipeline.py",
+      "title": "Credential redaction regex is malformed and can leak RTSP credentials into logs/events",
+      "reason": "Same hallucination as the stream_manager finding. Actual code uses `r\"://([^:]+):([^@]+)@\"` which correctly captures username and password groups separately. The `***@` in the replacement string is confusing the LLM. No leak."
+    },
+    {
+      "file": "src/stream_manager.py",
+      "title": "Stuck-mode fallback can bypass the resolver/proxy and connect directly to the camera",
+      "reason": "The `self._camera.rtsp_url` IS the user-configured URL from config.yaml, which for Scrypted-backed cameras is the rebroadcast URL, not a direct camera URL. go2rtc was removed in v0.8.6; there's no separate proxy layer. Reverting to configured URL in stuck mode is intentional fallback behavior \u2014 it doesn't bypass anything the user didn't configure. No security/architecture regression."
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+id: bind-in-event-listener
+language: JavaScript
+severity: warning
+message: "`.bind()` inside `addEventListener`/`removeEventListener` creates a new function each call — listeners registered this way cannot be paired for removal, causing leaks."
+note: "Feedback: 4+ TP on addEventListener, 6 TP on removeEventListener (merged rule). Scoped to callback argument position to avoid flagging bind() used in unrelated positions."
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: member_expression
+        has:
+          field: property
+          regex: "^(addEventListener|removeEventListener)$"
+    - has:
+        field: arguments
+        has:
+          kind: call_expression
+          has:
+            field: function
+            kind: member_expression
+            has:
+              field: property
+              regex: "^bind$"

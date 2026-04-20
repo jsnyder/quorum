@@ -1,0 +1,22 @@
+id: eval-exec-non-literal
+language: Python
+severity: error
+message: "`eval()`/`exec()` with a non-literal argument executes arbitrary code. If the argument can be influenced by user input this is RCE."
+note: "Prophylactic baseline. String literals are allowed (e.g. `eval('1+1')`) to avoid flagging test code that intentionally demonstrates eval."
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        regex: "^(eval|exec)$"
+    - has:
+        field: arguments
+        has:
+          any:
+            - kind: identifier
+            - kind: attribute
+            - kind: subscript
+            - kind: binary_operator
+            - kind: call
+          stopBy: end
+        stopBy: end
