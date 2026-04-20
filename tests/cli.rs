@@ -5,6 +5,8 @@ fn quorum() -> Command {
     let mut cmd = Command::cargo_bin("quorum").unwrap();
     // Isolate from user feedback store — use empty HOME so calibrator has no data
     cmd.env("HOME", "/tmp/quorum-test-home");
+    // Isolate from developer shell so tests don't invoke real LLM (see issue #23)
+    cmd.env_remove("QUORUM_API_KEY");
     cmd
 }
 

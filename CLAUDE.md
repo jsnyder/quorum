@@ -10,6 +10,9 @@ cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
+cargo run -- stats --by-repo                 # dimensional stats by repo
+cargo run -- stats --by-caller               # dimensional stats by caller
+cargo run -- stats --rolling 50              # rolling 50-review windows
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
@@ -71,3 +74,11 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
+
+## Review Telemetry (v0.13.0+)
+
+Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
+
+`invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
+
+Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--rolling N`. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.

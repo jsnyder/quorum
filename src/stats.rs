@@ -1,8 +1,10 @@
 /// Stats dashboard -- reads local data files and computes metrics.
 
 use crate::analytics;
+use crate::dimensions::DimensionSlice;
 use crate::feedback::FeedbackStore;
 use crate::formatting;
+use crate::glyphs;
 use crate::telemetry::TelemetryStore;
 use crate::output::Style;
 
@@ -159,6 +161,170 @@ pub fn format_human(report: &StatsReport, style: &Style) -> String {
     out
 }
 
+/// Render a dimensional-stats table (by-repo / by-caller / rolling) for humans.
+/// Follows DESIGN.md §4 (dim labels, default values, 2-space indent) and §11 (numeric formatting).
+pub fn format_dimension_table(
+    mode: &str,
+    slices: &[DimensionSlice],
+    style: &Style,
+    unicode: bool,
+) -> String {
+    let mut out = String::new();
+    let key_header = match mode {
+        "by-caller" => "Caller",
+        "rolling" => "Window",
+        _ => "Repo",
+    };
+
+    out.push_str(&format!(
+        "{bold}~ Stats: {mode}{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+        mode = mode,
+    ));
+
+    if slices.is_empty() {
+        out.push_str("  (no data)\n");
+        return out;
+    }
+
+    // Column widths -- fixed so layout stays aligned in monospace terminals.
+    let key_width = 16usize;
+    out.push_str(&format!(
+        "  {bold}{key:<kw$}  {:>7}  {:>13}  {:<22}  {:<16}{reset}\n",
+        "Reviews",
+        "Findings/file",
+        "Accept rate",
+        "Trend",
+        bold = style.bold,
+        reset = style.reset,
+        key = key_header,
+        kw = key_width,
+    ));
+
+    for s in slices {
+        let display_key = truncate_key(&s.key, key_width);
+
+        let accept_cell = match s.accept_rate {
+            Some(r) if !s.low_sample => {
+                let bar = glyphs::hbar(r * 100.0, 100.0, unicode);
+                let pct = format!("{:>3}%", (r * 100.0).round() as i64);
+                format!("{}{bar}{reset} {}", color_for_accept(r, style), pct,
+                    bar = bar, reset = style.reset)
+            }
+            _ => format!("{dim}—                    {reset}", dim = style.dim, reset = style.reset),
+        };
+
+        let trend_cell = if s.sparkline_points.is_empty() {
+            format!("{dim}—{reset}", dim = style.dim, reset = style.reset)
+        } else {
+            let spark = glyphs::sparkline(&s.sparkline_points, unicode);
+            let arrow = glyphs::trend_arrow(&s.sparkline_points, unicode);
+            format!("{} {}", spark, arrow)
+        };
+
+        let low_tag = if s.low_sample {
+            format!("  {dim}(low sample){reset}", dim = style.dim, reset = style.reset)
+        } else {
+            String::new()
+        };
+
+        out.push_str(&format!(
+            "  {key:<kw$}  {reviews:>7}  {fpf:>13.1}  {accept:<22}  {trend:<16}{low}\n",
+            key = display_key,
+            kw = key_width,
+            reviews = s.n_reviews,
+            fpf = s.findings_per_file,
+            accept = accept_cell,
+            trend = trend_cell,
+            low = low_tag,
+        ));
+    }
+
+    // Totals line (dim).
+    let total_reviews: u32 = slices.iter().map(|s| s.n_reviews).sum();
+    let low_count = slices.iter().filter(|s| s.low_sample).count();
+    let low_note = if low_count > 0 {
+        format!(" ({} low-sample)", low_count)
+    } else {
+        String::new()
+    };
+    out.push_str(&format!(
+        "\n  {dim}{} {}  {} reviews{}{reset}\n",
+        slices.len(),
+        if slices.len() == 1 { unit_label_singular(mode) } else { unit_label_plural(mode) },
+        total_reviews,
+        low_note,
+        dim = style.dim,
+        reset = style.reset,
+    ));
+
+    out
+}
+
+fn truncate_key(key: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if key.chars().count() <= width {
+        key.to_string()
+    } else if width == 1 {
+        // Can't fit ellipsis; just take the first char so layout stays aligned.
+        key.chars().take(1).collect()
+    } else {
+        let mut s: String = key.chars().take(width - 1).collect();
+        s.push('.');
+        s
+    }
+}
+
+fn color_for_accept(rate: f64, style: &Style) -> &str {
+    if rate >= 0.70 { style.green }
+    else if rate < 0.40 { style.red }
+    else { "" }
+}
+
+fn unit_label_singular(mode: &str) -> &'static str {
+    match mode {
+        "by-caller" => "caller",
+        "rolling" => "window",
+        _ => "repo",
+    }
+}
+
+fn unit_label_plural(mode: &str) -> &'static str {
+    match mode {
+        "by-caller" => "callers",
+        "rolling" => "windows",
+        _ => "repos",
+    }
+}
+
+/// Compact one-line dimensional summary (LLM-targeted, no glyphs per DESIGN.md §2).
+pub fn format_dimension_compact(mode: &str, slices: &[DimensionSlice]) -> String {
+    let mut parts = Vec::with_capacity(slices.len() + 1);
+    let mut low_count = 0usize;
+    for s in slices {
+        if s.low_sample {
+            low_count += 1;
+            continue;
+        }
+        let acc = s.accept_rate
+            .map(|r| format!(" acc{}", (r * 100.0).round() as i64))
+            .unwrap_or_default();
+        parts.push(format!(
+            "{}(n{} fpf{:.1}{})",
+            s.key, s.n_reviews, s.findings_per_file, acc,
+        ));
+    }
+    let low_suffix = if low_count > 0 {
+        format!(" +{} low-sample", low_count)
+    } else {
+        String::new()
+    };
+    format!("{}: {}{}", mode, parts.join(" "), low_suffix)
+}
+
 pub fn format_compact(report: &StatsReport) -> String {
     let mut parts = vec![
         format!("feedback:{}", report.feedback_count),
@@ -282,6 +448,111 @@ mod tests {
         assert!(out.contains("Spend (7d)"));
         assert!(out.contains("2.0k"));  // feedback count
         assert!(out.contains("74%"));   // precision
+    }
+
+    fn slice(key: &str, n: u32, findings: u32, files: u64, low_sample: bool) -> DimensionSlice {
+        DimensionSlice {
+            key: key.into(),
+            n_reviews: n,
+            n_findings: findings,
+            findings_per_file: if files == 0 { 0.0 } else { findings as f64 / files as f64 },
+            findings_per_kloc: None,
+            accept_rate: None,
+            severity_mix: Default::default(),
+            suppression_rate: 0.0,
+            avg_duration_ms: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
+            cache_hit_rate: 0.0,
+            sparkline_points: vec![],
+            low_sample,
+        }
+    }
+
+    #[test]
+    fn dimension_table_has_header_and_keys() {
+        let slices = vec![
+            slice("alpha", 10, 20, 10, false),
+            slice("beta", 3, 6, 3, true),
+        ];
+        let out = format_dimension_table("by-repo", &slices, &Style::plain(), true);
+        assert!(out.contains("Repo"), "by-repo header should use 'Repo'");
+        assert!(out.contains("Reviews"));
+        assert!(out.contains("Findings/file"));
+        assert!(out.contains("alpha"));
+        assert!(out.contains("beta"));
+    }
+
+    #[test]
+    fn dimension_table_header_matches_mode() {
+        let s = vec![slice("claude_code", 10, 5, 10, false)];
+        let repo = format_dimension_table("by-repo", &s, &Style::plain(), true);
+        let caller = format_dimension_table("by-caller", &s, &Style::plain(), true);
+        let rolling = format_dimension_table("rolling", &s, &Style::plain(), true);
+        assert!(repo.contains("Repo") && !repo.contains("Caller"));
+        assert!(caller.contains("Caller"));
+        assert!(rolling.contains("Window"));
+    }
+
+    #[test]
+    fn dimension_table_marks_low_sample_rows() {
+        let slices = vec![slice("tiny", 2, 1, 2, true)];
+        let out = format_dimension_table("by-repo", &slices, &Style::plain(), true);
+        assert!(out.contains("low sample"), "should tag low-sample rows");
+    }
+
+    #[test]
+    fn dimension_table_uses_bar_glyph_for_accept_rate() {
+        let mut s = slice("r", 10, 5, 10, false);
+        s.accept_rate = Some(0.78);
+        let out = format_dimension_table("by-repo", &[s], &Style::plain(), true);
+        // A 78% bar should have some filled and some empty cells.
+        assert!(out.contains('█'), "unicode bar should contain full-block char, got:\n{}", out);
+    }
+
+    #[test]
+    fn dimension_table_ascii_fallback_has_no_unicode_blocks() {
+        let mut s = slice("r", 10, 5, 10, false);
+        s.accept_rate = Some(0.78);
+        let out = format_dimension_table("by-repo", &[s], &Style::plain(), false);
+        for c in out.chars() {
+            let cp = c as u32;
+            assert!(
+                !(0x2581..=0x2588).contains(&cp) && cp != 0x00b7,
+                "ASCII fallback leaked unicode char {:?}",
+                c,
+            );
+        }
+    }
+
+    #[test]
+    fn dimension_table_empty_slices_does_not_panic() {
+        let out = format_dimension_table("by-repo", &[], &Style::plain(), true);
+        assert!(out.contains("no data") || out.is_empty());
+    }
+
+    #[test]
+    fn truncate_key_handles_zero_width_without_panic() {
+        assert_eq!(truncate_key("anything", 0), "");
+    }
+
+    #[test]
+    fn truncate_key_single_width_does_not_underflow() {
+        // width=1 would become take(width-1)=take(0), and we'd still need to return
+        // something non-empty or the table layout breaks. Contract: fit exactly in `width`.
+        let out = truncate_key("long-name", 1);
+        assert_eq!(out.chars().count(), 1);
+    }
+
+    #[test]
+    fn dimension_compact_single_line_no_glyphs() {
+        let slices = vec![slice("alpha", 10, 23, 10, false), slice("beta", 3, 6, 3, true)];
+        let out = format_dimension_compact("by-repo", &slices);
+        assert!(!out.contains('\n') || out.trim_end().lines().count() == 1,
+            "compact mode must be single-line, got: {:?}", out);
+        assert!(!out.contains('█'), "compact mode must not use semigraphics");
+        assert!(out.contains("alpha"));
     }
 
     #[test]

@@ -12,6 +12,8 @@ mod cli;
 mod config;
 mod context_enrichment;
 mod daemon;
+mod dimensions;
+mod glyphs;
 mod http_server;
 mod domain;
 mod embeddings;
@@ -31,6 +33,7 @@ mod pipeline;
 mod progress;
 mod redact;
 mod review;
+mod review_log;
 mod stats;
 mod suppress;
 mod telemetry;
@@ -53,6 +56,48 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Stats(opts) => {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             let home_path = std::path::PathBuf::from(&home);
+
+            // Dimensional views (by-repo / by-caller / rolling) read reviews.jsonl
+            // and aggregate via the `dimensions` module. Three output modes:
+            // JSON (pipe/--json), compact (CLAUDE_CODE/--compact), human (TTY).
+            let want_dimensional = opts.by_repo || opts.by_caller || opts.rolling.is_some();
+            if want_dimensional {
+                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let records = log.load_all().unwrap_or_default();
+                let (mode, slices) = if opts.by_repo {
+                    ("by-repo", dimensions::group_by_repo(&records))
+                } else if opts.by_caller {
+                    ("by-caller", dimensions::group_by_caller(&records))
+                } else {
+                    let n = opts.rolling.unwrap();
+                    ("rolling", dimensions::rolling_window(&records, n, 3))
+                };
+
+                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let use_compact = output::should_use_compact(opts.compact);
+                let use_json = opts.json || (is_pipe && !use_compact);
+
+                if use_json {
+                    let meta = serde_json::json!({
+                        "min_sample": dimensions::MIN_SAMPLE,
+                        "total_reviews": records.len(),
+                    });
+                    let payload = serde_json::json!({
+                        "mode": mode,
+                        "slices": slices,
+                        "meta": meta,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else if use_compact {
+                    println!("{}", stats::format_dimension_compact(mode, &slices));
+                } else {
+                    let style = output::Style::detect(false);
+                    let unicode = unicode_ok();
+                    print!("{}", stats::format_dimension_table(mode, &slices, &style, unicode));
+                }
+                std::process::exit(0);
+            }
+
             let feedback_store = feedback::FeedbackStore::new(home_path.join(".quorum/feedback.jsonl"));
             let telemetry_store = telemetry::TelemetryStore::new(home_path.join(".quorum/telemetry.jsonl"));
 
@@ -148,6 +193,32 @@ async fn run_mcp_server() -> anyhow::Result<()> {
     server.start().await
         .map_err(|e| anyhow::anyhow!("MCP server error: {}", e))?;
     Ok(())
+}
+
+/// Heuristic: whether the terminal can likely render block/sparkline glyphs.
+/// Conservative — TERM=dumb or NO_UNICODE env disables; LANG without UTF-8 also disables.
+fn unicode_ok() -> bool {
+    if std::env::var_os("NO_UNICODE").is_some() {
+        return false;
+    }
+    if let Some(term) = std::env::var_os("TERM") {
+        if term == "dumb" {
+            return false;
+        }
+    }
+    if let Ok(lang) = std::env::var("LANG") {
+        return lang.to_uppercase().contains("UTF-8") || lang.to_uppercase().contains("UTF8");
+    }
+    // No LANG set: default to unicode since we're likely on macOS or a modern terminal.
+    true
+}
+
+/// Root directory for deep-review tools when reviewing `file_path`.
+/// Uses the file's project root so agent tools don't escape into the
+/// process CWD (previously a concrete scope-confusion issue when
+/// `quorum review --deep /other/repo/f.rs` was run from $HOME).
+fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
+    pipeline::find_project_root(file_path)
 }
 
 fn run_review(opts: cli::ReviewOpts) -> i32 {
@@ -353,7 +424,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             // Deep review: agent loop with tool calling
             if opts.deep {
                 if let Some(client) = llm_client.as_deref() {
-                    let project_root = std::env::current_dir().unwrap_or_default();
+                    let project_root = deep_tool_root(file_path);
                     let tool_reg = tools::ToolRegistry::new(&project_root);
                     let agent_cfg = agent::AgentConfig::default();
                     let model = pipeline_cfg.models.first()
@@ -474,7 +545,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 // Deep review path
                 if deep {
                     if let Some(ref client) = llm_client {
-                        let project_root = std::env::current_dir().unwrap_or_default();
+                        let project_root = deep_tool_root(&file_path);
                         let tool_reg = tools::ToolRegistry::new(&project_root);
                         let agent_cfg = agent::AgentConfig::default();
                         let model = pipeline_cfg.models.first()
@@ -612,6 +683,39 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             suppressed: file_results.iter().map(|r| r.suppressed).sum(),
         };
         let _ = telem_store.record(&telem_entry);
+
+        // Per-review record for dimensional stats (by-repo, by-caller, rolling).
+        let reviews_path = std::path::PathBuf::from(&home).join(".quorum/reviews.jsonl");
+        let review_log = review_log::ReviewLog::new(reviews_path);
+        let first_file = opts.files.first().map(|p| p.as_path());
+        let repo = first_file.and_then(review_log::detect_repo);
+        let invoked_from = review_log::detect_invoked_from(opts.caller.as_deref());
+        let sev_iter = all_findings.iter().map(|f| &f.severity);
+        let record = review_log::ReviewRecord {
+            run_id: review_log::ReviewRecord::new_ulid(),
+            timestamp: chrono::Utc::now(),
+            quorum_version: env!("CARGO_PKG_VERSION").to_string(),
+            repo,
+            invoked_from,
+            model: pipeline_cfg.models.first().cloned().unwrap_or_default(),
+            files_reviewed: opts.files.len() as u32,
+            lines_added: None,     // diff instrumentation: future work
+            lines_removed: None,
+            findings_by_severity: review_log::SeverityCounts::from_severities(sev_iter),
+            suppressed_by_rule: std::collections::HashMap::new(), // per-rule breakdown: future work
+            tokens_in: total_tokens_in,
+            tokens_out: total_tokens_out,
+            tokens_cache_read: 0,  // cache instrumentation: future work
+            duration_ms: review_duration.as_millis() as u64,
+            flags: review_log::Flags {
+                deep: opts.deep,
+                parallel_n: opts.parallel as u32,
+                ensemble: opts.ensemble,
+            },
+        };
+        if let Err(e) = review_log.record(&record) {
+            eprintln!("Warning: failed to write review log: {}", e);
+        }
     }
 
     // If all files had errors and no findings, exit with tool error
@@ -821,6 +925,28 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         println!("{}", output);
     }
     exit_code
+}
+
+#[cfg(test)]
+mod deep_tool_root_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn deep_tool_root_uses_files_project_root_not_cwd() {
+        // Create a fake project with a Cargo.toml marker and a source file.
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("proj");
+        let src = project.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let file = src.join("lib.rs");
+        std::fs::write(&file, "").unwrap();
+
+        // Helper must return project root, NOT current_dir.
+        let root = deep_tool_root(&file);
+        assert_eq!(root, project, "tool root should match file's project root");
+    }
 }
 
 #[cfg(test)]
