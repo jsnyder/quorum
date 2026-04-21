@@ -117,18 +117,52 @@ fn chunk_id_follows_source_path_symbol_format() {
 }
 
 #[test]
-fn line_range_points_at_symbol_not_doc_comment() {
+fn line_range_covers_doc_comments_when_present() {
     let src = "\
-/// doc\n\
+/// doc line 1\n\
+/// doc line 2\n\
 pub fn foo() {}\n\
 ";
-    // Line 1: /// doc
-    // Line 2: pub fn foo() {}
+    // Line 1: /// doc line 1
+    // Line 2: /// doc line 2
+    // Line 3: pub fn foo() {}
     let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
     assert_eq!(
-        chunks[0].metadata.line_range.start, 2,
-        "line_range.start should point at the signature, not the doc comment"
+        chunks[0].metadata.line_range.start, 1,
+        "line_range.start should cover the doc block when docs are the chunk's content"
     );
+    assert_eq!(chunks[0].metadata.line_range.end, 3);
+}
+
+#[test]
+fn line_range_points_at_signature_when_no_doc_comments() {
+    let src = "\
+\n\
+pub fn foo() {}\n\
+";
+    let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
+    assert_eq!(chunks[0].metadata.line_range.start, 2);
+}
+
+#[test]
+fn same_named_items_in_sibling_modules_are_both_extracted() {
+    let src = r#"
+mod a { pub fn foo() {} }
+mod b { pub fn foo() {} }
+"#;
+    let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
+    let foos: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.qualified_name.as_deref() == Some("foo"))
+        .collect();
+    assert_eq!(foos.len(), 2, "both sibling `foo`s must be preserved");
+    // Ids are disambiguated by byte_start when names collide.
+    assert_ne!(foos[0].id, foos[1].id);
+    assert!(foos[0].id.contains("@"));
+    assert!(foos[1].id.contains("@"));
+    // Each `foo` lists the OTHER `foo` as a neighbor.
+    assert!(foos[0].metadata.neighboring_symbols.contains(&"foo".to_string()));
+    assert!(foos[1].metadata.neighboring_symbols.contains(&"foo".to_string()));
 }
 
 #[test]

@@ -76,18 +76,20 @@ pub fn extract_rust(
             let end_line = (node.end_pos().line() as u32) + 1;
 
             // Collect preceding `///` doc comments (contiguous lines immediately above).
-            let doc = collect_preceding_doc_comments(src, byte_range.start);
+            let (doc, doc_start_line) = collect_preceding_doc_comments(src, byte_range.start);
 
-            let content = if doc.is_empty() {
-                signature.clone()
+            let (content, content_start_line) = if doc.is_empty() {
+                (signature.clone(), sig_start_line)
             } else {
-                doc
+                // line_range should cover doc comments since they are part of the chunk's content.
+                (doc, doc_start_line.unwrap_or(sig_start_line))
             };
 
             raw.push(ExtractedSymbol {
                 byte_start: byte_range.start,
                 name,
                 sig_start_line,
+                content_start_line,
                 end_line,
                 signature,
                 content,
@@ -98,24 +100,42 @@ pub fn extract_rust(
     // Stable order by byte offset.
     raw.sort_by_key(|s| s.byte_start);
 
-    // Defensive: dedupe by qualified_name, keeping the first occurrence.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    raw.retain(|s| seen.insert(s.name.clone()));
+    // Dedupe by (name, byte_start) so distinct items that happen to share a name
+    // (e.g. `foo` in two sibling modules) are both preserved.
+    let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
+    raw.retain(|s| seen.insert((s.name.clone(), s.byte_start)));
 
-    // Compute neighboring symbols (names of OTHER symbols in this file, in order).
-    let all_names: Vec<String> = raw.iter().map(|s| s.name.clone()).collect();
+    // Count name occurrences so we can disambiguate chunk ids when the same name
+    // appears more than once in a file.
+    let mut name_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for s in &raw {
+        *name_counts.entry(s.name.clone()).or_insert(0) += 1;
+    }
+
+    // Neighbor lookup keyed by (name, byte_start) so an item isn't listed in its
+    // own neighbors, but same-named siblings are.
+    let all_items: Vec<(String, usize)> =
+        raw.iter().map(|s| (s.name.clone(), s.byte_start)).collect();
 
     let chunks: Vec<Chunk> = raw
         .into_iter()
         .map(|s| {
-            let neighboring_symbols: Vec<String> = all_names
+            let self_key = (s.name.clone(), s.byte_start);
+            let neighboring_symbols: Vec<String> = all_items
                 .iter()
-                .filter(|n| **n != s.name)
-                .cloned()
+                .filter(|k| **k != self_key)
+                .map(|(n, _)| n.clone())
                 .collect();
 
+            let id = if name_counts.get(&s.name).copied().unwrap_or(1) > 1 {
+                format!("{source}:{source_path}:{}@{}", s.name, s.byte_start)
+            } else {
+                format!("{source}:{source_path}:{}", s.name)
+            };
+
             Chunk {
-                id: format!("{source}:{source_path}:{}", s.name),
+                id,
                 source: source.to_string(),
                 kind: ChunkKind::Symbol,
                 subtype: None,
@@ -125,7 +145,7 @@ pub fn extract_rust(
                 metadata: ChunkMeta {
                     source_path: source_path.to_string(),
                     line_range: LineRange {
-                        start: s.sig_start_line,
+                        start: s.content_start_line,
                         end: s.end_line,
                     },
                     commit_sha: commit_sha.to_string(),
@@ -150,7 +170,9 @@ pub fn extract_rust(
 struct ExtractedSymbol {
     byte_start: usize,
     name: String,
+    #[allow(dead_code)]
     sig_start_line: u32,
+    content_start_line: u32,
     end_line: u32,
     signature: String,
     content: String,
@@ -183,29 +205,29 @@ fn item_signature(item_text: &str) -> String {
 
 /// Walk backwards from `byte_start` collecting contiguous `///` doc-comment
 /// lines that immediately precede the symbol. Returns the joined comment text
-/// with leading `/// ` / `//!` markers stripped.
+/// (with leading `/// ` / `//!` markers stripped) and the 1-indexed line number
+/// where the doc block starts (`None` if no docs were found).
 ///
 /// Contiguity rule: lines must be adjacent (no blank line gap). Leading
 /// whitespace on each line is skipped.
-fn collect_preceding_doc_comments(src: &str, byte_start: usize) -> String {
+fn collect_preceding_doc_comments(src: &str, byte_start: usize) -> (String, Option<u32>) {
     // Find the start-of-line offset for byte_start.
     let prefix = &src[..byte_start];
     let mut cursor = prefix.rfind('\n').map(|n| n + 1).unwrap_or(0);
 
     // Walk upward one line at a time.
     let mut lines: Vec<&str> = Vec::new();
+    // Track the byte offset of the topmost doc-comment line we've accepted.
+    let mut doc_block_start_byte: Option<usize> = None;
     while cursor > 0 {
         // Previous line spans [prev_line_start, cursor - 1) (excluding the \n at cursor-1).
         let slice = &src[..cursor - 1]; // drop the trailing newline
         let prev_line_start = slice.rfind('\n').map(|n| n + 1).unwrap_or(0);
         let line = &src[prev_line_start..cursor - 1];
         let trimmed = line.trim_start();
-        if trimmed.starts_with("///") {
+        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
             lines.push(strip_doc_prefix(trimmed));
-            cursor = prev_line_start;
-        } else if trimmed.starts_with("//!") {
-            // Inner doc comments on module-level items: treat the same way.
-            lines.push(strip_doc_prefix(trimmed));
+            doc_block_start_byte = Some(prev_line_start);
             cursor = prev_line_start;
         } else {
             break;
@@ -213,7 +235,15 @@ fn collect_preceding_doc_comments(src: &str, byte_start: usize) -> String {
     }
 
     lines.reverse();
-    lines.join("\n")
+    let start_line = doc_block_start_byte.map(|b| byte_to_line_1indexed(src, b));
+    (lines.join("\n"), start_line)
+}
+
+/// Convert a byte offset to a 1-indexed line number by counting newlines before it.
+fn byte_to_line_1indexed(src: &str, byte_offset: usize) -> u32 {
+    let clamped = byte_offset.min(src.len());
+    let newlines = src[..clamped].bytes().filter(|b| *b == b'\n').count();
+    (newlines as u32) + 1
 }
 
 fn strip_doc_prefix(line: &str) -> &str {
