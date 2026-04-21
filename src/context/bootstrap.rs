@@ -27,10 +27,21 @@ use crate::calibrator::Calibrator;
 use crate::context::cli::SourceLayout;
 use crate::context::config::SourcesConfig;
 use crate::context::index::builder::ensure_vec_loaded;
-use crate::context::index::traits::{HashEmbedder, SystemClock};
+#[cfg(test)]
+use crate::context::index::traits::HashEmbedder;
+use crate::context::index::traits::SystemClock;
 use crate::context::inject::{ContextInjectionSource, ContextInjector, RetrieverFn};
 use crate::context::retrieve::{Filters, RetrievalQuery, Retriever, ScoredChunk};
 use crate::feedback::FeedbackEntry;
+
+/// Construct the production retrieval embedder. Delegates to the shared
+/// factory in `cli::new_prod_embedder` so reviews and `quorum context
+/// query` agree on the same fastembed-with-HashEmbedder-fallback policy
+/// — using two different factories would drift the two code paths and
+/// make a first-run `context query` succeed while reviews panic.
+fn build_retrieval_embedder() -> crate::context::cli::ProdEmbedder {
+    crate::context::cli::new_prod_embedder()
+}
 
 /// Build a production `ContextInjectionSource` from `<home>/sources.toml` and
 /// the associated per-source indexes.
@@ -82,7 +93,15 @@ pub fn build_production_injector(
     let db_path_owned = db_path;
     let src_for_filter = src_name.clone();
 
-    let retriever: Arc<RetrieverFn> =
+    // Initialize fastembed once; share the `Arc` across every retriever
+    // call. Model init is expensive (~1s) and per-review cost would
+    // dominate otherwise. Mutex inside `FastEmbedEmbedder` serializes
+    // actual inference, which is fine because reviews are sequential per
+    // file anyway.
+    let embedder = std::sync::Arc::new(build_retrieval_embedder());
+
+    let retriever: Arc<RetrieverFn> = {
+        let embedder = std::sync::Arc::clone(&embedder);
         Arc::new(move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
             // Every invocation is a fresh process-safe open; the vec0 hook
             // must be registered before `Connection::open*` or the vector
@@ -93,9 +112,8 @@ pub fn build_production_injector(
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                     | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             )?;
-            let embedder = HashEmbedder::new(384);
             let clock = SystemClock;
-            let retriever = Retriever::new(&conn, &embedder, &clock);
+            let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
             // Constrain to the specific source we picked so multi-source
             // layouts don't accidentally leak hits from other indexes.
             let mut q = q.clone();
@@ -104,7 +122,8 @@ pub fn build_production_injector(
                 kinds: q.filters.kinds,
             };
             retriever.query(q)
-        });
+        })
+    };
 
     let calibrator = Calibrator::from_feedback(cfg.context.inject_min_score, feedback);
     let injector = ContextInjector::new(&cfg, retriever).with_calibrator(Arc::new(calibrator));

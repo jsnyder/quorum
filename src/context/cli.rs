@@ -24,7 +24,50 @@ use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesCon
 use crate::context::extract::dispatch::{extract_source, ExtractConfig};
 use crate::context::index::builder::{ensure_vec_loaded, IndexBuilder};
 use crate::context::index::state::IndexState;
-use crate::context::index::traits::{Clock, Embedder, HashEmbedder, SystemClock};
+#[cfg(feature = "embeddings")]
+use crate::context::index::traits::FastEmbedEmbedder;
+use crate::context::index::traits::HashEmbedder;
+use crate::context::index::traits::{Clock, Embedder, SystemClock};
+
+/// Production-mode embedder. Usually backed by fastembed's
+/// bge-small-en-v1.5 (384-dim); falls back to HashEmbedder when fastembed
+/// initialization fails (e.g., no network on first run to download the
+/// ONNX model) so reviews still run, degraded to BM25-only retrieval.
+///
+/// The enum dispatch costs one match per call, which is negligible next
+/// to ONNX inference. Keeping both variants behind a single public type
+/// lets `ContextDeps::Embedder` stay a concrete type (required by the
+/// trait's associated-type contract) while still permitting graceful
+/// fallback at runtime.
+pub enum ProdEmbedder {
+    #[cfg(feature = "embeddings")]
+    Fast(FastEmbedEmbedder),
+    Hash(HashEmbedder),
+}
+
+impl Embedder for ProdEmbedder {
+    fn dim(&self) -> usize {
+        match self {
+            #[cfg(feature = "embeddings")]
+            Self::Fast(e) => e.dim(),
+            Self::Hash(e) => e.dim(),
+        }
+    }
+    fn embed(&self, text: &str) -> Vec<f32> {
+        match self {
+            #[cfg(feature = "embeddings")]
+            Self::Fast(e) => e.embed(text),
+            Self::Hash(e) => e.embed(text),
+        }
+    }
+    fn model_hash(&self) -> String {
+        match self {
+            #[cfg(feature = "embeddings")]
+            Self::Fast(e) => e.model_hash(),
+            Self::Hash(e) => e.model_hash(),
+        }
+    }
+}
 use crate::context::inject::stale::{GitOps, SystemGit};
 use crate::context::retrieve::{Filters, RetrievalQuery, Retriever};
 use crate::context::store::ChunkStore;
@@ -70,7 +113,7 @@ pub trait ContextDeps {
 pub struct ProdDeps {
     git: SystemGit,
     clock: SystemClock,
-    embedder: HashEmbedder,
+    embedder: ProdEmbedder,
     home_dir: PathBuf,
 }
 
@@ -81,10 +124,7 @@ impl ProdDeps {
         Self {
             git: SystemGit,
             clock: SystemClock,
-            // Placeholder dimension matches the production fastembed
-            // bge-small-en-v1.5 dim so the index schema doesn't change when
-            // we swap this for the real embedder in Task 7.3.
-            embedder: HashEmbedder::new(384),
+            embedder: new_prod_embedder(),
             home_dir,
         }
     }
@@ -103,10 +143,37 @@ impl ProdDeps {
     }
 }
 
+/// Construct the production embedder. Fastembed can fail on first run
+/// (model download needs network) — we log a warning and fall back to
+/// HashEmbedder so reviews still execute. BM25 retrieval still works
+/// in the fallback; only the vector-similarity leg is degraded.
+pub(crate) fn new_prod_embedder() -> ProdEmbedder {
+    #[cfg(feature = "embeddings")]
+    {
+        match FastEmbedEmbedder::new() {
+            Ok(e) => ProdEmbedder::Fast(e),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "fastembed init failed; falling back to HashEmbedder (BM25-only retrieval)"
+                );
+                // HashEmbedder dim must match what's persisted in the
+                // index's `chunks_vec` schema — 384-dim to align with
+                // the production fastembed model.
+                ProdEmbedder::Hash(HashEmbedder::new(384))
+            }
+        }
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        ProdEmbedder::Hash(HashEmbedder::new(384))
+    }
+}
+
 impl ContextDeps for ProdDeps {
     type Git = SystemGit;
     type Clock = SystemClock;
-    type Embedder = HashEmbedder;
+    type Embedder = ProdEmbedder;
 
     fn git(&self) -> &Self::Git {
         &self.git

@@ -109,3 +109,58 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     }
     h
 }
+
+/// Production embedder backed by fastembed's bge-small-en-v1.5 (384-dim).
+///
+/// `fastembed::TextEmbedding::embed` takes `&mut self`, but the `Embedder`
+/// trait requires `&self + Send + Sync` so it can be shared across the
+/// pipeline. We serialize access with a `Mutex`; inference is CPU-bound
+/// and batched at a higher layer (`IndexBuilder::rebuild_from_jsonl`), so
+/// the lock is not on the hot retrieval path for reviews — only during
+/// indexing and the per-query embed in `RetrieverFn`, which happens once
+/// per review.
+#[cfg(feature = "embeddings")]
+pub struct FastEmbedEmbedder {
+    inner: std::sync::Mutex<crate::embeddings::LocalEmbedder>,
+}
+
+#[cfg(feature = "embeddings")]
+impl FastEmbedEmbedder {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: std::sync::Mutex::new(crate::embeddings::LocalEmbedder::new()?),
+        })
+    }
+}
+
+#[cfg(feature = "embeddings")]
+impl Embedder for FastEmbedEmbedder {
+    fn dim(&self) -> usize {
+        // BGE-small-en-v1.5 is fixed at 384 dimensions.
+        384
+    }
+
+    fn embed(&self, text: &str) -> Vec<f32> {
+        // Fall back to a zero vector on failure: the index is still
+        // usable via BM25 alone, so a transient embed error shouldn't
+        // crash the review. A persistent failure is obvious downstream
+        // (every vec0 query returns degenerate similarities).
+        match self.inner.lock() {
+            Ok(mut m) => m.embed(text).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "fastembed embed failed; returning zero vector");
+                vec![0.0; self.dim()]
+            }),
+            Err(_) => {
+                tracing::warn!("fastembed mutex poisoned; returning zero vector");
+                vec![0.0; self.dim()]
+            }
+        }
+    }
+
+    fn model_hash(&self) -> String {
+        // Matching this string against the one persisted in `state.json`
+        // drives the re-embed check in `IndexBuilder::requires_reembedding`.
+        // Bump the suffix when we change embedding models.
+        "fastembed-bge-small-en-v1.5-384".into()
+    }
+}
