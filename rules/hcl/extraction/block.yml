@@ -1,0 +1,4 @@
+id: hcl-block
+language: Hcl
+rule:
+  kind: block
