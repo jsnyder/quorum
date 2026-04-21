@@ -123,7 +123,7 @@ kind = "rust"
     assert_eq!(config.context.rerank_recency_halflife_days, 90);
     assert!((config.context.rerank_recency_floor - 0.25).abs() < f32::EPSILON);
     assert_eq!(config.context.max_source_size_mb, 200);
-    assert_eq!(config.context.auto_inject, true);
+    assert!(config.context.auto_inject);
 }
 
 #[test]
