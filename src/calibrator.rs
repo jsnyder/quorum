@@ -22,6 +22,11 @@ pub struct CalibratorConfig {
     pub boost_tp: bool,
     /// Whether to include auto-calibrate feedback in precedent matching
     pub use_auto_feedback: bool,
+    /// Number of `Verdict::ContextMisleading` confirmations after which a
+    /// chunk's injection threshold is sealed at `f32::INFINITY` (fully
+    /// suppressed). Each prior confirmation raises the threshold linearly
+    /// from the global floor toward 1.0.
+    pub inject_suppress_after: u32,
 }
 
 impl Default for CalibratorConfig {
@@ -31,6 +36,7 @@ impl Default for CalibratorConfig {
             embedding_similarity_threshold: 0.72,
             boost_tp: true,
             use_auto_feedback: true,
+            inject_suppress_after: 3,
         }
     }
 }
@@ -511,6 +517,88 @@ fn word_jaccard(a: &str, b: &str) -> f64 {
     let intersection = words_a.intersection(&words_b).count() as f64;
     let union = words_a.union(&words_b).count() as f64;
     if union == 0.0 { 0.0 } else { intersection / union }
+}
+
+// ---------------------------------------------------------------------------
+// Per-chunk injection threshold escalation (Task 8.3)
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+
+/// Stateful calibrator that tracks per-chunk ContextMisleading confirmations
+/// and escalates the retrieval injection threshold accordingly.
+///
+/// This is a new, retrieval-focused companion to the existing free-function
+/// `calibrate`/`calibrate_with_index` API; those paths are intentionally
+/// untouched. The retriever (Task 8.4) consults
+/// [`Calibrator::injection_threshold_for`] before deciding whether to inject a
+/// chunk. Each `Verdict::ContextMisleading` entry naming a chunk_id raises its
+/// threshold linearly; after `inject_suppress_after` confirmations the chunk
+/// is sealed at `f32::INFINITY` (fully suppressed).
+#[derive(Debug, Clone)]
+pub struct Calibrator {
+    inject_floor: f32,
+    inject_suppress_after: u32,
+    misleading_counts: HashMap<String, u32>,
+}
+
+impl Calibrator {
+    /// Build a Calibrator with the global inject floor (typically
+    /// `ContextConfig::inject_min_score`) and the default suppression budget
+    /// (`CalibratorConfig::default().inject_suppress_after`).
+    pub fn new(inject_floor: f32) -> Self {
+        let defaults = CalibratorConfig::default();
+        Self {
+            inject_floor,
+            inject_suppress_after: defaults.inject_suppress_after,
+            misleading_counts: HashMap::new(),
+        }
+    }
+
+    /// Build a Calibrator and seed its per-chunk misleading index from a
+    /// feedback-store snapshot. Every `Verdict::ContextMisleading` entry
+    /// contributes one confirmation per blamed chunk_id.
+    pub fn from_feedback(inject_floor: f32, feedback: &[FeedbackEntry]) -> Self {
+        let mut cal = Self::new(inject_floor);
+        for entry in feedback {
+            if let Verdict::ContextMisleading { blamed_chunk_ids } = &entry.verdict {
+                for chunk_id in blamed_chunk_ids {
+                    *cal.misleading_counts.entry(chunk_id.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        cal
+    }
+
+    /// Override the suppression budget (default 3).
+    pub fn with_suppress_after(mut self, n: u32) -> Self {
+        self.inject_suppress_after = n.max(1);
+        self
+    }
+
+    /// Record one ContextMisleading confirmation for `chunk_id`. Primarily for
+    /// tests; the production path rebuilds state via [`Self::from_feedback`].
+    pub(crate) fn record_misleading(&mut self, chunk_id: &str, _finding_title: &str) {
+        *self.misleading_counts.entry(chunk_id.to_string()).or_insert(0) += 1;
+    }
+
+    /// Return the effective injection threshold for `chunk_id`.
+    ///
+    /// - No confirmations -> global floor.
+    /// - `k` confirmations (`0 < k < N`) -> `floor + k * (1.0 - floor) / N`.
+    /// - `k >= N` -> `f32::INFINITY` (fully suppressed).
+    pub fn injection_threshold_for(&self, chunk_id: &str) -> f32 {
+        let k = self.misleading_counts.get(chunk_id).copied().unwrap_or(0);
+        let n = self.inject_suppress_after.max(1);
+        if k >= n {
+            return f32::INFINITY;
+        }
+        if k == 0 {
+            return self.inject_floor;
+        }
+        let step = (1.0 - self.inject_floor) / n as f32;
+        self.inject_floor + (k as f32) * step
+    }
 }
 
 #[cfg(test)]
@@ -1592,5 +1680,106 @@ mod tests {
         );
         assert_eq!(result.findings[0].severity, crate::finding::Severity::Medium,
             "metric-incompatible FPs must not downgrade severity");
+    }
+
+    // -- Per-chunk injection threshold escalation (Task 8.3) --
+
+    fn misleading_entry(chunk_ids: &[&str]) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "foo.rs".into(),
+            finding_title: "something that misled".into(),
+            finding_category: "context".into(),
+            verdict: Verdict::ContextMisleading {
+                blamed_chunk_ids: chunk_ids.iter().map(|s| s.to_string()).collect(),
+            },
+            reason: "misleading".into(),
+            model: Some("gpt-5.4".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+        }
+    }
+
+    #[test]
+    fn injection_threshold_is_global_floor_without_misleading_feedback() {
+        let cal = Calibrator::new(0.65);
+        assert!((cal.injection_threshold_for("never-seen") - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn threshold_rises_then_fully_suppresses_after_n_confirmations() {
+        let mut cal = Calibrator::new(0.65);
+        let id = "chunk-a";
+        assert!((cal.injection_threshold_for(id) - 0.65).abs() < 1e-6);
+
+        cal.record_misleading(id, "fp1");
+        assert!(cal.injection_threshold_for(id) > 0.65);
+        assert!(cal.injection_threshold_for(id).is_finite());
+
+        cal.record_misleading(id, "fp2");
+        assert!(cal.injection_threshold_for(id) > 0.65);
+        assert!(cal.injection_threshold_for(id).is_finite());
+
+        cal.record_misleading(id, "fp3");
+        assert!(
+            cal.injection_threshold_for(id).is_infinite(),
+            "third confirmation must seal chunk at INF (got {})",
+            cal.injection_threshold_for(id)
+        );
+    }
+
+    #[test]
+    fn threshold_uses_feedback_store_state_not_an_in_memory_counter() {
+        // No in-test calls to record_misleading: threshold escalation must
+        // come from the feedback snapshot supplied to the constructor.
+        let feedback = vec![
+            misleading_entry(&["chunk-a"]),
+            misleading_entry(&["chunk-a"]),
+        ];
+        let cal = Calibrator::from_feedback(0.65, &feedback);
+        let t = cal.injection_threshold_for("chunk-a");
+        assert!(t > 0.65 && t.is_finite(), "expected raised but finite, got {t}");
+
+        // One more confirmation in the store should seal it.
+        let mut feedback = feedback;
+        feedback.push(misleading_entry(&["chunk-a"]));
+        let cal = Calibrator::from_feedback(0.65, &feedback);
+        assert!(cal.injection_threshold_for("chunk-a").is_infinite());
+    }
+
+    #[test]
+    fn unrelated_chunk_ids_stay_at_the_global_floor() {
+        let feedback = vec![
+            misleading_entry(&["chunk-a"]),
+            misleading_entry(&["chunk-a"]),
+            misleading_entry(&["chunk-a"]),
+        ];
+        let cal = Calibrator::from_feedback(0.65, &feedback);
+        assert!(cal.injection_threshold_for("chunk-a").is_infinite());
+        assert!((cal.injection_threshold_for("chunk-b") - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn threshold_for_chunk_blamed_by_non_context_misleading_entry_is_unchanged() {
+        // A TP/FP/Wontfix verdict that happens to mention a chunk_id in its
+        // finding_title must not consult the misleading-escalation path.
+        let feedback = vec![
+            fb("chunk-a was flagged", "context", Verdict::Tp),
+            fb("chunk-a again",       "context", Verdict::Fp),
+            fb("chunk-a ignored",     "context", Verdict::Wontfix),
+        ];
+        let cal = Calibrator::from_feedback(0.65, &feedback);
+        assert!((cal.injection_threshold_for("chunk-a") - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn suppress_budget_is_configurable() {
+        let mut cal = Calibrator::new(0.65).with_suppress_after(5);
+        let id = "chunk-a";
+        for _ in 0..4 {
+            cal.record_misleading(id, "fp");
+            assert!(cal.injection_threshold_for(id).is_finite());
+        }
+        cal.record_misleading(id, "fp");
+        assert!(cal.injection_threshold_for(id).is_infinite());
     }
 }
