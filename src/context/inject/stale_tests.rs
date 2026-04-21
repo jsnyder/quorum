@@ -44,12 +44,12 @@ fn timestamp_returns_none_for_clean_repo() {
     let clock = now_fixed();
     let git = FakeGit { dirty: false };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::hours(1));
     assert!(annotator.annotate(&chunk).is_none());
 }
@@ -59,12 +59,12 @@ fn timestamp_returns_some_for_dirty_local_chunk() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::hours(2));
     let msg = annotator.annotate(&chunk).expect("expected staleness");
     assert!(msg.contains("source has edits"), "msg: {msg}");
@@ -76,12 +76,12 @@ fn timestamp_returns_none_for_non_current_source() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("registry-foo", clock.now() - Duration::hours(2));
     assert!(annotator.annotate(&chunk).is_none());
 }
@@ -90,12 +90,12 @@ fn timestamp_returns_none_for_non_current_source() {
 fn timestamp_returns_none_when_no_current_source() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
-    let annotator = TimestampStaleness {
-        current_source: None,
-        current_source_root: None,
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        None,
+        None,
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::hours(2));
     assert!(annotator.annotate(&chunk).is_none());
 }
@@ -105,12 +105,12 @@ fn format_age_renders_days() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::days(3));
     let msg = annotator.annotate(&chunk).unwrap();
     assert!(msg.contains("3d"), "msg: {msg}");
@@ -121,12 +121,12 @@ fn format_age_renders_just_now_under_one_minute() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::seconds(30));
     let msg = annotator.annotate(&chunk).unwrap();
     assert!(msg.contains("just now"), "msg: {msg}");
@@ -137,12 +137,12 @@ fn format_age_renders_singular_units() {
     let clock = now_fixed();
     let git = FakeGit { dirty: true };
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
 
     let chunk_hr = chunk_with("local", clock.now() - Duration::hours(1));
     let msg_hr = annotator.annotate(&chunk_hr).unwrap();
@@ -166,12 +166,12 @@ fn git_error_is_swallowed_returning_none() {
     let clock = now_fixed();
     let git = FailingGit;
     let root = PathBuf::from("/tmp/repo");
-    let annotator = TimestampStaleness {
-        current_source: Some("local"),
-        current_source_root: Some(root.as_path()),
-        git: &git,
-        clock: &clock,
-    };
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
     let chunk = chunk_with("local", clock.now() - Duration::hours(2));
     assert!(annotator.annotate(&chunk).is_none());
 }
@@ -190,4 +190,38 @@ fn system_git_implements_trait_without_compile_errors() {
     let git = SystemGit;
     let _ = git.has_local_changes(&tmp);
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+struct CountingGit {
+    dirty: bool,
+    calls: std::cell::Cell<usize>,
+}
+
+impl GitOps for CountingGit {
+    fn has_local_changes(&self, _: &Path) -> std::io::Result<bool> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(self.dirty)
+    }
+}
+
+#[test]
+fn timestamp_calls_git_status_only_once_per_annotator() {
+    let clock = now_fixed();
+    let git = CountingGit { dirty: true, calls: std::cell::Cell::new(0) };
+    let root = PathBuf::from("/tmp/repo");
+    let annotator = TimestampStaleness::new(
+        Some("local"),
+        Some(root.as_path()),
+        &git,
+        &clock,
+    );
+    for _ in 0..5 {
+        let chunk = chunk_with("local", clock.now() - Duration::hours(1));
+        assert!(annotator.annotate(&chunk).is_some());
+    }
+    assert_eq!(
+        git.calls.get(),
+        1,
+        "has_local_changes must be memoized per annotator instance"
+    );
 }

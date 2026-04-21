@@ -4,7 +4,7 @@
 //! The chunk.id tail-breaker ensures determinism when the same source emits
 //! two chunks with the same qualified_name (e.g. shadowed definitions).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::context::retrieve::ScoredChunk;
 
@@ -88,7 +88,9 @@ pub fn resolve_precedence(
     let mut log = PrecedenceLog::new();
 
     // First pass: group indices by qualified_name. Skip None (always kept).
-    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    // BTreeMap keeps group iteration deterministic so the PrecedenceLog entry
+    // order matches sorted qualified_name regardless of hasher state.
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, c) in chunks.iter().enumerate() {
         if let Some(qname) = c.chunk.qualified_name.as_ref() {
             groups.entry(qname.clone()).or_default().push(idx);
@@ -182,8 +184,8 @@ fn reason_for(winner: &ScoredChunk, loser: &ScoredChunk, weights: &SourceWeights
     if wi != li {
         return format!(
             "indexed {} > {}",
-            wi.format("%Y-%m-%d"),
-            li.format("%Y-%m-%d")
+            wi.format("%Y-%m-%dT%H:%M:%SZ"),
+            li.format("%Y-%m-%dT%H:%M:%SZ")
         );
     }
     if winner.chunk.source != loser.chunk.source {

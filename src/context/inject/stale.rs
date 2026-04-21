@@ -4,6 +4,7 @@
 //! can surface a short freshness warning. The `StalenessAnnotator` trait is
 //! the extension point; two implementations ship here.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use crate::context::index::traits::Clock;
@@ -70,11 +71,43 @@ impl GitOps for FakeGit {
 /// Annotator that uses git status + chunk indexed_at to detect staleness.
 /// Only annotates chunks whose source matches `current_source` (the local
 /// repo we're reviewing); registry sources (other checkouts) aren't flagged.
+///
+/// `git status` is invoked at most once per annotator instance: the first
+/// call caches the result in `dirty_cache`, and every subsequent `annotate`
+/// reuses it. Construct a new annotator per rendering pass to re-probe.
 pub struct TimestampStaleness<'a, G: GitOps> {
     pub current_source: Option<&'a str>,
     pub current_source_root: Option<&'a Path>,
     pub git: &'a G,
     pub clock: &'a dyn Clock,
+    #[doc(hidden)]
+    pub dirty_cache: RefCell<Option<Option<bool>>>,
+}
+
+impl<'a, G: GitOps> TimestampStaleness<'a, G> {
+    pub fn new(
+        current_source: Option<&'a str>,
+        current_source_root: Option<&'a Path>,
+        git: &'a G,
+        clock: &'a dyn Clock,
+    ) -> Self {
+        Self {
+            current_source,
+            current_source_root,
+            git,
+            clock,
+            dirty_cache: RefCell::new(None),
+        }
+    }
+
+    fn cached_dirty(&self, root: &Path) -> Option<bool> {
+        if let Some(cached) = *self.dirty_cache.borrow() {
+            return cached;
+        }
+        let result = self.git.has_local_changes(root).ok();
+        *self.dirty_cache.borrow_mut() = Some(result);
+        result
+    }
 }
 
 impl<'a, G: GitOps> StalenessAnnotator for TimestampStaleness<'a, G> {
@@ -84,7 +117,7 @@ impl<'a, G: GitOps> StalenessAnnotator for TimestampStaleness<'a, G> {
             return None;
         }
         let root = self.current_source_root?;
-        let dirty = self.git.has_local_changes(root).ok()?;
+        let dirty = self.cached_dirty(root)?;
         if !dirty {
             return None;
         }

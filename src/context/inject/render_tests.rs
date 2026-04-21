@@ -449,3 +449,46 @@ fn multiple_cards_separated_by_blank_lines() {
         total - 1
     );
 }
+
+#[test]
+fn symbol_fence_survives_triple_backticks_in_content() {
+    let content = "fn show() { let s = \"```rust\\nhi\\n```\"; }";
+    let chunk = scored(
+        "s1",
+        "s",
+        ChunkKind::Symbol,
+        Some("show"),
+        content,
+        "rust",
+        "src/x.rs",
+        1,
+        3,
+        "abc1234deadbeef",
+    );
+    let plan = plan_with(vec![chunk], 10);
+    let out = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
+    assert!(
+        out.contains("````rust"),
+        "fence must be longer than any backtick run in body: {out}"
+    );
+    let closing = out.matches("````").count();
+    assert!(closing >= 2, "expected matched ```` fence pair: {out}");
+}
+
+#[test]
+fn short_sha_does_not_panic_on_non_ascii_sha() {
+    let chunk = scored(
+        "s1",
+        "s",
+        ChunkKind::Symbol,
+        Some("x"),
+        "fn x() {}",
+        "rust",
+        "src/x.rs",
+        1,
+        1,
+        "ééééééé_more",
+    );
+    let plan = plan_with(vec![chunk], 2);
+    let _ = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
+}

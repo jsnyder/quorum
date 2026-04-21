@@ -224,3 +224,42 @@ fn duplicate_qname_across_same_source_is_a_no_conflict() {
     // chunk.id asc fallback: "chunk_a" < "chunk_b".
     assert_eq!(kept[0].chunk.id, "chunk_a");
 }
+
+#[test]
+fn precedence_log_entries_ordered_by_qualified_name() {
+    let weights = SourceWeights::new([("A".into(), 10), ("B".into(), 1)]);
+    let ts = t("2025-01-01T00:00:00Z");
+    let input = vec![
+        scored("1", "A", Some("zeta"), ts, 0.9),
+        scored("2", "B", Some("zeta"), ts, 0.9),
+        scored("3", "A", Some("alpha"), ts, 0.9),
+        scored("4", "B", Some("alpha"), ts, 0.9),
+        scored("5", "A", Some("mu"), ts, 0.9),
+        scored("6", "B", Some("mu"), ts, 0.9),
+    ];
+    let (_, log) = resolve_precedence(input, &weights);
+    let names: Vec<_> = log.entries().iter().map(|e| e.qualified_name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["alpha", "mu", "zeta"],
+        "precedence log must iterate qualified_names in sorted order"
+    );
+}
+
+#[test]
+fn indexed_at_reason_distinguishes_same_day_timestamps() {
+    let weights = SourceWeights::default();
+    let earlier = t("2026-04-21T08:00:00Z");
+    let later = t("2026-04-21T18:30:00Z");
+    let input = vec![
+        scored("1", "A", Some("f"), earlier, 0.9),
+        scored("2", "A", Some("f"), later, 0.9),
+    ];
+    let (_, log) = resolve_precedence(input, &weights);
+    let reason = &log.entries()[0].reason;
+    assert!(reason.starts_with("indexed "), "reason: {reason}");
+    assert!(
+        reason.contains("T18:30:00Z") && reason.contains("T08:00:00Z"),
+        "reason must include time-of-day: {reason}"
+    );
+}

@@ -77,12 +77,13 @@ fn render_card(
 
     match chunk.kind {
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let _ = writeln!(out, "```{lang}");
+            let fence = fence_for(&chunk.content);
+            let _ = writeln!(out, "{fence}{lang}");
             out.push_str(&chunk.content);
             if !chunk.content.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str("```\n");
+            let _ = writeln!(out, "{fence}");
         }
         ChunkKind::Doc => {
             let demoted = demote_h2(&chunk.content);
@@ -133,11 +134,33 @@ fn render_footer(out: &mut String, plan: &InjectionPlan, precedence: &Precedence
 }
 
 fn short_sha(sha: &str) -> &str {
-    if sha.len() >= 7 {
-        &sha[..7]
-    } else {
-        sha
+    // Walk by char boundary so the slice is always valid, even if a caller
+    // ever hands us a non-ASCII string (SHAs are hex, but the function is
+    // cheap to make robust).
+    match sha.char_indices().nth(7) {
+        Some((idx, _)) => &sha[..idx],
+        None => sha,
     }
+}
+
+/// Pick a fence length longer than any run of backticks appearing in `body`.
+/// Markdown requires the closing fence to be at least as long as the opening,
+/// and treats shorter runs inside as literal content.
+fn fence_for(body: &str) -> String {
+    let mut max_run = 0usize;
+    let mut cur = 0usize;
+    for ch in body.chars() {
+        if ch == '`' {
+            cur += 1;
+            if cur > max_run {
+                max_run = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    let len = max_run.max(2) + 1;
+    "`".repeat(len)
 }
 
 /// Demote `## ` headers to `#### ` on a line-by-line basis so doc h2s don't
