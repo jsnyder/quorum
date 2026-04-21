@@ -452,18 +452,24 @@ fn telemetry_counts_chunks_suppressed_by_calibrator() {
     let harness = build_harness("mini-rust");
     let sources = sources_config("mini-rust", 50, true);
 
-    // Baseline: measure how many chunks the retriever returns for this
-    // query. Every one of them will be sealed by the calibrator, so the
-    // gated injector's `suppressed_by_calibrator` must equal this count.
+    // Baseline: capture the chunk IDs that make it through plan filtering
+    // (these are the ones that would actually be injected on a normal run).
+    // We seal exactly those IDs in the calibrator; every one of them must
+    // then be dropped at the gate, so suppressed_by_calibrator >= the
+    // sealed count. Telemetry only exposes injected IDs (not the full
+    // retrieved set), so this is the tightest assertion we can make without
+    // plumbing additional state through the injector.
     let baseline = ContextInjector::new(&sources, retriever_closure(&harness));
     let baseline_outcome = baseline.inject(&verify_token_request());
-    let retrieved = baseline_outcome.telemetry.retrieved_chunk_count;
-    assert!(retrieved > 0, "baseline must return at least one chunk");
-    let retrieved_ids: Vec<String> = baseline_outcome.telemetry.injected_chunk_ids.clone();
+    assert!(
+        baseline_outcome.telemetry.retrieved_chunk_count > 0,
+        "baseline must return at least one chunk"
+    );
+    let sealed_ids: Vec<String> = baseline_outcome.telemetry.injected_chunk_ids.clone();
+    assert!(!sealed_ids.is_empty(), "baseline must inject >= 1 chunk");
 
-    // Seal every id returned in the baseline.
     let mut cal = Calibrator::new(sources.context.inject_min_score);
-    for id in &retrieved_ids {
+    for id in &sealed_ids {
         cal.record_misleading(id, "seal");
         cal.record_misleading(id, "seal");
         cal.record_misleading(id, "seal");
@@ -473,15 +479,13 @@ fn telemetry_counts_chunks_suppressed_by_calibrator() {
         .with_calibrator(Arc::new(cal));
     let gated_outcome = gated.inject(&verify_token_request());
 
-    // Sealed chunks are dropped -> suppressed_by_calibrator counts them.
-    // `retrieved` is an upper bound because some retrieved chunks may not
-    // be among `retrieved_ids` (they survived plan filtering), but all
-    // dropped chunks were sealed.
+    // Every sealed chunk that was retrieved is suppressed at the gate, so
+    // `suppressed_by_calibrator` must be at least the sealed-id count.
     assert!(
-        gated_outcome.telemetry.suppressed_by_calibrator as usize >= retrieved_ids.len(),
+        gated_outcome.telemetry.suppressed_by_calibrator as usize >= sealed_ids.len(),
         "suppressed_by_calibrator ({}) must be >= sealed-id count ({})",
         gated_outcome.telemetry.suppressed_by_calibrator,
-        retrieved_ids.len()
+        sealed_ids.len()
     );
 }
 

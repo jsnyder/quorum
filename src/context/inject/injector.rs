@@ -191,9 +191,10 @@ impl ContextInjectionSource for ContextInjector {
         // chunks the operator has already flagged as misleading.
         let hits = if let Some(cal) = self.calibrator.as_ref() {
             let before = hits.len();
+            let floor = self.context.inject_min_score;
             let kept: Vec<ScoredChunk> = hits
                 .into_iter()
-                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id))
+                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id).max(floor))
                 .collect();
             tele.suppressed_by_calibrator = (before - kept.len()) as u32;
             kept
@@ -272,5 +273,110 @@ impl std::fmt::Debug for ContextInjector {
             .field("auto_inject", &self.context.auto_inject)
             .field("k", &self.k)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calibrator::Calibrator;
+    use crate::context::retrieve::ScoreBreakdown;
+    use crate::context::types::{Chunk, ChunkMeta, LineRange, Provenance};
+
+    fn mk_chunk(id: &str) -> Chunk {
+        Chunk {
+            id: id.into(),
+            source: "src".into(),
+            kind: ChunkKind::Symbol,
+            subtype: None,
+            qualified_name: Some(id.into()),
+            signature: None,
+            content: "fn foo() { bar() }".repeat(40),
+            metadata: ChunkMeta {
+                source_path: "x.rs".into(),
+                line_range: LineRange::new(1, 1).unwrap(),
+                commit_sha: "c".into(),
+                indexed_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+                source_version: None,
+                language: Some("rust".into()),
+                is_exported: true,
+                neighboring_symbols: vec![],
+            },
+            provenance: Provenance::new("test", 0.9, "x.rs").unwrap(),
+        }
+    }
+
+    fn scored(id: &str, score: f32) -> ScoredChunk {
+        ScoredChunk {
+            chunk: mk_chunk(id),
+            score,
+            components: ScoreBreakdown {
+                bm25_norm: 0.0,
+                vec_norm: 0.0,
+                id_boost: 0.0,
+                path_boost: 0.0,
+                recency_mul: 1.0,
+                score,
+            },
+        }
+    }
+
+    fn ctx_with_min_score(min_score: f32) -> ContextConfig {
+        ContextConfig {
+            auto_inject: true,
+            inject_budget_tokens: 2000,
+            inject_min_score: min_score,
+            inject_max_chunks: 4,
+            rerank_recency_halflife_days: 90,
+            rerank_recency_floor: 0.25,
+            max_source_size_mb: 100,
+            ignore: vec![],
+        }
+    }
+
+    fn injector_with(
+        min_score: f32,
+        cal: Calibrator,
+        hit_score: f32,
+    ) -> (ContextInjector, InjectionRequest) {
+        let sources = SourcesConfig {
+            sources: vec![],
+            context: ctx_with_min_score(min_score),
+        };
+        let retriever: Arc<RetrieverFn> =
+            Arc::new(move |_q| Ok(vec![scored("chunk-a", hit_score)]));
+        let injector = ContextInjector::new(&sources, retriever).with_calibrator(Arc::new(cal));
+        let req = InjectionRequest {
+            file_path: "x.rs".into(),
+            language: Some("rust".into()),
+            identifiers: vec!["foo".into()],
+            text: "foo bar".into(),
+        };
+        (injector, req)
+    }
+
+    #[test]
+    fn gate_applies_config_min_score_when_calibrator_floor_is_lower() {
+        // Calibrator floor = 0.0 (no confirmations -> threshold 0.0), but the
+        // configured inject_min_score is 0.5. A chunk scoring 0.3 must be
+        // suppressed by the gate (not just later by plan filtering) so the
+        // telemetry correctly attributes the drop to the calibrator tier.
+        let (injector, req) = injector_with(0.5, Calibrator::new(0.0), 0.3);
+        let out = injector.inject(&req);
+        assert_eq!(
+            out.telemetry.suppressed_by_calibrator, 1,
+            "config min_score must be enforced at the calibrator gate"
+        );
+        assert!(out.rendered.is_none());
+    }
+
+    #[test]
+    fn gate_keeps_chunk_scoring_above_both_floors() {
+        // Chunk score 0.7 exceeds both the config min_score (0.5) and the
+        // calibrator-derived threshold (0.0) -> must not be suppressed by
+        // the gate.
+        let (injector, req) = injector_with(0.5, Calibrator::new(0.0), 0.7);
+        let out = injector.inject(&req);
+        assert_eq!(out.telemetry.suppressed_by_calibrator, 0);
     }
 }
