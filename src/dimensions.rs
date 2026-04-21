@@ -272,8 +272,15 @@ pub fn aggregate_by_source(records: &[ReviewRecord]) -> Vec<ContextDimensionSlic
     let mut buckets: HashMap<String, Vec<&ReviewRecord>> = HashMap::new();
     for r in records {
         if !r.context.injector_available { continue; }
+        // Defensive dedup: the injector already dedups injected_sources,
+        // but legacy or externally-written records could contain
+        // duplicates. Counting the same review twice in the same source
+        // bucket would inflate n_reviews.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for src in &r.context.injected_sources {
-            buckets.entry(src.clone()).or_default().push(r);
+            if seen.insert(src.as_str()) {
+                buckets.entry(src.clone()).or_default().push(r);
+            }
         }
     }
     let mut out: Vec<_> = buckets
@@ -631,6 +638,28 @@ mod tests {
         assert!((rust.avg_injected_chunk_count - 3.0).abs() < 1e-9);
         // avg tokens mini-py = (200+50)/2 = 125
         assert!((py.avg_injected_tokens - 125.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn by_source_defensively_dedups_duplicate_source_entries_in_a_single_record() {
+        // Legacy / externally-written record where injected_sources has
+        // duplicates must not count the same review twice in one bucket.
+        let records = vec![ctx_rec(
+            "r",
+            true,
+            &["mini-rust", "mini-rust", "mini-rust"],
+            2,
+            100,
+            false,
+            false,
+            Some("h"),
+        )];
+        let slices = aggregate_by_source(&records);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(
+            slices[0].n_reviews, 1,
+            "one review must be counted once even with duplicated source names"
+        );
     }
 
     #[test]
