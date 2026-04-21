@@ -263,3 +263,62 @@ else:
     assert!(foos[0].id.contains('@'));
     assert!(foos[1].id.contains('@'));
 }
+
+#[test]
+fn docstring_only_from_first_statement() {
+    // A bare string that is NOT the first statement is not a docstring.
+    let src = "\
+def foo():
+    x = 1
+    \"not a docstring\"
+    return x
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let foo = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("foo"))
+        .expect("foo not extracted");
+    assert!(
+        !foo.content.contains("not a docstring"),
+        "content should not include a non-first-statement string: {:?}",
+        foo.content
+    );
+    // Content should just be the signature in this case.
+    assert!(foo.content.contains("def foo()"), "content = {:?}", foo.content);
+}
+
+#[test]
+fn signature_survives_colon_in_string_default() {
+    let src = "\
+def foo(x: str = \"a:b\"):
+    pass
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let foo = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("foo"))
+        .expect("foo not extracted");
+    let sig = foo.signature.as_ref().unwrap();
+    assert!(
+        sig.contains("\"a:b\""),
+        "signature should preserve colon inside string default: {sig}"
+    );
+    assert!(sig.contains("def foo"), "signature was: {sig}");
+}
+
+#[test]
+fn signature_survives_colon_in_triple_quoted_default() {
+    // A triple-quoted default string spanning a colon must not truncate.
+    let src = "def foo(x: str = \"\"\"a:b\"\"\"):\n    pass\n";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let foo = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("foo"))
+        .expect("foo not extracted");
+    let sig = foo.signature.as_ref().unwrap();
+    assert!(
+        sig.contains("a:b"),
+        "triple-quoted default was truncated: {sig}"
+    );
+}
+
