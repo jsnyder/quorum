@@ -58,11 +58,61 @@ async fn main() -> anyhow::Result<()> {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             let home_path = std::path::PathBuf::from(&home);
 
-            // Dimensional views (by-repo / by-caller / rolling) read reviews.jsonl
-            // and aggregate via the `dimensions` module. Three output modes:
-            // JSON (pipe/--json), compact (CLAUDE_CODE/--compact), human (TTY).
-            let want_dimensional = opts.by_repo || opts.by_caller || opts.rolling.is_some();
-            if want_dimensional {
+            // Dimensional views read reviews.jsonl and aggregate via the
+            // `dimensions` module. Classic dims: --by-repo/--by-caller/--rolling.
+            // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
+            // Context dims compose with --rolling by restricting aggregation to
+            // the chronologically-last N records.
+            let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
+            let want_classic_dim = !want_context_dim
+                && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
+
+            if want_context_dim {
+                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let all_records = log.load_all().unwrap_or_default();
+                let records: Vec<_> = match opts.rolling {
+                    Some(n) if n < all_records.len() => {
+                        all_records[all_records.len() - n..].to_vec()
+                    }
+                    _ => all_records.clone(),
+                };
+
+                let (mode, slices) = if opts.by_source {
+                    ("by-source", dimensions::aggregate_by_source(&records))
+                } else if opts.by_reviewed_repo {
+                    ("by-reviewed-repo", dimensions::aggregate_by_reviewed_repo(&records))
+                } else {
+                    ("misleading", dimensions::aggregate_misleading(&records))
+                };
+
+                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let use_compact = output::should_use_compact(opts.compact);
+                let use_json = opts.json || (is_pipe && !use_compact);
+
+                if use_json {
+                    let meta = serde_json::json!({
+                        "min_sample": dimensions::MIN_SAMPLE,
+                        "total_reviews": all_records.len(),
+                        "windowed_reviews": records.len(),
+                        "rolling": opts.rolling,
+                    });
+                    let payload = serde_json::json!({
+                        "mode": mode,
+                        "slices": slices,
+                        "meta": meta,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else if use_compact {
+                    println!("{}", stats::format_context_dimension_compact(mode, &slices));
+                } else {
+                    let style = output::Style::detect(false);
+                    let unicode = unicode_ok();
+                    print!("{}", stats::format_context_dimension_table(mode, &slices, &style, unicode));
+                }
+                std::process::exit(0);
+            }
+
+            if want_classic_dim {
                 let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
                 let records = log.load_all().unwrap_or_default();
                 let (mode, slices) = if opts.by_repo {

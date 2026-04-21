@@ -50,6 +50,23 @@ pub struct StatsOpts {
     #[arg(long, value_parser = parse_rolling_n)]
     pub rolling: Option<usize>,
 
+    /// Group context-injection stats by injected source name.
+    /// Flattens `context.injected_sources`; reviews listing two sources
+    /// contribute to both rows.
+    #[arg(long)]
+    pub by_source: bool,
+
+    /// Group context-injection stats by repo, restricted to reviews
+    /// where an injector was wired (`injector_available = true`).
+    #[arg(long)]
+    pub by_reviewed_repo: bool,
+
+    /// Count reviews with misleading context telemetry: retriever
+    /// errors and "phantom" injections (rendered block recorded but
+    /// zero chunks). Produces a 3-row breakdown.
+    #[arg(long)]
+    pub misleading: bool,
+
     /// Hide dimensional highlights (top repos/callers/rolling) from the
     /// default dashboard. Restores the pre-highlights output shape.
     #[arg(long)]
@@ -350,6 +367,52 @@ mod tests {
         match args.command {
             Command::Review(opts) => assert_eq!(opts.parallel, 4),
             _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_source_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-source"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.by_source),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_reviewed_repo_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-reviewed-repo"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.by_reviewed_repo),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_misleading_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--misleading"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.misleading),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_source_composes_with_rolling() {
+        // `--by-source --rolling 50` must parse — the two flags are
+        // intentionally compatible (rolling slices are applied within
+        // the source group).
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-source", "--rolling", "50"]);
+        match args.command {
+            Command::Stats(opts) => {
+                assert!(opts.by_source);
+                assert_eq!(opts.rolling, Some(50));
+            }
+            _ => panic!("Expected Stats command"),
         }
     }
 }

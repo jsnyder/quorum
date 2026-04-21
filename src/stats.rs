@@ -1,7 +1,7 @@
 /// Stats dashboard -- reads local data files and computes metrics.
 
 use crate::analytics;
-use crate::dimensions::{self, DimensionSlice};
+use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice};
 use crate::feedback::FeedbackStore;
 use crate::formatting;
 use crate::glyphs;
@@ -442,6 +442,133 @@ pub fn format_compact(report: &StatsReport) -> String {
     }
 
     format!("{}\n", parts.join(" "))
+}
+
+/// Render a context-dimension table (--by-source / --by-reviewed-repo / --misleading)
+/// using the same semigraphics conventions as `format_dimension_table`.
+pub fn format_context_dimension_table(
+    mode: &str,
+    slices: &[ContextDimensionSlice],
+    style: &Style,
+    unicode: bool,
+) -> String {
+    let mut out = String::new();
+    let key_header = match mode {
+        "by-source" => "Source",
+        "by-reviewed-repo" => "Repo",
+        "misleading" => "Cause",
+        _ => "Key",
+    };
+
+    out.push_str(&format!(
+        "{bold}~ Stats: {mode}{reset}\n\n",
+        bold = style.bold, reset = style.reset, mode = mode,
+    ));
+
+    if slices.is_empty() {
+        out.push_str("  (no data)\n");
+        return out;
+    }
+
+    let key_width = 20usize;
+    out.push_str(&format!(
+        "  {bold}{key:<kw$}  {:>7}  {:>9}  {:>9}  {:>10}  {:>10}  {:<16}{reset}\n",
+        "Reviews",
+        "AvgChunks",
+        "AvgTokens",
+        "ErrRate",
+        "AdaptRate",
+        "Trend",
+        bold = style.bold,
+        reset = style.reset,
+        key = key_header,
+        kw = key_width,
+    ));
+
+    for s in slices {
+        let display_key = truncate_key(&s.key, key_width);
+
+        let err_cell = rate_cell(s.retriever_error_rate, style, unicode);
+        let adapt_cell = rate_cell(s.adaptive_threshold_rate, style, unicode);
+
+        let trend_cell = if s.sparkline_points.is_empty() {
+            format!("{dim}—{reset}", dim = style.dim, reset = style.reset)
+        } else {
+            let spark = glyphs::sparkline(&s.sparkline_points, unicode);
+            let arrow = glyphs::trend_arrow(&s.sparkline_points, unicode);
+            format!("{} {}", spark, arrow)
+        };
+
+        let low_tag = if s.low_sample {
+            format!("  {dim}(low sample){reset}", dim = style.dim, reset = style.reset)
+        } else {
+            String::new()
+        };
+
+        out.push_str(&format!(
+            "  {key:<kw$}  {reviews:>7}  {chunks:>9.2}  {tokens:>9.1}  {err:<10}  {adapt:<10}  {trend:<16}{low}\n",
+            key = display_key,
+            kw = key_width,
+            reviews = s.n_reviews,
+            chunks = s.avg_injected_chunk_count,
+            tokens = s.avg_injected_tokens,
+            err = err_cell,
+            adapt = adapt_cell,
+            trend = trend_cell,
+            low = low_tag,
+        ));
+    }
+
+    let total_reviews: u32 = slices.iter().map(|s| s.n_reviews).sum();
+    let low_count = slices.iter().filter(|s| s.low_sample).count();
+    let low_note = if low_count > 0 {
+        format!(" ({} low-sample)", low_count)
+    } else {
+        String::new()
+    };
+    out.push_str(&format!(
+        "\n  {dim}{} rows  {} reviews{}{reset}\n",
+        slices.len(),
+        total_reviews,
+        low_note,
+        dim = style.dim,
+        reset = style.reset,
+    ));
+
+    out
+}
+
+fn rate_cell(rate: f64, style: &Style, unicode: bool) -> String {
+    let bar = glyphs::hbar(rate * 100.0, 100.0, unicode);
+    let pct = format!("{:>3}%", (rate * 100.0).round() as i64);
+    format!("{}{bar} {}{reset}", "", pct, bar = bar, reset = style.reset)
+}
+
+/// Compact one-line summary for context dimensions (LLM-targeted, no glyphs).
+pub fn format_context_dimension_compact(mode: &str, slices: &[ContextDimensionSlice]) -> String {
+    let mut parts = Vec::with_capacity(slices.len() + 1);
+    let mut low_count = 0usize;
+    for s in slices {
+        if s.low_sample {
+            low_count += 1;
+            continue;
+        }
+        parts.push(format!(
+            "{}(n{} ch{:.1} tk{:.0} err{} adp{})",
+            s.key,
+            s.n_reviews,
+            s.avg_injected_chunk_count,
+            s.avg_injected_tokens,
+            (s.retriever_error_rate * 100.0).round() as i64,
+            (s.adaptive_threshold_rate * 100.0).round() as i64,
+        ));
+    }
+    let low_suffix = if low_count > 0 {
+        format!(" +{} low-sample", low_count)
+    } else {
+        String::new()
+    };
+    format!("{}: {}{}", mode, parts.join(" "), low_suffix)
 }
 
 pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
