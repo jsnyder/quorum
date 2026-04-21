@@ -1,8 +1,25 @@
 use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Generate a per-call unique suffix for the atomic-write tempfile so two
+/// concurrent `IndexState::save` calls on the same path don't race on a
+/// shared `*.tmp` file.
+fn unique_tmp_suffix() -> String {
+    let pid = process::id();
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{pid}-{nanos}-{n}.tmp")
+}
 
 /// Versioning + model tracking state written alongside `index.db`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,10 +65,12 @@ impl IndexState {
             }
         }
         let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension(format!(
-            "{}.tmp",
-            path.extension().and_then(|e| e.to_str()).unwrap_or("")
-        ));
+        let tmp = {
+            let mut t = path.as_os_str().to_os_string();
+            t.push(".");
+            t.push(unique_tmp_suffix());
+            PathBuf::from(t)
+        };
         std::fs::write(&tmp, json.as_bytes()).map_err(|source| StateError::Io {
             path: tmp.clone(),
             source,
@@ -99,4 +118,69 @@ pub enum StateError {
     },
     #[error("failed to parse state: {0}")]
     Parse(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn concurrent_saves_dont_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Arc::new(dir.path().join("state.json"));
+
+        let mut handles = Vec::new();
+        let mut expected_hashes = Vec::new();
+        for i in 0..8 {
+            let hash = format!("model-hash-{i}");
+            expected_hashes.push(hash.clone());
+            let p = Arc::clone(&path);
+            handles.push(thread::spawn(move || {
+                let state = IndexState::new(hash);
+                state.save(&p).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let loaded = IndexState::load(&path)
+            .expect("load must not see a corrupted/partial write")
+            .expect("file exists");
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            expected_hashes.contains(&loaded.embedder_model_hash),
+            "loaded hash {:?} not one of the writes {:?}",
+            loaded.embedder_model_hash,
+            expected_hashes,
+        );
+
+        // No leftover *.tmp siblings (all renames must have consumed them).
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("state.json.")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "unexpected leftover tempfiles: {:?}",
+            leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn save_then_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let s = IndexState::new("abc123".into());
+        s.save(&path).unwrap();
+        let loaded = IndexState::load(&path).unwrap().unwrap();
+        assert_eq!(loaded, s);
+    }
 }
