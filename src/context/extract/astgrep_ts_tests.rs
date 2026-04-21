@@ -191,6 +191,49 @@ export function foo() {}
 }
 
 #[test]
+fn signature_preserves_rhs_for_type_alias() {
+    // `{` on the RHS of a type alias is NOT a body opener — it must be kept.
+    let src = "export type Point = { x: number; y: number };\n";
+    let chunks = extract_typescript(src, "x.ts", "s", "c", when()).unwrap();
+    let t = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("Point"))
+        .expect("Point type alias not extracted");
+    let sig = t.signature.as_ref().unwrap();
+    assert!(
+        sig.contains("x: number"),
+        "type alias RHS must be preserved, got: {sig}"
+    );
+    assert!(
+        sig.contains("y: number"),
+        "type alias RHS must be preserved, got: {sig}"
+    );
+    assert!(sig.contains("export type Point ="), "got: {sig}");
+}
+
+#[test]
+fn signature_strips_body_for_class() {
+    // Class bodies must still be stripped (regression guard for the kind-aware
+    // signature logic).
+    let src = "\
+export class Widget {
+    private id: number = 0;
+    render(): void { return; }
+}
+";
+    let chunks = extract_typescript(src, "x.ts", "s", "c", when()).unwrap();
+    let w = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("Widget"))
+        .expect("Widget class not extracted");
+    let sig = w.signature.as_ref().unwrap();
+    assert!(sig.contains("export class Widget"), "got: {sig}");
+    assert!(!sig.contains('{'), "class body must be stripped, got: {sig}");
+    assert!(!sig.contains("render"), "class body must be stripped, got: {sig}");
+    assert!(!sig.contains("private id"), "class body must be stripped, got: {sig}");
+}
+
+#[test]
 fn mini_ts_auth_fixture_extracts_verify_token() {
     let src =
         std::fs::read_to_string("tests/fixtures/context/repos/mini-ts/src/auth.ts").unwrap();

@@ -77,7 +77,7 @@ pub fn extract_typescript(
             };
             let byte_range = node.range();
             let item_text = &src[byte_range.clone()];
-            let signature = item_signature(item_text);
+            let signature = item_signature(item_text, &inner.kind());
 
             let sig_start_line = (node.start_pos().line() as u32) + 1;
             let end_line = (node.end_pos().line() as u32) + 1;
@@ -178,12 +178,38 @@ struct ExtractedSymbol {
 
 /// Extract the declaration signature from a full exported item's source text.
 ///
-/// Strategy: take everything up to the first `{` (class/interface/function body)
-/// or `;` (end of type-alias statement), whichever comes first, and trim.
-/// For a `type X = string | number` with no `;` or `{`, the entire text is kept.
+/// Strategy depends on the declaration kind so that a `{` on the RHS of a type
+/// alias (`type P = { x: number }`) is not mistaken for a body opener:
+/// - function/class/interface: truncate at the first `{` (the body).
+/// - type_alias_declaration: truncate at the first `;` only; `{` is legal on
+///   the RHS (object type) and must be preserved.
+/// - any other kind: fall back to the first `{` or `;`.
 /// Runs of whitespace collapse to a single space.
-fn item_signature(item_text: &str) -> String {
-    let end = item_text.find(['{', ';']).unwrap_or(item_text.len());
+fn item_signature(item_text: &str, kind: &str) -> String {
+    let end = match kind {
+        "function_declaration" | "class_declaration" | "interface_declaration" => {
+            item_text.find('{').unwrap_or(item_text.len())
+        }
+        "type_alias_declaration" => {
+            // Find the terminating `;` while skipping content inside balanced
+            // `{ }` on the RHS (object types). If none, keep full text.
+            let mut depth = 0i32;
+            let mut cut = item_text.len();
+            for (i, ch) in item_text.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ';' if depth <= 0 => {
+                        cut = i;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            cut
+        }
+        _ => item_text.find(['{', ';']).unwrap_or(item_text.len()),
+    };
     let raw = &item_text[..end];
     let mut out = String::with_capacity(raw.len());
     let mut prev_ws = false;
@@ -244,6 +270,18 @@ fn collect_preceding_jsdoc(src: &str, byte_start: usize) -> (String, Option<u32>
         Some(idx) => idx,
         None => return (String::new(), None),
     };
+
+    // Guard: `/**` must appear at a logical comment start. If the byte directly
+    // before `/**` is a letter, digit, or punctuation like `/` or `=`, the match
+    // is almost certainly embedded in non-comment context (for example, a
+    // regex literal `/a*/` on the preceding line that made `*/` look like a
+    // JSDoc closer). In that case reject rather than attach unrelated text.
+    if open_idx > 0 {
+        let prev = bytes[open_idx - 1];
+        if !matches!(prev, b'\n' | b'\r' | b' ' | b'\t') {
+            return (String::new(), None);
+        }
+    }
 
     let inner = &src[open_idx + 3..close_start];
     let text = strip_jsdoc_inner(inner);
