@@ -1,0 +1,11 @@
+id: ts-exported-class
+language: TypeScript
+rule:
+  kind: class_declaration
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor
+  inside:
+    kind: export_statement
+    stopBy: neighbor
