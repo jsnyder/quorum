@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
-use crate::context::config::SourcesConfig;
+use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesConfig};
 use crate::context::index::traits::{Clock, Embedder, HashEmbedder, SystemClock};
 use crate::context::inject::stale::{GitOps, SystemGit};
 
@@ -192,7 +192,7 @@ impl ContextDeps for TestDeps {
 pub enum ContextCmd {
     Init,
     Add(AddArgs),
-    List,
+    List(ListArgs),
     Index(IndexArgs),
     Refresh(RefreshArgs),
     Query(QueryArgs),
@@ -205,7 +205,7 @@ impl ContextCmd {
         match self {
             ContextCmd::Init => "init",
             ContextCmd::Add(_) => "add",
-            ContextCmd::List => "list",
+            ContextCmd::List(_) => "list",
             ContextCmd::Index(_) => "index",
             ContextCmd::Refresh(_) => "refresh",
             ContextCmd::Query(_) => "query",
@@ -215,8 +215,43 @@ impl ContextCmd {
     }
 }
 
+/// Location for `quorum context add`. `Path` and `Git` are mutually
+/// exclusive; the CLI layer is responsible for enforcing this when parsing
+/// the `--path` / `--git` flags.
+#[derive(Debug, Clone)]
+pub enum AddLocation {
+    Path(PathBuf),
+    Git { url: String, rev: Option<String> },
+}
+
+impl Default for AddLocation {
+    fn default() -> Self {
+        AddLocation::Path(PathBuf::new())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct AddArgs {}
+pub struct AddArgs {
+    pub name: String,
+    pub kind: String,
+    pub location: AddLocation,
+    pub weight: Option<i32>,
+    pub ignore: Vec<String>,
+}
+
+/// Output format for `quorum context list`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListFormat {
+    #[default]
+    Human,
+    Compact,
+    Json,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ListArgs {
+    pub format: ListFormat,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct IndexArgs {}
@@ -255,6 +290,8 @@ pub struct CmdOutput {
 pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<CmdOutput> {
     match cmd {
         ContextCmd::Init => run_init(deps),
+        ContextCmd::Add(args) => run_add(args, deps),
+        ContextCmd::List(args) => run_list(args, deps),
         other => Err(anyhow!("not yet implemented: context {}", other.name())),
     }
 }
@@ -284,4 +321,192 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
         created_paths: vec![sources_path],
         warnings: Vec::new(),
     })
+}
+
+// --- Add handler ------------------------------------------------------------
+
+fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
+    // Up-front validation: failing here means the on-disk file is never
+    // touched, which is the cheapest way to satisfy the atomicity contract.
+    let name = args.name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("source name must not be empty"));
+    }
+    let kind = SourceKind::parse_cli(&args.kind).ok_or_else(|| {
+        anyhow!(
+            "unknown kind '{}' (expected one of: rust, typescript, javascript, python, go, terraform, service, docs)",
+            args.kind
+        )
+    })?;
+
+    let location = match &args.location {
+        AddLocation::Path(p) => {
+            let s = p.to_string_lossy();
+            if s.trim().is_empty() {
+                return Err(anyhow!("source '{}': path must not be empty", name));
+            }
+            SourceLocation::Path(p.clone())
+        }
+        AddLocation::Git { url, rev } => {
+            if url.trim().is_empty() {
+                return Err(anyhow!("source '{}': git url must not be empty", name));
+            }
+            SourceLocation::Git {
+                url: url.trim().to_string(),
+                rev: rev.as_ref().map(|r| r.trim().to_string()),
+            }
+        }
+    };
+
+    let entry = SourceEntry {
+        name: name.to_string(),
+        kind,
+        location,
+        paths: Vec::new(),
+        weight: args.weight,
+        ignore: args.ignore.clone(),
+    };
+
+    let sources_path = deps.home_dir().join("sources.toml");
+    SourcesConfig::append_source(&sources_path, &entry)
+        .map_err(|e| anyhow!("{e}"))?;
+
+    Ok(CmdOutput {
+        stdout: format!("added source '{}'", entry.name),
+        created_paths: Vec::new(),
+        warnings: Vec::new(),
+    })
+}
+
+// --- List handler -----------------------------------------------------------
+
+fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
+    let sources_path = deps.home_dir().join("sources.toml");
+    if !sources_path.exists() {
+        let msg =
+            "no sources registered; run `quorum context init` first".to_string();
+        return Ok(CmdOutput {
+            stdout: msg.clone(),
+            created_paths: Vec::new(),
+            warnings: vec![msg],
+        });
+    }
+    let cfg = SourcesConfig::load(&sources_path).map_err(|e| anyhow!("{e}"))?;
+
+    let stdout = match args.format {
+        ListFormat::Json => render_list_json(&cfg.sources)?,
+        ListFormat::Compact => render_list_compact(&cfg.sources),
+        ListFormat::Human => render_list_human(&cfg.sources),
+    };
+    Ok(CmdOutput {
+        stdout,
+        created_paths: Vec::new(),
+        warnings: Vec::new(),
+    })
+}
+
+fn location_summary(loc: &SourceLocation) -> String {
+    match loc {
+        SourceLocation::Path(p) => p.display().to_string(),
+        SourceLocation::Git { url, rev } => match rev {
+            Some(r) => format!("{url}@{r}"),
+            None => url.clone(),
+        },
+    }
+}
+
+fn render_list_human(sources: &[SourceEntry]) -> String {
+    if sources.is_empty() {
+        return "no sources registered".to_string();
+    }
+    // Compute column widths so the table stays readable without pulling in
+    // a table crate. Header row first, then data rows.
+    let rows: Vec<[String; 5]> = sources
+        .iter()
+        .map(|e| {
+            [
+                e.name.clone(),
+                e.kind.as_str().to_string(),
+                location_summary(&e.location),
+                e.weight.map(|w| w.to_string()).unwrap_or_default(),
+                e.ignore.len().to_string(),
+            ]
+        })
+        .collect();
+    let headers = ["NAME", "KIND", "LOCATION", "WEIGHT", "IGNORE"];
+    let mut widths = headers.map(|h| h.len());
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if cell.len() > widths[i] {
+                widths[i] = cell.len();
+            }
+        }
+    }
+    let fmt_row = |cells: &[String; 5]| -> String {
+        let mut s = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i > 0 {
+                s.push_str("  ");
+            }
+            s.push_str(cell);
+            // pad trailing cells too; trim at the very end for tidy output
+            if cell.len() < widths[i] {
+                s.push_str(&" ".repeat(widths[i] - cell.len()));
+            }
+        }
+        s.trim_end().to_string()
+    };
+    let header_cells: [String; 5] = headers.map(|h| h.to_string());
+    let mut out = fmt_row(&header_cells);
+    out.push('\n');
+    for row in &rows {
+        out.push_str(&fmt_row(row));
+        out.push('\n');
+    }
+    out
+}
+
+fn render_list_compact(sources: &[SourceEntry]) -> String {
+    if sources.is_empty() {
+        return "no sources registered".to_string();
+    }
+    // One line per source, tab-separated, glyph-free (see compact rule in
+    // project CLAUDE.md). Sort order mirrors the on-disk file order so
+    // callers can rely on stable, user-visible ordering.
+    let mut out = String::new();
+    for e in sources {
+        let weight = e.weight.map(|w| w.to_string()).unwrap_or_else(|| "-".into());
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            e.name,
+            e.kind.as_str(),
+            location_summary(&e.location),
+            weight,
+            e.ignore.len()
+        ));
+    }
+    out
+}
+
+fn render_list_json(sources: &[SourceEntry]) -> Result<String> {
+    let items: Vec<serde_json::Value> = sources
+        .iter()
+        .map(|e| {
+            let location = match &e.location {
+                SourceLocation::Path(p) => serde_json::json!({ "path": p.display().to_string() }),
+                SourceLocation::Git { url, rev } => {
+                    serde_json::json!({ "git": { "url": url, "rev": rev } })
+                }
+            };
+            serde_json::json!({
+                "name": e.name,
+                "kind": e.kind.as_str(),
+                "location": location,
+                "weight": e.weight,
+                "ignore": e.ignore,
+            })
+        })
+        .collect();
+    let out = serde_json::json!({ "sources": items });
+    Ok(serde_json::to_string_pretty(&out)?)
 }

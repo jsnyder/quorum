@@ -21,6 +21,41 @@ pub enum SourceKind {
     Docs,
 }
 
+impl SourceKind {
+    /// Canonical snake_case identifier used in `sources.toml` and in all
+    /// machine-readable outputs (`list --json`, etc.). Kept in sync with the
+    /// `Deserialize` impl on `RawKind`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::Rust => "rust",
+            SourceKind::Typescript => "typescript",
+            SourceKind::Javascript => "javascript",
+            SourceKind::Python => "python",
+            SourceKind::Go => "go",
+            SourceKind::Terraform => "terraform",
+            SourceKind::Service => "service",
+            SourceKind::Docs => "docs",
+        }
+    }
+
+    /// Parse a user-supplied kind string. Accepts a few common aliases
+    /// (`ts` -> `typescript`, `js` -> `javascript`, `py` -> `python`,
+    /// `tf` -> `terraform`) to match CLI ergonomics from the task plan.
+    pub fn parse_cli(s: &str) -> Option<SourceKind> {
+        Some(match s.trim() {
+            "rust" | "rs" => SourceKind::Rust,
+            "typescript" | "ts" => SourceKind::Typescript,
+            "javascript" | "js" => SourceKind::Javascript,
+            "python" | "py" => SourceKind::Python,
+            "go" => SourceKind::Go,
+            "terraform" | "tf" => SourceKind::Terraform,
+            "service" => SourceKind::Service,
+            "docs" => SourceKind::Docs,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceLocation {
     Git { url: String, rev: Option<String> },
@@ -180,6 +215,89 @@ impl SourcesConfig {
         Self::from_str(&text)
     }
 
+    /// Append a new `[[source]]` block to `sources.toml`.
+    ///
+    /// Validates first (name non-empty, location non-empty, duplicate-name
+    /// check against the on-disk file), then writes atomically using a
+    /// sibling tempfile + rename. On any failure the on-disk file is
+    /// byte-identical to before the call.
+    ///
+    /// The writer is surgical: it re-reads the existing text and appends a
+    /// freshly-rendered fragment rather than re-serializing the whole
+    /// config. This preserves any hand edits, comments, and formatting in
+    /// the `[context]` block and existing `[[source]]` entries.
+    pub fn append_source(path: &Path, entry: &SourceEntry) -> Result<(), ConfigError> {
+        if entry.name.trim().is_empty() {
+            return Err(ConfigError::Invalid("source name must not be empty".into()));
+        }
+        match &entry.location {
+            SourceLocation::Path(p) => {
+                if p.as_os_str().is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "source '{}': path must not be empty",
+                        entry.name
+                    )));
+                }
+            }
+            SourceLocation::Git { url, .. } => {
+                if url.trim().is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "source '{}': git url must not be empty",
+                        entry.name
+                    )));
+                }
+            }
+        }
+
+        // Re-parse to check duplicate name — single source of truth for
+        // uniqueness is the on-disk file, not an in-memory cache.
+        let existing_text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let existing = Self::from_str(&existing_text)?;
+        if existing.sources.iter().any(|e| e.name == entry.name) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate source name: {}",
+                entry.name
+            )));
+        }
+
+        let fragment = render_source_fragment(entry);
+        let mut new_text = existing_text;
+        if !new_text.ends_with('\n') {
+            new_text.push('\n');
+        }
+        new_text.push_str(&fragment);
+
+        // Atomic write: tmp sibling + rename. On POSIX rename is atomic
+        // within the same filesystem, so a crash mid-write leaves the
+        // original untouched.
+        let parent = path.parent().ok_or_else(|| {
+            ConfigError::Invalid(format!(
+                "sources.toml path has no parent: {}",
+                path.display()
+            ))
+        })?;
+        let tmp = parent.join(format!(
+            ".sources.toml.tmp-{}",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, new_text.as_bytes()).map_err(|source| ConfigError::Io {
+            path: tmp.clone(),
+            source,
+        })?;
+        std::fs::rename(&tmp, path).map_err(|source| {
+            // Best-effort cleanup; swallow the secondary error.
+            let _ = std::fs::remove_file(&tmp);
+            ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        Ok(())
+    }
+
     /// Write a minimal `sources.toml` containing only the `[context]` block
     /// populated with defaults. Creates parent directories as needed.
     ///
@@ -229,6 +347,44 @@ pub fn default_sources_toml() -> String {
         rerank_recency_floor = format_finite_f32(d.rerank_recency_floor),
         max_source_size_mb = d.max_source_size_mb,
     )
+}
+
+/// Render a single `[[source]]` TOML block. Uses `toml::Value` escaping for
+/// strings so exotic names/urls (quotes, backslashes) round-trip correctly.
+/// Only emits optional fields when present — mirroring what a hand-written
+/// file would look like.
+fn render_source_fragment(entry: &SourceEntry) -> String {
+    fn tq(s: &str) -> String {
+        // Basic TOML string escape via serde: cheaper than hand-rolling.
+        toml::Value::String(s.to_string()).to_string()
+    }
+    fn tq_array(items: &[String]) -> String {
+        let parts: Vec<String> = items.iter().map(|s| tq(s)).collect();
+        format!("[{}]", parts.join(", "))
+    }
+
+    let mut out = String::new();
+    out.push_str("\n[[source]]\n");
+    out.push_str(&format!("name = {}\n", tq(&entry.name)));
+    out.push_str(&format!("kind = {}\n", tq(entry.kind.as_str())));
+    match &entry.location {
+        SourceLocation::Path(p) => {
+            out.push_str(&format!("path = {}\n", tq(&p.display().to_string())));
+        }
+        SourceLocation::Git { url, rev } => {
+            out.push_str(&format!("git = {}\n", tq(url)));
+            if let Some(r) = rev {
+                out.push_str(&format!("rev = {}\n", tq(r)));
+            }
+        }
+    }
+    if let Some(w) = entry.weight {
+        out.push_str(&format!("weight = {w}\n"));
+    }
+    if !entry.ignore.is_empty() {
+        out.push_str(&format!("ignore = {}\n", tq_array(&entry.ignore)));
+    }
+    out
 }
 
 fn format_finite_f32(v: f32) -> String {
