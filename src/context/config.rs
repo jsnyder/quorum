@@ -279,9 +279,16 @@ impl SourcesConfig {
                 path.display()
             ))
         })?;
+        // Compose pid + monotonic-nanos so concurrent or rapid sequential
+        // calls in the same process don't collide on the tempfile name.
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let tmp = parent.join(format!(
-            ".sources.toml.tmp-{}",
-            std::process::id()
+            ".sources.toml.tmp-{}-{}",
+            std::process::id(),
+            suffix
         ));
         std::fs::write(&tmp, new_text.as_bytes()).map_err(|source| ConfigError::Io {
             path: tmp.clone(),

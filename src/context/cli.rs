@@ -351,12 +351,45 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
             if url.trim().is_empty() {
                 return Err(anyhow!("source '{}': git url must not be empty", name));
             }
+            // An explicit `--rev ""` should mean "no rev pinned", not store
+            // an empty string. Collapse empty/whitespace-only revs to None.
+            let rev_clean = rev
+                .as_ref()
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty());
             SourceLocation::Git {
                 url: url.trim().to_string(),
-                rev: rev.as_ref().map(|r| r.trim().to_string()),
+                rev: rev_clean,
             }
         }
     };
+
+    // Reject control characters in user-supplied strings before they reach
+    // the TOML writer — newlines in `name` or `url` would corrupt the file
+    // shape even with toml::Value string escaping.
+    let reject_controls = |field: &str, s: &str| -> Result<()> {
+        if s.chars().any(|c| c.is_control()) {
+            return Err(anyhow!(
+                "source '{name}': {field} contains a control character"
+            ));
+        }
+        Ok(())
+    };
+    reject_controls("name", name)?;
+    match &location {
+        SourceLocation::Path(p) => {
+            reject_controls("path", &p.to_string_lossy())?;
+        }
+        SourceLocation::Git { url, rev } => {
+            reject_controls("url", url)?;
+            if let Some(r) = rev {
+                reject_controls("rev", r)?;
+            }
+        }
+    }
+    for g in &args.ignore {
+        reject_controls("ignore", g)?;
+    }
 
     let entry = SourceEntry {
         name: name.to_string(),

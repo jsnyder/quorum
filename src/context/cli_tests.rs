@@ -356,8 +356,100 @@ fn list_renders_table_of_registered_sources() {
     assert!(s.contains("python"), "{s}");
     assert!(s.contains("home-assistant/core"), "{s}");
     assert!(s.contains("dev"), "{s}");
-    // ignore count "1" for core, "0" for ha
+    // The weight "2" and ignore count "1" for core must actually appear.
+    assert!(
+        s.lines().any(|l| l.contains("core") && l.contains('2') && l.contains('1')),
+        "row for 'core' must surface weight=2 and ignore count=1: {s}"
+    );
+    // ha has no weight and no ignore globs — expect a "0" ignore count on its row.
+    assert!(
+        s.lines().any(|l| l.contains("ha") && l.contains('0')),
+        "row for 'ha' must surface ignore count=0: {s}"
+    );
     assert!(s.contains("NAME") || s.contains("name"), "header expected: {s}");
+}
+
+#[test]
+fn add_git_with_empty_rev_stores_none_not_some_empty_string() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    run_context_cmd(
+        &ContextCmd::Add(git_add_args(
+            "pinned",
+            "rust",
+            "https://example.com/r",
+            Some(""),
+        )),
+        &deps,
+    )
+    .expect("add git with empty rev must succeed");
+
+    let cfg = SourcesConfig::load(&deps.home_dir().join("sources.toml")).unwrap();
+    assert_eq!(
+        cfg.sources[0].location,
+        SourceLocation::Git {
+            url: "https://example.com/r".to_string(),
+            rev: None,
+        },
+        "empty/whitespace --rev must collapse to None, not Some(\"\")"
+    );
+}
+
+#[test]
+fn add_rejects_control_characters_in_user_strings() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+
+    // Newline in name would corrupt the TOML even after string escaping.
+    let bad_name = AddArgs {
+        name: "core\nlie".to_string(),
+        kind: "rust".to_string(),
+        location: AddLocation::Path(PathBuf::from("/tmp/x")),
+        weight: None,
+        ignore: Vec::new(),
+    };
+    let err = run_context_cmd(&ContextCmd::Add(bad_name), &deps)
+        .expect_err("control char in name must be rejected");
+    assert!(format!("{err}").contains("control character"));
+
+    // Same for url, rev, path, ignore glob.
+    for args in [
+        AddArgs {
+            name: "ok".to_string(),
+            kind: "rust".to_string(),
+            location: AddLocation::Git { url: "https://bad\n.com".into(), rev: None },
+            weight: None,
+            ignore: Vec::new(),
+        },
+        AddArgs {
+            name: "ok2".to_string(),
+            kind: "rust".to_string(),
+            location: AddLocation::Git {
+                url: "https://ok.com".into(),
+                rev: Some("main\nhack".into()),
+            },
+            weight: None,
+            ignore: Vec::new(),
+        },
+        AddArgs {
+            name: "ok3".to_string(),
+            kind: "rust".to_string(),
+            location: AddLocation::Path(PathBuf::from("/tmp/with\nlf")),
+            weight: None,
+            ignore: Vec::new(),
+        },
+        AddArgs {
+            name: "ok4".to_string(),
+            kind: "rust".to_string(),
+            location: AddLocation::Path(PathBuf::from("/tmp/x")),
+            weight: None,
+            ignore: vec!["glob\t".to_string()],
+        },
+    ] {
+        let err = run_context_cmd(&ContextCmd::Add(args), &deps)
+            .expect_err("control char must be rejected");
+        assert!(format!("{err}").contains("control character"));
+    }
 }
 
 #[test]
