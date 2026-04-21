@@ -1,6 +1,7 @@
 pub mod config;
 pub mod extract;
 pub mod index;
+pub mod inject;
 pub mod retrieve;
 pub mod store;
 pub mod types;
