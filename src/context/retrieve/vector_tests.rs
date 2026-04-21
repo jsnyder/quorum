@@ -251,3 +251,38 @@ fn filter_narrows_to_empty_when_no_matches() {
     let hits = vec_search(&conn, &q, &filters, 3).unwrap();
     assert!(hits.is_empty());
 }
+
+#[test]
+fn strict_filter_still_returns_k_when_possible() {
+    // 10 chunks across two sources (5 each). A strict filter on source "A"
+    // should still return k=4 results; the adaptive overfetch should grow
+    // past the initial k*4 if filters drop candidates below k.
+    let dir = tempdir().unwrap();
+    let mut chunks = Vec::new();
+    for i in 0..5 {
+        chunks.push(mk_chunk(
+            "A",
+            &format!("a{i}"),
+            &format!("alpha match target {i}"),
+            ChunkKind::Symbol,
+        ));
+        chunks.push(mk_chunk(
+            "B",
+            &format!("b{i}"),
+            &format!("beta distractor {i}"),
+            ChunkKind::Symbol,
+        ));
+    }
+    let conn = build_test_db_with_embeddings(dir.path(), chunks);
+
+    let q = query_vec("alpha match target");
+    let filters = Filters {
+        sources: vec!["A".into()],
+        kinds: vec![],
+    };
+    let hits = vec_search(&conn, &q, &filters, 4).unwrap();
+    assert_eq!(hits.len(), 4);
+    for h in &hits {
+        assert!(h.chunk_id.starts_with('a'), "unexpected id: {}", h.chunk_id);
+    }
+}

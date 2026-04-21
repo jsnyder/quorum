@@ -218,3 +218,55 @@ fn recency_floor_respected_when_zero_raw_signal() {
     assert_eq!(out[0].1.score, 0.0);
     assert!(out[0].1.score.is_finite());
 }
+
+#[test]
+fn nan_raw_scores_become_zero() {
+    let config = RerankConfig::default();
+    let n = now();
+    let inputs = vec![
+        input("a", f32::NAN, 0.5, false, false, n),
+        input("b", 5.0, f32::INFINITY, false, false, n),
+        input("c", 1.0, 0.1, false, false, n),
+    ];
+    let out = rerank(&inputs, n, &config);
+    for (_, br) in &out {
+        assert!(br.score.is_finite(), "score must be finite");
+        assert!(br.bm25_norm.is_finite());
+        assert!(br.vec_norm.is_finite());
+        assert!((0.0..=1.0).contains(&br.bm25_norm));
+        assert!((0.0..=1.0).contains(&br.vec_norm));
+    }
+}
+
+#[test]
+fn recency_floor_above_one_is_clamped() {
+    // recency_floor > 1.0 would otherwise amplify old items; rerank must
+    // clamp it so recency_mul stays <= 1.0.
+    let config = RerankConfig {
+        recency_halflife_days: 90,
+        recency_floor: 2.0,
+    };
+    let n = now();
+    let indexed = n - Duration::days(3650);
+    let inputs = vec![input("a", 5.0, 0.5, false, false, indexed)];
+    let out = rerank(&inputs, n, &config);
+    assert!(
+        out[0].1.recency_mul <= 1.0,
+        "recency_mul must be clamped: {}",
+        out[0].1.recency_mul
+    );
+}
+
+#[test]
+fn negative_recency_floor_clamps_to_zero() {
+    let config = RerankConfig {
+        recency_halflife_days: 90,
+        recency_floor: -0.5,
+    };
+    let n = now();
+    let indexed = n - Duration::days(3650);
+    let inputs = vec![input("a", 5.0, 0.5, false, false, indexed)];
+    let out = rerank(&inputs, n, &config);
+    assert!(out[0].1.recency_mul >= 0.0);
+    assert!(out[0].1.recency_mul <= 1.0);
+}

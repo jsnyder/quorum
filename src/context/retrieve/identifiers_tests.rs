@@ -129,3 +129,22 @@ fn empty_or_whitespace_refs_filtered() {
     let ids = harvest_identifiers(&refs, &file, &load_stoplist("rust"));
     assert_eq!(ids, vec!["foo".to_string(), "bar".to_string()]);
 }
+
+#[test]
+fn stoplist_is_case_insensitive() {
+    let stoplist = load_stoplist("rust");
+    assert!(stoplist.is_generic("client"));
+    assert!(stoplist.is_generic("CLIENT"));
+    assert!(stoplist.is_generic("Client"));
+}
+
+#[test]
+fn whitespace_ref_is_treated_as_empty() {
+    // "  foo  ", " foo", "foo" all collapse to "foo"; count becomes 1 so
+    // path segments are appended. Expect exactly one "foo" in the output.
+    let refs = sym(&["  foo  ", " foo", "foo"]);
+    let file = ReviewedFile::new("src/bar.rs", "rust");
+    let ids = harvest_identifiers(&refs, &file, &load_stoplist("rust"));
+    assert_eq!(ids.iter().filter(|s| s.as_str() == "foo").count(), 1);
+    assert!(ids.contains(&"bar".to_string()));
+}

@@ -47,10 +47,15 @@ pub struct GenericStoplist(HashSet<String>);
 
 impl GenericStoplist {
     pub fn new(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self(names.into_iter().map(|s| s.into()).collect())
+        Self(
+            names
+                .into_iter()
+                .map(|s| s.into().to_ascii_lowercase())
+                .collect(),
+        )
     }
     pub fn is_generic(&self, name: &str) -> bool {
-        self.0.contains(name)
+        self.0.contains(&name.to_ascii_lowercase())
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -139,16 +144,16 @@ pub fn harvest_identifiers(
     reviewed_file: &ReviewedFile,
     stoplist: &GenericStoplist,
 ) -> Vec<String> {
-    // 1. Dedupe refs preserving order; filter empty/whitespace.
+    // 1. Normalize whitespace, dedupe refs preserving order; drop empty.
     let mut seen: HashSet<String> = HashSet::new();
     let mut ref_names: Vec<String> = Vec::new();
     for s in refs {
-        let name = s.name.as_str();
-        if name.trim().is_empty() {
+        let trimmed = s.name.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        if seen.insert(name.to_string()) {
-            ref_names.push(name.to_string());
+        if seen.insert(trimmed.to_string()) {
+            ref_names.push(trimmed.to_string());
         }
     }
 

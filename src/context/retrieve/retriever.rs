@@ -191,8 +191,13 @@ fn quote_as_fts_phrase(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-/// Fetch every chunk whose id is in `ids` in a single query and return a
-/// lookup map. Unknown ids are silently skipped.
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is 999; stay comfortably
+/// below so the `IN (?, ?, ...)` clause fits under the bind limit.
+const ID_BATCH_SIZE: usize = 500;
+
+/// Fetch every chunk whose id is in `ids` and return a lookup map. Unknown
+/// ids are silently skipped. Batches the `IN` clause so large candidate
+/// sets stay under SQLite's bind-parameter limit.
 fn fetch_chunks_by_id(
     conn: &Connection,
     ids: &[String],
@@ -200,6 +205,18 @@ fn fetch_chunks_by_id(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let mut out = HashMap::with_capacity(ids.len());
+    for batch in ids.chunks(ID_BATCH_SIZE) {
+        fetch_chunks_batch(conn, batch, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn fetch_chunks_batch(
+    conn: &Connection,
+    ids: &[String],
+    out: &mut HashMap<String, Chunk>,
+) -> rusqlite::Result<()> {
     let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(",");
@@ -214,12 +231,11 @@ fn fetch_chunks_by_id(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), row_to_chunk)?;
 
-    let mut out = HashMap::with_capacity(ids.len());
     for row in rows {
         let chunk = row?;
         out.insert(chunk.id.clone(), chunk);
     }
-    Ok(out)
+    Ok(())
 }
 
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {

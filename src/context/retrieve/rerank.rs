@@ -57,15 +57,21 @@ const VEC_WEIGHT: f32 = 0.4;
 const ID_BOOST: f32 = 1.0;
 const PATH_BOOST: f32 = 0.5;
 
+/// Coerce non-finite raw scores (NaN, +/-inf) to 0.0 before normalization.
+fn sanitize(x: f32) -> f32 {
+    if x.is_finite() { x } else { 0.0 }
+}
+
 /// Min-max normalize `values`. Ties-at-zero → 0.0 for all. Ties-above-zero →
-/// 1.0 for all.
+/// 1.0 for all. Non-finite inputs are treated as 0.0.
 fn normalize(values: &[f32]) -> Vec<f32> {
     if values.is_empty() {
         return Vec::new();
     }
+    let clean: Vec<f32> = values.iter().map(|v| sanitize(*v)).collect();
     let mut min = f32::INFINITY;
     let mut max = f32::NEG_INFINITY;
-    for &v in values {
+    for &v in &clean {
         if v < min {
             min = v;
         }
@@ -75,10 +81,10 @@ fn normalize(values: &[f32]) -> Vec<f32> {
     }
     if (max - min).abs() < f32::EPSILON {
         let fill = if max > 0.0 { 1.0 } else { 0.0 };
-        return vec![fill; values.len()];
+        return vec![fill; clean.len()];
     }
     let range = max - min;
-    values.iter().map(|v| (v - min) / range).collect()
+    clean.iter().map(|v| (v - min) / range).collect()
 }
 
 /// Recency decay: `max(exp(-ln2 * age_days / halflife), floor)`.
@@ -106,6 +112,12 @@ pub(crate) fn rerank(
     if inputs.is_empty() {
         return Vec::new();
     }
+    // Clamp recency_floor to [0, 1]; a floor > 1.0 would amplify old items
+    // above the no-decay baseline.
+    let config = RerankConfig {
+        recency_halflife_days: config.recency_halflife_days,
+        recency_floor: config.recency_floor.clamp(0.0, 1.0),
+    };
     let bm25_raw: Vec<f32> = inputs.iter().map(|i| i.bm25_raw).collect();
     let vec_raw: Vec<f32> = inputs.iter().map(|i| i.vec_raw).collect();
     let bm25_norm = normalize(&bm25_raw);
@@ -120,7 +132,7 @@ pub(crate) fn rerank(
             let id_boost = if input.id_exact_match { ID_BOOST } else { 0.0 };
             let path_boost = if input.language_match { PATH_BOOST } else { 0.0 };
             let blended = BM25_WEIGHT * bn + VEC_WEIGHT * vn;
-            let recency_mul = recency_multiplier(now, input.indexed_at, config);
+            let recency_mul = recency_multiplier(now, input.indexed_at, &config);
             let score = (blended + id_boost + path_boost) * recency_mul;
             (
                 input.chunk_id.clone(),

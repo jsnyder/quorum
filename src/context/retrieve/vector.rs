@@ -1,8 +1,9 @@
 //! Vector KNN search over sqlite-vec's `chunks_vec` virtual table.
 //!
 //! Filter strategy: vec0 rejects JOINs combined with `MATCH + k`, so we
-//! over-fetch `k * 4` ids from vec0 first, then intersect against `chunks`
-//! with the requested source/kind filters in a second query.
+//! over-fetch ids from vec0 first, then intersect against `chunks` with the
+//! requested source/kind filters in a second query. The overfetch size
+//! doubles (up to `k * 32`) when filters drop the candidate set below `k`.
 
 use rusqlite::{Connection, params_from_iter};
 
@@ -15,8 +16,12 @@ pub struct VecHit {
     pub distance: f32,
 }
 
-/// Serialize the vec0 `k` hyperparameter.
+/// Initial overfetch multiplier before filters are applied.
 const OVERFETCH_MULTIPLIER: usize = 4;
+/// Cap on adaptive overfetch growth.
+const OVERFETCH_CAP_MULTIPLIER: usize = 32;
+/// sqlite-vec's compile-time KNN `k` limit.
+const VEC_K_HARD_LIMIT: usize = 4096;
 
 pub fn vec_search(
     conn: &Connection,
@@ -29,9 +34,40 @@ pub fn vec_search(
     }
 
     let q_bytes = embedding_to_le_bytes(q_embedding);
-    let overfetch = k.saturating_mul(OVERFETCH_MULTIPLIER).max(k);
+    let mut fetch = k
+        .saturating_mul(OVERFETCH_MULTIPLIER)
+        .max(k)
+        .min(VEC_K_HARD_LIMIT);
+    let cap = k
+        .saturating_mul(OVERFETCH_CAP_MULTIPLIER)
+        .max(k)
+        .min(VEC_K_HARD_LIMIT);
 
-    // Step 1: pull the nearest `overfetch` ids from vec0 (no JOIN).
+    loop {
+        let rows = run_vec_query(conn, &q_bytes, fetch)?;
+        let raw_len = rows.len();
+
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filtered = apply_filters(conn, rows, filters, k)?;
+
+        // Enough results OR the index returned fewer rows than we asked for
+        // (index exhausted) OR we've reached the cap.
+        if filtered.len() >= k || raw_len < fetch || fetch >= cap {
+            return Ok(filtered);
+        }
+
+        fetch = fetch.saturating_mul(2).min(cap);
+    }
+}
+
+fn run_vec_query(
+    conn: &Connection,
+    q_bytes: &[u8],
+    fetch: usize,
+) -> rusqlite::Result<Vec<(String, f32)>> {
     let mut stmt = conn.prepare(
         "SELECT id, distance
          FROM chunks_vec
@@ -39,18 +75,18 @@ pub fn vec_search(
          ORDER BY distance",
     )?;
 
-    let rows: Vec<(String, f32)> = stmt
-        .query_map(rusqlite::params![q_bytes, overfetch as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    stmt.query_map(rusqlite::params![q_bytes, fetch as i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
+    })?
+    .collect::<rusqlite::Result<_>>()
+}
 
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Step 2: apply source/kind filters against `chunks` and preserve vec0
-    // distance order.
+fn apply_filters(
+    conn: &Connection,
+    rows: Vec<(String, f32)>,
+    filters: &Filters,
+    k: usize,
+) -> rusqlite::Result<Vec<VecHit>> {
     let no_filters = filters.sources.is_empty() && filters.kinds.is_empty();
 
     let allowed_ids: std::collections::HashSet<String> = if no_filters {

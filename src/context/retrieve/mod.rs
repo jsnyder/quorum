@@ -16,7 +16,11 @@ pub mod rerank;
 pub mod retriever;
 pub mod vector;
 
+// Public re-exports for consumers of the retrieve module. Clippy's unused
+// analysis treats these as dead in a binary crate; suppress that noise.
+#[allow(unused_imports)]
 pub use rerank::{RerankConfig, ScoreBreakdown};
+#[allow(unused_imports)]
 pub use retriever::{RetrievalQuery, Retriever, ScoredChunk};
 
 #[cfg(test)]

@@ -389,6 +389,41 @@ fn empty_query_returns_empty() {
 }
 
 #[test]
+fn large_candidate_set_hydrates_via_batching() {
+    // Build an index with >600 chunks so that the BM25+vector union of
+    // candidate ids comfortably exceeds 500 — the IN-clause batch size.
+    // k=200 is chosen so vec0's k=800 overfetch stays under its 4096 cap.
+    // Success here proves the batched `IN` hydration works; a single-batch
+    // implementation would also pass, but a bound-limit regression (>999)
+    // would fail with "too many SQL variables".
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let chunks: Vec<Chunk> = (0..700)
+        .map(|i| {
+            mk_chunk(
+                &format!("id{i:04}"),
+                "s",
+                &format!("batch content chunk {i}"),
+                Some(&format!("id{i:04}")),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            )
+        })
+        .collect();
+    let (conn, emb, clock) = mk_retriever_ctx(dir.path(), chunks);
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "batch content chunk".into(),
+        k: 200,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    assert!(!hits.is_empty(), "expected non-empty hits");
+    assert!(hits.len() <= 200);
+}
+
+#[test]
 fn duplicate_chunk_ids_dont_inflate_results() {
     let dir = tempdir().unwrap();
     let n = now_ts();
