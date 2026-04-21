@@ -174,3 +174,109 @@ fn example_fixture_loads() {
     assert!(names.contains(&"mini-ts"));
     assert!(names.contains(&"mini-terraform"));
 }
+
+#[test]
+fn rejects_zero_inject_budget() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+inject_budget_tokens = 0
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(err.to_string().contains("inject_budget_tokens"), "got: {err}");
+}
+
+#[test]
+fn rejects_zero_max_chunks() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+inject_max_chunks = 0
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(err.to_string().contains("inject_max_chunks"), "got: {err}");
+}
+
+#[test]
+fn rejects_zero_halflife() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+rerank_recency_halflife_days = 0
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(err.to_string().contains("halflife"), "got: {err}");
+}
+
+#[test]
+fn rejects_zero_max_source_size() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+max_source_size_mb = 0
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(err.to_string().contains("max_source_size_mb"), "got: {err}");
+}
+
+#[test]
+fn rejects_unknown_context_field() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+inject_min_socre = 0.5   # typo
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(s.contains("unknown") || s.contains("inject_min_socre"), "got: {err}");
+}
+
+#[test]
+fn rejects_unknown_source_field() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+weigth = 5   # typo
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(s.contains("unknown") || s.contains("weigth"), "got: {err}");
+}
+
+#[test]
+fn rejects_unknown_top_level_field() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[unknown_block]
+foo = "bar"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(s.contains("unknown") || s.contains("unknown_block"), "got: {err}");
+}

@@ -86,6 +86,7 @@ pub enum ConfigError {
 // --- Raw TOML shapes --------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default, rename = "source")]
     source: Vec<RawSource>,
@@ -94,6 +95,7 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSource {
     name: String,
     kind: RawKind,
@@ -142,6 +144,7 @@ impl<'de> Deserialize<'de> for RawKind {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct RawContext {
     #[serde(default)]
     auto_inject: Option<bool>,
@@ -238,10 +241,22 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
         ignore: raw.ignore,
     };
 
+    if !ctx.inject_min_score.is_finite() {
+        return Err(ConfigError::Invalid(format!(
+            "inject_min_score must be finite, got {}",
+            ctx.inject_min_score
+        )));
+    }
     if !(0.0..=1.0).contains(&ctx.inject_min_score) {
         return Err(ConfigError::Invalid(format!(
             "inject_min_score must be in [0.0, 1.0], got {}",
             ctx.inject_min_score
+        )));
+    }
+    if !ctx.rerank_recency_floor.is_finite() {
+        return Err(ConfigError::Invalid(format!(
+            "rerank_recency_floor must be finite, got {}",
+            ctx.rerank_recency_floor
         )));
     }
     if !(0.0..=1.0).contains(&ctx.rerank_recency_floor) {
@@ -249,6 +264,26 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
             "rerank_recency_floor must be in [0.0, 1.0], got {}",
             ctx.rerank_recency_floor
         )));
+    }
+    if ctx.inject_budget_tokens == 0 {
+        return Err(ConfigError::Invalid(
+            "inject_budget_tokens must be greater than 0".into(),
+        ));
+    }
+    if ctx.inject_max_chunks == 0 {
+        return Err(ConfigError::Invalid(
+            "inject_max_chunks must be greater than 0".into(),
+        ));
+    }
+    if ctx.rerank_recency_halflife_days == 0 {
+        return Err(ConfigError::Invalid(
+            "rerank_recency_halflife_days must be greater than 0".into(),
+        ));
+    }
+    if ctx.max_source_size_mb == 0 {
+        return Err(ConfigError::Invalid(
+            "max_source_size_mb must be greater than 0".into(),
+        ));
     }
 
     Ok(ctx)
