@@ -1,6 +1,10 @@
+pub mod injector;
 pub mod plan;
 pub mod render;
 pub mod stale;
+
+#[allow(unused_imports)]
+pub use injector::{ContextInjectionSource, ContextInjector, InjectionRequest, RetrieverFn};
 
 #[cfg(test)]
 mod plan_tests;
