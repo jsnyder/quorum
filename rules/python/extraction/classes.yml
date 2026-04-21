@@ -1,0 +1,8 @@
+id: py-class
+language: Python
+rule:
+  kind: class_definition
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor

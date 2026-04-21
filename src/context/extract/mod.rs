@@ -1,7 +1,10 @@
+pub mod astgrep_py;
 pub mod astgrep_rust;
 pub mod astgrep_ts;
 pub mod markdown;
 
+#[cfg(test)]
+mod astgrep_py_tests;
 #[cfg(test)]
 mod astgrep_rust_tests;
 #[cfg(test)]
