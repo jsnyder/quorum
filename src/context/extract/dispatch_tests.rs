@@ -279,6 +279,82 @@ fn git_source_returns_error_for_mvp() {
 }
 
 #[test]
+fn overlapping_paths_dedupe_and_extract_once() {
+    // Baseline: scan the root once, capture the chunk id set.
+    let baseline_entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
+    let clock = FixedClock::epoch();
+    let baseline = extract_source(&baseline_entry, &ExtractConfig::default(), &clock).unwrap();
+    let baseline_ids: std::collections::BTreeSet<String> =
+        baseline.chunks.iter().map(|c| c.id.clone()).collect();
+    assert_eq!(
+        baseline_ids.len(),
+        baseline.chunks.len(),
+        "baseline chunk ids are already unique"
+    );
+
+    // Now point `paths` at both `.` (root) and `src` — overlapping. With the
+    // dedupe in place, the descendant `src` must be dropped and chunk ids
+    // should remain unique and match the baseline exactly.
+    let mut entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
+    entry.paths = vec![PathBuf::from("."), PathBuf::from("src")];
+    let result = extract_source(&entry, &ExtractConfig::default(), &clock).unwrap();
+
+    let ids: Vec<String> = result.chunks.iter().map(|c| c.id.clone()).collect();
+    let unique: std::collections::BTreeSet<String> = ids.iter().cloned().collect();
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "overlapping scan roots produced duplicate chunk ids: {} total vs {} unique",
+        ids.len(),
+        unique.len()
+    );
+    assert_eq!(
+        unique, baseline_ids,
+        "overlapping scan roots should yield the same chunk set as a single root scan"
+    );
+}
+
+#[test]
+fn exact_duplicate_paths_dedupe() {
+    // Two identical path entries must collapse to a single scan.
+    let mut entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
+    entry.paths = vec![PathBuf::from("src"), PathBuf::from("src")];
+    let clock = FixedClock::epoch();
+    let result = extract_source(&entry, &ExtractConfig::default(), &clock).unwrap();
+
+    let ids: Vec<String> = result.chunks.iter().map(|c| c.id.clone()).collect();
+    let unique: std::collections::BTreeSet<String> = ids.iter().cloned().collect();
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "duplicate path entries produced duplicate chunk ids"
+    );
+}
+
+#[test]
+fn bare_directory_name_in_global_ignore_is_honored() {
+    let entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
+    let config = ExtractConfig {
+        global_ignore: vec!["docs".into()], // bare name, no slash
+        ..Default::default()
+    };
+    let clock = FixedClock::epoch();
+    let result = extract_source(&entry, &config, &clock).unwrap();
+
+    assert!(
+        !result
+            .chunks
+            .iter()
+            .any(|c| c.metadata.source_path.starts_with("docs/")),
+        "bare `docs` ignore pattern should exclude docs/ subtree"
+    );
+    assert!(
+        result.diagnostics.skipped_by_tier.global > 0,
+        "expected global skip count > 0 from bare ignore pattern"
+    );
+}
+
+#[test]
 fn empty_source_path_list_scans_root() {
     let entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
     let clock = FixedClock::epoch();

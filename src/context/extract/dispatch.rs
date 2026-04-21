@@ -129,7 +129,8 @@ pub fn extract_source(
     let scan_roots: Vec<PathBuf> = if source.paths.is_empty() {
         vec![root.clone()]
     } else {
-        source.paths.iter().map(|p| root.join(p)).collect()
+        let joined: Vec<PathBuf> = source.paths.iter().map(|p| root.join(p)).collect();
+        dedupe_scan_roots(joined)
     };
 
     let indexed_at = clock.now();
@@ -383,10 +384,56 @@ fn normalize_pattern(p: &str) -> String {
     if p.ends_with('/') {
         // Directory prefix: match any path under it anywhere.
         let trimmed = p.trim_end_matches('/');
-        format!("**/{trimmed}/**")
-    } else {
-        p.to_string()
+        return format!("**/{trimmed}/**");
     }
+    // Bare name with no glob meta chars and no path separators: treat as a
+    // directory-name match anywhere in the tree (e.g. `node_modules` →
+    // `**/node_modules/**`). This matches the documented behavior above.
+    let bare = !p.is_empty()
+        && !p.contains('/')
+        && !p.contains('*')
+        && !p.contains('?')
+        && !p.contains('[');
+    if bare {
+        return format!("**/{p}/**");
+    }
+    p.to_string()
+}
+
+/// Canonicalize scan roots where possible, then drop any root whose
+/// canonical path is a descendant (prefix-match) of another kept root.
+/// Shorter (parent) paths are kept; descendants are discarded. Roots that
+/// cannot be canonicalized (e.g. missing) are retained as-is and filtered
+/// later by the `!scan_root.exists()` guard.
+fn dedupe_scan_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    // Pair each input with its canonical form (falling back to the original).
+    let mut paired: Vec<(PathBuf, PathBuf)> = roots
+        .into_iter()
+        .map(|p| {
+            let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+            (p, canon)
+        })
+        .collect();
+
+    // Sort by canonical path length (string form) ascending so parents precede
+    // descendants; stable sort preserves input order for equal-length entries.
+    paired.sort_by_key(|(_, canon)| canon.as_os_str().len());
+
+    let mut kept_canons: Vec<PathBuf> = Vec::new();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for (orig, canon) in paired {
+        let is_descendant = kept_canons.iter().any(|parent| canon.starts_with(parent));
+        if is_descendant {
+            tracing::debug!(
+                path = %orig.display(),
+                "scan root is a descendant of another scan root; skipping to avoid duplicate extraction"
+            );
+            continue;
+        }
+        kept_canons.push(canon);
+        kept.push(orig);
+    }
+    kept
 }
 
 /// Test `rel` (forward-slash relative path) against each pattern, returning the
