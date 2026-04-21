@@ -55,10 +55,11 @@ impl ChunkStore {
     /// in Phase 3). Callers appending incrementally within a single extraction
     /// pass should track seen ids themselves if dedup matters mid-run.
     pub fn append(&mut self, chunk: &Chunk) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         let mut record = serde_json::to_string(chunk)
