@@ -225,6 +225,7 @@ mod tests {
             tokens_cache_read: 0,
             duration_ms: 500,
             flags: Flags::default(),
+            context: Default::default(),
         }
     }
 

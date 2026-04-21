@@ -602,6 +602,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     findings: sup_result.kept,
                                     usage: Default::default(),
                                     suppressed: sup_result.suppressed.len(),
+                                    context_telemetry: None,
                                 };
                                 return (idx, Ok((result, sup_result.suppressed)));
                             }
@@ -730,6 +731,55 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         let repo = first_file.and_then(review_log::detect_repo);
         let invoked_from = review_log::detect_invoked_from(opts.caller.as_deref());
         let sev_iter = all_findings.iter().map(|f| &f.severity);
+        // Merge per-file context telemetry into a single review-level
+        // record. Counts/durations are summed; thresholds/flags take the
+        // last populated value (all files share the same injector config,
+        // so they're identical in practice); ID lists are concatenated.
+        // When no file reported telemetry, default to semantic zeros
+        // (injector_available=false).
+        let mut context_telem = review_log::ContextTelemetry::default();
+        let mut any_telem = false;
+        for r in &file_results {
+            if let Some(t) = &r.context_telemetry {
+                any_telem = true;
+                context_telem.auto_inject_enabled = t.auto_inject_enabled;
+                context_telem.injector_available = t.injector_available;
+                context_telem.retrieved_chunk_count =
+                    context_telem.retrieved_chunk_count.saturating_add(t.retrieved_chunk_count);
+                context_telem.injected_chunk_count =
+                    context_telem.injected_chunk_count.saturating_add(t.injected_chunk_count);
+                context_telem.injected_tokens =
+                    context_telem.injected_tokens.saturating_add(t.injected_tokens);
+                context_telem.below_threshold_count =
+                    context_telem.below_threshold_count.saturating_add(t.below_threshold_count);
+                context_telem.adaptive_threshold_applied =
+                    context_telem.adaptive_threshold_applied || t.adaptive_threshold_applied;
+                context_telem.effective_prose_threshold = t.effective_prose_threshold;
+                context_telem
+                    .injected_chunk_ids
+                    .extend(t.injected_chunk_ids.iter().cloned());
+                for s in &t.injected_sources {
+                    if !context_telem.injected_sources.iter().any(|x| x == s) {
+                        context_telem.injected_sources.push(s.clone());
+                    }
+                }
+                context_telem.precedence_entries =
+                    context_telem.precedence_entries.saturating_add(t.precedence_entries);
+                context_telem.render_duration_ms =
+                    context_telem.render_duration_ms.saturating_add(t.render_duration_ms);
+                // Keep the first non-None hash; if any file rendered a
+                // block, we have a representative hash. When multiple
+                // files inject, they're distinct blocks — we expose the
+                // first one as a sample.
+                if context_telem.rendered_prompt_hash.is_none() && t.rendered_prompt_hash.is_some() {
+                    context_telem.rendered_prompt_hash = t.rendered_prompt_hash.clone();
+                }
+            }
+        }
+        if !any_telem {
+            context_telem = review_log::ContextTelemetry::default();
+        }
+
         let record = review_log::ReviewRecord {
             run_id: review_log::ReviewRecord::new_ulid(),
             timestamp: chrono::Utc::now(),
@@ -751,6 +801,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 parallel_n: opts.parallel as u32,
                 ensemble: opts.ensemble,
             },
+            context: context_telem,
         };
         if let Err(e) = review_log.record(&record) {
             eprintln!("Warning: failed to write review log: {}", e);

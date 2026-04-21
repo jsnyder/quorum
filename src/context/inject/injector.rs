@@ -7,6 +7,7 @@
 //! `Vec<ScoredChunk>` so tests can inject fakes.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::context::config::{ContextConfig, SourcesConfig};
 use crate::context::inject::plan::plan_injection;
@@ -16,6 +17,7 @@ use crate::context::retrieve::{
     resolve_precedence, Filters, PrecedenceLog, RetrievalQuery, ScoredChunk, SourceWeights,
 };
 use crate::context::types::ChunkKind;
+use crate::review_log::{hash_rendered_block, ContextTelemetry};
 
 /// Request shape that the review pipeline passes to the injector.
 ///
@@ -38,9 +40,35 @@ pub struct InjectionRequest {
 /// over an owned retriever + connection.
 pub type RetrieverFn = dyn Fn(&RetrievalQuery) -> anyhow::Result<Vec<ScoredChunk>> + Send + Sync;
 
-/// Trait that the pipeline calls. A `None` result means "no context to inject".
+/// Result of an injection attempt: the optional rendered block plus
+/// telemetry describing the retrieve→plan→render pass (always populated,
+/// even when `rendered` is `None`).
+#[derive(Debug, Clone, Default)]
+pub struct InjectionOutcome {
+    pub rendered: Option<String>,
+    pub telemetry: ContextTelemetry,
+}
+
+impl InjectionOutcome {
+    /// Outcome representing "auto_inject was disabled". Telemetry records
+    /// injector_available=true so dashboards can tell this apart from
+    /// "no injector wired at all".
+    pub fn disabled() -> Self {
+        Self {
+            rendered: None,
+            telemetry: ContextTelemetry {
+                auto_inject_enabled: false,
+                injector_available: true,
+                ..ContextTelemetry::default()
+            },
+        }
+    }
+}
+
+/// Trait that the pipeline calls. A `rendered = None` result means
+/// "no context to inject" — the telemetry is still populated.
 pub trait ContextInjectionSource: Send + Sync {
-    fn inject(&self, req: &InjectionRequest) -> Option<String>;
+    fn inject(&self, req: &InjectionRequest) -> InjectionOutcome;
 }
 
 /// Concrete injector that composes retrieve → precedence → plan → render.
@@ -80,9 +108,26 @@ impl ContextInjector {
 }
 
 impl ContextInjectionSource for ContextInjector {
-    fn inject(&self, req: &InjectionRequest) -> Option<String> {
+    fn inject(&self, req: &InjectionRequest) -> InjectionOutcome {
+        // Start the clock at the very top so retrieve+plan+render cost
+        // is measured end-to-end (including the auto_inject guard, which
+        // is negligible but consistent).
+        let started = Instant::now();
+
+        // Seed telemetry now; every early return mutates and ships it.
+        let mut tele = ContextTelemetry {
+            auto_inject_enabled: self.context.auto_inject,
+            injector_available: true,
+            effective_prose_threshold: self.context.inject_min_score,
+            ..ContextTelemetry::default()
+        };
+
         if !self.context.auto_inject {
-            return None;
+            tele.render_duration_ms = started.elapsed().as_millis() as u64;
+            return InjectionOutcome {
+                rendered: None,
+                telemetry: tele,
+            };
         }
 
         let query = RetrievalQuery {
@@ -102,11 +147,20 @@ impl ContextInjectionSource for ContextInjector {
                     file_path = %req.file_path,
                     "context injection retriever failed; skipping block"
                 );
-                return None;
+                tele.render_duration_ms = started.elapsed().as_millis() as u64;
+                return InjectionOutcome {
+                    rendered: None,
+                    telemetry: tele,
+                };
             }
         };
+        tele.retrieved_chunk_count = hits.len() as u32;
         if hits.is_empty() {
-            return None;
+            tele.render_duration_ms = started.elapsed().as_millis() as u64;
+            return InjectionOutcome {
+                rendered: None,
+                telemetry: tele,
+            };
         }
 
         // Precedence pass (dedupes duplicated qualified_names across sources).
@@ -115,6 +169,7 @@ impl ContextInjectionSource for ContextInjector {
         } else {
             resolve_precedence(hits, &self.weights)
         };
+        tele.precedence_entries = precedence_log.entries().len() as u32;
 
         let (symbols, prose): (Vec<_>, Vec<_>) = kept
             .into_iter()
@@ -122,15 +177,46 @@ impl ContextInjectionSource for ContextInjector {
 
         let token_counter = |s: &str| s.split_whitespace().count();
         let plan = plan_injection(symbols, prose, &self.context, &token_counter);
+        tele.below_threshold_count = plan.below_threshold_count as u32;
+        tele.effective_prose_threshold = plan.effective_prose_threshold;
+        tele.adaptive_threshold_applied = plan.adaptive_threshold_applied;
+
         if plan.injected.is_empty() {
-            return None;
+            tele.render_duration_ms = started.elapsed().as_millis() as u64;
+            return InjectionOutcome {
+                rendered: None,
+                telemetry: tele,
+            };
         }
 
+        // Capture injected IDs/sources BEFORE the move into the renderer.
+        tele.injected_chunk_count = plan.injected.len() as u32;
+        tele.injected_tokens = plan.token_count as u32;
+        tele.injected_chunk_ids = plan
+            .injected
+            .iter()
+            .map(|c| c.chunk.id.clone())
+            .collect();
+        let mut uniq_sources: Vec<String> = Vec::new();
+        for c in &plan.injected {
+            if !uniq_sources.iter().any(|s| s == &c.chunk.source) {
+                uniq_sources.push(c.chunk.source.clone());
+            }
+        }
+        tele.injected_sources = uniq_sources;
+
         let rendered = render_context_block(&plan, &NoStaleness, &precedence_log);
-        if rendered.trim().is_empty() {
+        let rendered_opt = if rendered.trim().is_empty() {
             None
         } else {
+            tele.rendered_prompt_hash = Some(hash_rendered_block(&rendered));
             Some(rendered)
+        };
+
+        tele.render_duration_ms = started.elapsed().as_millis() as u64;
+        InjectionOutcome {
+            rendered: rendered_opt,
+            telemetry: tele,
         }
     }
 }

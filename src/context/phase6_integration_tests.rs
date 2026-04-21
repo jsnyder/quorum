@@ -117,8 +117,9 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         text: "jwt validation signing key".to_string(),
     };
 
-    let out = injector
-        .inject(&req)
+    let outcome = injector.inject(&req);
+    let out = outcome
+        .rendered
         .expect("auto_inject=true should produce a block when hits exist");
     assert!(
         out.starts_with("# Context"),
@@ -128,6 +129,10 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         out.contains("verify_token"),
         "block should mention verify_token: {out}"
     );
+    assert!(outcome.telemetry.auto_inject_enabled);
+    assert!(outcome.telemetry.injector_available);
+    assert!(outcome.telemetry.injected_chunk_count > 0);
+    assert!(outcome.telemetry.rendered_prompt_hash.is_some());
 }
 
 #[test]
@@ -143,10 +148,14 @@ fn injector_returns_none_when_auto_inject_disabled() {
         text: "jwt validation signing key".to_string(),
     };
 
+    let outcome = injector.inject(&req);
     assert!(
-        injector.inject(&req).is_none(),
+        outcome.rendered.is_none(),
         "auto_inject=false must produce None"
     );
+    assert!(!outcome.telemetry.auto_inject_enabled);
+    assert!(outcome.telemetry.injector_available);
+    assert_eq!(outcome.telemetry.injected_chunk_count, 0);
 }
 
 #[test]
@@ -163,7 +172,7 @@ fn injector_returns_none_when_query_yields_no_hits() {
     };
 
     assert!(
-        injector.inject(&req).is_none(),
+        injector.inject(&req).rendered.is_none(),
         "empty query yields no hits -> None"
     );
 }
@@ -186,7 +195,7 @@ fn injector_returns_none_when_retriever_closure_returns_empty_vec() {
     };
 
     assert!(
-        injector.inject(&req).is_none(),
+        injector.inject(&req).rendered.is_none(),
         "retriever returning empty Vec -> None"
     );
 }
@@ -210,7 +219,7 @@ fn injector_returns_none_when_retriever_errors() {
     };
 
     assert!(
-        injector.inject(&req).is_none(),
+        injector.inject(&req).rendered.is_none(),
         "retriever error must yield None (fail-open, tracing::warn only)"
     );
 }

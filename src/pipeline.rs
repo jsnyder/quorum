@@ -73,6 +73,10 @@ pub struct FileReviewResult {
     pub findings: Vec<Finding>,
     pub usage: crate::llm_client::TokenUsage,
     pub suppressed: usize,
+    /// Context-injection telemetry for this file, if an injector was
+    /// wired. `None` when the pipeline ran without `context_injector`
+    /// (reviewers that don't support context, or the LLM-only paths).
+    pub context_telemetry: Option<crate::review_log::ContextTelemetry>,
 }
 
 pub struct PipelineConfig {
@@ -228,6 +232,9 @@ pub fn review_file(
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
+    // Populated inside the LLM branch when a context_injector is wired.
+    // Declared here so the final FileReviewResult construction can see it.
+    let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
 
     // Use pre-built shared index if available (parallel mode), otherwise build locally
     let shared_index = pipeline_config.feedback_index.clone();
@@ -366,24 +373,29 @@ pub fn review_file(
         // Optional `quorum context` injection (retrieve → plan → render).
         // When no injector is wired, this is a no-op and `context_block`
         // stays `None`, preserving byte-identical prompts.
-        let context_block = pipeline_config.context_injector.as_ref().and_then(|inj| {
-            let mut identifiers: Vec<String> = redacted_ctx
-                .callee_signatures
-                .iter()
-                .filter_map(|sig| extract_ident_from_signature(sig))
-                .collect();
-            identifiers.extend(redacted_ctx.import_targets.iter().cloned());
-            identifiers.sort();
-            identifiers.dedup();
-            let text_sample: String = redacted_code.chars().take(400).collect();
-            let req = crate::context::inject::InjectionRequest {
-                file_path: file_str.clone(),
-                language: Some(lang_name(lang).to_string()),
-                identifiers,
-                text: text_sample,
-            };
-            inj.inject(&req)
-        });
+        let context_block = match pipeline_config.context_injector.as_ref() {
+            Some(inj) => {
+                let mut identifiers: Vec<String> = redacted_ctx
+                    .callee_signatures
+                    .iter()
+                    .filter_map(|sig| extract_ident_from_signature(sig))
+                    .collect();
+                identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+                identifiers.sort();
+                identifiers.dedup();
+                let text_sample: String = redacted_code.chars().take(400).collect();
+                let req = crate::context::inject::InjectionRequest {
+                    file_path: file_str.clone(),
+                    language: Some(lang_name(lang).to_string()),
+                    identifiers,
+                    text: text_sample,
+                };
+                let outcome = inj.inject(&req);
+                context_telemetry = Some(outcome.telemetry);
+                outcome.rendered
+            }
+            None => None,
+        };
 
         let req = ReviewRequest {
             file_path: file_str.clone(),
@@ -516,6 +528,7 @@ pub fn review_file(
         findings: final_findings,
         usage: total_usage,
         suppressed: suppressed_count,
+        context_telemetry,
     })
 }
 
@@ -791,6 +804,7 @@ pub fn review_file_llm_only(
         findings: final_findings,
         usage: total_usage,
         suppressed: suppressed_count,
+        context_telemetry: None,
     })
 }
 
