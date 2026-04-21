@@ -20,8 +20,183 @@ pub enum Command {
     Serve,
     /// Run as daemon with file watching and warm caches
     Daemon(DaemonOpts),
+    /// Manage the review-context store (sources, index, retrieval)
+    Context(ContextOpts),
     /// Print version
     Version,
+}
+
+/// Top-level `quorum context` command. Wraps the nested subcommand so that
+/// argparse can keep the context surface area in a single enum.
+#[derive(Parser)]
+#[command(
+    about = "Manage the review-context store",
+    long_about = "Register source repositories or docs, index them for semantic retrieval, \
+                  and surface relevant chunks during review.\n\n\
+                  Examples:\n  \
+                    quorum context init\n  \
+                    quorum context add --name my-app --kind rust --path ./src\n  \
+                    quorum context index --all\n  \
+                    quorum context query \"how is auth done?\" --k 5"
+)]
+pub struct ContextOpts {
+    #[command(subcommand)]
+    pub command: ContextCommand,
+}
+
+#[derive(Subcommand)]
+pub enum ContextCommand {
+    /// Create ~/.quorum/sources.toml with a default empty config.
+    ///
+    /// Example: quorum context init
+    Init,
+
+    /// Register a new source (local path or git repo).
+    ///
+    /// Example: quorum context add --name myapp --kind rust --path ./src
+    Add(ContextAddOpts),
+
+    /// List registered sources.
+    ///
+    /// Example: quorum context list --json
+    List(ContextListOpts),
+
+    /// Extract + embed one or all registered sources.
+    ///
+    /// Example: quorum context index --source myapp
+    Index(ContextIndexOpts),
+
+    /// Re-index sources that have drifted since last extract.
+    ///
+    /// Example: quorum context refresh --all
+    Refresh(ContextRefreshOpts),
+
+    /// Semantic search across indexed chunks.
+    ///
+    /// Example: quorum context query "token refresh" --k 5
+    Query(ContextQueryOpts),
+
+    /// Remove per-source artefacts for sources no longer in sources.toml.
+    ///
+    /// Example: quorum context prune --dry-run
+    Prune(ContextPruneOpts),
+
+    /// Run health checks on the context store.
+    ///
+    /// Example: quorum context doctor --json
+    Doctor(ContextDoctorOpts),
+}
+
+#[derive(Parser)]
+pub struct ContextAddOpts {
+    /// Short unique name for the source (used as a directory key).
+    #[arg(long)]
+    pub name: String,
+
+    /// Source kind: rust, typescript, javascript, python, go, terraform, service, docs.
+    #[arg(long)]
+    pub kind: String,
+
+    /// Local filesystem path to the source. Mutually exclusive with --git.
+    #[arg(long, conflicts_with = "git")]
+    pub path: Option<PathBuf>,
+
+    /// Git URL for a remote source. Mutually exclusive with --path.
+    #[arg(long, conflicts_with = "path")]
+    pub git: Option<String>,
+
+    /// Optional git rev (branch, tag, sha) to pin when --git is set.
+    #[arg(long, requires = "git")]
+    pub rev: Option<String>,
+
+    /// Relative weight (higher floats further in retrieval).
+    #[arg(long)]
+    pub weight: Option<i32>,
+
+    /// Glob to exclude from extraction (repeatable).
+    #[arg(long = "ignore")]
+    pub ignore: Vec<String>,
+}
+
+#[derive(Parser)]
+pub struct ContextListOpts {
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact single-line-per-source output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextIndexOpts {
+    /// Index a single named source. Mutually exclusive with --all.
+    #[arg(long, conflicts_with = "all")]
+    pub source: Option<String>,
+
+    /// Index every registered source.
+    #[arg(long, conflicts_with = "source")]
+    pub all: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextRefreshOpts {
+    /// Refresh a single named source. Mutually exclusive with --all.
+    #[arg(long, conflicts_with = "all")]
+    pub source: Option<String>,
+
+    /// Refresh every registered source.
+    #[arg(long, conflicts_with = "source")]
+    pub all: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextQueryOpts {
+    /// Natural-language query text.
+    pub text: String,
+
+    /// Restrict results to a single source.
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Return up to this many chunks.
+    #[arg(long)]
+    pub k: Option<usize>,
+
+    /// Include per-chunk scoring details.
+    #[arg(long)]
+    pub explain: bool,
+
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact token-efficient output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextPruneOpts {
+    /// Report what would be removed without touching the filesystem.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextDoctorOpts {
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact tab-separated output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+
+    /// Apply best-effort fixes for any fixable failures.
+    #[arg(long)]
+    pub repair: bool,
 }
 
 #[derive(Parser)]

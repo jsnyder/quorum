@@ -187,11 +187,161 @@ async fn main() -> anyhow::Result<()> {
             run_daemon(opts).await?;
         }
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
+        cli::Command::Context(opts) => std::process::exit(run_context(opts)),
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
     }
     Ok(())
+}
+
+/// Translate clap args for `quorum context ...` into a `ContextCmd` and run
+/// it against `ProdDeps`. Prints stdout to stdout, warnings (one per line)
+/// to stderr. Exit code: 0 on success (unless `doctor` reports any failing
+/// check, in which case 1), 1 on handler error.
+fn run_context(opts: cli::ContextOpts) -> i32 {
+    use context::cli::{
+        run_context_cmd, AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat,
+        IndexArgs, ListArgs, ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat,
+        RefreshArgs, SourceSelector,
+    };
+    use std::io::Write;
+
+    // Map `--source X` / `--all` / neither into a SourceSelector. The default
+    // when both are absent is `All` to match the handler's natural semantics
+    // (bulk ops over every registered source).
+    fn selector(source: Option<String>, all: bool) -> SourceSelector {
+        if all {
+            SourceSelector::All
+        } else if let Some(name) = source {
+            SourceSelector::Single(name)
+        } else {
+            SourceSelector::All
+        }
+    }
+
+    let is_doctor = matches!(opts.command, cli::ContextCommand::Doctor(_));
+
+    let cmd = match opts.command {
+        cli::ContextCommand::Init => ContextCmd::Init,
+        cli::ContextCommand::Add(a) => {
+            let location = match (a.path, a.git) {
+                (Some(p), None) => AddLocation::Path(p),
+                (None, Some(url)) => AddLocation::Git { url, rev: a.rev },
+                (Some(_), Some(_)) => {
+                    eprintln!("error: --path and --git are mutually exclusive");
+                    return 1;
+                }
+                (None, None) => {
+                    eprintln!("error: one of --path or --git is required");
+                    return 1;
+                }
+            };
+            ContextCmd::Add(AddArgs {
+                name: a.name,
+                kind: a.kind,
+                location,
+                weight: a.weight,
+                ignore: a.ignore,
+            })
+        }
+        cli::ContextCommand::List(l) => {
+            let format = if l.json {
+                ListFormat::Json
+            } else if l.compact {
+                ListFormat::Compact
+            } else {
+                ListFormat::Human
+            };
+            ContextCmd::List(ListArgs { format })
+        }
+        cli::ContextCommand::Index(i) => {
+            ContextCmd::Index(IndexArgs { selector: selector(i.source, i.all) })
+        }
+        cli::ContextCommand::Refresh(r) => {
+            ContextCmd::Refresh(RefreshArgs { selector: selector(r.source, r.all) })
+        }
+        cli::ContextCommand::Query(q) => {
+            let format = if q.json {
+                QueryFormat::Json
+            } else if q.compact {
+                QueryFormat::Compact
+            } else {
+                QueryFormat::Table
+            };
+            ContextCmd::Query(QueryArgs {
+                text: q.text,
+                source: q.source,
+                k: q.k,
+                explain: q.explain,
+                format,
+            })
+        }
+        cli::ContextCommand::Prune(p) => ContextCmd::Prune(PruneArgs { dry_run: p.dry_run }),
+        cli::ContextCommand::Doctor(d) => {
+            let format = if d.json {
+                DoctorFormat::Json
+            } else if d.compact {
+                DoctorFormat::Compact
+            } else {
+                DoctorFormat::Table
+            };
+            ContextCmd::Doctor(DoctorArgs { format, repair: d.repair })
+        }
+    };
+
+    let deps = match ProdDeps::from_env() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 1;
+        }
+    };
+
+    match run_context_cmd(&cmd, &deps) {
+        Ok(out) => {
+            // Match the signal-safe stdout pattern used elsewhere: write via
+            // a locked handle and flush. We deliberately ignore write errors
+            // (e.g. BrokenPipe from `| head`) so exit code reflects the
+            // handler result rather than the downstream consumer.
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let _ = handle.write_all(out.stdout.as_bytes());
+            if !out.stdout.is_empty() && !out.stdout.ends_with('\n') {
+                let _ = handle.write_all(b"\n");
+            }
+            let _ = handle.flush();
+            for w in &out.warnings {
+                eprintln!("{}", w);
+            }
+            // `doctor` renders its own overall status into stdout. Re-parse
+            // that one signal (JSON `"ok": false`, table `overall: fail`,
+            // or compact `fail\t...` rows) to set the exit code without
+            // changing the handler's CmdOutput contract.
+            if is_doctor && doctor_reports_fail(&out.stdout) {
+                return 1;
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            1
+        }
+    }
+}
+
+/// Detect whether a rendered `context doctor` payload reports any failing
+/// check. Accepts all three output formats (json/table/compact).
+fn doctor_reports_fail(stdout: &str) -> bool {
+    if stdout.contains("\"ok\": false") || stdout.contains("\"ok\":false") {
+        return true;
+    }
+    if stdout.contains("\noverall: fail") || stdout.starts_with("overall: fail") {
+        return true;
+    }
+    // Compact: one status per line, tab-separated. A leading "fail\t" marks
+    // a failing check row.
+    stdout.lines().any(|l| l.starts_with("fail\t"))
 }
 
 async fn run_mcp_server() -> anyhow::Result<()> {
