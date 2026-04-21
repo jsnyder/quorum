@@ -76,8 +76,10 @@ pub fn build_production_injector(
         }
     })?;
 
-    // Stringify the db path for the closure — `&Path` isn't `'static`.
-    let db_str = db_path.to_string_lossy().into_owned();
+    // Own the db path directly so non-UTF-8 bytes (rare on macOS/Linux but
+    // legal on ext4/APFS) survive the hand-off into the `'static` closure
+    // without going through `to_string_lossy`.
+    let db_path_owned = db_path;
     let src_for_filter = src_name.clone();
 
     let retriever: Arc<RetrieverFn> =
@@ -87,7 +89,7 @@ pub fn build_production_injector(
             // leg of retrieval errors with `no such module: vec0`.
             ensure_vec_loaded();
             let conn = Connection::open_with_flags(
-                &db_str,
+                &db_path_owned,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                     | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             )?;
