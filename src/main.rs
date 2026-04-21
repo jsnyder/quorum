@@ -10,6 +10,7 @@ mod calibrator;
 mod calibrator_trace;
 mod cli;
 mod config;
+mod context;
 mod context_enrichment;
 mod daemon;
 mod dimensions;
