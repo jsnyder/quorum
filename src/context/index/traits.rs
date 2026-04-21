@@ -62,7 +62,7 @@ pub trait Embedder: Send + Sync {
 /// NOT meant for production retrieval quality — purely a stable stand-in so
 /// index tests don't load fastembed in CI.
 pub struct HashEmbedder {
-    pub dim: usize,
+    dim: usize,
 }
 
 impl HashEmbedder {
