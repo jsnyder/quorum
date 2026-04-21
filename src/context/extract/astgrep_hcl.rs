@@ -276,24 +276,33 @@ fn find_description<D: ast_grep_core::Doc>(
         if attr.kind().as_ref() != "attribute" {
             continue;
         }
-        // Attribute structure: identifier = expression
-        let ident = attr
-            .children()
-            .find(|c| c.kind().as_ref() == "identifier")?;
+        // Attribute structure: identifier = expression. Use `continue` (not
+        // `?`) on structural mismatches so a malformed earlier attribute does
+        // not mask a later valid `description`.
+        let Some(ident) = attr.children().find(|c| c.kind().as_ref() == "identifier") else {
+            continue;
+        };
         if ident.text().as_ref() != "description" {
             continue;
         }
-        let expr = attr.children().find(|c| c.kind().as_ref() == "expression")?;
+        let Some(expr) = attr.children().find(|c| c.kind().as_ref() == "expression") else {
+            continue;
+        };
         if let Some(s) = first_string_literal(&expr, src) {
             return Some(s);
         }
+        // Found `description = <non-simple>`: don't keep scanning — a block
+        // should only ever have one `description` attribute.
         return None;
     }
     None
 }
 
-/// Walk an expression looking for a simple string literal; return its unquoted
-/// content. Skips heredocs (starting with `<<`).
+/// Accept only a *simple* string literal value: `expression > literal_value >
+/// string_lit`. Function calls (`upper("x")`), binary ops (`"a" + "b"`),
+/// template expressions (`"pre-${x}"`) and heredocs (`<<EOT ... EOT`) all
+/// return `None` so the caller falls back to body text instead of pulling
+/// a misleading inner string.
 fn first_string_literal<D: ast_grep_core::Doc>(
     expr: &ast_grep_core::Node<'_, D>,
     src: &str,
@@ -303,22 +312,46 @@ fn first_string_literal<D: ast_grep_core::Doc>(
     if text.starts_with("<<") {
         return None;
     }
-    // The common shape is expression > literal_value > string_lit. Look for a
-    // descendant string_lit and unquote it.
-    fn find_string_lit<'a, D: ast_grep_core::Doc>(
-        n: &ast_grep_core::Node<'a, D>,
-    ) -> Option<ast_grep_core::Node<'a, D>> {
-        if n.kind().as_ref() == "string_lit" {
-            return Some(n.clone());
-        }
-        for c in n.children() {
-            if let Some(f) = find_string_lit(&c) {
-                return Some(f);
-            }
-        }
-        None
+
+    // Shallow walk only. Accept:
+    //   expression -> string_lit
+    //   expression -> literal_value -> string_lit
+    // Reject anything else (function_call, binary_operation, template_expr,
+    // conditional, etc.).
+    let mut direct = expr.children().filter(|c| {
+        let k = c.kind();
+        let kind = k.as_ref();
+        // Some HCL grammars emit whitespace/comment nodes as children; skip
+        // them so we see only the real expression shape.
+        kind != "comment" && !kind.trim().is_empty()
+    });
+    let first = direct.next()?;
+    if direct.next().is_some() {
+        // More than one significant child means this isn't a simple literal
+        // (e.g. binary op `"a" + "b"`).
+        return None;
     }
-    let lit = find_string_lit(expr)?;
+
+    let lit = match first.kind().as_ref() {
+        "string_lit" => first,
+        "literal_value" => {
+            let mut inner = first.children().filter(|c| {
+                let k = c.kind();
+                let kind = k.as_ref();
+                kind != "comment" && !kind.trim().is_empty()
+            });
+            let only = inner.next()?;
+            if inner.next().is_some() {
+                return None;
+            }
+            if only.kind().as_ref() != "string_lit" {
+                return None;
+            }
+            only
+        }
+        _ => return None,
+    };
+
     Some(unquote_string_lit(lit.text().as_ref()))
 }
 

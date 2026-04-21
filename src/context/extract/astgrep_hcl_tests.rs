@@ -194,6 +194,109 @@ variable \"foo\" {
 }
 
 #[test]
+fn description_from_function_call_is_ignored() {
+    let src = "\
+variable \"x\" {
+  description = upper(\"not accepted\")
+  default     = \"d\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    // The inner string must not be surfaced as a clean description value.
+    // We reject by checking we fell through to body fallback (which contains
+    // the word `default` from the second attribute and the raw attribute
+    // text, not just the plucked inner string).
+    assert_ne!(
+        v.content.trim(),
+        "not accepted",
+        "must not pluck inner string from function call"
+    );
+    assert!(
+        v.content.contains("default"),
+        "expected fallback body content to include later attributes; got {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn description_from_template_interpolation_is_ignored() {
+    // HCL has no binary `+` on strings; the natural concat is template
+    // interpolation. The inner string literal inside a template_expr must
+    // not be surfaced as the description.
+    let src = "\
+variable \"x\" {
+  description = \"a-${var.env}-b\"
+  type        = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    // A template with interpolation should not be mistaken for a simple
+    // literal. Accept either: fall through to body content, OR accept the
+    // whole template text verbatim. What we must reject is cherry-picking
+    // just `a-` or `-b`.
+    let c = &v.content;
+    assert!(
+        !(c.trim() == "a-" || c.trim() == "-b"),
+        "must not extract a bare inner fragment; got {:?}",
+        c
+    );
+    assert!(
+        c.contains("type") || c.contains("a-${var.env}-b"),
+        "expected body fallback or full template text; got {:?}",
+        c
+    );
+}
+
+#[test]
+fn description_extracted_despite_prior_attribute() {
+    // `type` comes before `description`. Extractor should still find the
+    // description even if the earlier attribute has a non-string value.
+    let src = "\
+variable \"x\" {
+  type        = string
+  description = \"The real description\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    assert!(
+        v.content.contains("The real description"),
+        "description should be found after earlier attribute; got {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn simple_string_description_regression() {
+    let src = "\
+variable \"x\" {
+  description = \"simple\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    assert!(
+        v.content.contains("simple"),
+        "simple string description must still work; got {:?}",
+        v.content
+    );
+}
+
+#[test]
 fn same_named_resources_with_different_types() {
     let src = "\
 resource \"aws_vpc\" \"main\" {
