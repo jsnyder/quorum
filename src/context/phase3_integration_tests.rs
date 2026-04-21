@@ -57,16 +57,25 @@ fn extracted_chunks_become_queryable_via_fts_and_vec() {
         .unwrap();
     assert_eq!(total as usize, extracted.chunks.len());
 
-    let fts_hits: Vec<String> = conn
-        .prepare("SELECT id FROM chunks_fts WHERE chunks_fts MATCH 'verify_token'")
+    let fts_rows: Vec<(String, String)> = conn
+        .prepare("SELECT id, content FROM chunks_fts WHERE chunks_fts MATCH 'verify_token'")
         .unwrap()
-        .query_map([], |r| r.get::<_, String>(0))
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
+    assert!(!fts_rows.is_empty());
     assert!(
-        fts_hits.iter().any(|id| id.contains("verify_token")),
-        "expected FTS hit for verify_token, got {fts_hits:?}"
+        fts_rows
+            .iter()
+            .any(|(id, _)| id.contains("verify_token")),
+        "expected FTS hit id containing verify_token, got {fts_rows:?}"
+    );
+    assert!(
+        fts_rows
+            .iter()
+            .any(|(_, content)| content.to_lowercase().contains("verify_token")),
+        "expected at least one FTS match with verify_token in content, got {fts_rows:?}"
     );
 
     let vec_total: i64 = conn
@@ -162,4 +171,14 @@ fn rebuild_of_same_source_replaces_prior_vectors() {
         .query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))
         .unwrap();
     assert_eq!(total as usize, extracted.chunks.len());
+
+    let vec_total: i64 = conn
+        .query_row("SELECT count(*) FROM chunks_vec", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(vec_total as usize, extracted.chunks.len());
+
+    let fts_total: i64 = conn
+        .query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fts_total as usize, extracted.chunks.len());
 }
