@@ -98,11 +98,13 @@ pub struct ContextAddOpts {
     pub kind: String,
 
     /// Local filesystem path to the source. Mutually exclusive with --git.
-    #[arg(long, conflicts_with = "git")]
+    /// Exactly one of --path or --git is required.
+    #[arg(long, conflicts_with = "git", required_unless_present = "git")]
     pub path: Option<PathBuf>,
 
     /// Git URL for a remote source. Mutually exclusive with --path.
-    #[arg(long, conflicts_with = "path")]
+    /// Exactly one of --path or --git is required.
+    #[arg(long, conflicts_with = "path", required_unless_present = "path")]
     pub git: Option<String>,
 
     /// Optional git rev (branch, tag, sha) to pin when --git is set.
