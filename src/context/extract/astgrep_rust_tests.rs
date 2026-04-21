@@ -166,6 +166,44 @@ mod b { pub fn foo() {} }
 }
 
 #[test]
+fn content_combines_docs_and_signature() {
+    let src = r#"
+/// Validates a JWT.
+pub fn verify_token(x: &str) -> bool { true }
+"#;
+    let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
+    let c = &chunks[0];
+    assert!(c.content.contains("Validates a JWT"));
+    assert!(c.content.contains("pub fn verify_token"));
+}
+
+#[test]
+fn module_inner_doc_is_not_attached_to_next_item() {
+    let src = r#"
+//! Module-level docs.
+
+pub fn foo() {}
+"#;
+    let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
+    let foo = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("foo"))
+        .unwrap();
+    assert!(!foo.content.contains("Module-level docs"));
+}
+
+#[test]
+fn signature_survives_brace_inside_attribute() {
+    let src = r##"
+#[doc = "example { brace"]
+pub fn foo() {}
+"##;
+    let chunks = extract_rust(src, "x.rs", "s", "c", when()).unwrap();
+    let foo = &chunks[0];
+    assert!(foo.signature.as_ref().unwrap().contains("pub fn foo"));
+}
+
+#[test]
 fn mini_rust_token_rs_fixture_extracts_verify_token() {
     let src =
         std::fs::read_to_string("tests/fixtures/context/repos/mini-rust/src/token.rs").unwrap();
