@@ -81,7 +81,19 @@ impl QuorumHandler {
     }
 
     fn handle_feedback(&self, params: FeedbackTool) -> Result<CallToolResult, String> {
-        let verdict = match params.verdict.to_lowercase().as_str() {
+        let verdict_lower = params.verdict.to_lowercase();
+        // `blamed_chunks` is only meaningful for `context_misleading`. Reject
+        // callers that pass it with any other verdict — silent acceptance
+        // would discard real data without telling the caller.
+        if verdict_lower.as_str() != "context_misleading"
+            && params.blamed_chunks.as_ref().is_some_and(|v| !v.is_empty())
+        {
+            return Err(format!(
+                "blamed_chunks is only valid with verdict='context_misleading' (got '{}')",
+                params.verdict
+            ));
+        }
+        let verdict = match verdict_lower.as_str() {
             "tp" => Verdict::Tp,
             "fp" => Verdict::Fp,
             "partial" => Verdict::Partial,
@@ -483,6 +495,40 @@ mod tests {
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn feedback_handler_rejects_blamed_chunks_with_non_context_misleading_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/foo.rs".into(),
+            finding: "whatever".into(),
+            verdict: "tp".into(),
+            reason: "r".into(),
+            model: None,
+            blamed_chunks: Some(vec!["chunk-x".into()]),
+        };
+
+        let err = handler.handle_feedback(params).expect_err("must reject");
+        assert!(
+            err.contains("blamed_chunks is only valid"),
+            "error must explain the constraint: {err}"
+        );
+        // Nothing must have been persisted.
+        let store = FeedbackStore::new(path);
+        assert_eq!(store.load_all().unwrap().len(), 0);
     }
 
     #[test]

@@ -405,8 +405,14 @@ pub fn parse_blamed_chunks(raw: Option<&str>) -> anyhow::Result<Vec<String>> {
     let Some(s) = raw else {
         return Ok(Vec::new());
     };
+    // Explicit empty / whitespace-only --blamed-chunks "" is rejected: the
+    // flag was present, so the user meant something. If the intent is "no
+    // chunks blamed", omit the flag entirely (parse_blamed_chunks(None)
+    // returns Ok(vec![])).
     if s.trim().is_empty() {
-        return Ok(Vec::new());
+        anyhow::bail!(
+            "--blamed-chunks was provided but is empty; omit the flag if no chunks are blamed"
+        );
     }
     let mut out = Vec::new();
     for part in s.split(',') {
@@ -635,10 +641,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_blamed_chunks_blank_string_returns_empty_vec() {
-        // A user passing `--blamed-chunks ""` is treated the same as omission.
-        assert_eq!(parse_blamed_chunks(Some("")).unwrap(), Vec::<String>::new());
-        assert_eq!(parse_blamed_chunks(Some("   ")).unwrap(), Vec::<String>::new());
+    fn parse_blamed_chunks_blank_string_is_rejected() {
+        // Explicit `--blamed-chunks ""` is a user mistake, not shorthand for
+        // "no chunks" — omit the flag entirely for that semantic.
+        assert!(parse_blamed_chunks(Some("")).is_err());
+        assert!(parse_blamed_chunks(Some("   ")).is_err());
     }
 
     #[test]
