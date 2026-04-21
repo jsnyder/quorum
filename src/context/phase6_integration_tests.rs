@@ -257,3 +257,108 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
         "healthy-but-empty retriever must NOT set retriever_errored"
     );
 }
+
+#[test]
+fn end_to_end_review_with_context_injection_logs_telemetry() {
+    // End-to-end wiring check: a pipeline configured with a real
+    // `ContextInjector` (backed by the mini-rust fixture index) must produce
+    // a `FileReviewResult` whose `context_telemetry` is non-default, and
+    // that telemetry must round-trip through a `ReviewRecord` written to
+    // reviews.jsonl in a tempdir.
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    use crate::parser::{self, Language};
+    use crate::pipeline::{review_file, PipelineConfig};
+    use crate::review_log::{Flags, ReviewLog, ReviewRecord, SeverityCounts};
+    use crate::test_support::fakes::FakeReviewer;
+
+    // 1. Index the mini-rust fixture and wire a real ContextInjector.
+    let harness = build_harness("mini-rust");
+    // Budget 50 mirrors the working phase6 injector test — with a small
+    // budget the 40% floor is easy to clear on the mini-rust fixture.
+    let sources = sources_config("mini-rust", 50, true);
+    let injector = ContextInjector::new(&sources, retriever_closure(&harness));
+
+    // 2. Build the pipeline with a fake LLM that returns an empty findings
+    //    list (well-formed JSON) and the injector wired in.
+    let llm = FakeReviewer::always("[]");
+    let config = PipelineConfig {
+        models: vec!["test-model".into()],
+        auto_calibrate: false,
+        skip_context7: true,
+        context_injector: Some(Arc::new(injector)),
+        ..Default::default()
+    };
+
+    // 3. Review a synthetic rust source that mentions `verify_token` — a
+    //    symbol known to live in the fixture — so retrieval returns hits.
+    //    The `verify_token` call surfaces as a hydrated callee signature,
+    //    which the pipeline turns into a retrieval identifier.
+    let source = "fn verify_token(t: &str) -> bool { !t.is_empty() }\n\
+                  pub fn check(t: &str) -> bool { verify_token(t) }\n";
+    let tree = parser::parse(source, Language::Rust).unwrap();
+    let result = review_file(
+        Path::new("src/auth.rs"),
+        source,
+        Language::Rust,
+        &tree,
+        Some(&llm),
+        &config,
+    )
+    .unwrap();
+
+    let tele = result
+        .context_telemetry
+        .expect("context_injector wired -> FileReviewResult must carry telemetry");
+    assert!(tele.auto_inject_enabled, "auto_inject=true in config");
+    assert!(tele.injector_available);
+    assert!(!tele.retriever_errored);
+    assert!(tele.injected_chunk_count > 0, "retrieve+plan delivered chunks");
+    assert!(tele.rendered_prompt_hash.is_some(), "render hash present");
+    assert!(!tele.injected_chunk_ids.is_empty(), "chunk ids recorded");
+    assert!(
+        tele.injected_chunk_ids
+            .iter()
+            .any(|id| id.contains("verify_token") || id.contains("token")),
+        "expected at least one injected chunk id to mention the indexed symbol, got {:?}",
+        tele.injected_chunk_ids,
+    );
+
+    // 4. Build a ReviewRecord carrying this telemetry and persist it to a
+    //    tempdir reviews.jsonl (avoids touching ~/.quorum/).
+    let dir = TempDir::new().unwrap();
+    let log = ReviewLog::new(dir.path().join("reviews.jsonl"));
+    let record = ReviewRecord {
+        run_id: ReviewRecord::new_ulid(),
+        timestamp: chrono::Utc::now(),
+        quorum_version: env!("CARGO_PKG_VERSION").to_string(),
+        repo: Some("phase6-e2e".into()),
+        invoked_from: "test".into(),
+        model: "test-model".into(),
+        files_reviewed: 1,
+        lines_added: None,
+        lines_removed: None,
+        findings_by_severity: SeverityCounts::default(),
+        suppressed_by_rule: Default::default(),
+        tokens_in: 0,
+        tokens_out: 0,
+        tokens_cache_read: 0,
+        duration_ms: 0,
+        flags: Flags::default(),
+        context: tele.clone(),
+    };
+    log.record(&record).unwrap();
+
+    // 5. Read back: exactly one record, context block round-trips intact.
+    let loaded = log.load_all().unwrap();
+    assert_eq!(loaded.len(), 1, "exactly one record written");
+    let back = &loaded[0].context;
+    assert!(back.auto_inject_enabled);
+    assert!(back.injector_available);
+    assert!(!back.retriever_errored);
+    assert!(back.injected_chunk_count > 0);
+    assert!(back.rendered_prompt_hash.is_some());
+    assert_eq!(back.injected_chunk_ids, tele.injected_chunk_ids);
+}
