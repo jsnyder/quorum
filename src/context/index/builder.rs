@@ -10,8 +10,31 @@ use std::sync::OnceLock;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::traits::{Clock, Embedder};
+use crate::context::store::{ChunkStore, LoadError};
+use crate::context::types::Chunk;
+
+/// Summary of a single-source rebuild.
+#[derive(Debug, Default)]
+pub struct RebuildReport {
+    pub source: String,
+    pub chunks_loaded: usize,
+    pub chunks_embedded: usize,
+    pub chunks_inserted: usize,
+    pub prior_source_chunks_removed: usize,
+    pub parse_errors: Vec<LoadError>,
+}
 
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// Pack a `Vec<f32>` as the little-endian byte blob expected by sqlite-vec's
+/// `vec0` virtual table.
+fn f32_vec_to_le_bytes(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
 
 static VEC_INIT: OnceLock<()> = OnceLock::new();
 
@@ -100,6 +123,142 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
     #[allow(dead_code)]
     pub(crate) fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+
+    /// Full rebuild for a single source: truncate the source's rows in
+    /// `chunks`/`chunks_fts`/`chunks_vec`, lenient-load all chunks from the
+    /// jsonl, embed each, and bulk-insert. Atomic: any failure rolls back all
+    /// changes made by this call.
+    ///
+    /// Chunks whose `source` field differs from `source_name` are rejected and
+    /// counted in `parse_errors`.
+    pub fn rebuild_from_jsonl(
+        &mut self,
+        source_name: &str,
+        jsonl_path: &Path,
+    ) -> anyhow::Result<RebuildReport> {
+        let load = ChunkStore::load_all_lenient(jsonl_path)?;
+        let mut parse_errors = load.errors;
+
+        let (matching, mismatched): (Vec<Chunk>, Vec<Chunk>) = load
+            .chunks
+            .into_iter()
+            .partition(|c| c.source == source_name);
+
+        for bad in &mismatched {
+            parse_errors.push(LoadError {
+                line_number: 0,
+                message: format!(
+                    "chunk '{}' belongs to source '{}', not '{}'",
+                    bad.id, bad.source, source_name
+                ),
+            });
+        }
+
+        let mut report = RebuildReport {
+            source: source_name.to_string(),
+            chunks_loaded: matching.len(),
+            parse_errors,
+            ..RebuildReport::default()
+        };
+
+        // Pre-embed outside the transaction so embedding failures don't force
+        // a rollback of a no-op transaction. Empty content is skipped
+        // defensively (validate() rejects it at ingest).
+        let mut embedded: Vec<(Chunk, Vec<f32>)> = Vec::with_capacity(matching.len());
+        for chunk in matching {
+            if chunk.content.is_empty() {
+                continue;
+            }
+            let vec = self.embedder.embed(&chunk.content);
+            embedded.push((chunk, vec));
+        }
+        report.chunks_embedded = embedded.len();
+
+        let tx = self.conn.transaction()?;
+
+        let prior_removed = {
+            let mut del_vec = tx.prepare(
+                "DELETE FROM chunks_vec WHERE id IN (SELECT id FROM chunks WHERE source = ?1)",
+            )?;
+            del_vec.execute(params![source_name])?;
+
+            let mut del_fts = tx.prepare(
+                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE source = ?1)",
+            )?;
+            del_fts.execute(params![source_name])?;
+
+            let mut del_chunks = tx.prepare("DELETE FROM chunks WHERE source = ?1")?;
+            del_chunks.execute(params![source_name])?
+        };
+        report.prior_source_chunks_removed = prior_removed;
+
+        {
+            let mut ins_chunk = tx.prepare(
+                "INSERT INTO chunks (
+                    id, source, kind, subtype, qualified_name, signature, content,
+                    source_path, line_start, line_end, commit_sha, indexed_at,
+                    source_version, language, is_exported, neighboring_symbols,
+                    extractor, confidence, source_uri
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                )",
+            )?;
+            let mut ins_fts = tx.prepare(
+                "INSERT INTO chunks_fts (id, content, qualified_name, signature)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let mut ins_vec = tx.prepare(
+                "INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)",
+            )?;
+
+            for (chunk, vec) in &embedded {
+                let kind_str = serde_json::to_value(&chunk.kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                let neighbors_json =
+                    serde_json::to_string(&chunk.metadata.neighboring_symbols)?;
+                let indexed_at = chunk.metadata.indexed_at.to_rfc3339();
+
+                ins_chunk.execute(params![
+                    chunk.id,
+                    chunk.source,
+                    kind_str,
+                    chunk.subtype,
+                    chunk.qualified_name,
+                    chunk.signature,
+                    chunk.content,
+                    chunk.metadata.source_path,
+                    chunk.metadata.line_range.start(),
+                    chunk.metadata.line_range.end(),
+                    chunk.metadata.commit_sha,
+                    indexed_at,
+                    chunk.metadata.source_version,
+                    chunk.metadata.language,
+                    i32::from(chunk.metadata.is_exported),
+                    neighbors_json,
+                    chunk.provenance.extractor(),
+                    chunk.provenance.confidence(),
+                    chunk.provenance.source_uri(),
+                ])?;
+
+                ins_fts.execute(params![
+                    chunk.id,
+                    chunk.content,
+                    chunk.qualified_name.clone().unwrap_or_default(),
+                    chunk.signature.clone().unwrap_or_default(),
+                ])?;
+
+                let bytes = f32_vec_to_le_bytes(vec);
+                ins_vec.execute(params![chunk.id, bytes])?;
+            }
+        }
+
+        report.chunks_inserted = embedded.len();
+        tx.commit()?;
+        Ok(report)
     }
 
     fn open_with_vec(db_path: &Path) -> rusqlite::Result<Connection> {
