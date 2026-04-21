@@ -17,19 +17,31 @@ static VEC_INIT: OnceLock<()> = OnceLock::new();
 
 /// Register the sqlite-vec extension as an auto-extension so every subsequent
 /// `Connection::open` loads `vec0`. Idempotent and thread-safe.
+///
+/// Safety note on the transmute below: the `sqlite-vec` crate (v0.1.x)
+/// declares `sqlite3_vec_init` as `extern "C" fn()` with no arguments in its
+/// Rust bindings, but the underlying C symbol produced by the amalgamation
+/// actually implements the standard SQLite extension entrypoint
+/// `int sqlite3_vec_init(sqlite3*, char**, const sqlite3_api_routines*)`.
+/// The no-arg Rust declaration is a convenience lie; the real C ABI matches
+/// `ExtInit`. This is the exact pattern documented in sqlite-vec's own
+/// rusqlite test (see crate `tests` module). We verify the source pointer
+/// via a `cast`-then-typed-binding so any future ABI divergence (e.g. the
+/// crate switches to a correct signature) surfaces as a type error rather
+/// than silent UB.
 fn ensure_vec_loaded() {
+    type ExtInit = unsafe extern "C" fn(
+        *mut rusqlite::ffi::sqlite3,
+        *mut *mut std::os::raw::c_char,
+        *const rusqlite::ffi::sqlite3_api_routines,
+    ) -> std::os::raw::c_int;
+
     VEC_INIT.get_or_init(|| unsafe {
-        // The exported `sqlite3_vec_init` has a no-arg signature in the
-        // `sqlite-vec` crate, but `sqlite3_auto_extension` expects the real
-        // 3-arg extension init signature. Transmute via a raw pointer — this
-        // matches the pattern documented by sqlite-vec's own tests.
-        type ExtInit = unsafe extern "C" fn(
-            *mut rusqlite::ffi::sqlite3,
-            *mut *mut std::os::raw::c_char,
-            *const rusqlite::ffi::sqlite3_api_routines,
-        ) -> std::os::raw::c_int;
-        let init: ExtInit =
-            std::mem::transmute(sqlite_vec::sqlite3_vec_init as *const ());
+        // Force source type: `unsafe extern "C" fn()`. If sqlite-vec ever
+        // corrects the declaration to match `ExtInit`, this `as *const ()`
+        // plus the transmute becomes a redundant identity cast (still sound).
+        let src: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;
+        let init: ExtInit = std::mem::transmute::<unsafe extern "C" fn(), ExtInit>(src);
         rusqlite::ffi::sqlite3_auto_extension(Some(init));
     });
 }
@@ -106,65 +118,80 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
     }
 
     fn run_migrations(conn: &Connection, embedder: &E) -> rusqlite::Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS state (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+        // All schema DDL + initial state rows run inside one transaction so a
+        // failure mid-way cannot leave the DB partially initialized.
+        conn.execute("BEGIN", [])?;
+        let result = (|| -> rusqlite::Result<()> {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS state (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id                  TEXT PRIMARY KEY,
+                    source              TEXT NOT NULL,
+                    kind                TEXT NOT NULL,
+                    subtype             TEXT,
+                    qualified_name      TEXT,
+                    signature           TEXT,
+                    content             TEXT NOT NULL,
+                    source_path         TEXT NOT NULL,
+                    line_start          INTEGER NOT NULL,
+                    line_end            INTEGER NOT NULL,
+                    commit_sha          TEXT NOT NULL,
+                    indexed_at          TEXT NOT NULL,
+                    source_version      TEXT,
+                    language            TEXT,
+                    is_exported         INTEGER NOT NULL,
+                    neighboring_symbols TEXT NOT NULL,
+                    extractor           TEXT NOT NULL,
+                    confidence          REAL NOT NULL,
+                    source_uri          TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
+                CREATE INDEX IF NOT EXISTS idx_chunks_kind   ON chunks(kind);
+                CREATE INDEX IF NOT EXISTS idx_chunks_qname  ON chunks(qualified_name);
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    id UNINDEXED,
+                    content,
+                    qualified_name,
+                    signature,
+                    tokenize = 'unicode61 tokenchars ''_::$'''
+                );",
+            )?;
+
+            let vec_sql = format!(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
+                    id TEXT PRIMARY KEY,
+                    embedding FLOAT[{}]
+                )",
+                embedder.dim()
             );
+            conn.execute_batch(&vec_sql)?;
 
-            CREATE TABLE IF NOT EXISTS chunks (
-                id                  TEXT PRIMARY KEY,
-                source              TEXT NOT NULL,
-                kind                TEXT NOT NULL,
-                subtype             TEXT,
-                qualified_name      TEXT,
-                signature           TEXT,
-                content             TEXT NOT NULL,
-                source_path         TEXT NOT NULL,
-                line_start          INTEGER NOT NULL,
-                line_end            INTEGER NOT NULL,
-                commit_sha          TEXT NOT NULL,
-                indexed_at          TEXT NOT NULL,
-                source_version      TEXT,
-                language            TEXT,
-                is_exported         INTEGER NOT NULL,
-                neighboring_symbols TEXT NOT NULL,
-                extractor           TEXT NOT NULL,
-                confidence          REAL NOT NULL,
-                source_uri          TEXT NOT NULL
-            );
+            conn.execute(
+                "INSERT OR IGNORE INTO state(key, value) VALUES ('schema_version', ?1)",
+                params![SCHEMA_VERSION.to_string()],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO state(key, value) VALUES ('embedder_model_hash', ?1)",
+                params![embedder.model_hash()],
+            )?;
+            Ok(())
+        })();
 
-            CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
-            CREATE INDEX IF NOT EXISTS idx_chunks_kind   ON chunks(kind);
-            CREATE INDEX IF NOT EXISTS idx_chunks_qname  ON chunks(qualified_name);
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                id UNINDEXED,
-                content,
-                qualified_name,
-                signature,
-                tokenize = 'unicode61 tokenchars ''_::$'''
-            );",
-        )?;
-
-        let vec_sql = format!(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
-                id TEXT PRIMARY KEY,
-                embedding FLOAT[{}]
-            )",
-            embedder.dim()
-        );
-        conn.execute_batch(&vec_sql)?;
-
-        conn.execute(
-            "INSERT OR IGNORE INTO state(key, value) VALUES ('schema_version', ?1)",
-            params![SCHEMA_VERSION.to_string()],
-        )?;
-        conn.execute(
-            "INSERT OR IGNORE INTO state(key, value) VALUES ('embedder_model_hash', ?1)",
-            params![embedder.model_hash()],
-        )?;
-
-        Ok(())
+        match result {
+            Ok(()) => {
+                conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
     }
 }
