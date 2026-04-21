@@ -77,6 +77,10 @@ pub struct ContextTelemetry {
     /// True iff an injector was wired into the pipeline at all.
     #[serde(default)]
     pub injector_available: bool,
+    /// True iff the retriever closure returned an error for this review
+    /// (dashboards can distinguish "retriever crashed" from "no hits").
+    #[serde(default)]
+    pub retriever_errored: bool,
     /// Total chunks returned by the retriever (pre-plan filtering).
     #[serde(default)]
     pub retrieved_chunk_count: u32,
@@ -522,6 +526,7 @@ mod tests {
         ContextTelemetry {
             auto_inject_enabled: true,
             injector_available: true,
+            retriever_errored: false,
             retrieved_chunk_count: 5,
             injected_chunk_count: 2,
             injected_tokens: 180,

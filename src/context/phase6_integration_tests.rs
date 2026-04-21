@@ -218,8 +218,42 @@ fn injector_returns_none_when_retriever_errors() {
         text: "jwt validation".to_string(),
     };
 
+    let outcome = injector.inject(&req);
     assert!(
-        injector.inject(&req).rendered.is_none(),
+        outcome.rendered.is_none(),
         "retriever error must yield None (fail-open, tracing::warn only)"
+    );
+    assert!(
+        outcome.telemetry.retriever_errored,
+        "retriever error must be distinguishable in telemetry from 'no hits'"
+    );
+    assert_eq!(
+        outcome.telemetry.retrieved_chunk_count, 0,
+        "retriever error -> no retrieved chunks counted"
+    );
+}
+
+#[test]
+fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
+    use std::sync::Arc;
+
+    use crate::context::inject::injector::RetrieverFn;
+
+    let sources = sources_config("mini-rust", 50, true);
+    let empty_retriever: Arc<RetrieverFn> = Arc::new(|_q| Ok(Vec::new()));
+    let injector = ContextInjector::new(&sources, empty_retriever);
+
+    let req = InjectionRequest {
+        file_path: "src/auth.rs".to_string(),
+        language: Some("rust".to_string()),
+        identifiers: vec!["verify_token".to_string()],
+        text: "jwt validation".to_string(),
+    };
+
+    let outcome = injector.inject(&req);
+    assert!(outcome.rendered.is_none());
+    assert!(
+        !outcome.telemetry.retriever_errored,
+        "healthy-but-empty retriever must NOT set retriever_errored"
     );
 }

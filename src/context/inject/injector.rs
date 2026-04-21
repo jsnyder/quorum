@@ -147,6 +147,7 @@ impl ContextInjectionSource for ContextInjector {
                     file_path = %req.file_path,
                     "context injection retriever failed; skipping block"
                 );
+                tele.retriever_errored = true;
                 tele.render_duration_ms = started.elapsed().as_millis() as u64;
                 return InjectionOutcome {
                     rendered: None,
@@ -207,6 +208,13 @@ impl ContextInjectionSource for ContextInjector {
 
         let rendered = render_context_block(&plan, &NoStaleness, &precedence_log);
         let rendered_opt = if rendered.trim().is_empty() {
+            // Plan produced chunks but render yielded nothing usable — reset
+            // the injection counters so telemetry consumers see "0 delivered"
+            // instead of "N planned, but no hash / no block" inconsistency.
+            tele.injected_chunk_count = 0;
+            tele.injected_tokens = 0;
+            tele.injected_chunk_ids.clear();
+            tele.injected_sources.clear();
             None
         } else {
             tele.rendered_prompt_hash = Some(hash_rendered_block(&rendered));
