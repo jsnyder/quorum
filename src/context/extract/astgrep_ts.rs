@@ -144,10 +144,8 @@ pub fn extract_typescript(
                 content: s.content,
                 metadata: ChunkMeta {
                     source_path: source_path.to_string(),
-                    line_range: LineRange {
-                        start: s.content_start_line,
-                        end: s.end_line,
-                    },
+                    line_range: LineRange::new(s.content_start_line, s.end_line)
+                        .expect("ast-grep-typescript extractor produced invalid line range"),
                     commit_sha: commit_sha.to_string(),
                     indexed_at,
                     source_version: None,
@@ -155,11 +153,8 @@ pub fn extract_typescript(
                     is_exported: true,
                     neighboring_symbols,
                 },
-                provenance: Provenance {
-                    extractor: "ast-grep-typescript".to_string(),
-                    confidence: 0.9,
-                    source_uri: source_path.to_string(),
-                },
+                provenance: Provenance::new("ast-grep-typescript", 0.9, source_path.to_string())
+                    .expect("ast-grep-typescript extractor produced invalid provenance"),
             }
         })
         .collect();
@@ -190,24 +185,7 @@ fn item_signature(item_text: &str, kind: &str) -> String {
         "function_declaration" | "class_declaration" | "interface_declaration" => {
             item_text.find('{').unwrap_or(item_text.len())
         }
-        "type_alias_declaration" => {
-            // Find the terminating `;` while skipping content inside balanced
-            // `{ }` on the RHS (object types). If none, keep full text.
-            let mut depth = 0i32;
-            let mut cut = item_text.len();
-            for (i, ch) in item_text.char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    ';' if depth <= 0 => {
-                        cut = i;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            cut
-        }
+        "type_alias_declaration" => find_type_alias_semicolon(item_text),
         _ => item_text.find(['{', ';']).unwrap_or(item_text.len()),
     };
     let raw = &item_text[..end];
@@ -225,6 +203,41 @@ fn item_signature(item_text: &str, kind: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// Scan a type-alias body for the terminating `;` while respecting string
+/// and template literals as well as bracket depth. String/template state
+/// prevents `;` inside literals (e.g. `type D = "a;b"`) from truncating the
+/// signature. `<` / `>` count toward depth to keep generic constraints
+/// grouped; this over-counts when `>` is a comparison operator, but that is
+/// accepted as fuzzy for signature scanning.
+fn find_type_alias_semicolon(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut str_quote: Option<u8> = None;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = str_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                str_quote = None;
+            }
+        } else {
+            match b {
+                b'"' | b'\'' | b'`' => str_quote = Some(b),
+                b'{' | b'(' | b'[' | b'<' => depth += 1,
+                b'}' | b')' | b']' | b'>' => depth -= 1,
+                b';' if depth <= 0 => return i,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    text.len()
 }
 
 /// Walk backwards from `byte_start` collecting a single JSDoc block (`/** ... */`)

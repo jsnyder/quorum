@@ -254,3 +254,22 @@ fn mini_ts_auth_fixture_extracts_verify_token() {
     assert!(vt.content.contains("JWT"));
     assert!(vt.content.contains("signing key"));
 }
+
+#[test]
+fn type_alias_with_semicolon_in_string() {
+    let src = r#"export type Delim = "a;b";"#;
+    let chunks = extract_typescript(src, "x.ts", "s", "c", when()).unwrap();
+    assert_eq!(chunks.len(), 1);
+    let sig = chunks[0].signature.as_ref().unwrap();
+    assert!(sig.contains("\"a;b\""), "signature was: {sig}");
+    assert!(sig.contains("export type Delim"), "signature was: {sig}");
+}
+
+#[test]
+fn type_alias_with_semicolon_in_template_literal() {
+    let src = "export type T = `a;b`;\n";
+    let chunks = extract_typescript(src, "x.ts", "s", "c", when()).unwrap();
+    assert_eq!(chunks.len(), 1);
+    let sig = chunks[0].signature.as_ref().unwrap();
+    assert!(sig.contains("`a;b`"), "signature was: {sig}");
+}
