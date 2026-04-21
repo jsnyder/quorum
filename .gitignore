@@ -4,3 +4,5 @@
 .DS_Store
 .fastembed_cache/
 .notion-sync.json
+mutants.out/
+mutants.out.old/
