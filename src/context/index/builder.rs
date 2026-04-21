@@ -52,7 +52,13 @@ static VEC_INIT: OnceLock<()> = OnceLock::new();
 /// via a `cast`-then-typed-binding so any future ABI divergence (e.g. the
 /// crate switches to a correct signature) surfaces as a type error rather
 /// than silent UB.
-fn ensure_vec_loaded() {
+/// Register sqlite-vec as a process-wide auto-extension so every subsequent
+/// `Connection::open*` call transparently gets the `vec0` virtual table
+/// available. Callers that open the index db without going through
+/// `IndexBuilder` (e.g. the read-only `quorum context query` path) must
+/// invoke this before `Connection::open*` — otherwise the first SQL that
+/// touches `chunks_vec` fails with `no such module: vec0`.
+pub(crate) fn ensure_vec_loaded() {
     type ExtInit = unsafe extern "C" fn(
         *mut rusqlite::ffi::sqlite3,
         *mut *mut std::os::raw::c_char,

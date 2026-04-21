@@ -22,7 +22,7 @@ use rusqlite::Connection;
 
 use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesConfig};
 use crate::context::extract::dispatch::{extract_source, ExtractConfig};
-use crate::context::index::builder::IndexBuilder;
+use crate::context::index::builder::{ensure_vec_loaded, IndexBuilder};
 use crate::context::index::state::IndexState;
 use crate::context::index::traits::{Clock, Embedder, HashEmbedder, SystemClock};
 use crate::context::inject::stale::{GitOps, SystemGit};
@@ -996,6 +996,13 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
         ));
     }
 
+    // The index schema uses the `vec0` virtual table; without the sqlite-vec
+    // auto-extension registered, opening the db succeeds but any query that
+    // touches `chunks_vec` fails with `no such module: vec0`. IndexBuilder
+    // registers the hook during `index`, but a fresh process that jumps
+    // straight to `query` has never run it.
+    ensure_vec_loaded();
+
     let conn = Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
@@ -1429,6 +1436,11 @@ fn check_chunks_jsonl(home: &Path, name: &str) -> CheckResult {
 }
 
 fn db_chunk_count(db: &Path) -> Result<i64> {
+    // Register the vec0 auto-extension hook even though this function only
+    // queries `chunks`; doctor may grow checks that touch `chunks_vec` in
+    // the future and we don't want a subtle "works in tests, fails in
+    // production" split between the fresh-process and post-index cases.
+    ensure_vec_loaded();
     let conn = Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
