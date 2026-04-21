@@ -10,11 +10,51 @@ pub enum ChunkKind {
 }
 
 /// 1-indexed inclusive line range in a source file.
+///
+/// Construct via [`LineRange::new`]; fields are `pub(crate)` so existing
+/// in-crate readers continue to work while external struct-literal
+/// construction is forbidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "RawLineRange")]
 pub struct LineRange {
-    pub start: u32,
-    pub end: u32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LineRangeError {
+    #[error("line_range.start must be >= 1 (got {0})")]
+    InvalidStart(u32),
+    #[error("line_range.end must be >= 1 (got {0})")]
+    InvalidEnd(u32),
+    #[error("line_range.end ({end}) must be >= start ({start})")]
+    EndBeforeStart { start: u32, end: u32 },
+}
+
+impl LineRange {
+    /// Construct a validated 1-indexed inclusive line range.
+    pub fn new(start: u32, end: u32) -> Result<Self, LineRangeError> {
+        if start == 0 {
+            return Err(LineRangeError::InvalidStart(start));
+        }
+        if end == 0 {
+            return Err(LineRangeError::InvalidEnd(end));
+        }
+        if start > end {
+            return Err(LineRangeError::EndBeforeStart { start, end });
+        }
+        Ok(Self { start, end })
+    }
+
+    #[inline]
+    pub fn start(&self) -> u32 {
+        self.start
+    }
+
+    #[inline]
+    pub fn end(&self) -> u32 {
+        self.end
+    }
 }
 
 #[derive(Deserialize)]
@@ -31,9 +71,15 @@ impl TryFrom<RawLineRange> for LineRange {
             return Err("line ranges must be 1-indexed (got 0)".into());
         }
         if raw.start > raw.end {
-            return Err(format!("line range start ({}) must be <= end ({})", raw.start, raw.end));
+            return Err(format!(
+                "line range start ({}) must be <= end ({})",
+                raw.start, raw.end
+            ));
         }
-        Ok(Self { start: raw.start, end: raw.end })
+        Ok(Self {
+            start: raw.start,
+            end: raw.end,
+        })
     }
 }
 
@@ -77,14 +123,64 @@ pub struct ChunkMeta {
 }
 
 // Note: confidence is f32, so Provenance derives PartialEq but NOT Eq.
+//
+// Construct via [`Provenance::new`]; fields are `pub(crate)` so existing
+// in-crate readers continue to work while external struct-literal
+// construction is forbidden.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawProvenance")]
 pub struct Provenance {
-    pub extractor: String,
+    pub(crate) extractor: String,
     /// Confidence score in the range [0.0, 1.0]. f32 is used (vs f64) to keep
     /// JSONL rows compact; precision beyond 6 digits is not meaningful here.
-    pub confidence: f32,
-    pub source_uri: String,
+    pub(crate) confidence: f32,
+    pub(crate) source_uri: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProvenanceError {
+    #[error("provenance.confidence must be finite (got {0})")]
+    NotFinite(f32),
+    #[error("provenance.confidence must be in [0.0, 1.0] (got {0})")]
+    OutOfRange(f32),
+}
+
+impl Provenance {
+    /// Construct a validated provenance record.
+    ///
+    /// `confidence` must be finite and within `[0.0, 1.0]`.
+    pub fn new(
+        extractor: impl Into<String>,
+        confidence: f32,
+        source_uri: impl Into<String>,
+    ) -> Result<Self, ProvenanceError> {
+        if !confidence.is_finite() {
+            return Err(ProvenanceError::NotFinite(confidence));
+        }
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(ProvenanceError::OutOfRange(confidence));
+        }
+        Ok(Self {
+            extractor: extractor.into(),
+            confidence,
+            source_uri: source_uri.into(),
+        })
+    }
+
+    #[inline]
+    pub fn extractor(&self) -> &str {
+        &self.extractor
+    }
+
+    #[inline]
+    pub fn confidence(&self) -> f32 {
+        self.confidence
+    }
+
+    #[inline]
+    pub fn source_uri(&self) -> &str {
+        &self.source_uri
+    }
 }
 
 #[derive(Deserialize)]
@@ -99,10 +195,16 @@ impl TryFrom<RawProvenance> for Provenance {
 
     fn try_from(raw: RawProvenance) -> Result<Self, Self::Error> {
         if !raw.confidence.is_finite() {
-            return Err(format!("confidence must be finite (got {})", raw.confidence));
+            return Err(format!(
+                "confidence must be finite (got {})",
+                raw.confidence
+            ));
         }
         if !(0.0..=1.0).contains(&raw.confidence) {
-            return Err(format!("confidence must be in [0.0, 1.0] (got {})", raw.confidence));
+            return Err(format!(
+                "confidence must be in [0.0, 1.0] (got {})",
+                raw.confidence
+            ));
         }
         Ok(Self {
             extractor: raw.extractor,

@@ -74,10 +74,8 @@ pub fn split_markdown(
             content: preamble_slice.to_string(),
             metadata: ChunkMeta {
                 source_path: source_path.to_string(),
-                line_range: LineRange {
-                    start: 1,
-                    end: end_line,
-                },
+                line_range: LineRange::new(1, end_line)
+                    .expect("markdown preamble produced invalid line range"),
                 commit_sha: commit_sha.to_string(),
                 indexed_at,
                 source_version: None,
@@ -85,11 +83,12 @@ pub fn split_markdown(
                 is_exported: true,
                 neighboring_symbols: Vec::new(),
             },
-            provenance: Provenance {
-                extractor: "markdown-splitter".into(),
-                confidence: 1.0,
-                source_uri: format!("{source}:{source_path}"),
-            },
+            provenance: Provenance::new(
+                "markdown-splitter",
+                1.0,
+                format!("{source}:{source_path}"),
+            )
+            .expect("markdown preamble produced invalid provenance"),
         });
     }
 
@@ -147,10 +146,8 @@ pub fn split_markdown(
             content: content_slice.to_string(),
             metadata: ChunkMeta {
                 source_path: source_path.to_string(),
-                line_range: LineRange {
-                    start: start_line,
-                    end: end_line,
-                },
+                line_range: LineRange::new(start_line, end_line)
+                    .expect("markdown section produced invalid line range"),
                 commit_sha: commit_sha.to_string(),
                 indexed_at,
                 source_version: None,
@@ -158,11 +155,12 @@ pub fn split_markdown(
                 is_exported: true,
                 neighboring_symbols: Vec::new(),
             },
-            provenance: Provenance {
-                extractor: "markdown-splitter".into(),
-                confidence: 1.0,
-                source_uri: format!("{source}:{source_path}"),
-            },
+            provenance: Provenance::new(
+                "markdown-splitter",
+                1.0,
+                format!("{source}:{source_path}"),
+            )
+            .expect("markdown section produced invalid provenance"),
         });
     }
 

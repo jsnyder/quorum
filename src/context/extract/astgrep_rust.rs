@@ -81,8 +81,10 @@ pub fn extract_rust(
             let (content, content_start_line) = if doc.is_empty() {
                 (signature.clone(), sig_start_line)
             } else {
-                // line_range should cover doc comments since they are part of the chunk's content.
-                (doc, doc_start_line.unwrap_or(sig_start_line))
+                // Combine: docs followed by the signature so retrieval has both
+                // prose and the callable shape.
+                let combined = format!("{}\n\n{}", doc, signature);
+                (combined, doc_start_line.unwrap_or(sig_start_line))
             };
 
             raw.push(ExtractedSymbol {
@@ -144,10 +146,8 @@ pub fn extract_rust(
                 content: s.content,
                 metadata: ChunkMeta {
                     source_path: source_path.to_string(),
-                    line_range: LineRange {
-                        start: s.content_start_line,
-                        end: s.end_line,
-                    },
+                    line_range: LineRange::new(s.content_start_line, s.end_line)
+                        .expect("ast-grep-rust extractor produced invalid line range"),
                     commit_sha: commit_sha.to_string(),
                     indexed_at,
                     source_version: None,
@@ -155,11 +155,8 @@ pub fn extract_rust(
                     is_exported: true,
                     neighboring_symbols,
                 },
-                provenance: Provenance {
-                    extractor: "ast-grep-rust".to_string(),
-                    confidence: 0.9,
-                    source_uri: source_path.to_string(),
-                },
+                provenance: Provenance::new("ast-grep-rust", 0.9, source_path.to_string())
+                    .expect("ast-grep-rust extractor produced invalid provenance"),
             }
         })
         .collect();
@@ -178,13 +175,64 @@ struct ExtractedSymbol {
     content: String,
 }
 
+/// Find the byte index that terminates the signature portion of a Rust item.
+///
+/// Tracks string literals (`"..."`, with `\"` escape), char literals
+/// (`'...'`, with `\'` escape), and attribute bracket nesting (`#[...]`,
+/// `#![...]`) so that a `{` or `;` appearing inside any of those does not
+/// prematurely terminate the signature.
+///
+/// TODO: raw strings (`r"..."`, `r#"..."#`) are not handled; they round-trip
+/// through the string-literal branch and may over-consume. Acceptable for
+/// the current extractor surface (no raw strings in attribute metadata in
+/// the corpus).
+fn find_signature_end(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut bracket_depth: i32 = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_str {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_str = false;
+            }
+        } else if in_char {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_char = false;
+            }
+        } else {
+            match b {
+                b'"' => in_str = true,
+                b'\'' => in_char = true,
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth -= 1,
+                b'{' if bracket_depth == 0 => return i,
+                b';' if bracket_depth == 0 => return i,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    text.len()
+}
+
 /// Extract the declaration signature from a full item's source text.
 ///
 /// Strategy: take everything up to the first `{` (for fn/struct/enum/trait bodies)
 /// or `;` (for unit/tuple struct declarations), whichever comes first, and trim.
 /// Multi-line signatures collapse runs of whitespace to a single space.
 fn item_signature(item_text: &str) -> String {
-    let end = item_text.find(['{', ';']).unwrap_or(item_text.len());
+    let end = find_signature_end(item_text);
     let raw = &item_text[..end];
     // Normalize whitespace: collapse runs of whitespace to one space.
     let mut out = String::with_capacity(raw.len());
@@ -225,7 +273,9 @@ fn collect_preceding_doc_comments(src: &str, byte_start: usize) -> (String, Opti
         let prev_line_start = slice.rfind('\n').map(|n| n + 1).unwrap_or(0);
         let line = &src[prev_line_start..cursor - 1];
         let trimmed = line.trim_start();
-        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+        // Only outer `///` doc comments attach to the next item. `//!` is
+        // module-level (inner) and must not be collected here.
+        if trimmed.starts_with("///") {
             lines.push(strip_doc_prefix(trimmed));
             doc_block_start_byte = Some(prev_line_start);
             cursor = prev_line_start;

@@ -15,7 +15,7 @@ fn test_chunk() -> Chunk {
         content: "Validates a JWT against the signing key.".into(),
         metadata: ChunkMeta {
             source_path: "src/token.rs".to_string(),
-            line_range: LineRange { start: 10, end: 25 },
+            line_range: LineRange::new(10, 25).unwrap(),
             commit_sha: "abc123".into(),
             indexed_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             source_version: None,
@@ -154,6 +154,62 @@ fn line_range_rejects_zero_start() {
     let json = r#"{"start": 0, "end": 5}"#;
     let err = serde_json::from_str::<LineRange>(json).unwrap_err();
     assert!(err.to_string().contains("1-indexed"), "got: {err}");
+}
+
+#[test]
+fn line_range_new_rejects_zero_start() {
+    let err = LineRange::new(0, 5).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("start"), "got: {msg}");
+}
+
+#[test]
+fn line_range_new_rejects_inverted() {
+    let err = LineRange::new(10, 5).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("must be >= start"), "got: {msg}");
+}
+
+#[test]
+fn line_range_new_accepts_valid() {
+    let r = LineRange::new(1, 1).expect("1..=1 is valid");
+    assert_eq!(r.start(), 1);
+    assert_eq!(r.end(), 1);
+
+    let r = LineRange::new(3, 10).expect("3..=10 is valid");
+    assert_eq!(r.start(), 3);
+    assert_eq!(r.end(), 10);
+}
+
+#[test]
+fn provenance_new_rejects_nan() {
+    let err = Provenance::new("x", f32::NAN, "u").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("finite"), "got: {msg}");
+}
+
+#[test]
+fn provenance_new_rejects_out_of_range() {
+    let err = Provenance::new("x", 1.5, "u").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("[0.0, 1.0]"), "got: {msg}");
+}
+
+#[test]
+fn provenance_new_rejects_negative() {
+    let err = Provenance::new("x", -0.1, "u").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("[0.0, 1.0]"), "got: {msg}");
+}
+
+#[test]
+fn provenance_new_accepts_valid() {
+    for c in [0.0_f32, 0.5, 1.0] {
+        let p = Provenance::new("x", c, "u").expect("valid confidence");
+        assert_eq!(p.extractor(), "x");
+        assert_eq!(p.confidence(), c);
+        assert_eq!(p.source_uri(), "u");
+    }
 }
 
 #[test]

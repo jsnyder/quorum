@@ -14,7 +14,7 @@ fn test_chunk(id: &str) -> Chunk {
         content: "content".into(),
         metadata: ChunkMeta {
             source_path: "x.rs".into(),
-            line_range: LineRange { start: 1, end: 2 },
+            line_range: LineRange::new(1, 2).unwrap(),
             commit_sha: "c".into(),
             indexed_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             source_version: None,
@@ -22,11 +22,7 @@ fn test_chunk(id: &str) -> Chunk {
             is_exported: true,
             neighboring_symbols: vec![],
         },
-        provenance: Provenance {
-            extractor: "e".into(),
-            confidence: 1.0,
-            source_uri: "u".into(),
-        },
+        provenance: Provenance::new("e", 1.0, "u").unwrap(),
     }
 }
 

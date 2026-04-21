@@ -122,7 +122,7 @@ fn make_chunk(source: &str, id: &str, content: &str) -> Chunk {
         content: content.to_string(),
         metadata: ChunkMeta {
             source_path: "src/x.rs".to_string(),
-            line_range: LineRange { start: 1, end: 10 },
+            line_range: LineRange::new(1, 10).unwrap(),
             commit_sha: "abc".into(),
             indexed_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             source_version: None,
@@ -130,10 +130,11 @@ fn make_chunk(source: &str, id: &str, content: &str) -> Chunk {
             is_exported: true,
             neighboring_symbols: vec![],
         },
-        provenance: Provenance {
-            extractor: "ast-grep-rust".into(),
-            confidence: 1.0,
-            source_uri: format!("git://{source}@abc/src/x.rs#L1-10"),
-        },
+        provenance: Provenance::new(
+            "ast-grep-rust",
+            1.0,
+            format!("git://{source}@abc/src/x.rs#L1-10"),
+        )
+        .unwrap(),
     }
 }

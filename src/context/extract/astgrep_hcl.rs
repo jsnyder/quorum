@@ -153,10 +153,8 @@ pub fn extract_hcl(
                 content: s.content,
                 metadata: ChunkMeta {
                     source_path: source_path.to_string(),
-                    line_range: LineRange {
-                        start: s.start_line,
-                        end: s.end_line,
-                    },
+                    line_range: LineRange::new(s.start_line, s.end_line)
+                        .expect("ast-grep-hcl extractor produced invalid line range"),
                     commit_sha: commit_sha.to_string(),
                     indexed_at,
                     source_version: None,
@@ -164,11 +162,8 @@ pub fn extract_hcl(
                     is_exported: true,
                     neighboring_symbols,
                 },
-                provenance: Provenance {
-                    extractor: "ast-grep-hcl".to_string(),
-                    confidence: 0.9,
-                    source_uri: source_path.to_string(),
-                },
+                provenance: Provenance::new("ast-grep-hcl", 0.9, source_path.to_string())
+                    .expect("ast-grep-hcl extractor produced invalid provenance"),
             }
         })
         .collect();

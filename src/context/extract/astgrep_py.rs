@@ -157,10 +157,8 @@ pub fn extract_python(
                 content: s.content,
                 metadata: ChunkMeta {
                     source_path: source_path.to_string(),
-                    line_range: LineRange {
-                        start: s.content_start_line,
-                        end: s.end_line,
-                    },
+                    line_range: LineRange::new(s.content_start_line, s.end_line)
+                        .expect("ast-grep-python extractor produced invalid line range"),
                     commit_sha: commit_sha.to_string(),
                     indexed_at,
                     source_version: None,
@@ -168,11 +166,8 @@ pub fn extract_python(
                     is_exported: true,
                     neighboring_symbols,
                 },
-                provenance: Provenance {
-                    extractor: "ast-grep-python".to_string(),
-                    confidence: 0.9,
-                    source_uri: source_path.to_string(),
-                },
+                provenance: Provenance::new("ast-grep-python", 0.9, source_path.to_string())
+                    .expect("ast-grep-python extractor produced invalid provenance"),
             }
         })
         .collect();
@@ -311,33 +306,81 @@ fn string_literal_text<D: ast_grep_core::Doc>(
 fn item_signature(item_text: &str) -> String {
     let bytes = item_text.as_bytes();
     let mut depth: i32 = 0;
-    let mut in_str: Option<u8> = None;
+    // None = outside any string; Single/Double = single-line quoted; Triple*
+    // = triple-quoted (may span newlines). Only a matching closer ends the
+    // string state.
+    #[derive(Clone, Copy)]
+    enum StrKind {
+        None,
+        Single,
+        Double,
+        TripleSingle,
+        TripleDouble,
+    }
+    let mut str_kind = StrKind::None;
     let mut cut = item_text.len();
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
-        if let Some(q) = in_str {
-            if b == b'\\' {
-                i += 2;
-                continue;
+        match str_kind {
+            StrKind::None => {
+                // Triple-quote detection must precede single-quote detection.
+                if i + 2 < bytes.len() && &bytes[i..i + 3] == b"\"\"\"" {
+                    str_kind = StrKind::TripleDouble;
+                    i += 3;
+                    continue;
+                }
+                if i + 2 < bytes.len() && &bytes[i..i + 3] == b"'''" {
+                    str_kind = StrKind::TripleSingle;
+                    i += 3;
+                    continue;
+                }
+                match b {
+                    b'"' => str_kind = StrKind::Double,
+                    b'\'' => str_kind = StrKind::Single,
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth -= 1,
+                    b':' if depth == 0 => {
+                        cut = i;
+                        break;
+                    }
+                    _ => {}
+                }
+                i += 1;
             }
-            if b == q {
-                in_str = None;
+            StrKind::Single | StrKind::Double => {
+                let quote = match str_kind {
+                    StrKind::Single => b'\'',
+                    StrKind::Double => b'"',
+                    _ => unreachable!(),
+                };
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == quote {
+                    str_kind = StrKind::None;
+                }
+                i += 1;
             }
-            i += 1;
-            continue;
+            StrKind::TripleSingle | StrKind::TripleDouble => {
+                let closer: &[u8] = match str_kind {
+                    StrKind::TripleSingle => b"'''",
+                    StrKind::TripleDouble => b"\"\"\"",
+                    _ => unreachable!(),
+                };
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if i + 2 < bytes.len() && &bytes[i..i + 3] == closer {
+                    str_kind = StrKind::None;
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+            }
         }
-        match b {
-            b'"' | b'\'' => in_str = Some(b),
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            b':' if depth == 0 => {
-                cut = i;
-                break;
-            }
-            _ => {}
-        }
-        i += 1;
     }
     let raw = &item_text[..cut];
 
@@ -399,8 +442,13 @@ fn item_signature(item_text: &str) -> String {
     tidied
 }
 
-/// Inspect the body of a function/class node and, if the first statement is a
+/// Inspect the body of a function/class node and, if the FIRST statement is a
 /// bare string literal, return its dedented text. Otherwise return `None`.
+///
+/// Python's docstring convention is strict: only the very first statement in
+/// a function/class body counts as a docstring. A later `expression_statement`
+/// whose child is a string (e.g. after an assignment or `pass`) is NOT a
+/// docstring and must not be mistaken for one.
 fn extract_docstring<D: ast_grep_core::Doc>(
     src: &str,
     node: &ast_grep_core::Node<'_, D>,
@@ -410,13 +458,39 @@ fn extract_docstring<D: ast_grep_core::Doc>(
         .children()
         .find(|c| c.kind().as_ref() == "block")?;
 
-    // First `expression_statement` child whose child is a `string`.
-    let expr_stmt = block
-        .children()
-        .find(|c| c.kind().as_ref() == "expression_statement")?;
-    let string_node = expr_stmt
-        .children()
-        .find(|c| c.kind().as_ref() == "string")?;
+    // Inspect the FIRST statement-like child of the body. tree-sitter-python
+    // may place trivia (comments) as siblings, so skip those but stop at the
+    // first real statement node and require it to be an expression_statement
+    // whose first real child is a `string`.
+    let mut first_stmt = None;
+    for c in block.children() {
+        let k = c.kind();
+        let kind = k.as_ref();
+        if kind == "comment" || kind.trim().is_empty() {
+            continue;
+        }
+        first_stmt = Some(c);
+        break;
+    }
+    let first_stmt = first_stmt?;
+    if first_stmt.kind().as_ref() != "expression_statement" {
+        return None;
+    }
+
+    let mut first_child = None;
+    for c in first_stmt.children() {
+        let k = c.kind();
+        let kind = k.as_ref();
+        if kind == "comment" || kind.trim().is_empty() {
+            continue;
+        }
+        first_child = Some(c);
+        break;
+    }
+    let string_node = first_child?;
+    if string_node.kind().as_ref() != "string" {
+        return None;
+    }
 
     let range = string_node.range();
     let raw = &src[range];
