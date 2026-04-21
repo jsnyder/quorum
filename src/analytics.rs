@@ -39,6 +39,9 @@ pub fn compute_stats(entries: &[FeedbackEntry]) -> HashMap<String, SourceStats> 
             Verdict::Fp => s.fp += 1,
             Verdict::Partial => s.partial += 1,
             Verdict::Wontfix => s.wontfix += 1,
+            // ContextMisleading is a retrieval signal, not a finding-quality verdict;
+            // excluded from per-model TP/FP analytics.
+            Verdict::ContextMisleading { .. } => {}
         }
     }
     stats
@@ -112,6 +115,8 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
                     Verdict::Partial => partial += 1,
                     Verdict::Fp => fp += 1,
                     Verdict::Wontfix => {}
+                    // Retrieval-quality signal; not part of rolling precision.
+                    Verdict::ContextMisleading { .. } => {}
                 }
             }
             let relevant = tp + partial;

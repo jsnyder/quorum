@@ -171,6 +171,7 @@ pub fn calibrate(
                     Verdict::Fp => "FP",
                     Verdict::Partial => "Partial",
                     Verdict::Wontfix => "Wontfix",
+                    Verdict::ContextMisleading { .. } => "ContextMisleading",
                 },
                 entry.finding_title,
                 entry.reason
@@ -397,6 +398,7 @@ pub fn calibrate_with_index(
                 match s.entry.verdict {
                     Verdict::Tp => "TP", Verdict::Fp => "FP",
                     Verdict::Partial => "Partial", Verdict::Wontfix => "Wontfix",
+                    Verdict::ContextMisleading { .. } => "ContextMisleading",
                 },
                 s.entry.finding_title, s.entry.reason, s.similarity
             ));

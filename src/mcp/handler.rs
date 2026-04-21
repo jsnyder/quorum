@@ -241,6 +241,7 @@ impl FeedbackEntry {
             Verdict::Fp => "false positive",
             Verdict::Partial => "partial",
             Verdict::Wontfix => "wontfix",
+            Verdict::ContextMisleading { .. } => "context misleading",
         }
     }
 }
