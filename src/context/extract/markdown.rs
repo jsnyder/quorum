@@ -48,11 +48,55 @@ pub fn split_markdown(
     indexed_at: DateTime<Utc>,
 ) -> Vec<Chunk> {
     let h2_starts = collect_h2_starts(md);
-    if h2_starts.is_empty() {
-        return Vec::new();
+
+    // Preamble = bytes before first H2 (or whole doc if no H2s). If it has any
+    // non-whitespace content, emit it as a synthetic chunk with slug `preamble`
+    // and id suffix `__preamble__`. This ensures H2-less documents (CHANGELOGs,
+    // short notes, ADRs with only H1) still produce a chunk instead of being
+    // silently dropped.
+    let first_h2 = h2_starts.first().map(|h| h.byte_start);
+    let preamble_end = first_h2.unwrap_or(md.len());
+    let preamble_raw = &md[..preamble_end];
+    let preamble_trimmed_len = preamble_raw.trim_end().len();
+    let preamble_slice = &preamble_raw[..preamble_trimmed_len];
+
+    let mut chunks: Vec<Chunk> = Vec::with_capacity(h2_starts.len() + 1);
+
+    if !preamble_slice.trim().is_empty() {
+        let end_line = line_of_offset(md, preamble_trimmed_len.saturating_sub(1));
+        chunks.push(Chunk {
+            id: format!("{source}:{source_path}:__preamble__"),
+            source: source.to_string(),
+            kind: ChunkKind::Doc,
+            subtype: Some(subtype.as_str().to_string()),
+            qualified_name: None,
+            signature: None,
+            content: preamble_slice.to_string(),
+            metadata: ChunkMeta {
+                source_path: source_path.to_string(),
+                line_range: LineRange {
+                    start: 1,
+                    end: end_line,
+                },
+                commit_sha: commit_sha.to_string(),
+                indexed_at,
+                source_version: None,
+                language: Some("markdown".into()),
+                is_exported: true,
+                neighboring_symbols: Vec::new(),
+            },
+            provenance: Provenance {
+                extractor: "markdown-splitter".into(),
+                confidence: 1.0,
+                source_uri: format!("{source}:{source_path}"),
+            },
+        });
     }
 
-    let mut chunks = Vec::with_capacity(h2_starts.len());
+    if h2_starts.is_empty() {
+        return chunks;
+    }
+
     let mut slug_counts: HashMap<String, u32> = HashMap::new();
 
     for (i, h2) in h2_starts.iter().enumerate() {

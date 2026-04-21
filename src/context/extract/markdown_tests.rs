@@ -20,22 +20,28 @@ fn main() { foo(); }
 some prose
 "#;
     let chunks = split_markdown(md, "README.md", "test-src", DocSubtype::Readme, "abc", when());
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].id, "test-src:README.md:usage");
-    assert_eq!(chunks[0].subtype.as_deref(), Some("README"));
-    assert!(chunks[0].content.contains("## Usage"));
-    assert!(chunks[0].content.contains("```rust"));
-    assert!(chunks[0].content.contains("fn main"));
-    assert_eq!(chunks[1].id, "test-src:README.md:design");
+    // Now: preamble ("# Project\nintro"), Usage, Design
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].id, "test-src:README.md:__preamble__");
+    assert!(chunks[0].content.contains("# Project"));
+    assert!(chunks[0].content.contains("intro"));
+    assert_eq!(chunks[1].id, "test-src:README.md:usage");
+    assert_eq!(chunks[1].subtype.as_deref(), Some("README"));
+    assert!(chunks[1].content.contains("## Usage"));
+    assert!(chunks[1].content.contains("```rust"));
+    assert!(chunks[1].content.contains("fn main"));
+    assert_eq!(chunks[2].id, "test-src:README.md:design");
 }
 
 #[test]
 fn heading_slug_disambiguates_duplicates() {
     let md = "# Top\n## Same\nfirst\n## Same\nsecond\n";
     let chunks = split_markdown(md, "d.md", "s", DocSubtype::Doc, "c", when());
-    assert_eq!(chunks.len(), 2);
-    assert_eq!(chunks[0].id, "s:d.md:same");
-    assert_eq!(chunks[1].id, "s:d.md:same-2");
+    // Now: preamble ("# Top"), same, same-2
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].id, "s:d.md:__preamble__");
+    assert_eq!(chunks[1].id, "s:d.md:same");
+    assert_eq!(chunks[2].id, "s:d.md:same-2");
 }
 
 #[test]
@@ -45,46 +51,82 @@ fn empty_markdown_yields_no_chunks() {
 }
 
 #[test]
-fn markdown_without_h2_yields_no_chunks() {
-    let md = "# Title\nonly an h1 here";
-    let chunks = split_markdown(md, "x.md", "s", DocSubtype::Doc, "c", when());
+fn whitespace_only_markdown_yields_no_chunks() {
+    let chunks = split_markdown("\n\n   \n\n", "e.md", "s", DocSubtype::Doc, "c", when());
     assert!(chunks.is_empty());
+}
+
+#[test]
+fn markdown_without_h2_emits_single_preamble_chunk() {
+    let md = "# Title\nonly an h1 and some prose here\nmore prose\n";
+    let chunks = split_markdown(md, "x.md", "s", DocSubtype::Doc, "c", when());
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].id, "s:x.md:__preamble__");
+    assert!(chunks[0].content.contains("only an h1"));
+    assert!(chunks[0].content.contains("more prose"));
+}
+
+#[test]
+fn preamble_and_h2_both_emitted() {
+    let md = "# Title\nintro prose\n\n## Usage\nusage here\n";
+    let chunks = split_markdown(md, "r.md", "s", DocSubtype::Doc, "c", when());
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].id, "s:r.md:__preamble__");
+    assert!(chunks[0].content.contains("intro prose"));
+    assert_eq!(chunks[1].id, "s:r.md:usage");
+    assert!(chunks[1].content.contains("usage here"));
+}
+
+#[test]
+fn h2_only_doc_has_no_preamble() {
+    let md = "## First\nbody\n";
+    let chunks = split_markdown(md, "r.md", "s", DocSubtype::Doc, "c", when());
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].id, "s:r.md:first");
 }
 
 #[test]
 fn h3_stays_inside_parent_h2() {
     let md = "# T\n## Parent\nintro\n### Sub\nsub content\n## Other\nother\n";
     let chunks = split_markdown(md, "d.md", "s", DocSubtype::Doc, "c", when());
-    assert_eq!(chunks.len(), 2);
-    assert!(chunks[0].content.contains("### Sub"));
-    assert!(chunks[0].content.contains("sub content"));
-    assert!(!chunks[0].content.contains("Other"));
+    // Now: preamble ("# T"), Parent, Other
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].id, "s:d.md:__preamble__");
+    assert!(chunks[1].content.contains("### Sub"));
+    assert!(chunks[1].content.contains("sub content"));
+    assert!(!chunks[1].content.contains("Other"));
 }
 
 #[test]
 fn line_ranges_are_1_indexed_inclusive() {
     let md = "# T\n## A\nfirst\nsecond\n## B\nthird\n";
-    // Line 1: # T
+    // Line 1: # T        (preamble)
     // Line 2: ## A
     // Line 3: first
     // Line 4: second
     // Line 5: ## B
     // Line 6: third
     let chunks = split_markdown(md, "d.md", "s", DocSubtype::Doc, "c", when());
-    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks.len(), 3);
+    // Preamble: line 1
+    assert_eq!(chunks[0].id, "s:d.md:__preamble__");
+    assert_eq!(chunks[0].metadata.line_range.start, 1);
+    assert_eq!(chunks[0].metadata.line_range.end, 1);
     // Section A: lines 2..=4 (## A, first, second)
-    assert_eq!(chunks[0].metadata.line_range.start, 2);
-    assert_eq!(chunks[0].metadata.line_range.end, 4);
+    assert_eq!(chunks[1].metadata.line_range.start, 2);
+    assert_eq!(chunks[1].metadata.line_range.end, 4);
     // Section B: lines 5..=6
-    assert_eq!(chunks[1].metadata.line_range.start, 5);
-    assert_eq!(chunks[1].metadata.line_range.end, 6);
+    assert_eq!(chunks[2].metadata.line_range.start, 5);
+    assert_eq!(chunks[2].metadata.line_range.end, 6);
 }
 
 #[test]
 fn metadata_reflects_source_and_commit() {
-    let md = "# T\n## A\nfoo\n";
+    // Use H2-only doc so chunks[0] is the section (not a preamble).
+    let md = "## A\nfoo\n";
     let when = DateTime::<Utc>::from_timestamp(1700000000, 0).unwrap();
     let chunks = split_markdown(md, "docs/readme.md", "my-src", DocSubtype::Readme, "abc123", when);
+    assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].source, "my-src");
     assert_eq!(chunks[0].metadata.source_path, "docs/readme.md");
     assert_eq!(chunks[0].metadata.commit_sha, "abc123");
@@ -97,8 +139,10 @@ fn metadata_reflects_source_and_commit() {
 fn section_with_only_whitespace_is_skipped() {
     let md = "# T\n## Empty\n\n\n## Real\ncontent\n";
     let chunks = split_markdown(md, "d.md", "s", DocSubtype::Doc, "c", when());
-    assert_eq!(chunks.len(), 1);
-    assert_eq!(chunks[0].id, "s:d.md:real");
+    // Now: preamble ("# T"), Real (Empty skipped)
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].id, "s:d.md:__preamble__");
+    assert_eq!(chunks[1].id, "s:d.md:real");
 }
 
 #[test]
