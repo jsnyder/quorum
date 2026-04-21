@@ -42,7 +42,7 @@ fn no_staleness_returns_none() {
 #[test]
 fn timestamp_returns_none_for_clean_repo() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: false };
+    let git = FakeGit::with_dirty(false);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -57,7 +57,7 @@ fn timestamp_returns_none_for_clean_repo() {
 #[test]
 fn timestamp_returns_some_for_dirty_local_chunk() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -74,7 +74,7 @@ fn timestamp_returns_some_for_dirty_local_chunk() {
 #[test]
 fn timestamp_returns_none_for_non_current_source() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -89,7 +89,7 @@ fn timestamp_returns_none_for_non_current_source() {
 #[test]
 fn timestamp_returns_none_when_no_current_source() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let annotator = TimestampStaleness::new(
         None,
         None,
@@ -103,7 +103,7 @@ fn timestamp_returns_none_when_no_current_source() {
 #[test]
 fn format_age_renders_days() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -119,7 +119,7 @@ fn format_age_renders_days() {
 #[test]
 fn format_age_renders_just_now_under_one_minute() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -135,7 +135,7 @@ fn format_age_renders_just_now_under_one_minute() {
 #[test]
 fn format_age_renders_singular_units() {
     let clock = now_fixed();
-    let git = FakeGit { dirty: true };
+    let git = FakeGit::with_dirty(true);
     let root = PathBuf::from("/tmp/repo");
     let annotator = TimestampStaleness::new(
         Some("local"),
@@ -157,6 +157,9 @@ fn format_age_renders_singular_units() {
 struct FailingGit;
 impl GitOps for FailingGit {
     fn has_local_changes(&self, _: &Path) -> std::io::Result<bool> {
+        Err(std::io::Error::other("fake error"))
+    }
+    fn head_sha(&self, _: &Path) -> std::io::Result<Option<String>> {
         Err(std::io::Error::other("fake error"))
     }
 }
@@ -201,6 +204,9 @@ impl GitOps for CountingGit {
     fn has_local_changes(&self, _: &Path) -> std::io::Result<bool> {
         self.calls.set(self.calls.get() + 1);
         Ok(self.dirty)
+    }
+    fn head_sha(&self, _: &Path) -> std::io::Result<Option<String>> {
+        Ok(None)
     }
 }
 

@@ -34,6 +34,14 @@ pub trait GitOps {
     /// Returns true if the working tree has any uncommitted changes.
     /// For MVP this is a boolean; future versions may return per-path status.
     fn has_local_changes(&self, repo_root: &Path) -> std::io::Result<bool>;
+
+    /// Resolve the current git HEAD sha for the given directory.
+    ///
+    /// Returns `Ok(None)` when the directory is not inside a git repository
+    /// (e.g. path sources that point at a plain folder). Returns `Err` only
+    /// when `git` itself is broken (missing binary, I/O error). Callers use
+    /// this to decide whether a re-index is needed.
+    fn head_sha(&self, repo_root: &Path) -> std::io::Result<Option<String>>;
 }
 
 /// Production GitOps implementation using `git status --porcelain`.
@@ -55,16 +63,77 @@ impl GitOps for SystemGit {
         }
         Ok(!output.stdout.is_empty())
     }
+
+    fn head_sha(&self, repo_root: &Path) -> std::io::Result<Option<String>> {
+        // `git rev-parse HEAD` prints the sha to stdout. A non-zero exit
+        // means "not a git repo" (or an empty repo with no commits yet); we
+        // map that to Ok(None) rather than Err so callers can treat path
+        // sources uniformly.
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if sha.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(sha))
+        }
+    }
 }
 
-/// Fake GitOps for tests — returns a canned `has_local_changes` value.
+/// Fake GitOps for tests — returns canned values.
 pub struct FakeGit {
     pub dirty: bool,
+    /// Canned HEAD sha keyed by repo root path. When a path isn't present in
+    /// the map, `head_sha` returns whatever `default_head` is. The default
+    /// `FakeGit::default()` yields `Some("deadbeef...")` regardless of path,
+    /// which is the common case for tests that only care that a sha exists.
+    pub head_by_path: std::collections::HashMap<std::path::PathBuf, Option<String>>,
+    pub default_head: Option<String>,
+}
+
+impl Default for FakeGit {
+    fn default() -> Self {
+        Self {
+            dirty: false,
+            head_by_path: std::collections::HashMap::new(),
+            default_head: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+        }
+    }
+}
+
+impl FakeGit {
+    /// Convenience constructor matching the old `FakeGit { dirty }` shape so
+    /// existing call sites continue to compile.
+    pub fn with_dirty(dirty: bool) -> Self {
+        Self {
+            dirty,
+            ..Self::default()
+        }
+    }
+
+    /// Register a canned HEAD sha for a specific path.
+    pub fn set_head(&mut self, path: &Path, sha: Option<String>) {
+        self.head_by_path.insert(path.to_path_buf(), sha);
+    }
 }
 
 impl GitOps for FakeGit {
     fn has_local_changes(&self, _: &Path) -> std::io::Result<bool> {
         Ok(self.dirty)
+    }
+
+    fn head_sha(&self, repo_root: &Path) -> std::io::Result<Option<String>> {
+        if let Some(override_sha) = self.head_by_path.get(repo_root) {
+            return Ok(override_sha.clone());
+        }
+        Ok(self.default_head.clone())
     }
 }
 

@@ -1,7 +1,8 @@
 //! Unit tests for `src/context/cli.rs`.
 
 use super::cli::{
-    run_context_cmd, AddArgs, AddLocation, ContextCmd, ContextDeps, ListArgs, ListFormat, TestDeps,
+    run_context_cmd, AddArgs, AddLocation, ContextCmd, ContextDeps, IndexArgs, ListArgs,
+    ListFormat, QueryArgs, QueryFormat, RefreshArgs, SourceSelector, TestDeps,
 };
 use super::config::{SourceLocation, SourcesConfig};
 use std::path::PathBuf;
@@ -490,4 +491,360 @@ fn list_json_output_has_stable_field_names() {
     );
     assert_eq!(s0.get("name").and_then(|x| x.as_str()), Some("core"));
     assert_eq!(s0.get("kind").and_then(|x| x.as_str()), Some("rust"));
+}
+
+// --- index / refresh / query ------------------------------------------------
+
+/// Absolute path to a repo fixture. Works regardless of where cargo sets
+/// the working directory for the test binary — use CARGO_MANIFEST_DIR so
+/// the path is stable across `cargo test` invocations.
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/context/repos")
+        .join(name)
+}
+
+fn fixture_path_str(name: &str) -> String {
+    fixture_path(name).display().to_string()
+}
+
+fn seed_single_source(deps: &TestDeps, name: &str, fixture: &str) {
+    run_context_cmd(&ContextCmd::Init, deps).expect("init");
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args(name, "rust", &fixture_path_str(fixture))),
+        deps,
+    )
+    .expect("add");
+}
+
+#[test]
+fn index_single_source_creates_jsonl_and_db_under_home() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+
+    let args = IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+    };
+    let out = run_context_cmd(&ContextCmd::Index(args), &deps).expect("index");
+
+    let src_dir = deps.home_dir().join("sources").join("mini");
+    let jsonl = src_dir.join("chunks.jsonl");
+    let db = src_dir.join("index.db");
+    let state = src_dir.join("state.json");
+    assert!(jsonl.exists(), "chunks.jsonl must be created at {}", jsonl.display());
+    assert!(db.exists(), "index.db must be created at {}", db.display());
+    assert!(state.exists(), "state.json must be created at {}", state.display());
+
+    assert!(out.created_paths.contains(&jsonl));
+    assert!(out.created_paths.contains(&db));
+    assert!(out.created_paths.contains(&state));
+    assert!(
+        out.stdout.contains("indexed 'mini'"),
+        "stdout must announce per-source success: {:?}",
+        out.stdout
+    );
+    assert!(out.warnings.is_empty(), "no warnings on happy path: {:?}", out.warnings);
+}
+
+#[test]
+fn index_all_continues_past_single_source_failure() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    // Good source.
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("good", "rust", &fixture_path_str("mini-rust"))),
+        &deps,
+    )
+    .expect("add good");
+    // Bad source: points at a nonexistent directory so extract_source errors.
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args(
+            "bad",
+            "rust",
+            "/definitely/not/a/real/fixture/path/quorum-test",
+        )),
+        &deps,
+    )
+    .expect("add bad");
+
+    let args = IndexArgs {
+        selector: SourceSelector::All,
+    };
+    let out = run_context_cmd(&ContextCmd::Index(args), &deps)
+        .expect("--all must not hard-error when only some sources fail");
+
+    // Good source must have landed on disk.
+    let good_db = deps
+        .home_dir()
+        .join("sources")
+        .join("good")
+        .join("index.db");
+    assert!(good_db.exists(), "good source must be indexed despite bad one failing");
+    // Summary must mention both.
+    assert!(out.stdout.contains("indexed 'good'"), "{:?}", out.stdout);
+    assert!(
+        out.stdout.contains("failed 'bad'"),
+        "failure must be reported in stdout summary: {:?}",
+        out.stdout
+    );
+    // Failure also surfaces as a warning so the CLI layer can signal non-zero
+    // exit codes if desired.
+    assert!(
+        out.warnings.iter().any(|w| w.contains("bad")),
+        "warnings should flag the failed source: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn index_is_idempotent() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    let args = || IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+    };
+
+    run_context_cmd(&ContextCmd::Index(args()), &deps).expect("first index");
+    let db = deps
+        .home_dir()
+        .join("sources")
+        .join("mini")
+        .join("index.db");
+
+    let count1: i64 = {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(count1 > 0, "first index should populate chunks");
+
+    run_context_cmd(&ContextCmd::Index(args()), &deps).expect("second index");
+    let count2: i64 = {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count1, count2,
+        "re-indexing must be idempotent; got {count1} then {count2}"
+    );
+}
+
+#[test]
+fn refresh_skips_when_head_sha_unchanged() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+
+    // First call acts as an index (no state on disk yet), second call must
+    // short-circuit because fake git returns the same HEAD sha.
+    run_context_cmd(
+        &ContextCmd::Refresh(RefreshArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("first refresh");
+
+    let out = run_context_cmd(
+        &ContextCmd::Refresh(RefreshArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("second refresh");
+
+    assert!(
+        out.stdout.contains("skipped 'mini'"),
+        "second refresh must report a skip: {:?}",
+        out.stdout
+    );
+    // No fresh paths created on a skip.
+    assert!(
+        out.created_paths.is_empty(),
+        "skip must not create paths: {:?}",
+        out.created_paths
+    );
+}
+
+#[test]
+fn refresh_rebuilds_on_embedder_model_hash_mismatch() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+
+    // First index to lay down state.json.
+    run_context_cmd(
+        &ContextCmd::Refresh(RefreshArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("first refresh");
+
+    // Corrupt state.json so the recorded model hash differs from the
+    // current embedder's model hash.
+    let state_path = deps
+        .home_dir()
+        .join("sources")
+        .join("mini")
+        .join("state.json");
+    let raw = std::fs::read_to_string(&state_path).unwrap();
+    let mut parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    parsed["embedder_model_hash"] = serde_json::json!("stale-model-v0");
+    std::fs::write(&state_path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+    // Refresh should now *rebuild* rather than skip, even though HEAD is
+    // unchanged.
+    let out = run_context_cmd(
+        &ContextCmd::Refresh(RefreshArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("third refresh");
+
+    assert!(
+        out.stdout.contains("refreshed 'mini'"),
+        "model-hash mismatch must trigger rebuild: {:?}",
+        out.stdout
+    );
+    // State file must now record the current embedder's hash.
+    let after = std::fs::read_to_string(&state_path).unwrap();
+    let after_parsed: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_ne!(
+        after_parsed["embedder_model_hash"],
+        serde_json::json!("stale-model-v0"),
+        "rebuild must overwrite the stale model hash"
+    );
+}
+
+#[test]
+fn query_returns_ranked_hits_for_indexed_source() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("index");
+
+    let args = QueryArgs {
+        text: "verify_token".to_string(),
+        source: Some("mini".to_string()),
+        k: Some(3),
+        explain: false,
+        format: QueryFormat::Table,
+    };
+    let out = run_context_cmd(&ContextCmd::Query(args), &deps).expect("query");
+    assert!(
+        out.stdout.contains("verify_token"),
+        "first hit should surface the verify_token qualified name: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn query_json_output_has_stable_schema() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("index");
+
+    let args = QueryArgs {
+        text: "verify_token".to_string(),
+        source: Some("mini".to_string()),
+        k: Some(3),
+        explain: false,
+        format: QueryFormat::Json,
+    };
+    let out = run_context_cmd(&ContextCmd::Query(args), &deps).expect("query");
+    let v: serde_json::Value =
+        serde_json::from_str(&out.stdout).expect("query --json emits valid JSON");
+    let hits = v
+        .get("hits")
+        .and_then(|x| x.as_array())
+        .expect("top-level {hits: [...]}");
+    assert!(!hits.is_empty(), "expected at least one hit");
+    let h0 = &hits[0];
+    for key in ["rank", "source", "qualified_name", "score", "chunk_id"] {
+        assert!(
+            h0.get(key).is_some(),
+            "missing stable field '{key}' in JSON hit: {h0}"
+        );
+    }
+    // Without --explain, breakdown must NOT be present (pinning the schema
+    // so `--explain` is genuinely additive, not a permanent field).
+    assert!(
+        h0.get("breakdown").is_none(),
+        "breakdown must be absent without --explain: {h0}"
+    );
+    assert_eq!(h0.get("rank").and_then(|x| x.as_i64()), Some(1));
+}
+
+#[test]
+fn query_explain_includes_score_breakdown() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+        }),
+        &deps,
+    )
+    .expect("index");
+
+    let args = QueryArgs {
+        text: "verify_token".to_string(),
+        source: Some("mini".to_string()),
+        k: Some(3),
+        explain: true,
+        format: QueryFormat::Json,
+    };
+    let out = run_context_cmd(&ContextCmd::Query(args), &deps).expect("query explain");
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+    let hits = v.get("hits").and_then(|x| x.as_array()).unwrap();
+    let h0 = &hits[0];
+    let br = h0
+        .get("breakdown")
+        .expect("--explain must include a breakdown object");
+    for key in [
+        "bm25_norm",
+        "vec_norm",
+        "id_boost",
+        "path_boost",
+        "recency_mul",
+        "score",
+    ] {
+        assert!(
+            br.get(key).is_some(),
+            "breakdown missing field '{key}': {br}"
+        );
+    }
+}
+
+#[test]
+fn query_errors_when_source_has_no_index() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    // Note: no `index` run.
+    let args = QueryArgs {
+        text: "verify_token".to_string(),
+        source: Some("mini".to_string()),
+        k: Some(3),
+        explain: false,
+        format: QueryFormat::Table,
+    };
+    let err = run_context_cmd(&ContextCmd::Query(args), &deps)
+        .expect_err("querying an un-indexed source must error");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("no index") || msg.contains("context index"),
+        "error should point user to the index step: {msg:?}"
+    );
 }

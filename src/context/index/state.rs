@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -22,11 +23,20 @@ fn unique_tmp_suffix() -> String {
 }
 
 /// Versioning + model tracking state written alongside `index.db`.
+///
+/// The optional `head_sha` and `indexed_at` fields are populated by the
+/// `quorum context index` / `refresh` handlers so they can detect whether a
+/// source has moved since the last build. They default to `None` when absent
+/// (older state files without these fields still load cleanly).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndexState {
     pub schema_version: u32,
     pub embedder_model_hash: String,
     pub quorum_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_at: Option<DateTime<Utc>>,
 }
 
 impl IndexState {
@@ -35,7 +45,23 @@ impl IndexState {
             schema_version: CURRENT_SCHEMA_VERSION,
             embedder_model_hash,
             quorum_version: env!("CARGO_PKG_VERSION").to_string(),
+            head_sha: None,
+            indexed_at: None,
         }
+    }
+
+    /// Chainable setter for the current git HEAD sha (None for path sources).
+    #[must_use]
+    pub fn with_head_sha(mut self, head_sha: Option<String>) -> Self {
+        self.head_sha = head_sha;
+        self
+    }
+
+    /// Chainable setter for the indexed-at timestamp.
+    #[must_use]
+    pub fn with_indexed_at(mut self, ts: DateTime<Utc>) -> Self {
+        self.indexed_at = Some(ts);
+        self
     }
 
     /// Load from the given path. Returns `Ok(None)` if the file doesn't exist,
