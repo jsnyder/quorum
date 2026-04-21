@@ -332,6 +332,35 @@ The calibrator can ADD findings only when backed by deterministic local evidence
 
 Analytics track TP/FP rate per source -- over time you learn which reviewer (LLM or local) is strongest for which finding categories.
 
+### 6. Context Injection (`quorum context`)
+
+**Evidence**: AST hydration (section 2) gives the reviewer complete information about *this file's* immediate dependencies. But the reviewer still lacks the broader project knowledge a human reviewer carries — internal SDKs, convention documents, the shape of adjacent packages. External services like Context7 fill that gap for public libraries but can't see private code.
+
+`quorum context` is a local, offline hybrid-retrieval layer that the reviewer consults on every LLM call.
+
+**On-disk layout** (per registered source):
+```
+~/.quorum/
+├── sources.toml                    # source registry + injection config
+└── sources/<name>/
+    ├── chunks.jsonl                # extracted symbols/prose, append-only
+    ├── index.db                    # SQLite: FTS5 + sqlite-vec virtual tables
+    └── state.json                  # head SHA, indexed_at, schema version
+```
+
+**Pipeline** (retrieve → plan → render → inject):
+1. **Retrieve**: BM25 over `chunks_fts` ∪ cosine over `chunks_vec`, candidates merged and reranked by BM25 / vector / qualified-id boost / path boost / recency multiplier
+2. **Precedence**: dedupe by qualified_name across sources, keeping the highest-weighted source's version (preserves overrides in multi-source setups)
+3. **Plan**: greedy pack under `inject_budget_tokens`, symbols before prose, dropping items below `inject_min_score`; when symbols starve prose gets a bounded threshold relaxation (40% budget floor)
+4. **Render**: fenced Markdown block; symbol chunks include source/qualified name/lines; prose demotes H1/H2 to H4 so headings don't escape the block; deterministic fence length via max-backtick-run + 1
+5. **Gate**: `Calibrator::injection_threshold_for(chunk_id)` drops chunks whose score falls below `max(inject_min_score, per_chunk_threshold)`; the per-chunk threshold escalates on every `context_misleading` feedback verdict and seals permanently (`f32::INFINITY`) at N confirmations
+
+**Feedback loop**: users mark misleading context with `quorum feedback --verdict context_misleading --blamed-chunks <ids>`. The calibrator treats blamed chunks as a separate axis from finding-level TP/FP, so a chunk that misleads one review can be suppressed without penalizing the underlying retrieval rules.
+
+**Telemetry**: every review's `reviews.jsonl` record gains a `ContextTelemetry` block: retrieved/injected counts, token spend, threshold applied, calibrator suppression count, and a sha256 of the rendered block (so identical injections collapse in aggregates).
+
+**Why local, not Context7-style remote**: private codebases can't be sent to external services; cold-start index time is once per source rather than per-review; no round-trip on the critical path (<10ms warm p95 target). Runs offline with no network dependency after indexing.
+
 ### Provenance and Analytics
 
 Every finding carries:
