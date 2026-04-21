@@ -1,0 +1,14 @@
+[[source]]
+name = "mini-rust"
+path = "tests/fixtures/context/repos/mini-rust"
+kind = "rust"
+
+[[source]]
+name = "mini-ts"
+path = "tests/fixtures/context/repos/mini-ts"
+kind = "typescript"
+
+[[source]]
+name = "mini-terraform"
+path = "tests/fixtures/context/repos/mini-terraform"
+kind = "terraform"
