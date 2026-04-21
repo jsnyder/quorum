@@ -60,6 +60,9 @@ pub struct Diagnostics {
     pub unknown_extension_skipped: usize,
     pub extractor_errors: Vec<ExtractorError>,
     pub top_skipped_globs: Vec<(String, usize)>,
+    /// Count of `source.paths` entries that, after canonicalization, resolved
+    /// outside the source root and were refused.
+    pub escaped_paths: usize,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -126,17 +129,44 @@ pub fn extract_source(
     let global_patterns = compile_patterns(&config.global_ignore);
     // MVP: .gitignore is not yet honored — Phase 3 will parse and apply it.
 
-    let scan_roots: Vec<PathBuf> = if source.paths.is_empty() {
-        vec![root.clone()]
-    } else {
-        let joined: Vec<PathBuf> = source.paths.iter().map(|p| root.join(p)).collect();
-        dedupe_scan_roots(joined)
-    };
-
     let indexed_at = clock.now();
     let mut diagnostics = Diagnostics::default();
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut per_source_hit_counts: HashMap<String, usize> = HashMap::new();
+
+    // Canonicalize the source root so we can enforce that every requested
+    // scan path stays inside it (blocks `../../etc` and absolute escapes).
+    let canonical_root = std::fs::canonicalize(&root).ok();
+
+    let scan_roots: Vec<PathBuf> = if source.paths.is_empty() {
+        vec![root.clone()]
+    } else {
+        let mut kept: Vec<PathBuf> = Vec::with_capacity(source.paths.len());
+        for p in &source.paths {
+            let joined = root.join(p);
+            if let Some(ref croot) = canonical_root {
+                match std::fs::canonicalize(&joined) {
+                    Ok(cjoined) => {
+                        if !cjoined.starts_with(croot) {
+                            tracing::warn!(
+                                source = %source.name,
+                                requested_path = ?p,
+                                "scan path escapes source root; ignoring"
+                            );
+                            diagnostics.escaped_paths += 1;
+                            continue;
+                        }
+                    }
+                    Err(_) => {
+                        // Nonexistent: retain and let the existing
+                        // `!scan_root.exists()` guard warn-and-skip below.
+                    }
+                }
+            }
+            kept.push(joined);
+        }
+        dedupe_scan_roots(kept)
+    };
 
     for scan_root in &scan_roots {
         if !scan_root.exists() {

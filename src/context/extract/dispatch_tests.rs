@@ -355,6 +355,36 @@ fn bare_directory_name_in_global_ignore_is_honored() {
 }
 
 #[test]
+fn rejects_scan_path_escaping_source_root() {
+    let entry = SourceEntry {
+        name: "x".into(),
+        kind: SourceKind::Rust,
+        location: SourceLocation::Path(fixture_path("mini-rust")),
+        paths: vec![PathBuf::from("../../../")],
+        weight: None,
+        ignore: vec![],
+    };
+    let result = extract_source(&entry, &ExtractConfig::default(), &FixedClock::epoch()).unwrap();
+    assert!(result.chunks.is_empty());
+    assert_eq!(result.diagnostics.escaped_paths, 1);
+}
+
+#[test]
+fn rejects_absolute_scan_path_outside_root() {
+    let entry = SourceEntry {
+        name: "x".into(),
+        kind: SourceKind::Rust,
+        location: SourceLocation::Path(fixture_path("mini-rust")),
+        paths: vec![PathBuf::from("/etc")],
+        weight: None,
+        ignore: vec![],
+    };
+    let result = extract_source(&entry, &ExtractConfig::default(), &FixedClock::epoch()).unwrap();
+    assert!(result.chunks.is_empty());
+    assert_eq!(result.diagnostics.escaped_paths, 1);
+}
+
+#[test]
 fn empty_source_path_list_scans_root() {
     let entry = mk_entry("mini-rust", SourceKind::Rust, fixture_path("mini-rust"));
     let clock = FixedClock::epoch();
