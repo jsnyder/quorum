@@ -17,6 +17,8 @@ mod phase3_integration_tests;
 #[cfg(test)]
 mod phase4_integration_tests;
 #[cfg(test)]
+mod phase5_integration_tests;
+#[cfg(test)]
 mod store_tests;
 #[cfg(test)]
 mod types_tests;
