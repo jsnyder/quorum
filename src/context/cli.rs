@@ -262,8 +262,9 @@ pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<Cmd
 // --- Init handler -----------------------------------------------------------
 
 fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
-    let dir = deps.home_dir().join(".quorum");
-    let sources_path = dir.join("sources.toml");
+    // `home_dir()` already points at the quorum state root (e.g. `~/.quorum`
+    // in production, a tempdir in tests) — don't append `.quorum` again here.
+    let sources_path = deps.home_dir().join("sources.toml");
 
     if sources_path.exists() {
         return Ok(CmdOutput {

@@ -24,7 +24,7 @@ fn run_context_cmd_init_creates_sources_toml() {
 
     let output = run_context_cmd(&ContextCmd::Init, &deps).expect("init succeeds");
 
-    let expected = deps.home_dir().join(".quorum").join("sources.toml");
+    let expected = deps.home_dir().join("sources.toml");
     assert!(
         expected.exists(),
         "init must create {}",
@@ -50,9 +50,13 @@ fn run_context_cmd_init_creates_sources_toml() {
 }
 
 #[test]
-fn run_context_cmd_init_is_idempotent() {
+fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
     let deps = TestDeps::new();
     let _ = run_context_cmd(&ContextCmd::Init, &deps).expect("first init succeeds");
+    let sources_path = deps.home_dir().join("sources.toml");
+    // Mutate the file so we can prove re-init does NOT overwrite it.
+    let sentinel = "# sentinel: hand-edited after init\n[context]\nauto_inject = false\n";
+    std::fs::write(&sources_path, sentinel).unwrap();
 
     let output = run_context_cmd(&ContextCmd::Init, &deps).expect("re-init succeeds");
 
@@ -60,10 +64,6 @@ fn run_context_cmd_init_is_idempotent() {
         output.created_paths.is_empty(),
         "re-init must not report created paths: {:?}",
         output.created_paths
-    );
-    assert!(
-        !output.warnings.is_empty(),
-        "re-init must surface an 'already initialized' warning"
     );
     assert!(
         output
@@ -74,6 +74,26 @@ fn run_context_cmd_init_is_idempotent() {
         output.warnings
     );
     assert!(output.stdout.contains("already initialized"));
+    let after = std::fs::read_to_string(&sources_path).unwrap();
+    assert_eq!(after, sentinel, "re-init must not clobber existing config");
+}
+
+#[test]
+fn run_context_cmd_init_writes_directly_under_home_dir() {
+    // Regression for the bug where ProdDeps (home_dir = ~/.quorum) plus the
+    // handler joining ".quorum" again produced ~/.quorum/.quorum/sources.toml.
+    // With home_dir treated as the state root, the file must land directly
+    // at <home>/sources.toml — no extra ".quorum" component.
+    let deps = TestDeps::new();
+    let output = run_context_cmd(&ContextCmd::Init, &deps).unwrap();
+    let expected = deps.home_dir().join("sources.toml");
+    assert!(expected.exists(), "sources.toml must land at <home>/sources.toml");
+    assert_eq!(output.created_paths, vec![expected]);
+    let doubled = deps.home_dir().join(".quorum").join("sources.toml");
+    assert!(
+        !doubled.exists(),
+        "must NOT create <home>/.quorum/sources.toml (double-join)"
+    );
 }
 
 #[test]
