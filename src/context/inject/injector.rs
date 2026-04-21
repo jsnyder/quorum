@@ -18,6 +18,10 @@ use crate::context::retrieve::{
 use crate::context::types::ChunkKind;
 
 /// Request shape that the review pipeline passes to the injector.
+///
+/// `file_path` is captured today for diagnostic tracing and for future
+/// filters (e.g. excluding chunks from the file being reviewed); it is not
+/// yet routed into the retrieval query by design.
 #[derive(Debug, Clone)]
 pub struct InjectionRequest {
     pub file_path: String,
@@ -65,10 +69,12 @@ impl ContextInjector {
         }
     }
 
-    /// Override the retrieval top-K (default 8).
+    /// Override the retrieval top-K (default 8). Values of 0 are silently
+    /// clamped to 1 so an accidental config never makes the injector a
+    /// permanent no-op.
     #[must_use]
     pub fn with_k(mut self, k: usize) -> Self {
-        self.k = k;
+        self.k = k.max(1);
         self
     }
 }
@@ -90,7 +96,14 @@ impl ContextInjectionSource for ContextInjector {
 
         let hits = match (self.retriever)(&query) {
             Ok(h) => h,
-            Err(_) => return None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    file_path = %req.file_path,
+                    "context injection retriever failed; skipping block"
+                );
+                return None;
+            }
         };
         if hits.is_empty() {
             return None;
