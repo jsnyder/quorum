@@ -95,6 +95,9 @@ bm25 = "2.3.2"
 
 # Markdown parsing (context feature: doc chunk extraction)
 pulldown-cmark = "0.13"
+
+# Filesystem walking (context feature: source extraction dispatch)
+walkdir = "2"
 # tree-sitter-dockerfile grammar is vendored in grammars/ and compiled via build.rs
 # (the crate depends on tree-sitter 0.20 which conflicts with 0.25)
 

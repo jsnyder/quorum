@@ -2700,6 +2700,7 @@ dependencies = [
  "tree-sitter-yaml",
  "ulid",
  "url",
+ "walkdir",
 ]
 
 [[package]]
