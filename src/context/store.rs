@@ -47,7 +47,13 @@ impl ChunkStore {
 
     /// Append a chunk as a single JSONL line. Creates the file and any missing
     /// parent directories on first call. Opens in append mode per call — no
-    /// persistent file handle is held.
+    /// persistent file handle is held. Crash-safe: each record is written in one
+    /// buffered call followed by `sync_data`.
+    ///
+    /// Does NOT check for duplicate ids — dedup is enforced by
+    /// [`ChunkStore::validate`] (called before `IndexBuilder::rebuild_from_jsonl`
+    /// in Phase 3). Callers appending incrementally within a single extraction
+    /// pass should track seen ids themselves if dedup matters mid-run.
     pub fn append(&mut self, chunk: &Chunk) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -55,34 +61,37 @@ impl ChunkStore {
             }
         }
 
-        let line = serde_json::to_string(chunk)
+        let mut record = serde_json::to_string(chunk)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        record.push('\n');
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
+        file.write_all(record.as_bytes())?;
+        file.sync_data()?;
         Ok(())
     }
 
     /// Strict load: the first malformed line aborts with an error.
     /// A missing file returns an empty Vec (not an error).
     pub fn load_all(path: &Path) -> io::Result<Vec<Chunk>> {
-        let contents = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        use std::io::BufRead;
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e),
         };
-
+        let reader = std::io::BufReader::new(file);
         let mut chunks = Vec::new();
-        for (idx, raw) in contents.split('\n').enumerate() {
-            let line = raw.trim();
-            if line.is_empty() {
+        for (idx, line) in reader.lines().enumerate() {
+            let raw = line?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            let chunk: Chunk = serde_json::from_str(line).map_err(|e| {
+            let chunk: Chunk = serde_json::from_str(trimmed).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("line {}: {e}", idx + 1),
@@ -97,8 +106,9 @@ impl ChunkStore {
     /// chunks in `report.chunks`. Blank lines are silently skipped. A missing
     /// file yields an empty report.
     pub fn load_all_lenient(path: &Path) -> io::Result<LoadReport> {
-        let contents = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        use std::io::BufRead;
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Ok(LoadReport {
                     chunks: Vec::new(),
@@ -107,15 +117,16 @@ impl ChunkStore {
             }
             Err(e) => return Err(e),
         };
-
+        let reader = std::io::BufReader::new(file);
         let mut chunks = Vec::new();
         let mut errors = Vec::new();
-        for (idx, raw) in contents.split('\n').enumerate() {
-            let line = raw.trim();
-            if line.is_empty() {
+        for (idx, line) in reader.lines().enumerate() {
+            let raw = line?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Chunk>(line) {
+            match serde_json::from_str::<Chunk>(trimmed) {
                 Ok(chunk) => chunks.push(chunk),
                 Err(e) => errors.push(LoadError {
                     line_number: idx + 1,
