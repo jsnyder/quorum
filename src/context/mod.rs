@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod config;
 pub mod extract;
 pub mod index;
@@ -6,6 +7,8 @@ pub mod retrieve;
 pub mod store;
 pub mod types;
 
+#[cfg(test)]
+mod cli_tests;
 #[cfg(test)]
 mod config_tests;
 #[cfg(test)]

@@ -180,6 +180,69 @@ impl SourcesConfig {
         Self::from_str(&text)
     }
 
+    /// Write a minimal `sources.toml` containing only the `[context]` block
+    /// populated with defaults. Creates parent directories as needed.
+    ///
+    /// Used by `quorum context init`. No-op on callers: this always writes a
+    /// fresh file, so callers should guard against clobbering an existing one.
+    pub fn write_default(path: &Path) -> Result<(), ConfigError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let body = default_sources_toml();
+        std::fs::write(path, body).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+}
+
+/// Render the bundled default `sources.toml` as a string. Exposed for tests
+/// and `init` command templating; contains a `[context]` block with the
+/// numeric defaults from `ContextConfig::default()` and a comment header.
+pub fn default_sources_toml() -> String {
+    let d = ContextConfig::default();
+    // Hand-rolled TOML: the raw parse structs are Deserialize-only, and
+    // adding Serialize here would ripple through a lot of test fixtures.
+    // Keeping the writer local is cheaper and keeps key ordering stable.
+    format!(
+        "# quorum context sources\n\
+         # External sources to extract context from. Add entries with:\n\
+         #   quorum context add <name> --kind <kind> (--git <url> | --path <dir>)\n\
+         \n\
+         [context]\n\
+         auto_inject = {auto_inject}\n\
+         inject_budget_tokens = {inject_budget_tokens}\n\
+         inject_min_score = {inject_min_score}\n\
+         inject_max_chunks = {inject_max_chunks}\n\
+         rerank_recency_halflife_days = {rerank_recency_halflife_days}\n\
+         rerank_recency_floor = {rerank_recency_floor}\n\
+         max_source_size_mb = {max_source_size_mb}\n",
+        auto_inject = d.auto_inject,
+        inject_budget_tokens = d.inject_budget_tokens,
+        inject_min_score = format_finite_f32(d.inject_min_score),
+        inject_max_chunks = d.inject_max_chunks,
+        rerank_recency_halflife_days = d.rerank_recency_halflife_days,
+        rerank_recency_floor = format_finite_f32(d.rerank_recency_floor),
+        max_source_size_mb = d.max_source_size_mb,
+    )
+}
+
+fn format_finite_f32(v: f32) -> String {
+    // Ensure TOML always sees a decimal point so the value round-trips as a
+    // float (and not an integer) through the raw parser.
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
+impl SourcesConfig {
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let mut sources = Vec::with_capacity(raw.source.len());
         let mut seen = HashSet::new();
