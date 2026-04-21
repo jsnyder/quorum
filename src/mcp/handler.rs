@@ -86,7 +86,13 @@ impl QuorumHandler {
             "fp" => Verdict::Fp,
             "partial" => Verdict::Partial,
             "wontfix" => Verdict::Wontfix,
-            other => return Err(format!("Invalid verdict: {}. Use tp, fp, partial, or wontfix.", other)),
+            "context_misleading" => Verdict::ContextMisleading {
+                blamed_chunk_ids: params.blamed_chunks.clone().unwrap_or_default(),
+            },
+            other => return Err(format!(
+                "Invalid verdict: {}. Use tp, fp, partial, wontfix, or context_misleading.",
+                other
+            )),
         };
 
         let entry = FeedbackEntry {
@@ -402,6 +408,7 @@ mod tests {
             verdict: "tp".into(),
             reason: "Fixed".into(),
             model: Some("gpt-5.4".into()),
+            blamed_chunks: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -432,9 +439,50 @@ mod tests {
             verdict: "invalid".into(),
             reason: "test".into(),
             model: None,
+            blamed_chunks: None,
         };
 
         assert!(handler.handle_feedback(params).is_err());
+    }
+
+    #[test]
+    fn feedback_handler_records_context_misleading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/retriever.rs".into(),
+            finding: "Stale API reference".into(),
+            verdict: "context_misleading".into(),
+            reason: "docs described v1, code uses v2".into(),
+            model: None,
+            blamed_chunks: Some(vec!["chunk-abc".into(), "chunk-def".into()]),
+        };
+
+        let result = handler.handle_feedback(params).unwrap();
+        let text = serde_json::to_string(&result.content[0]).unwrap();
+        assert!(text.contains("context misleading"));
+
+        let store = FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert_eq!(blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
     }
 
     #[test]

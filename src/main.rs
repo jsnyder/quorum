@@ -1173,14 +1173,28 @@ fn run_feedback_inner(
     verdict_str: &str,
     reason: &str,
     model: Option<&str>,
+    blamed_chunks: Option<&str>,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
-    let verdict = match cli::parse_verdict(verdict_str) {
+    let mut verdict = match cli::parse_verdict(verdict_str) {
         Ok(v) => v,
         Err(e) => {
             return (3, format!("Error: {}", e));
         }
     };
+
+    // Merge --blamed-chunks into a ContextMisleading verdict. For other
+    // verdicts, silently ignore the flag (the plan says we shouldn't error
+    // on spurious use — existing validation behavior is unchanged).
+    let parsed_chunks = match cli::parse_blamed_chunks(blamed_chunks) {
+        Ok(v) => v,
+        Err(e) => {
+            return (3, format!("Error: {}", e));
+        }
+    };
+    if let feedback::Verdict::ContextMisleading { blamed_chunk_ids } = &mut verdict {
+        *blamed_chunk_ids = parsed_chunks;
+    }
 
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
@@ -1199,7 +1213,13 @@ fn run_feedback_inner(
     }
 
     let total = store.count().unwrap_or(0);
-    let verdict_label = format!("{:?}", entry.verdict).to_lowercase();
+    let verdict_label = match &entry.verdict {
+        feedback::Verdict::Tp => "tp".to_string(),
+        feedback::Verdict::Fp => "fp".to_string(),
+        feedback::Verdict::Partial => "partial".to_string(),
+        feedback::Verdict::Wontfix => "wontfix".to_string(),
+        feedback::Verdict::ContextMisleading { .. } => "context_misleading".to_string(),
+    };
 
     // Format output based on mode
     let use_compact = output::should_use_compact(false);
@@ -1231,7 +1251,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
     let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
     let (exit_code, output) = run_feedback_inner(
         &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-        opts.model.as_deref(), &feedback_path,
+        opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
     );
     if exit_code != 0 {
         eprintln!("{}", output);
@@ -1273,7 +1293,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1287,7 +1307,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, &path,
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1298,7 +1318,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1310,7 +1330,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, &path,
+            "src/auth.rs", "Test finding", "fp", "Not real", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1322,7 +1342,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1334,7 +1354,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, &path,
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1352,10 +1372,92 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), &path,
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("gpt-5.4"));
+    }
+
+    #[test]
+    fn feedback_cli_records_context_misleading_with_blamed_chunks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "Injected context described v1 API, code uses v2",
+            None,
+            Some("chunk-abc,chunk-def"),
+            &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        // Serialized struct variant: {"context_misleading":{"blamed_chunk_ids":[...]}}
+        assert!(contents.contains("context_misleading"),
+            "verdict tag missing; got: {}", contents);
+        assert!(contents.contains("chunk-abc"), "first chunk id missing; got: {}", contents);
+        assert!(contents.contains("chunk-def"), "second chunk id missing; got: {}", contents);
+
+        // Round-trip through the store to assert exact structure.
+        let store = feedback::FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert_eq!(blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn feedback_cli_rejects_empty_entry_in_blamed_chunks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, output) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "r",
+            None,
+            Some("a,,b"),
+            &path,
+        );
+        assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
+        assert!(output.to_lowercase().contains("empty"),
+            "error must mention empty entry; got: {}", output);
+        // Nothing should have been written.
+        assert!(!path.exists() || std::fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn feedback_cli_context_misleading_with_no_blamed_chunks_uses_empty_vec() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "No specific chunks identified",
+            None,
+            None, // user omitted --blamed-chunks entirely
+            &path,
+        );
+        assert_eq!(exit_code, 0,
+            "omitted --blamed-chunks must succeed with an empty default");
+
+        let store = feedback::FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert!(blamed_chunk_ids.is_empty(),
+                    "absent flag must produce empty Vec, not populate with a placeholder");
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
     }
 }

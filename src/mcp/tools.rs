@@ -21,7 +21,7 @@ pub struct ReviewTool {
 
 #[mcp_tool(
     name = "feedback",
-    description = "Record whether a review finding was a true positive (tp), false positive (fp), partial, or wontfix. Improves future reviews."
+    description = "Record whether a review finding was a true positive (tp), false positive (fp), partial, wontfix, or context_misleading. Improves future reviews."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FeedbackTool {
@@ -30,13 +30,17 @@ pub struct FeedbackTool {
     pub file_path: String,
     /// The finding title/message
     pub finding: String,
-    /// Verdict: tp, fp, partial, or wontfix
+    /// Verdict: tp, fp, partial, wontfix, or context_misleading
     pub verdict: String,
     /// Reason for the verdict
     pub reason: String,
     /// Which model produced the finding (optional)
     #[serde(default)]
     pub model: Option<String>,
+    /// Chunk IDs blamed for misleading context. Only meaningful with
+    /// `verdict = "context_misleading"`. May be empty or omitted.
+    #[serde(default, rename = "blamedChunks")]
+    pub blamed_chunks: Option<Vec<String>>,
 }
 
 #[mcp_tool(
