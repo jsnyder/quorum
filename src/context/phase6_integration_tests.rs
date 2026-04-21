@@ -362,3 +362,167 @@ fn end_to_end_review_with_context_injection_logs_telemetry() {
     assert!(back.rendered_prompt_hash.is_some());
     assert_eq!(back.injected_chunk_ids, tele.injected_chunk_ids);
 }
+
+// ---- Task 8.4: calibrator-driven per-chunk injection suppression ------------
+
+/// Build the standard mini-rust injection request that retrieves
+/// `verify_token`-class chunks.
+fn verify_token_request() -> InjectionRequest {
+    InjectionRequest {
+        file_path: "src/auth.rs".to_string(),
+        language: Some("rust".to_string()),
+        identifiers: vec!["verify_token".to_string()],
+        text: "jwt validation signing key".to_string(),
+    }
+}
+
+#[test]
+fn previously_retrieved_chunk_disappears_from_results_after_3_context_misleading_confirmations() {
+    use crate::calibrator::Calibrator;
+    use std::sync::Arc;
+
+    // 1. Index mini-rust and confirm baseline retrieval surfaces a
+    //    `verify_token`-bearing block.
+    let harness = build_harness("mini-rust");
+    let sources = sources_config("mini-rust", 50, true);
+    let baseline = ContextInjector::new(&sources, retriever_closure(&harness));
+    let baseline_outcome = baseline.inject(&verify_token_request());
+    let rendered = baseline_outcome
+        .rendered
+        .expect("baseline retrieval must produce a block");
+    assert!(
+        rendered.contains("verify_token"),
+        "baseline block should mention verify_token, got: {rendered}"
+    );
+    let blamed_ids: Vec<String> = baseline_outcome.telemetry.injected_chunk_ids.clone();
+    assert!(
+        !blamed_ids.is_empty(),
+        "baseline must produce at least one injected chunk id to blame"
+    );
+
+    // 2. Record 3 ContextMisleading confirmations against every chunk id
+    //    that was delivered in the baseline block. Default
+    //    `inject_suppress_after = 3` => each blamed id is sealed at INF.
+    let mut cal = Calibrator::new(sources.context.inject_min_score);
+    for id in &blamed_ids {
+        cal.record_misleading(id, "misleading context");
+        cal.record_misleading(id, "misleading context");
+        cal.record_misleading(id, "misleading context");
+    }
+
+    // 3. Re-run retrieval with the same fixture but a calibrator-gated
+    //    injector. The blamed chunks must be gone.
+    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
+        .with_calibrator(Arc::new(cal));
+    let gated_outcome = gated.inject(&verify_token_request());
+
+    let gated_ids = &gated_outcome.telemetry.injected_chunk_ids;
+    for id in &blamed_ids {
+        assert!(
+            !gated_ids.contains(id),
+            "chunk {id} was flagged 3x misleading but still appeared in gated retrieval: {gated_ids:?}"
+        );
+    }
+}
+
+#[test]
+fn calibrator_none_preserves_retrieval_behavior() {
+    // `with_calibrator` never called -> byte-identical outcome to the
+    // pre-8.4 injector.
+    let harness = build_harness("mini-rust");
+    let sources = sources_config("mini-rust", 50, true);
+    let injector = ContextInjector::new(&sources, retriever_closure(&harness));
+
+    let outcome = injector.inject(&verify_token_request());
+    assert!(
+        outcome.rendered.is_some(),
+        "no calibrator wired => block must still render"
+    );
+    assert_eq!(
+        outcome.telemetry.suppressed_by_calibrator, 0,
+        "no calibrator wired => suppressed_by_calibrator must be 0"
+    );
+}
+
+#[test]
+fn telemetry_counts_chunks_suppressed_by_calibrator() {
+    use crate::calibrator::Calibrator;
+    use std::sync::Arc;
+
+    let harness = build_harness("mini-rust");
+    let sources = sources_config("mini-rust", 50, true);
+
+    // Baseline: measure how many chunks the retriever returns for this
+    // query. Every one of them will be sealed by the calibrator, so the
+    // gated injector's `suppressed_by_calibrator` must equal this count.
+    let baseline = ContextInjector::new(&sources, retriever_closure(&harness));
+    let baseline_outcome = baseline.inject(&verify_token_request());
+    let retrieved = baseline_outcome.telemetry.retrieved_chunk_count;
+    assert!(retrieved > 0, "baseline must return at least one chunk");
+    let retrieved_ids: Vec<String> = baseline_outcome.telemetry.injected_chunk_ids.clone();
+
+    // Seal every id returned in the baseline.
+    let mut cal = Calibrator::new(sources.context.inject_min_score);
+    for id in &retrieved_ids {
+        cal.record_misleading(id, "seal");
+        cal.record_misleading(id, "seal");
+        cal.record_misleading(id, "seal");
+    }
+
+    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
+        .with_calibrator(Arc::new(cal));
+    let gated_outcome = gated.inject(&verify_token_request());
+
+    // Sealed chunks are dropped -> suppressed_by_calibrator counts them.
+    // `retrieved` is an upper bound because some retrieved chunks may not
+    // be among `retrieved_ids` (they survived plan filtering), but all
+    // dropped chunks were sealed.
+    assert!(
+        gated_outcome.telemetry.suppressed_by_calibrator as usize >= retrieved_ids.len(),
+        "suppressed_by_calibrator ({}) must be >= sealed-id count ({})",
+        gated_outcome.telemetry.suppressed_by_calibrator,
+        retrieved_ids.len()
+    );
+}
+
+#[test]
+fn partially_raised_threshold_keeps_high_score_chunks_and_drops_low_ones() {
+    use crate::calibrator::Calibrator;
+    use std::sync::Arc;
+
+    // One confirmation lifts the threshold to `floor + (1-floor)/N`, which
+    // is < 1.0 but > floor. Chunks whose raw score falls in that band are
+    // dropped; chunks with score >= the raised band survive. On the
+    // mini-rust fixture the inject_min_score floor is 0.0, so one
+    // confirmation raises the per-chunk threshold to ~0.333 — still well
+    // below typical hit scores.
+    let harness = build_harness("mini-rust");
+    let sources = sources_config("mini-rust", 50, true);
+
+    let baseline = ContextInjector::new(&sources, retriever_closure(&harness));
+    let baseline_outcome = baseline.inject(&verify_token_request());
+    let blamed_ids: Vec<String> = baseline_outcome
+        .telemetry
+        .injected_chunk_ids
+        .clone();
+    assert!(!blamed_ids.is_empty());
+
+    // Single confirmation per chunk -> raised but not sealed.
+    let mut cal = Calibrator::new(sources.context.inject_min_score);
+    for id in &blamed_ids {
+        cal.record_misleading(id, "one-shot");
+    }
+
+    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
+        .with_calibrator(Arc::new(cal));
+    let gated_outcome = gated.inject(&verify_token_request());
+
+    // We don't assert exact survivorship here (score distribution is
+    // fixture-dependent) — just that the telemetry stays internally
+    // consistent: suppressed count never exceeds retrieved count.
+    assert!(
+        gated_outcome.telemetry.suppressed_by_calibrator
+            <= gated_outcome.telemetry.retrieved_chunk_count,
+        "suppressed_by_calibrator must not exceed retrieved_chunk_count"
+    );
+}

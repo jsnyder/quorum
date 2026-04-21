@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::calibrator::Calibrator;
 use crate::context::config::{ContextConfig, SourcesConfig};
 use crate::context::inject::plan::plan_injection;
 use crate::context::inject::render::render_context_block;
@@ -77,6 +78,12 @@ pub struct ContextInjector {
     weights: SourceWeights,
     retriever: Arc<RetrieverFn>,
     k: usize,
+    /// Optional per-chunk threshold oracle. When `Some`, the injector gates
+    /// post-retrieve hits by `max(inject_min_score,
+    /// calibrator.injection_threshold_for(chunk_id))` and drops chunks whose
+    /// score falls below that. `None` preserves the pre-calibrator behavior
+    /// (no per-chunk suppression).
+    calibrator: Option<Arc<Calibrator>>,
 }
 
 impl ContextInjector {
@@ -94,6 +101,7 @@ impl ContextInjector {
             weights,
             retriever,
             k: 8,
+            calibrator: None,
         }
     }
 
@@ -103,6 +111,16 @@ impl ContextInjector {
     #[must_use]
     pub fn with_k(mut self, k: usize) -> Self {
         self.k = k.max(1);
+        self
+    }
+
+    /// Attach a calibrator so the injector can apply per-chunk injection
+    /// thresholds (from `Verdict::ContextMisleading` feedback). A chunk
+    /// that has been flagged `inject_suppress_after` times returns
+    /// `f32::INFINITY` from the calibrator and is dropped unconditionally.
+    #[must_use]
+    pub fn with_calibrator(mut self, calibrator: Arc<Calibrator>) -> Self {
+        self.calibrator = Some(calibrator);
         self
     }
 }
@@ -163,6 +181,25 @@ impl ContextInjectionSource for ContextInjector {
                 telemetry: tele,
             };
         }
+
+        // Calibrator gate (Task 8.4): drop chunks whose score falls below
+        // their per-chunk injection threshold. `f32::INFINITY` from the
+        // calibrator (N+ ContextMisleading confirmations) is a hard seal.
+        //
+        // This is a post-retrieve concern — the raw retriever contract is
+        // unchanged — and runs before precedence/plan so neither sees
+        // chunks the operator has already flagged as misleading.
+        let hits = if let Some(cal) = self.calibrator.as_ref() {
+            let before = hits.len();
+            let kept: Vec<ScoredChunk> = hits
+                .into_iter()
+                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id))
+                .collect();
+            tele.suppressed_by_calibrator = (before - kept.len()) as u32;
+            kept
+        } else {
+            hits
+        };
 
         // Precedence pass (dedupes duplicated qualified_names across sources).
         let (kept, precedence_log) = if self.weights.is_empty() {

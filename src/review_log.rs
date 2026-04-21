@@ -116,6 +116,12 @@ pub struct ContextTelemetry {
     /// injected.
     #[serde(default)]
     pub rendered_prompt_hash: Option<String>,
+    /// Chunks dropped post-retrieve by the calibrator's per-chunk
+    /// `injection_threshold_for` gate (raised thresholds from prior
+    /// `Verdict::ContextMisleading` feedback). `0` when no calibrator was
+    /// wired into the injector.
+    #[serde(default)]
+    pub suppressed_by_calibrator: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -538,6 +544,7 @@ mod tests {
             precedence_entries: 1,
             render_duration_ms: 42,
             rendered_prompt_hash: Some("deadbeef".into()),
+            suppressed_by_calibrator: 0,
         }
     }
 
