@@ -148,3 +148,39 @@ fn unknown_fields_parse_cleanly_for_forward_compat() {
     let chunk: Chunk = serde_json::from_str(json).unwrap();
     assert_eq!(chunk.id, "s:p:q");
 }
+
+#[test]
+fn line_range_rejects_zero_start() {
+    let json = r#"{"start": 0, "end": 5}"#;
+    let err = serde_json::from_str::<LineRange>(json).unwrap_err();
+    assert!(err.to_string().contains("1-indexed"), "got: {err}");
+}
+
+#[test]
+fn line_range_rejects_inverted_range() {
+    let json = r#"{"start": 10, "end": 5}"#;
+    let err = serde_json::from_str::<LineRange>(json).unwrap_err();
+    assert!(err.to_string().contains("<= end"), "got: {err}");
+}
+
+#[test]
+fn provenance_rejects_nan_confidence() {
+    let _json = r#"{"extractor": "x", "confidence": "NaN", "source_uri": "u"}"#;
+    // NaN can't be expressed in JSON directly; we need to test via f32 path
+    let json_inf = r#"{"extractor": "x", "confidence": 1.0e300, "source_uri": "u"}"#;
+    // 1.0e300 as f32 is infinity
+    let err = serde_json::from_str::<Provenance>(json_inf).unwrap_err();
+    assert!(err.to_string().contains("finite") || err.to_string().contains("[0.0, 1.0]"),
+        "got: {err}");
+}
+
+#[test]
+fn provenance_rejects_out_of_range_confidence() {
+    let json_high = r#"{"extractor": "x", "confidence": 1.5, "source_uri": "u"}"#;
+    let err = serde_json::from_str::<Provenance>(json_high).unwrap_err();
+    assert!(err.to_string().contains("[0.0, 1.0]"), "got: {err}");
+
+    let json_neg = r#"{"extractor": "x", "confidence": -0.1, "source_uri": "u"}"#;
+    let err = serde_json::from_str::<Provenance>(json_neg).unwrap_err();
+    assert!(err.to_string().contains("[0.0, 1.0]"), "got: {err}");
+}

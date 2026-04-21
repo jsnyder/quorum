@@ -11,9 +11,30 @@ pub enum ChunkKind {
 
 /// 1-indexed inclusive line range in a source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawLineRange")]
 pub struct LineRange {
     pub start: u32,
     pub end: u32,
+}
+
+#[derive(Deserialize)]
+struct RawLineRange {
+    start: u32,
+    end: u32,
+}
+
+impl TryFrom<RawLineRange> for LineRange {
+    type Error = String;
+
+    fn try_from(raw: RawLineRange) -> Result<Self, Self::Error> {
+        if raw.start == 0 || raw.end == 0 {
+            return Err("line ranges must be 1-indexed (got 0)".into());
+        }
+        if raw.start > raw.end {
+            return Err(format!("line range start ({}) must be <= end ({})", raw.start, raw.end));
+        }
+        Ok(Self { start: raw.start, end: raw.end })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,10 +78,36 @@ pub struct ChunkMeta {
 
 // Note: confidence is f32, so Provenance derives PartialEq but NOT Eq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawProvenance")]
 pub struct Provenance {
     pub extractor: String,
     /// Confidence score in the range [0.0, 1.0]. f32 is used (vs f64) to keep
     /// JSONL rows compact; precision beyond 6 digits is not meaningful here.
     pub confidence: f32,
     pub source_uri: String,
+}
+
+#[derive(Deserialize)]
+struct RawProvenance {
+    extractor: String,
+    confidence: f32,
+    source_uri: String,
+}
+
+impl TryFrom<RawProvenance> for Provenance {
+    type Error = String;
+
+    fn try_from(raw: RawProvenance) -> Result<Self, Self::Error> {
+        if !raw.confidence.is_finite() {
+            return Err(format!("confidence must be finite (got {})", raw.confidence));
+        }
+        if !(0.0..=1.0).contains(&raw.confidence) {
+            return Err(format!("confidence must be in [0.0, 1.0] (got {})", raw.confidence));
+        }
+        Ok(Self {
+            extractor: raw.extractor,
+            confidence: raw.confidence,
+            source_uri: raw.source_uri,
+        })
+    }
 }
