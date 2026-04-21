@@ -1,8 +1,9 @@
 //! Unit tests for `src/context/cli.rs`.
 
 use super::cli::{
-    run_context_cmd, AddArgs, AddLocation, ContextCmd, ContextDeps, IndexArgs, ListArgs,
-    ListFormat, QueryArgs, QueryFormat, RefreshArgs, SourceSelector, TestDeps,
+    run_context_cmd, AddArgs, AddLocation, CheckStatus, ContextCmd, ContextDeps, DoctorArgs,
+    DoctorFormat, IndexArgs, ListArgs, ListFormat, PruneArgs, QueryArgs, QueryFormat,
+    RefreshArgs, SourceSelector, TestDeps,
 };
 use super::config::{SourceLocation, SourcesConfig};
 use std::path::PathBuf;
@@ -864,4 +865,440 @@ fn query_errors_when_source_has_no_index() {
         msg.contains("no index") || msg.contains("context index"),
         "error should point user to the index step: {msg:?}"
     );
+}
+
+// --- prune ------------------------------------------------------------------
+
+/// Helper: manually create a `sources/<name>/` directory with placeholder
+/// files so the prune/doctor tests don't need to run a full index cycle.
+fn make_source_dir(deps: &TestDeps, name: &str) -> PathBuf {
+    let dir = deps.home_dir().join("sources").join(name);
+    std::fs::create_dir_all(&dir).expect("create source dir");
+    std::fs::write(dir.join("chunks.jsonl"), "").expect("touch chunks.jsonl");
+    dir
+}
+
+#[test]
+fn prune_removes_orphan_source_dirs_listed_in_output() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    // Register only 'keeper'; leave 'orphan' as a stray dir.
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("keeper", "rust", "/tmp/keeper")),
+        &deps,
+    )
+    .expect("add keeper");
+    let keeper_dir = make_source_dir(&deps, "keeper");
+    let orphan_dir = make_source_dir(&deps, "orphan");
+
+    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps)
+        .expect("prune ok");
+
+    assert!(
+        !orphan_dir.exists(),
+        "orphan dir must be deleted: {}",
+        orphan_dir.display()
+    );
+    assert!(
+        keeper_dir.exists(),
+        "registered source dir must be preserved"
+    );
+    assert!(
+        out.removed_paths.iter().any(|p| p == &orphan_dir),
+        "removed_paths must list orphan: {:?}",
+        out.removed_paths
+    );
+    assert!(
+        !out.removed_paths.iter().any(|p| p == &keeper_dir),
+        "removed_paths must not list keeper: {:?}",
+        out.removed_paths
+    );
+    assert!(
+        out.stdout.contains("orphan"),
+        "stdout must mention what was pruned: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn prune_preserves_registered_source_dirs() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("alpha", "rust", "/tmp/alpha")),
+        &deps,
+    )
+    .expect("add alpha");
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("beta", "rust", "/tmp/beta")),
+        &deps,
+    )
+    .expect("add beta");
+    let a = make_source_dir(&deps, "alpha");
+    let b = make_source_dir(&deps, "beta");
+
+    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps)
+        .expect("prune ok");
+
+    assert!(a.exists() && b.exists(), "both registered dirs must survive");
+    assert!(
+        out.removed_paths.is_empty(),
+        "no orphans => removed_paths empty: {:?}",
+        out.removed_paths
+    );
+}
+
+#[test]
+fn prune_dry_run_reports_but_does_not_delete() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let orphan = make_source_dir(&deps, "ghost");
+
+    let args = PruneArgs { dry_run: true };
+    let out = run_context_cmd(&ContextCmd::Prune(args), &deps).expect("prune dry-run");
+
+    assert!(
+        orphan.exists(),
+        "--dry-run must leave the dir in place: {}",
+        orphan.display()
+    );
+    assert!(
+        out.removed_paths.iter().any(|p| p == &orphan),
+        "removed_paths reports what WOULD be pruned: {:?}",
+        out.removed_paths
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("dry") || out.stdout.to_lowercase().contains("would"),
+        "stdout must flag dry-run: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn prune_refuses_to_touch_paths_outside_sources_root() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    // Bypass the CLI add path (which has its own validation) and write a
+    // malicious name directly to sources.toml — simulates a hand-edited
+    // config that a future version of `add` might permit.
+    let sources_path = deps.home_dir().join("sources.toml");
+    let malicious = "\n[[source]]\nname = \"../evil\"\nkind = \"rust\"\npath = \"/tmp/x\"\n";
+    let existing = std::fs::read_to_string(&sources_path).unwrap();
+    std::fs::write(&sources_path, format!("{existing}{malicious}")).unwrap();
+
+    // Create a canary file outside the sources root that must never be touched.
+    let canary = deps.home_dir().join("canary.txt");
+    std::fs::write(&canary, b"must survive").unwrap();
+
+    let result = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps);
+
+    assert!(
+        canary.exists(),
+        "prune must never traverse outside <home>/sources/"
+    );
+    let std::result::Result::Ok(out) = result else {
+        // Rejecting the malicious config outright is also acceptable.
+        return;
+    };
+    for p in &out.removed_paths {
+        let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+        let root = deps.home_dir().join("sources").canonicalize().unwrap();
+        assert!(
+            canon.starts_with(&root),
+            "removed path {} escaped sources root {}",
+            canon.display(),
+            root.display()
+        );
+    }
+}
+
+// --- doctor -----------------------------------------------------------------
+
+/// Spin up a realistic indexed state so doctor_*_green_on_healthy_state has
+/// something to check.
+fn seed_and_index(deps: &TestDeps, name: &str, fixture: &str) {
+    seed_single_source(deps, name, fixture);
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single(name.to_string()),
+        }),
+        deps,
+    )
+    .expect("index");
+}
+
+fn parse_doctor_json(out_stdout: &str) -> serde_json::Value {
+    serde_json::from_str(out_stdout).expect("doctor --json must emit valid JSON")
+}
+
+#[test]
+fn doctor_all_green_on_healthy_state() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor ok");
+
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).expect("checks[]");
+    for c in checks {
+        let status = c.get("status").and_then(|x| x.as_str()).unwrap_or("");
+        assert_eq!(
+            status, "pass",
+            "check {} must be pass on healthy state: {c}",
+            c.get("name").and_then(|x| x.as_str()).unwrap_or("?")
+        );
+    }
+    assert!(
+        out.warnings.is_empty(),
+        "no warnings on healthy state: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn doctor_reports_missing_source_dir_as_fixable_failure() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("mini", "rust", &fixture_path_str("mini-rust"))),
+        &deps,
+    )
+    .expect("add");
+    // No index run: <home>/sources/mini/ doesn't exist.
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    let hit = checks
+        .iter()
+        .find(|c| c.get("name").and_then(|x| x.as_str()) == Some("per_source_dirs_present"))
+        .expect("per_source_dirs_present check must exist");
+    assert_eq!(hit.get("status").and_then(|x| x.as_str()), Some("fail"));
+    assert_eq!(hit.get("fixable").and_then(|x| x.as_bool()), Some(true));
+}
+
+#[test]
+fn doctor_reports_missing_index_db_as_fixable_failure() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    let db = deps.home_dir().join("sources").join("mini").join("index.db");
+    std::fs::remove_file(&db).expect("remove index.db");
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    let hit = checks
+        .iter()
+        .find(|c| c.get("name").and_then(|x| x.as_str()) == Some("per_source_index_db_opens"))
+        .expect("per_source_index_db_opens check must exist");
+    assert_eq!(hit.get("status").and_then(|x| x.as_str()), Some("fail"));
+    assert_eq!(hit.get("fixable").and_then(|x| x.as_bool()), Some(true));
+}
+
+#[test]
+fn doctor_reports_mismatched_model_hash() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    // Rewrite state.json with a bogus model hash to simulate an embedder
+    // upgrade between index runs.
+    let state_path = deps.home_dir().join("sources").join("mini").join("state.json");
+    let bad = serde_json::json!({
+        "schema_version": 1,
+        "embedder_model_hash": "definitely-not-the-current-hash",
+        "quorum_version": env!("CARGO_PKG_VERSION"),
+    });
+    std::fs::write(&state_path, serde_json::to_string_pretty(&bad).unwrap()).unwrap();
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    let hit = checks
+        .iter()
+        .find(|c| c.get("name").and_then(|x| x.as_str()) == Some("per_source_state_json_valid"))
+        .expect("per_source_state_json_valid check must exist");
+    assert_eq!(hit.get("status").and_then(|x| x.as_str()), Some("fail"));
+    assert_eq!(hit.get("fixable").and_then(|x| x.as_bool()), Some(true));
+}
+
+#[test]
+fn doctor_reports_orphan_dir_as_warning() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    let orphan = make_source_dir(&deps, "stray");
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    let hit = checks
+        .iter()
+        .find(|c| c.get("name").and_then(|x| x.as_str()) == Some("orphan_source_dirs"))
+        .expect("orphan_source_dirs check must exist");
+    assert_eq!(hit.get("status").and_then(|x| x.as_str()), Some("warn"));
+    let detail = hit.get("detail").and_then(|x| x.as_str()).unwrap_or("");
+    assert!(
+        detail.contains("stray"),
+        "detail must name the orphan: {detail:?}"
+    );
+    assert!(orphan.exists(), "doctor must not delete orphans itself");
+}
+
+#[test]
+fn doctor_json_schema_is_stable() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    let v = parse_doctor_json(&out.stdout);
+    // Top-level: ok: bool, checks: array.
+    assert!(v.get("ok").and_then(|x| x.as_bool()).is_some(), "ok: bool");
+    let checks = v.get("checks").and_then(|x| x.as_array()).expect("checks[]");
+    assert!(!checks.is_empty(), "must emit at least one check");
+    // Each check: name, status, fixable, detail, scope (None or "<source>").
+    for c in checks {
+        for key in ["name", "status", "fixable", "detail"] {
+            assert!(
+                c.get(key).is_some(),
+                "check must have '{key}': {c}"
+            );
+        }
+        let status = c.get("status").and_then(|x| x.as_str()).unwrap();
+        assert!(
+            matches!(status, "pass" | "fail" | "warn"),
+            "status must be pass|fail|warn: {status}"
+        );
+    }
+    // At least one of the required check names is present.
+    let names: Vec<&str> = checks
+        .iter()
+        .filter_map(|c| c.get("name").and_then(|x| x.as_str()))
+        .collect();
+    for required in [
+        "sources_toml_exists_and_parses",
+        "per_source_dirs_present",
+        "per_source_chunks_jsonl_readable",
+        "per_source_index_db_opens",
+        "per_source_index_db_matches_jsonl",
+        "per_source_state_json_valid",
+        "orphan_source_dirs",
+    ] {
+        assert!(
+            names.contains(&required),
+            "doctor must emit check '{required}': {names:?}"
+        );
+    }
+}
+
+#[test]
+fn doctor_repair_rebuilds_missing_index_db() {
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    let db = deps.home_dir().join("sources").join("mini").join("index.db");
+    std::fs::remove_file(&db).expect("remove db");
+    assert!(!db.exists());
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        repair: true,
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("repair runs");
+
+    assert!(db.exists(), "--repair must rebuild missing index.db");
+    assert!(
+        out.created_paths.iter().any(|p| p == &db),
+        "created_paths must list the rebuilt db: {:?}",
+        out.created_paths
+    );
+    // Re-run doctor post-repair: should be all green except possibly warns.
+    let post = run_context_cmd(
+        &ContextCmd::Doctor(DoctorArgs {
+            format: DoctorFormat::Json,
+            ..DoctorArgs::default()
+        }),
+        &deps,
+    )
+    .expect("post-repair doctor");
+    let v = parse_doctor_json(&post.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    for c in checks {
+        let status = c.get("status").and_then(|x| x.as_str()).unwrap_or("");
+        assert_ne!(
+            status, "fail",
+            "no residual failures after repair: {c}"
+        );
+    }
+}
+
+#[test]
+fn doctor_repair_is_best_effort_continues_past_one_source_failure() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    // Good source: fully indexed.
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("good", "rust", &fixture_path_str("mini-rust"))),
+        &deps,
+    )
+    .expect("add good");
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("good".to_string()),
+        }),
+        &deps,
+    )
+    .expect("index good");
+    // Delete good's db to force a fixable failure.
+    let good_db = deps.home_dir().join("sources").join("good").join("index.db");
+    std::fs::remove_file(&good_db).expect("remove good db");
+
+    // Bad source: registered but sources/bad/ never created and jsonl absent
+    // — missing_source_dir is fixable-in-theory (we just mkdir it) but the
+    // subsequent db/jsonl repairs have no source material. Must not abort.
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("bad", "rust", "/tmp/bad-placeholder")),
+        &deps,
+    )
+    .expect("add bad");
+
+    let _out = run_context_cmd(
+        &ContextCmd::Doctor(DoctorArgs {
+            format: DoctorFormat::Json,
+            repair: true,
+        }),
+        &deps,
+    )
+    .expect("repair must not hard-error even if one source can't be fixed");
+
+    assert!(
+        good_db.exists(),
+        "repair must fix the good source even if bad source can't be repaired"
+    );
+    // Bad source: at least the dir must have been created.
+    let bad_dir = deps.home_dir().join("sources").join("bad");
+    assert!(
+        bad_dir.exists(),
+        "repair must at least mkdir missing source dirs"
+    );
+    let _ = CheckStatus::Pass; // keep CheckStatus referenced even if enum not re-exported
 }

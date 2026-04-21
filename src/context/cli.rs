@@ -214,7 +214,7 @@ pub enum ContextCmd {
     Index(IndexArgs),
     Refresh(RefreshArgs),
     Query(QueryArgs),
-    Prune,
+    Prune(PruneArgs),
     Doctor(DoctorArgs),
 }
 
@@ -227,7 +227,7 @@ impl ContextCmd {
             ContextCmd::Index(_) => "index",
             ContextCmd::Refresh(_) => "refresh",
             ContextCmd::Query(_) => "query",
-            ContextCmd::Prune => "prune",
+            ContextCmd::Prune(_) => "prune",
             ContextCmd::Doctor(_) => "doctor",
         }
     }
@@ -310,8 +310,59 @@ pub struct QueryArgs {
     pub format: QueryFormat,
 }
 
+/// Output format for `quorum context doctor`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DoctorFormat {
+    #[default]
+    Table,
+    Compact,
+    Json,
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct DoctorArgs {}
+pub struct DoctorArgs {
+    pub format: DoctorFormat,
+    /// Apply best-effort fixes for any fixable failures (missing dirs,
+    /// missing index.db, embedder model hash mismatch).
+    pub repair: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PruneArgs {
+    /// When true, report what would be deleted without touching the disk.
+    pub dry_run: bool,
+}
+
+/// Status of a single `doctor` check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckStatus {
+    Pass,
+    Fail { fixable: bool },
+    Warn,
+}
+
+impl CheckStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            CheckStatus::Pass => "pass",
+            CheckStatus::Fail { .. } => "fail",
+            CheckStatus::Warn => "warn",
+        }
+    }
+    fn fixable(&self) -> bool {
+        matches!(self, CheckStatus::Fail { fixable: true })
+    }
+}
+
+/// One row in the doctor report. `scope` is `None` for whole-store checks
+/// (sources.toml, orphans) and `Some(source_name)` for per-source checks.
+#[derive(Debug, Clone)]
+pub struct CheckResult {
+    pub name: &'static str,
+    pub scope: Option<String>,
+    pub status: CheckStatus,
+    pub detail: String,
+}
 
 // --- Output -----------------------------------------------------------------
 
@@ -323,6 +374,9 @@ pub struct CmdOutput {
     pub stdout: String,
     /// Paths the command created (for test assertions + `--dry-run` UX).
     pub created_paths: Vec<PathBuf>,
+    /// Paths the command deleted (or would have, under `--dry-run`).
+    /// Populated by `prune`; empty for all other commands.
+    pub removed_paths: Vec<PathBuf>,
     /// Non-fatal warnings (e.g. "already initialized").
     pub warnings: Vec<String>,
 }
@@ -343,7 +397,8 @@ pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<Cmd
         ContextCmd::Index(args) => run_index(args, deps),
         ContextCmd::Refresh(args) => run_refresh(args, deps),
         ContextCmd::Query(args) => run_query(args, deps),
-        other => Err(anyhow!("not yet implemented: context {}", other.name())),
+        ContextCmd::Prune(args) => run_prune(args, deps),
+        ContextCmd::Doctor(args) => run_doctor(args, deps),
     }
 }
 
@@ -375,6 +430,7 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
         return Ok(CmdOutput {
             stdout: format!("context already initialized at {}", sources_path.display()),
             created_paths: Vec::new(),
+            removed_paths: Vec::new(),
             warnings: vec![format!(
                 "{} already exists; leaving it untouched",
                 sources_path.display()
@@ -387,6 +443,7 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
     Ok(CmdOutput {
         stdout: format!("initialized context at {}", sources_path.display()),
         created_paths: vec![sources_path],
+        removed_paths: Vec::new(),
         warnings: Vec::new(),
     })
 }
@@ -475,6 +532,7 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
     Ok(CmdOutput {
         stdout: format!("added source '{}'", entry.name),
         created_paths: Vec::new(),
+        removed_paths: Vec::new(),
         warnings: Vec::new(),
     })
 }
@@ -489,6 +547,7 @@ fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
         return Ok(CmdOutput {
             stdout: msg.clone(),
             created_paths: Vec::new(),
+            removed_paths: Vec::new(),
             warnings: vec![msg],
         });
     }
@@ -502,6 +561,7 @@ fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
     Ok(CmdOutput {
         stdout,
         created_paths: Vec::new(),
+        removed_paths: Vec::new(),
         warnings: Vec::new(),
     })
 }
@@ -752,6 +812,7 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
     Ok(CmdOutput {
         stdout,
         created_paths: created,
+        removed_paths: Vec::new(),
         warnings,
     })
 }
@@ -860,6 +921,7 @@ fn run_refresh<D: ContextDeps>(args: &RefreshArgs, deps: &D) -> Result<CmdOutput
     Ok(CmdOutput {
         stdout: lines.join("\n"),
         created_paths: created,
+        removed_paths: Vec::new(),
         warnings,
     })
 }
@@ -965,6 +1027,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
     Ok(CmdOutput {
         stdout,
         created_paths: Vec::new(),
+        removed_paths: Vec::new(),
         warnings: Vec::new(),
     })
 }
@@ -1098,4 +1161,701 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}…", &s[..max.saturating_sub(1)])
     }
+}
+
+// --- Prune / Doctor -------------------------------------------------------
+
+/// Root directory under which every per-source dir is allowed to live.
+/// Both prune and doctor join with this and then verify the result stays
+/// bounded — protects against malicious `sources.toml` entries whose `name`
+/// would escape (e.g. `../evil`).
+fn sources_root(home: &Path) -> PathBuf {
+    home.join("sources")
+}
+
+/// True if `name` is a safe single directory component: non-empty, no path
+/// separators, no ".." / ".", no NUL. Mirrors the validation we'd ideally
+/// enforce in `SourcesConfig::append_source`, but is duplicated here so a
+/// hand-edited sources.toml can't fool prune into deleting unrelated dirs.
+fn is_safe_source_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name == "." || name == ".." {
+        return false;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return false;
+    }
+    // Control chars (\n, \t, ...) would be disastrous in a path anyway.
+    if name.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    true
+}
+
+/// Enumerate on-disk per-source dirs beneath `<home>/sources/`. Returns the
+/// absolute path of each immediate subdirectory. Non-existent root => empty.
+fn on_disk_source_dirs(home: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let root = sources_root(home);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&root)
+        .map_err(|e| anyhow!("read_dir({}): {e}", root.display()))?;
+    for ent in entries {
+        let ent = ent.map_err(|e| anyhow!("read_dir entry: {e}"))?;
+        let ft = ent
+            .file_type()
+            .map_err(|e| anyhow!("file_type: {e}"))?;
+        if !ft.is_dir() {
+            continue;
+        }
+        // Only keep structurally safe names — a dir literally named ".."
+        // can't exist via the FS (read_dir never yields it as an entry),
+        // but defense in depth keeps the "inside sources root" invariant
+        // straightforward to reason about.
+        if let Some(name) = ent.file_name().to_str() {
+            if !is_safe_source_name(name) {
+                continue;
+            }
+            out.push((name.to_string(), ent.path()));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// Return (registered, config) — `registered` contains only names that are
+/// safe per `is_safe_source_name`. Unsafe names raise a warning on the
+/// caller side.
+fn registered_safe_names(cfg: &SourcesConfig) -> (Vec<String>, Vec<String>) {
+    let mut safe = Vec::new();
+    let mut unsafe_names = Vec::new();
+    for e in &cfg.sources {
+        if is_safe_source_name(&e.name) {
+            safe.push(e.name.clone());
+        } else {
+            unsafe_names.push(e.name.clone());
+        }
+    }
+    (safe, unsafe_names)
+}
+
+fn run_prune<D: ContextDeps>(args: &PruneArgs, deps: &D) -> Result<CmdOutput> {
+    let sources_path = deps.home_dir().join("sources.toml");
+    let cfg = if sources_path.exists() {
+        SourcesConfig::load(&sources_path).map_err(|e| anyhow!("{e}"))?
+    } else {
+        // No config => every sources/<x>/ dir is orphan. Proceed without
+        // erroring: prune is inherently idempotent and this is a valid
+        // "clean up an abandoned install" case.
+        SourcesConfig::from_str("").unwrap_or_else(|_| SourcesConfig::from_str("[context]\n").expect("empty config"))
+    };
+    let (registered, unsafe_names) = registered_safe_names(&cfg);
+    let root = sources_root(deps.home_dir());
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+
+    let dirs = on_disk_source_dirs(deps.home_dir())?;
+    let mut removed: Vec<PathBuf> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+
+    for name in &unsafe_names {
+        warnings.push(format!(
+            "sources.toml: source name '{}' is unsafe and will be ignored by prune",
+            name
+        ));
+    }
+
+    for (name, path) in &dirs {
+        if registered.contains(name) {
+            continue;
+        }
+        // Double-check containment: the canonicalized dir must live under
+        // the canonicalized sources root. This is the belt-and-suspenders
+        // check that makes the "refuses to touch paths outside sources
+        // root" contract hold even if someone replaces a dir with a
+        // symlink pointing outside.
+        let path_canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !path_canon.starts_with(&root_canon) {
+            warnings.push(format!(
+                "skipping '{}': resolved path {} is outside {}",
+                name,
+                path_canon.display(),
+                root_canon.display()
+            ));
+            continue;
+        }
+
+        if args.dry_run {
+            lines.push(format!("would remove '{}': {}", name, path.display()));
+            removed.push(path.clone());
+        } else {
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => {
+                    lines.push(format!("removed '{}': {}", name, path.display()));
+                    removed.push(path.clone());
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove '{}': {e}", name);
+                    warnings.push(msg.clone());
+                    lines.push(msg);
+                }
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(if args.dry_run {
+            "dry-run: nothing to prune".to_string()
+        } else {
+            "nothing to prune".to_string()
+        });
+    } else if args.dry_run {
+        lines.insert(0, "dry-run: no files modified".to_string());
+    }
+
+    Ok(CmdOutput {
+        stdout: lines.join("\n"),
+        created_paths: Vec::new(),
+        removed_paths: removed,
+        warnings,
+    })
+}
+
+// --- Doctor checks ----------------------------------------------------------
+
+fn check_sources_toml<D: ContextDeps>(deps: &D) -> (CheckResult, Option<SourcesConfig>) {
+    let path = deps.home_dir().join("sources.toml");
+    if !path.exists() {
+        return (
+            CheckResult {
+                name: "sources_toml_exists_and_parses",
+                scope: None,
+                status: CheckStatus::Fail { fixable: false },
+                detail: format!("{} does not exist; run `quorum context init`", path.display()),
+            },
+            None,
+        );
+    }
+    match SourcesConfig::load(&path) {
+        Ok(cfg) => (
+            CheckResult {
+                name: "sources_toml_exists_and_parses",
+                scope: None,
+                status: CheckStatus::Pass,
+                detail: format!("{} ok ({} sources)", path.display(), cfg.sources.len()),
+            },
+            Some(cfg),
+        ),
+        Err(e) => (
+            CheckResult {
+                name: "sources_toml_exists_and_parses",
+                scope: None,
+                status: CheckStatus::Fail { fixable: false },
+                detail: format!("parse error: {e}"),
+            },
+            None,
+        ),
+    }
+}
+
+fn check_per_source_dir(home: &Path, name: &str) -> CheckResult {
+    let dir = SourceLayout::for_source(home, name).dir;
+    if dir.exists() && dir.is_dir() {
+        CheckResult {
+            name: "per_source_dirs_present",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Pass,
+            detail: format!("{} present", dir.display()),
+        }
+    } else {
+        CheckResult {
+            name: "per_source_dirs_present",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: true },
+            detail: format!("missing dir: {}", dir.display()),
+        }
+    }
+}
+
+fn check_chunks_jsonl(home: &Path, name: &str) -> CheckResult {
+    let jsonl = SourceLayout::for_source(home, name).jsonl;
+    if !jsonl.exists() {
+        return CheckResult {
+            name: "per_source_chunks_jsonl_readable",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: false },
+            detail: format!("missing: {}", jsonl.display()),
+        };
+    }
+    match std::fs::metadata(&jsonl) {
+        Ok(meta) => {
+            if meta.len() == 0 {
+                CheckResult {
+                    name: "per_source_chunks_jsonl_readable",
+                    scope: Some(name.to_string()),
+                    status: CheckStatus::Warn,
+                    detail: format!("{} is empty", jsonl.display()),
+                }
+            } else if std::fs::File::open(&jsonl).is_ok() {
+                CheckResult {
+                    name: "per_source_chunks_jsonl_readable",
+                    scope: Some(name.to_string()),
+                    status: CheckStatus::Pass,
+                    detail: format!("{} bytes", meta.len()),
+                }
+            } else {
+                CheckResult {
+                    name: "per_source_chunks_jsonl_readable",
+                    scope: Some(name.to_string()),
+                    status: CheckStatus::Fail { fixable: false },
+                    detail: format!("cannot open {}", jsonl.display()),
+                }
+            }
+        }
+        Err(e) => CheckResult {
+            name: "per_source_chunks_jsonl_readable",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: false },
+            detail: format!("stat failed: {e}"),
+        },
+    }
+}
+
+fn db_chunk_count(db: &Path) -> Result<i64> {
+    let conn = Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let n: i64 = conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
+    Ok(n)
+}
+
+fn check_index_db(home: &Path, name: &str) -> (CheckResult, Option<i64>) {
+    let db = SourceLayout::for_source(home, name).db;
+    if !db.exists() {
+        return (
+            CheckResult {
+                name: "per_source_index_db_opens",
+                scope: Some(name.to_string()),
+                status: CheckStatus::Fail { fixable: true },
+                detail: format!("missing: {}", db.display()),
+            },
+            None,
+        );
+    }
+    match db_chunk_count(&db) {
+        Ok(n) => (
+            CheckResult {
+                name: "per_source_index_db_opens",
+                scope: Some(name.to_string()),
+                status: CheckStatus::Pass,
+                detail: format!("{n} rows in chunks"),
+            },
+            Some(n),
+        ),
+        Err(e) => (
+            CheckResult {
+                name: "per_source_index_db_opens",
+                scope: Some(name.to_string()),
+                status: CheckStatus::Fail { fixable: true },
+                detail: format!("open/query failed: {e}"),
+            },
+            None,
+        ),
+    }
+}
+
+fn count_jsonl_lines(p: &Path) -> std::io::Result<usize> {
+    use std::io::{BufRead, BufReader};
+    let f = std::fs::File::open(p)?;
+    let r = BufReader::new(f);
+    let mut n = 0usize;
+    for line in r.lines() {
+        let line = line?;
+        if !line.trim().is_empty() {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+fn check_db_jsonl_agreement(home: &Path, name: &str, db_count: Option<i64>) -> CheckResult {
+    let layout = SourceLayout::for_source(home, name);
+    if db_count.is_none() || !layout.jsonl.exists() {
+        return CheckResult {
+            name: "per_source_index_db_matches_jsonl",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Warn,
+            detail: "skipped: db or jsonl unavailable".into(),
+        };
+    }
+    let n_db = db_count.unwrap();
+    let n_jsonl = match count_jsonl_lines(&layout.jsonl) {
+        Ok(n) => n as i64,
+        Err(e) => {
+            return CheckResult {
+                name: "per_source_index_db_matches_jsonl",
+                scope: Some(name.to_string()),
+                status: CheckStatus::Warn,
+                detail: format!("jsonl read error: {e}"),
+            };
+        }
+    };
+    if n_db == n_jsonl {
+        CheckResult {
+            name: "per_source_index_db_matches_jsonl",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Pass,
+            detail: format!("{n_db} chunks match"),
+        }
+    } else {
+        CheckResult {
+            name: "per_source_index_db_matches_jsonl",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Warn,
+            detail: format!("db={n_db} jsonl={n_jsonl}"),
+        }
+    }
+}
+
+fn check_state_json<D: ContextDeps>(deps: &D, name: &str) -> CheckResult {
+    let state_path = SourceLayout::for_source(deps.home_dir(), name).state;
+    if !state_path.exists() {
+        return CheckResult {
+            name: "per_source_state_json_valid",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: true },
+            detail: format!("missing: {}", state_path.display()),
+        };
+    }
+    match IndexState::load(&state_path) {
+        Ok(Some(s)) => {
+            let expected = deps.embedder().model_hash();
+            if s.embedder_model_hash == expected {
+                CheckResult {
+                    name: "per_source_state_json_valid",
+                    scope: Some(name.to_string()),
+                    status: CheckStatus::Pass,
+                    detail: format!("schema v{}, hash match", s.schema_version),
+                }
+            } else {
+                CheckResult {
+                    name: "per_source_state_json_valid",
+                    scope: Some(name.to_string()),
+                    status: CheckStatus::Fail { fixable: true },
+                    detail: format!(
+                        "embedder model hash mismatch: on-disk={} expected={}",
+                        s.embedder_model_hash, expected
+                    ),
+                }
+            }
+        }
+        Ok(None) => CheckResult {
+            name: "per_source_state_json_valid",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: true },
+            detail: format!("empty state.json"),
+        },
+        Err(e) => CheckResult {
+            name: "per_source_state_json_valid",
+            scope: Some(name.to_string()),
+            status: CheckStatus::Fail { fixable: false },
+            detail: format!("parse error: {e}"),
+        },
+    }
+}
+
+fn check_orphan_dirs<D: ContextDeps>(
+    deps: &D,
+    cfg: Option<&SourcesConfig>,
+) -> Result<CheckResult> {
+    let registered: std::collections::HashSet<String> = cfg
+        .map(|c| c.sources.iter().map(|s| s.name.clone()).collect())
+        .unwrap_or_default();
+    let dirs = on_disk_source_dirs(deps.home_dir())?;
+    let orphans: Vec<String> = dirs
+        .into_iter()
+        .filter(|(name, _)| !registered.contains(name))
+        .map(|(name, _)| name)
+        .collect();
+    Ok(if orphans.is_empty() {
+        CheckResult {
+            name: "orphan_source_dirs",
+            scope: None,
+            status: CheckStatus::Pass,
+            detail: "no orphans".into(),
+        }
+    } else {
+        CheckResult {
+            name: "orphan_source_dirs",
+            scope: None,
+            status: CheckStatus::Warn,
+            detail: format!("orphan dirs: {}", orphans.join(", ")),
+        }
+    })
+}
+
+fn run_doctor<D: ContextDeps>(args: &DoctorArgs, deps: &D) -> Result<CmdOutput> {
+    let (toml_check, cfg) = check_sources_toml(deps);
+    let mut checks: Vec<CheckResult> = vec![toml_check];
+
+    if let Some(cfg) = &cfg {
+        for entry in &cfg.sources {
+            if !is_safe_source_name(&entry.name) {
+                checks.push(CheckResult {
+                    name: "per_source_dirs_present",
+                    scope: Some(entry.name.clone()),
+                    status: CheckStatus::Fail { fixable: false },
+                    detail: "unsafe source name; skipping per-source checks".into(),
+                });
+                continue;
+            }
+            let dir_check = check_per_source_dir(deps.home_dir(), &entry.name);
+            let dir_ok = matches!(dir_check.status, CheckStatus::Pass);
+            checks.push(dir_check);
+
+            if dir_ok {
+                checks.push(check_chunks_jsonl(deps.home_dir(), &entry.name));
+                let (db_check, db_count) = check_index_db(deps.home_dir(), &entry.name);
+                checks.push(db_check);
+                checks.push(check_db_jsonl_agreement(
+                    deps.home_dir(),
+                    &entry.name,
+                    db_count,
+                ));
+                checks.push(check_state_json(deps, &entry.name));
+            } else {
+                // Still enumerate the names so the JSON schema contract
+                // holds even when the per-source dir is missing.
+                for missing_name in [
+                    "per_source_chunks_jsonl_readable",
+                    "per_source_index_db_opens",
+                    "per_source_index_db_matches_jsonl",
+                    "per_source_state_json_valid",
+                ] {
+                    checks.push(CheckResult {
+                        name: missing_name,
+                        scope: Some(entry.name.clone()),
+                        status: CheckStatus::Fail { fixable: true },
+                        detail: "skipped: source dir missing".into(),
+                    });
+                }
+            }
+        }
+    }
+
+    checks.push(check_orphan_dirs(deps, cfg.as_ref())?);
+
+    // Repair pass.
+    let mut created: Vec<PathBuf> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut repair_lines: Vec<String> = Vec::new();
+    if args.repair {
+        if let Some(cfg) = &cfg {
+            for entry in &cfg.sources {
+                if !is_safe_source_name(&entry.name) {
+                    warnings.push(format!(
+                        "skipping repair for unsafe source name '{}'",
+                        entry.name
+                    ));
+                    continue;
+                }
+                if let Err(e) = repair_one_source(deps, entry, &mut created, &mut repair_lines) {
+                    // Best-effort: note the failure and continue.
+                    warnings.push(format!("repair '{}' failed: {e}", entry.name));
+                    repair_lines.push(format!("failed '{}': {e}", entry.name));
+                }
+            }
+        }
+
+        // Re-run checks so the post-repair report reflects reality.
+        let (toml_check2, cfg2) = check_sources_toml(deps);
+        checks = vec![toml_check2];
+        if let Some(cfg2) = &cfg2 {
+            for entry in &cfg2.sources {
+                if !is_safe_source_name(&entry.name) {
+                    continue;
+                }
+                let dir_check = check_per_source_dir(deps.home_dir(), &entry.name);
+                let dir_ok = matches!(dir_check.status, CheckStatus::Pass);
+                checks.push(dir_check);
+                if dir_ok {
+                    checks.push(check_chunks_jsonl(deps.home_dir(), &entry.name));
+                    let (db_check, db_count) = check_index_db(deps.home_dir(), &entry.name);
+                    checks.push(db_check);
+                    checks.push(check_db_jsonl_agreement(
+                        deps.home_dir(),
+                        &entry.name,
+                        db_count,
+                    ));
+                    checks.push(check_state_json(deps, &entry.name));
+                } else {
+                    for missing_name in [
+                        "per_source_chunks_jsonl_readable",
+                        "per_source_index_db_opens",
+                        "per_source_index_db_matches_jsonl",
+                        "per_source_state_json_valid",
+                    ] {
+                        checks.push(CheckResult {
+                            name: missing_name,
+                            scope: Some(entry.name.clone()),
+                            status: CheckStatus::Fail { fixable: true },
+                            detail: "skipped: source dir missing".into(),
+                        });
+                    }
+                }
+            }
+        }
+        checks.push(check_orphan_dirs(deps, cfg2.as_ref())?);
+    }
+
+    let any_fail = checks
+        .iter()
+        .any(|c| matches!(c.status, CheckStatus::Fail { .. }));
+    let stdout = match args.format {
+        DoctorFormat::Json => render_doctor_json(&checks, !any_fail, &repair_lines)?,
+        DoctorFormat::Compact => render_doctor_compact(&checks, &repair_lines),
+        DoctorFormat::Table => render_doctor_table(&checks, !any_fail, &repair_lines),
+    };
+
+    Ok(CmdOutput {
+        stdout,
+        created_paths: created,
+        removed_paths: Vec::new(),
+        warnings,
+    })
+}
+
+fn repair_one_source<D: ContextDeps>(
+    deps: &D,
+    entry: &SourceEntry,
+    created: &mut Vec<PathBuf>,
+    lines: &mut Vec<String>,
+) -> Result<()> {
+    let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
+
+    // 1. Missing source dir.
+    if !layout.dir.exists() {
+        ensure_dir(&layout.dir)?;
+        created.push(layout.dir.clone());
+        lines.push(format!("created dir for '{}'", entry.name));
+    }
+
+    // 2. Missing index.db but jsonl present => rebuild.
+    let jsonl_exists = layout.jsonl.exists();
+    let db_exists = layout.db.exists();
+    let db_ok = db_exists && db_chunk_count(&layout.db).is_ok();
+
+    // 3. State hash check.
+    let needs_reembed = match IndexState::load(&layout.state) {
+        Ok(Some(s)) => s.embedder_model_hash != deps.embedder().model_hash(),
+        Ok(None) => true,
+        Err(_) => true,
+    };
+
+    if (!db_ok || needs_reembed) && jsonl_exists {
+        // Wipe broken db so rebuild gets a clean file.
+        if db_exists && !db_ok {
+            let _ = std::fs::remove_file(&layout.db);
+        }
+        let mut builder = IndexBuilder::new(&layout.db, deps.clock(), deps.embedder())
+            .map_err(|e| anyhow!("open index db: {e}"))?;
+        let _report = builder
+            .rebuild_from_jsonl(&entry.name, &layout.jsonl)
+            .map_err(|e| anyhow!("rebuild failed: {e}"))?;
+        created.push(layout.db.clone());
+        lines.push(format!("rebuilt index for '{}'", entry.name));
+
+        // Write fresh state.json.
+        let head_sha = match source_repo_root(entry) {
+            Some(root) if root.exists() => {
+                deps.git().head_sha(root).unwrap_or(None)
+            }
+            _ => None,
+        };
+        let state = IndexState::new(deps.embedder().model_hash())
+            .with_head_sha(head_sha)
+            .with_indexed_at(deps.clock().now());
+        state
+            .save(&layout.state)
+            .map_err(|e| anyhow!("save state.json: {e}"))?;
+        created.push(layout.state.clone());
+    } else if !jsonl_exists && !db_ok {
+        // Neither side exists — leave a note for the user.
+        lines.push(format!(
+            "cannot repair '{}': no chunks.jsonl to rebuild from",
+            entry.name
+        ));
+    }
+    Ok(())
+}
+
+fn render_doctor_json(
+    checks: &[CheckResult],
+    ok: bool,
+    repair_lines: &[String],
+) -> Result<String> {
+    let items: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "scope": c.scope,
+                "status": c.status.as_str(),
+                "fixable": c.status.fixable(),
+                "detail": c.detail,
+            })
+        })
+        .collect();
+    let mut out = serde_json::json!({
+        "ok": ok,
+        "checks": items,
+    });
+    if !repair_lines.is_empty() {
+        out["repair"] = serde_json::json!(repair_lines);
+    }
+    Ok(serde_json::to_string_pretty(&out)?)
+}
+
+fn render_doctor_table(checks: &[CheckResult], ok: bool, repair_lines: &[String]) -> String {
+    let mut out = String::new();
+    out.push_str("STATUS  CHECK                                    SCOPE      DETAIL\n");
+    for c in checks {
+        out.push_str(&format!(
+            "{:<7} {:<40} {:<10} {}\n",
+            c.status.as_str(),
+            c.name,
+            c.scope.as_deref().unwrap_or("-"),
+            c.detail
+        ));
+    }
+    out.push_str(&format!("\noverall: {}\n", if ok { "ok" } else { "fail" }));
+    if !repair_lines.is_empty() {
+        out.push_str("\nrepair log:\n");
+        for l in repair_lines {
+            out.push_str(&format!("  {l}\n"));
+        }
+    }
+    out
+}
+
+fn render_doctor_compact(checks: &[CheckResult], repair_lines: &[String]) -> String {
+    let mut out = String::new();
+    for c in checks {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\n",
+            c.status.as_str(),
+            c.name,
+            c.scope.as_deref().unwrap_or("-"),
+            c.detail
+        ));
+    }
+    for l in repair_lines {
+        out.push_str(&format!("repair\t{l}\n"));
+    }
+    out
 }
