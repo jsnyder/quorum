@@ -221,7 +221,15 @@ fn section_body_is_blank(section: &str) -> bool {
 /// Convert a byte offset into a 1-indexed line number.
 fn line_of_offset(md: &str, offset: usize) -> u32 {
     // `offset` may equal md.len() for the EOF sentinel; clamp for safety.
-    let clamped = offset.min(md.len());
+    // Slicing UTF-8 requires a char boundary — pulldown-cmark's offsets are
+    // almost always valid, but if an upstream hands us an index that falls
+    // inside a multi-byte codepoint (observed with emoji in section bodies
+    // during dogfood), stepping back to the previous boundary keeps the
+    // count correct without panicking.
+    let mut clamped = offset.min(md.len());
+    while clamped > 0 && !md.is_char_boundary(clamped) {
+        clamped -= 1;
+    }
     let count = md[..clamped].matches('\n').count() + 1;
     u32::try_from(count).unwrap_or(u32::MAX)
 }
