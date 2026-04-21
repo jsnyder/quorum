@@ -1,6 +1,5 @@
 use super::types::*;
 use chrono::{DateTime, Utc};
-use std::path::PathBuf;
 
 fn test_chunk() -> Chunk {
     Chunk {
@@ -15,8 +14,8 @@ fn test_chunk() -> Chunk {
         ),
         content: "Validates a JWT against the signing key.".into(),
         metadata: ChunkMeta {
-            source_path: PathBuf::from("src/token.rs"),
-            line_range: (10, 25),
+            source_path: "src/token.rs".to_string(),
+            line_range: LineRange { start: 10, end: 25 },
             commit_sha: "abc123".into(),
             indexed_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             source_version: None,
@@ -71,19 +70,19 @@ fn none_option_fields_are_omitted_from_json() {
     chunk.metadata.language = None;
     let json = serde_json::to_string(&chunk).unwrap();
     assert!(
-        !json.contains("qualified_name"),
+        !json.contains("\"qualified_name\""),
         "None fields should be omitted: {json}"
     );
     assert!(
-        !json.contains("signature"),
+        !json.contains("\"signature\""),
         "None fields should be omitted: {json}"
     );
     assert!(
-        !json.contains("subtype"),
+        !json.contains("\"subtype\""),
         "None fields should be omitted: {json}"
     );
     assert!(
-        !json.contains("source_version"),
+        !json.contains("\"source_version\""),
         "None fields should be omitted: {json}"
     );
     assert!(
@@ -102,7 +101,7 @@ fn missing_option_fields_parse_as_none() {
         "content": "hello",
         "metadata": {
             "source_path": "p",
-            "line_range": [1, 2],
+            "line_range": {"start": 1, "end": 2},
             "commit_sha": "c",
             "indexed_at": "2026-01-01T00:00:00Z",
             "is_exported": true,
@@ -119,4 +118,33 @@ fn missing_option_fields_parse_as_none() {
     assert!(chunk.signature.is_none());
     assert!(chunk.subtype.is_none());
     assert!(chunk.metadata.language.is_none());
+}
+
+#[test]
+fn unknown_fields_parse_cleanly_for_forward_compat() {
+    // If a future version of quorum writes extra fields, older binaries
+    // must still parse the JSON without error.
+    let json = r#"{
+        "id": "s:p:q",
+        "source": "s",
+        "kind": "symbol",
+        "content": "hello",
+        "metadata": {
+            "source_path": "p",
+            "line_range": {"start": 1, "end": 2},
+            "commit_sha": "c",
+            "indexed_at": "2026-01-01T00:00:00Z",
+            "is_exported": true,
+            "neighboring_symbols": [],
+            "future_field": {"added_in": "v3"}
+        },
+        "provenance": {
+            "extractor": "e",
+            "confidence": 1.0,
+            "source_uri": "u"
+        },
+        "another_future_field": 42
+    }"#;
+    let chunk: Chunk = serde_json::from_str(json).unwrap();
+    assert_eq!(chunk.id, "s:p:q");
 }
