@@ -1,5 +1,6 @@
 pub mod config;
 pub mod extract;
+pub mod index;
 pub mod store;
 pub mod types;
 

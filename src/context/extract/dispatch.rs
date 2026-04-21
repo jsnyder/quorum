@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use glob::Pattern;
 use walkdir::WalkDir;
 
@@ -78,24 +77,7 @@ pub struct ExtractorError {
     pub error: String,
 }
 
-/// Clock abstraction for tests.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
-}
-
-pub struct FixedClock(pub DateTime<Utc>);
-
-impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
-        self.0
-    }
-}
-
-impl FixedClock {
-    pub fn epoch() -> Self {
-        Self(DateTime::<Utc>::from_timestamp(0, 0).unwrap())
-    }
-}
+pub use crate::context::index::traits::{Clock, FixedClock};
 
 #[derive(Debug)]
 pub struct ExtractResult {
