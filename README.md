@@ -117,6 +117,29 @@ EOF
 
 Rules are picked up automatically when ast-grep is in PATH. Project-local rules in `rules/` are also scanned.
 
+## Context Injection (`quorum context`)
+
+Quorum can index your own code (monorepo packages, internal SDKs, documentation directories) into a local hybrid search index and automatically splice the most relevant symbols and prose into every LLM review prompt. This is an offline, privacy-preserving alternative to external doc lookups.
+
+```bash
+# 1. Register a source (path or git URL)
+quorum context init
+quorum context add --name internal-sdk --kind rust --path /src/internal-sdk --weight 10
+
+# 2. Build the index (once; refresh after large changes)
+quorum context index --source internal-sdk
+
+# 3. Verify the index is healthy
+quorum context doctor
+
+# 4. Normal reviews now inject the top-k relevant chunks
+quorum review src/billing.rs   # prompt will include matching internal-sdk context
+```
+
+Under the hood the index is FTS5 + sqlite-vec with a reranker over BM25 / vector / id-match / path-match / recency signals. The rendered block is capped by token budget, deduped by qualified name, and gated per-chunk via the calibrator so `context_misleading` feedback permanently suppresses misleading hits after N confirmations. Every review records a `ContextTelemetry` entry (retrieved/injected counts, token count, rendered-prompt hash) for audit.
+
+Configuration lives at `~/.quorum/sources.toml`; set `context.auto_inject = false` to disable injection without removing the indexes.
+
 ## MCP Server (for Claude Code)
 
 Add to your Claude Code MCP config:

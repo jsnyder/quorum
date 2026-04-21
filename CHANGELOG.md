@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] — 0.16.0 (feat/context)
+
+### Added
+- `quorum context` subcommand: local/offline alternative to Context7 for injecting project-specific symbols and docs into LLM review prompts
+  - `init` / `add` / `list` / `index` / `refresh` / `query` / `prune` / `doctor` subcommands
+  - Hybrid retrieval: FTS5 BM25 + sqlite-vec cosine, reranked by id/path/recency signals
+  - `render` pipeline emits a fenced Markdown block (symbols first, then prose), stable prompt hash for telemetry
+  - Per-source on-disk layout at `~/.quorum/sources/<name>/{chunks.jsonl,index.db,state.json}`
+  - `doctor` runs 7 structural checks and reports fixable vs non-fixable failures
+- Context injector wired into the review pipeline: `quorum review` loads `~/.quorum/sources.toml` automatically and injects the rendered block when `auto_inject = true`
+- `context_misleading` feedback verdict + `blamed_chunks` routing: per-chunk injection thresholds raise with each confirmation and seal at N (default 3)
+- Review telemetry record gains a `ContextTelemetry` block (retrieved/injected counts, token count, threshold, duration, calibrator suppression count, rendered-prompt sha256)
+
+### Fixed
+- `context query` in a fresh process failed with `no such module: vec0` because sqlite-vec's auto-extension hook was only registered inside `IndexBuilder`. `ensure_vec_loaded()` is now called from `run_query` and `db_chunk_count` before the raw `Connection::open*`
+- Calibrator gate in the context injector enforces `max(inject_min_score, calibrator_threshold)` to match the documented contract
+
 ## [0.3.0] - 2026-03-25
 
 ### Added
