@@ -551,6 +551,22 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
+    // Build the production context injector from `~/.quorum/sources.toml`
+    // (if present and `auto_inject = true`). Returns `None` when context
+    // isn't configured, so reviews without a sources file behave exactly
+    // as before.
+    let context_injector = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| std::path::PathBuf::from(h).join(".quorum"))
+        .and_then(|quorum_home| {
+            context::bootstrap::build_production_injector(&quorum_home, &feedback_entries)
+        });
+    if context_injector.is_some() {
+        tracing::info!(
+            "context injector wired from ~/.quorum/sources.toml — auto-inject is active"
+        );
+    }
+
     let pipeline_cfg = PipelineConfig {
         models,
         calibration_model: opts.calibration_model.clone(),
@@ -563,6 +579,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         fast: opts.fast,
         semaphore,
         feedback_index: shared_feedback_index,
+        context_injector,
         ..Default::default()
     };
 

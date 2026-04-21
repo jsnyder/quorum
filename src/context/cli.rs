@@ -678,15 +678,15 @@ fn render_list_json(sources: &[SourceEntry]) -> Result<String> {
 // --- Source layout helpers --------------------------------------------------
 
 /// On-disk layout for a single indexed source.
-struct SourceLayout {
-    dir: PathBuf,
-    jsonl: PathBuf,
-    db: PathBuf,
-    state: PathBuf,
+pub(crate) struct SourceLayout {
+    pub(crate) dir: PathBuf,
+    pub(crate) jsonl: PathBuf,
+    pub(crate) db: PathBuf,
+    pub(crate) state: PathBuf,
 }
 
 impl SourceLayout {
-    fn for_source(home: &Path, name: &str) -> Self {
+    pub(crate) fn for_source(home: &Path, name: &str) -> Self {
         let dir = home.join("sources").join(name);
         Self {
             jsonl: dir.join("chunks.jsonl"),
