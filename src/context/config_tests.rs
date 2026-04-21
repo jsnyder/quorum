@@ -280,3 +280,69 @@ foo = "bar"
     let s = err.to_string().to_lowercase();
     assert!(s.contains("unknown") || s.contains("unknown_block"), "got: {err}");
 }
+
+#[test]
+fn rejects_empty_git_string() {
+    let toml = r#"
+[[source]]
+name = "x"
+git = ""
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(
+        s.contains("exactly one") || s.contains("non-empty"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_whitespace_only_path() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "   "
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(
+        s.contains("exactly one") || s.contains("non-empty"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_rev_on_path_source() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "./foo"
+rev = "main"
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    let s = err.to_string().to_lowercase();
+    assert!(s.contains("rev") && s.contains("path"), "got: {err}");
+}
+
+#[test]
+fn accepts_rev_on_git_source() {
+    let toml = r#"
+[[source]]
+name = "x"
+git = "git@host:org/repo.git"
+rev = "main"
+kind = "rust"
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(config.sources.len(), 1);
+    match &config.sources[0].location {
+        SourceLocation::Git { url, rev } => {
+            assert_eq!(url, "git@host:org/repo.git");
+            assert_eq!(rev.as_deref(), Some("main"));
+        }
+        _ => panic!("expected git source"),
+    }
+}

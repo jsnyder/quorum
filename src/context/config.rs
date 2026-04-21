@@ -192,15 +192,26 @@ impl SourcesConfig {
                 )));
             }
 
-            let location = match (rs.git.as_deref(), rs.path.as_deref()) {
+            let git_opt = rs.git.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let path_opt = rs.path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+            let location = match (git_opt, path_opt) {
                 (Some(url), None) => SourceLocation::Git {
                     url: url.to_string(),
                     rev: rs.rev.clone(),
                 },
-                (None, Some(p)) => SourceLocation::Path(PathBuf::from(p)),
+                (None, Some(p)) => {
+                    if rs.rev.is_some() {
+                        return Err(ConfigError::Invalid(format!(
+                            "source '{}': `rev` only applies to git sources, not path sources",
+                            rs.name
+                        )));
+                    }
+                    SourceLocation::Path(PathBuf::from(p))
+                }
                 (Some(_), Some(_)) | (None, None) => {
                     return Err(ConfigError::Invalid(format!(
-                        "source '{}': must specify exactly one of 'git' or 'path'",
+                        "source '{}': must specify exactly one non-empty `git` or `path`",
                         rs.name
                     )));
                 }
