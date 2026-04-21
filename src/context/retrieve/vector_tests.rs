@@ -3,7 +3,8 @@ use std::path::Path;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::vector::{Filters, embedding_to_le_bytes, vec_search};
+use super::Filters;
+use super::vector::{embedding_to_le_bytes, vec_search};
 use crate::context::index::builder::IndexBuilder;
 use crate::context::index::traits::{Embedder, FixedClock, HashEmbedder};
 use crate::context::store::ChunkStore;

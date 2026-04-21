@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::bm25::{Bm25Hit, Filters, bm25_search, build_match_expression};
+use super::Filters;
+use super::bm25::{Bm25Hit, bm25_search, build_match_expression};
 use crate::context::index::builder::IndexBuilder;
 use crate::context::index::traits::{FixedClock, HashEmbedder};
 use crate::context::store::ChunkStore;

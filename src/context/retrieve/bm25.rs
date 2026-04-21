@@ -6,16 +6,8 @@
 
 use rusqlite::{Connection, ToSql, params_from_iter};
 
+use super::Filters;
 use crate::context::types::ChunkKind;
-
-/// Filters pushed into the SQL query.
-#[derive(Debug, Clone, Default)]
-pub struct Filters {
-    /// If empty, no source restriction.
-    pub sources: Vec<String>,
-    /// If empty, no kind restriction.
-    pub kinds: Vec<ChunkKind>,
-}
 
 /// Single BM25 hit.
 #[derive(Debug, Clone, PartialEq)]

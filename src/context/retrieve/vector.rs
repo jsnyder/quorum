@@ -6,13 +6,8 @@
 
 use rusqlite::{Connection, params_from_iter};
 
+use super::Filters;
 use crate::context::types::ChunkKind;
-
-#[derive(Debug, Clone, Default)]
-pub struct Filters {
-    pub sources: Vec<String>,
-    pub kinds: Vec<ChunkKind>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VecHit {
