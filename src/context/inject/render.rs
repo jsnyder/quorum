@@ -163,8 +163,9 @@ fn fence_for(body: &str) -> String {
     "`".repeat(len)
 }
 
-/// Demote `## ` headers to `#### ` on a line-by-line basis so doc h2s don't
-/// collide with our `###` card headers. Does not touch `### ` or deeper.
+/// Demote shallow ATX headings (`# `, `## `) so no doc line outranks our
+/// `###` card headers or the top-level `# Context` title. `### ` and deeper
+/// pass through untouched.
 fn demote_h2(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     for (i, line) in body.split('\n').enumerate() {
@@ -172,6 +173,9 @@ fn demote_h2(body: &str) -> String {
             out.push('\n');
         }
         if let Some(rest) = line.strip_prefix("## ") {
+            out.push_str("#### ");
+            out.push_str(rest);
+        } else if let Some(rest) = line.strip_prefix("# ") {
             out.push_str("#### ");
             out.push_str(rest);
         } else {

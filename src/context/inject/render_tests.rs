@@ -476,6 +476,38 @@ fn symbol_fence_survives_triple_backticks_in_content() {
 }
 
 #[test]
+fn h1_in_doc_body_is_demoted_below_card_header() {
+    let chunk = scored(
+        "d1",
+        "s",
+        ChunkKind::Doc,
+        None,
+        "# Top Level Title\n\nBody text.",
+        "",
+        "docs/adr.md",
+        1,
+        3,
+        "abc1234deadbeef",
+    );
+    let plan = plan_with(vec![chunk], 5);
+    let out = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
+    // The only `# ` header in the output must be the top-level `# Context`.
+    // A doc body `# Top Level Title` must NOT survive as a bare h1.
+    let h1_count = out
+        .lines()
+        .filter(|l| l.starts_with("# ") && !l.starts_with("## "))
+        .count();
+    assert_eq!(
+        h1_count, 1,
+        "expected only `# Context` as h1, got {h1_count}:\n{out}"
+    );
+    assert!(
+        out.contains("#### Top Level Title"),
+        "h1 must be demoted to h4 (or deeper): {out}"
+    );
+}
+
+#[test]
 fn short_sha_does_not_panic_on_non_ascii_sha() {
     let chunk = scored(
         "s1",
