@@ -1,0 +1,176 @@
+use super::config::*;
+
+#[test]
+fn loads_valid_sources_toml() {
+    let toml = r#"
+[[source]]
+name = "internal-auth"
+git = "git@github.com:myorg/auth.git"
+rev = "main"
+kind = "rust"
+weight = 10
+
+[[source]]
+name = "tf-net"
+path = "../terraform-modules/networking"
+kind = "terraform"
+
+[context]
+inject_budget_tokens = 1500
+inject_min_score = 0.65
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(config.sources.len(), 2);
+    assert_eq!(config.sources[0].name, "internal-auth");
+    assert_eq!(config.sources[0].kind, SourceKind::Rust);
+    assert_eq!(config.sources[0].weight, Some(10));
+    assert!(matches!(config.sources[0].location, SourceLocation::Git { .. }));
+    match &config.sources[0].location {
+        SourceLocation::Git { url, rev } => {
+            assert_eq!(url, "git@github.com:myorg/auth.git");
+            assert_eq!(rev.as_deref(), Some("main"));
+        }
+        _ => panic!("expected git"),
+    }
+    assert_eq!(config.sources[1].name, "tf-net");
+    assert_eq!(config.sources[1].kind, SourceKind::Terraform);
+    assert!(matches!(config.sources[1].location, SourceLocation::Path(_)));
+    assert_eq!(config.context.inject_budget_tokens, 1500);
+}
+
+#[test]
+fn rejects_source_with_both_git_and_path() {
+    let toml = r#"
+[[source]]
+name = "bad"
+git = "x"
+path = "y"
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("exactly one")
+            || err.to_string().to_lowercase().contains("either"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_source_with_neither_git_nor_path() {
+    let toml = r#"
+[[source]]
+name = "bad"
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("exactly one")
+            || err.to_string().to_lowercase().contains("either")
+            || err.to_string().to_lowercase().contains("missing"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_duplicate_source_names() {
+    let toml = r#"
+[[source]]
+name = "dup"
+path = "a"
+kind = "rust"
+
+[[source]]
+name = "dup"
+path = "b"
+kind = "rust"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("duplicate"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_unknown_kind() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "cobol"
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("unknown")
+            || err.to_string().to_lowercase().contains("kind")
+            || err.to_string().to_lowercase().contains("invalid"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn defaults_fill_missing_context_block() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(config.context.inject_budget_tokens, 1500);
+    assert!((config.context.inject_min_score - 0.65).abs() < f32::EPSILON);
+    assert_eq!(config.context.inject_max_chunks, 4);
+    assert_eq!(config.context.rerank_recency_halflife_days, 90);
+    assert!((config.context.rerank_recency_floor - 0.25).abs() < f32::EPSILON);
+    assert_eq!(config.context.max_source_size_mb, 200);
+    assert_eq!(config.context.auto_inject, true);
+}
+
+#[test]
+fn min_score_out_of_range_rejected() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+inject_min_score = 1.5
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("min_score")
+            || err.to_string().contains("[0.0, 1.0]"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn recency_floor_out_of_range_rejected() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+rerank_recency_floor = 1.5
+"#;
+    let err = SourcesConfig::from_str(toml).unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("recency_floor")
+            || err.to_string().contains("[0.0, 1.0]"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn example_fixture_loads() {
+    let path = std::path::Path::new("tests/fixtures/context/sources/example-sources.toml");
+    let config = SourcesConfig::load(path).unwrap();
+    assert_eq!(config.sources.len(), 3);
+    let names: Vec<_> = config.sources.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"mini-rust"));
+    assert!(names.contains(&"mini-ts"));
+    assert!(names.contains(&"mini-terraform"));
+}
