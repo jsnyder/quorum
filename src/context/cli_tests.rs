@@ -83,6 +83,23 @@ fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
 }
 
 #[test]
+fn run_context_cmd_init_errors_when_sources_path_is_a_directory() {
+    // If something created a *directory* at <home>/sources.toml, treating it
+    // as an already-initialized regular file would silently disable future
+    // init/add calls. Init must fail loudly instead.
+    let deps = TestDeps::new();
+    std::fs::create_dir_all(deps.home_dir().join("sources.toml"))
+        .expect("mkdir sources.toml as a dir");
+    let err = run_context_cmd(&ContextCmd::Init, &deps)
+        .expect_err("init over a non-file path must fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not a regular file"),
+        "error must call out the path shape: {msg}"
+    );
+}
+
+#[test]
 fn run_context_cmd_init_writes_directly_under_home_dir() {
     // Regression for the bug where ProdDeps (home_dir = ~/.quorum) plus the
     // handler joining ".quorum" again produced ~/.quorum/.quorum/sources.toml.

@@ -354,7 +354,24 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
     // in production, a tempdir in tests) — don't append `.quorum` again here.
     let sources_path = deps.home_dir().join("sources.toml");
 
+    // Distinguish "already a regular file" (idempotent success) from "the
+    // path exists but is a directory / symlink / device" (hard error). The
+    // bare `.exists()` check can't tell them apart; without this, a stray
+    // `mkdir sources.toml` under `~/.quorum` makes every future `init` and
+    // `add` silently no-op instead of complaining.
     if sources_path.exists() {
+        let meta = std::fs::symlink_metadata(&sources_path).map_err(|e| {
+            anyhow!(
+                "cannot stat {}: {e}",
+                sources_path.display()
+            )
+        })?;
+        if !meta.file_type().is_file() {
+            return Err(anyhow!(
+                "{} exists but is not a regular file; refusing to initialize over it",
+                sources_path.display()
+            ));
+        }
         return Ok(CmdOutput {
             stdout: format!("context already initialized at {}", sources_path.display()),
             created_paths: Vec::new(),
