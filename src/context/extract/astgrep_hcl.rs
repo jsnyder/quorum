@@ -93,7 +93,16 @@ pub fn extract_hcl(
             let description = find_description(&node, src);
             let content = match description {
                 Some(d) if !d.is_empty() => d,
-                _ => body_fallback_content(&node, src),
+                _ => {
+                    // Redact the body fallback for sensitive variables so
+                    // that `default = "..."` secrets do not flow into the
+                    // extracted chunk.
+                    if info.block_type == "variable" && is_sensitive_variable(&node) {
+                        "sensitive = true (body redacted)".to_string()
+                    } else {
+                        body_fallback_content(&node, src)
+                    }
+                }
             };
 
             let byte_range = node.range();
@@ -291,6 +300,38 @@ fn find_description<D: ast_grep_core::Doc>(
         return None;
     }
     None
+}
+
+/// True if a `variable` block declares `sensitive = true`. Scans the block's
+/// `body` for a `sensitive` attribute whose RHS is a boolean `true` literal.
+/// Also accepts a bare string `"true"` defensively — both forms are sometimes
+/// seen in the wild and either indicates the value should not leak into
+/// extracted context.
+fn is_sensitive_variable<D: ast_grep_core::Doc>(block: &ast_grep_core::Node<'_, D>) -> bool {
+    let Some(body) = block.children().find(|c| c.kind().as_ref() == "body") else {
+        return false;
+    };
+    for attr in body.children() {
+        if attr.kind().as_ref() != "attribute" {
+            continue;
+        }
+        let Some(ident) = attr.children().find(|c| c.kind().as_ref() == "identifier") else {
+            continue;
+        };
+        if ident.text().as_ref() != "sensitive" {
+            continue;
+        }
+        let Some(expr) = attr.children().find(|c| c.kind().as_ref() == "expression") else {
+            continue;
+        };
+        let text = expr.text();
+        let trimmed = text.as_ref().trim();
+        if trimmed == "true" || trimmed == "\"true\"" {
+            return true;
+        }
+        return false;
+    }
+    false
 }
 
 /// Accept only a *simple* string literal value: `expression > literal_value >

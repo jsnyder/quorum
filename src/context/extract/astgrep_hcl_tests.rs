@@ -322,3 +322,82 @@ resource \"aws_subnet\" \"main\" {
     );
     assert_eq!(chunks.len(), 2);
 }
+
+#[test]
+fn sensitive_variable_body_is_redacted() {
+    // A variable with `sensitive = true` and no description must not leak
+    // its body (including `default`) into the extracted chunk.
+    let src = "\
+variable \"db_password\" {
+  sensitive = true
+  default   = \"super-secret-123\"
+  type      = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("db_password"))
+        .expect("expected db_password chunk");
+    assert!(
+        !v.content.contains("super-secret-123"),
+        "sensitive default leaked into content: {:?}",
+        v.content
+    );
+    let lower = v.content.to_lowercase();
+    assert!(
+        lower.contains("sensitive") || lower.contains("redact"),
+        "expected redaction marker; content = {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn non_sensitive_variable_body_not_redacted() {
+    // Regression guard: a plain variable without `sensitive = true` still
+    // receives its body as the fallback content.
+    let src = "\
+variable \"region\" {
+  type    = string
+  default = \"us-east-1\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("region"))
+        .expect("expected region chunk");
+    assert!(
+        v.content.contains("us-east-1"),
+        "non-sensitive body unexpectedly redacted: {:?}",
+        v.content
+    );
+    let lower = v.content.to_lowercase();
+    assert!(
+        !lower.contains("redact"),
+        "non-sensitive body should not contain redaction marker: {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn sensitive_variable_false_is_not_redacted() {
+    // `sensitive = false` must NOT trigger redaction.
+    let src = "\
+variable \"region\" {
+  sensitive = false
+  default   = \"us-east-1\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("region"))
+        .expect("expected region chunk");
+    assert!(
+        v.content.contains("us-east-1"),
+        "sensitive=false should not redact; content = {:?}",
+        v.content
+    );
+}
+
