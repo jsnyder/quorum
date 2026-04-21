@@ -77,6 +77,9 @@ pub struct ExtractorError {
     pub error: String,
 }
 
+// `FixedClock` re-exported for backward compat with callers that imported it
+// from this module before traits.rs existed.
+#[allow(unused_imports)]
 pub use crate::context::index::traits::{Clock, FixedClock};
 
 #[derive(Debug)]
