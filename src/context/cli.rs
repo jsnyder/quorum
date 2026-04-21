@@ -90,10 +90,13 @@ impl ProdDeps {
     }
 
     /// Resolve `~/.quorum` from `$HOME` (Unix) or `%USERPROFILE%` (Windows).
-    /// Returns an error if neither is set.
+    /// Returns an error if neither is set or if either is empty (an empty
+    /// value would yield a relative `.quorum` path that resolves against
+    /// the current working directory, which is never the user's intent).
     pub fn from_env() -> Result<Self> {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
+        let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        let home = from("HOME")
+            .or_else(|| from("USERPROFILE"))
             .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
         let root = PathBuf::from(home).join(".quorum");
         Ok(Self::new(root))

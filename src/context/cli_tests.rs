@@ -84,6 +84,37 @@ fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
 }
 
 #[test]
+fn prod_deps_from_env_rejects_empty_home() {
+    // An empty HOME would yield a relative ".quorum" path that resolves
+    // against the cwd. Treat empty as missing.
+    use super::cli::ProdDeps;
+    let prev_home = std::env::var_os("HOME");
+    let prev_up = std::env::var_os("USERPROFILE");
+    // SAFETY: test is single-threaded with respect to env mutation here;
+    // Rust 2024 marks set_var/remove_var unsafe because they can race with
+    // other threads reading env. We restore both values before returning.
+    unsafe {
+        std::env::set_var("HOME", "");
+        std::env::remove_var("USERPROFILE");
+    }
+    let r = ProdDeps::from_env();
+    unsafe {
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+    assert!(
+        r.is_err(),
+        "empty HOME with no USERPROFILE must error rather than accept relative '.quorum'"
+    );
+}
+
+#[test]
 fn run_context_cmd_init_errors_when_sources_path_is_a_directory() {
     // If something created a *directory* at <home>/sources.toml, treating it
     // as an already-initialized regular file would silently disable future
