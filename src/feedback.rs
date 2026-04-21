@@ -113,13 +113,14 @@ impl FeedbackStore {
         &self,
         file: impl Into<String>,
         finding_title: impl Into<String>,
+        finding_category: impl Into<String>,
         blamed_chunk_ids: Vec<String>,
         reason: impl Into<String>,
     ) -> anyhow::Result<()> {
         let entry = FeedbackEntry {
             file_path: file.into(),
             finding_title: finding_title.into(),
-            finding_category: String::new(),
+            finding_category: finding_category.into(),
             verdict: Verdict::ContextMisleading { blamed_chunk_ids },
             reason: reason.into(),
             model: None,
@@ -255,6 +256,7 @@ mod tests {
             .record_context_misleading(
                 "src/retriever.rs",
                 "Stale API reference",
+                "correctness",
                 vec!["chunk-abc".into(), "chunk-def".into()],
                 "Injected docs described v1, code uses v2",
             )
@@ -269,6 +271,10 @@ mod tests {
         }
         assert_eq!(all[0].file_path, "src/retriever.rs");
         assert_eq!(all[0].finding_title, "Stale API reference");
+        assert_eq!(
+            all[0].finding_category, "correctness",
+            "finding_category must round-trip, not be hardcoded empty"
+        );
         assert_eq!(all[0].provenance, Provenance::Human);
     }
 
@@ -299,6 +305,7 @@ mod tests {
             .record_context_misleading(
                 "src/foo.rs",
                 "No chunks blamed",
+                "",
                 vec![],
                 "Reviewer did not identify specific chunks",
             )
