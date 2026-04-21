@@ -161,6 +161,82 @@ fn falls_back_to_signature_when_no_docstring() {
 }
 
 #[test]
+fn dunder_all_inside_comment_is_ignored() {
+    let src = "\
+# __all__ = [\"fake\"]
+def real(): pass
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let names: Vec<_> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert!(
+        names.contains(&"real"),
+        "`real` must be extracted when __all__ is only in a comment, got: {names:?}"
+    );
+}
+
+#[test]
+fn dunder_all_inside_docstring_is_ignored() {
+    let src = "\
+\"\"\"Module doc mentioning __all__ = ['ghost'].\"\"\"
+def real(): pass
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let names: Vec<_> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert!(
+        names.contains(&"real"),
+        "`real` must be extracted when __all__ is only in a docstring, got: {names:?}"
+    );
+}
+
+#[test]
+fn dunder_all_nested_in_function_is_ignored() {
+    let src = "\
+def configure():
+    __all__ = [\"inner\"]
+def top(): pass
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let names: Vec<_> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert!(
+        names.contains(&"top"),
+        "`top` must be extracted when __all__ is only inside a function, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"configure"),
+        "`configure` must be extracted; got: {names:?}"
+    );
+}
+
+#[test]
+fn multiple_dunder_all_last_wins() {
+    let src = "\
+__all__ = [\"a\"]
+__all__ = [\"b\"]
+def a(): pass
+def b(): pass
+";
+    let chunks = extract_python(src, "x.py", "s", "c", when()).unwrap();
+    let names: Vec<_> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["b"],
+        "last __all__ assignment must win, got: {names:?}"
+    );
+}
+
+#[test]
 fn same_named_items_dedupe_disambiguated() {
     let src = "\
 if True:

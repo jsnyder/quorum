@@ -29,6 +29,9 @@ const RULE_YAMLS: &[&str] = &[
     include_str!("../../../rules/python/extraction/classes.yml"),
 ];
 
+const DUNDER_ALL_RULE_YAML: &str =
+    include_str!("../../../rules/python/extraction/dunder-all.yml");
+
 fn load_extraction_rules() -> anyhow::Result<Vec<RuleConfig<SupportLang>>> {
     let globals = GlobalRules::default();
     let mut rules = Vec::with_capacity(RULE_YAMLS.len());
@@ -38,6 +41,16 @@ fn load_extraction_rules() -> anyhow::Result<Vec<RuleConfig<SupportLang>>> {
         rules.extend(parsed);
     }
     Ok(rules)
+}
+
+fn load_dunder_all_rule() -> anyhow::Result<RuleConfig<SupportLang>> {
+    let globals = GlobalRules::default();
+    let parsed = from_yaml_string::<SupportLang>(DUNDER_ALL_RULE_YAML, &globals)
+        .map_err(|e| anyhow::anyhow!("failed to parse bundled python dunder-all rule: {e}"))?;
+    parsed
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("dunder-all rule yaml produced no rule"))
 }
 
 /// Extract exported Python symbols (top-level `def`, `class`) from a source
@@ -56,7 +69,8 @@ pub fn extract_python(
     let rules = load_extraction_rules()?;
     let root = SupportLang::Python.ast_grep(src);
 
-    let dunder_all = find_dunder_all(src);
+    let dunder_all_rule = load_dunder_all_rule()?;
+    let dunder_all = find_dunder_all(src, &root, &dunder_all_rule);
 
     let mut raw: Vec<ExtractedSymbol> = Vec::new();
 
@@ -201,109 +215,91 @@ fn is_exported(name: &str, dunder_all: Option<&HashSet<String>>) -> bool {
 /// Find a module-level `__all__ = [...]` or `__all__ = (...)` and return the
 /// set of string names. Returns `None` when no `__all__` is defined.
 ///
-/// Handles:
-/// - `__all__ = ["foo", "bar"]`
-/// - `__all__ = ("foo", "bar")`
-/// - `__all__: list[str] = ["foo"]`
-/// - single- or double-quoted string literals
-fn find_dunder_all(src: &str) -> Option<HashSet<String>> {
-    // Scan line-by-line for a line whose stripped form starts with `__all__`
-    // followed by (optional annotation) `=`. This is a pragmatic text scan
-    // that handles the overwhelmingly common cases without trying to parse
-    // arbitrary Python expressions.
-    let start = src.find("__all__")?;
-    // Find the `=` after this occurrence (skip an optional `: annotation`).
-    let after = &src[start + "__all__".len()..];
-    let eq_rel = after.find('=')?;
-    // Ensure it's a bare `=`, not `==`. If the byte right after the `=` is
-    // another `=`, this is an equality check, not an assignment.
-    let after_eq_bytes = after.as_bytes();
-    if after_eq_bytes.get(eq_rel + 1) == Some(&b'=') {
-        return None;
-    }
-    let rhs = &after[eq_rel + 1..];
-
-    // Find the opening bracket.
-    let open_idx = rhs.find(['[', '('])?;
-    let open_ch = rhs.as_bytes()[open_idx];
-    let close_ch = if open_ch == b'[' { b']' } else { b')' };
-
-    // Find the matching close, respecting nested brackets and string literals.
-    let bytes = rhs.as_bytes();
-    let mut depth: i32 = 0;
-    let mut i = open_idx;
-    let mut close_idx: Option<usize> = None;
-    let mut in_str: Option<u8> = None;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if let Some(q) = in_str {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == q {
-                in_str = None;
-            }
-            i += 1;
+/// Uses ast-grep to match `assignment` nodes whose `left` field is `__all__`,
+/// filters to module top-level (ignores assignments inside function/class
+/// bodies), and extracts string literal children from the RHS `list` or
+/// `tuple` expression. If multiple top-level assignments exist, the last one
+/// wins (Python semantics).
+///
+/// Correctly skips occurrences inside comments, docstrings, and nested scopes
+/// because those are not `assignment` AST nodes at module top level.
+fn find_dunder_all<D: ast_grep_core::Doc>(
+    src: &str,
+    root: &ast_grep_core::AstGrep<D>,
+    rule: &RuleConfig<SupportLang>,
+) -> Option<HashSet<String>> {
+    let mut top_level_matches: Vec<(usize, ast_grep_core::Node<'_, D>)> = Vec::new();
+    for m in root.root().find_all(&rule.matcher) {
+        let node = m.get_node().clone();
+        // Confirm the left field text is exactly `__all__` (guard against
+        // `self.__all__` etc. that the `pattern: __all__` might still match
+        // via the wider rule).
+        let Some(left) = node.field("left") else {
+            continue;
+        };
+        if left.text().as_ref() != "__all__" {
             continue;
         }
-        match b {
-            b'"' | b'\'' => in_str = Some(b),
-            c if c == open_ch => depth += 1,
-            c if c == close_ch => {
-                depth -= 1;
-                if depth == 0 {
-                    close_idx = Some(i);
-                    break;
-                }
-            }
-            _ => {}
+        if !is_module_top_level(node.clone()) {
+            continue;
         }
-        i += 1;
+        top_level_matches.push((node.range().start, node));
     }
-    let close = close_idx?;
-    let inner = &rhs[open_idx + 1..close];
+
+    if top_level_matches.is_empty() {
+        return None;
+    }
+
+    // Python semantics: last assignment wins.
+    top_level_matches.sort_by_key(|(start, _)| *start);
+    let (_, last) = top_level_matches.into_iter().next_back()?;
+
+    let rhs = last.field("right")?;
 
     let mut set = HashSet::new();
-    for lit in extract_string_literals(inner) {
-        set.insert(lit);
+    for child in rhs.children() {
+        if child.kind().as_ref() != "string" {
+            continue;
+        }
+        if let Some(lit) = string_literal_text(src, &child) {
+            set.insert(lit);
+        }
     }
     Some(set)
 }
 
-/// Collect Python string literals from a small source fragment. Handles
-/// single- and double-quoted strings. Does not handle triple-quoted or
-/// f-strings (unlikely in `__all__`).
-fn extract_string_literals(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'"' || b == b'\'' {
-            let quote = b;
-            let start = i + 1;
-            let mut j = start;
-            while j < bytes.len() {
-                if bytes[j] == b'\\' {
-                    j += 2;
-                    continue;
-                }
-                if bytes[j] == quote {
-                    break;
-                }
-                j += 1;
-            }
-            if j <= bytes.len() && j >= start {
-                let lit = &s[start..j.min(s.len())];
-                out.push(lit.to_string());
-                i = j + 1;
-                continue;
-            }
+/// Extract the content of a Python `string` node. tree-sitter-python wraps
+/// string content in `string_start`, `string_content`, `string_end` children;
+/// concatenate all `string_content` children. Fall back to trimming the outer
+/// quote bytes if no `string_content` child is present.
+fn string_literal_text<D: ast_grep_core::Doc>(
+    src: &str,
+    string_node: &ast_grep_core::Node<'_, D>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut found = false;
+    for c in string_node.children() {
+        if c.kind().as_ref() == "string_content" {
+            found = true;
+            let range = c.range();
+            out.push_str(&src[range]);
         }
-        i += 1;
     }
-    out
+    if found {
+        return Some(out);
+    }
+    let range = string_node.range();
+    let raw = &src[range];
+    // Strip one leading and trailing quote character if present.
+    let trimmed = raw
+        .strip_prefix('"')
+        .or_else(|| raw.strip_prefix('\''))
+        .unwrap_or(raw);
+    let trimmed = trimmed
+        .strip_suffix('"')
+        .or_else(|| trimmed.strip_suffix('\''))
+        .unwrap_or(trimmed);
+    Some(trimmed.to_string())
 }
 
 /// Extract the signature (header) of a Python `def` or `class` item. Takes
