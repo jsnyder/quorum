@@ -140,6 +140,8 @@ Under the hood the index is FTS5 + sqlite-vec with a reranker over BM25 / vector
 
 Configuration lives at `~/.quorum/sources.toml`; set `context.auto_inject = false` to disable injection without removing the indexes.
 
+**Tuning `inject_budget_tokens`** (default `1500`): the planner enforces a 40%-of-budget floor on the smallest chunk it will inject, so a chunk only lands when it contributes at least `0.4 × inject_budget_tokens` tokens. This prevents tiny stubs from displacing more substantial context. If your sources index short helpers (< 600 tokens), lower the budget (try `500`–`800`) until relevant chunks clear the floor. Watch `reviews.jsonl` → `context.injected_chunk_count` to validate.
+
 ## MCP Server (for Claude Code)
 
 Add to your Claude Code MCP config:
