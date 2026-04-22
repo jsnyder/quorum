@@ -129,24 +129,66 @@ impl ProdDeps {
         }
     }
 
+    /// Construct a `ProdDeps` whose embedder is the **strict** production
+    /// embedder: fastembed init failures surface as errors instead of
+    /// falling back to HashEmbedder. Use this for paths that would
+    /// otherwise silently corrupt the on-disk index (`index`, `refresh`).
+    pub fn new_strict(home_dir: PathBuf) -> Result<Self> {
+        Ok(Self {
+            git: SystemGit,
+            clock: SystemClock,
+            embedder: new_prod_embedder_strict()?,
+            home_dir,
+        })
+    }
+
     /// Resolve `~/.quorum` from `$HOME` (Unix) or `%USERPROFILE%` (Windows).
-    /// Returns an error if neither is set or if either is empty (an empty
-    /// value would yield a relative `.quorum` path that resolves against
-    /// the current working directory, which is never the user's intent).
+    /// Returns an error if neither is set, if either is empty, or if the
+    /// value is not an absolute path. An empty or relative value would
+    /// yield a `.quorum` path that resolves against the current working
+    /// directory, which is never the user's intent and would silently
+    /// scatter state across wherever the binary happened to launch.
     pub fn from_env() -> Result<Self> {
+        Ok(Self::new(Self::resolve_quorum_root()?))
+    }
+
+    /// Like `from_env` but uses the strict embedder factory. Use for paths
+    /// that write to the on-disk index (`index`, `refresh`) so a silent
+    /// fastembed fallback can't corrupt `chunks_vec`.
+    pub fn from_env_strict() -> Result<Self> {
+        Self::new_strict(Self::resolve_quorum_root()?)
+    }
+
+    fn resolve_quorum_root() -> Result<PathBuf> {
         let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        // On Windows, `USERPROFILE` is the canonical user dir. `HOME` is
+        // often set by MSYS/Cygwin/Git Bash to an MSYS-mangled path that
+        // doesn't match the profile CreateFile + Explorer see. Prefer
+        // USERPROFILE there and fall back to HOME for non-standard envs.
+        // Elsewhere (macOS/Linux), HOME is canonical.
+        #[cfg(windows)]
+        let home = from("USERPROFILE")
+            .or_else(|| from("HOME"))
+            .ok_or_else(|| anyhow!("neither USERPROFILE nor HOME is set"))?;
+        #[cfg(not(windows))]
         let home = from("HOME")
             .or_else(|| from("USERPROFILE"))
             .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
-        let root = PathBuf::from(home).join(".quorum");
-        Ok(Self::new(root))
+        let home_path = PathBuf::from(&home);
+        if !home_path.is_absolute() {
+            anyhow::bail!(
+                "HOME/USERPROFILE must be an absolute path, got {:?}",
+                home_path
+            );
+        }
+        Ok(home_path.join(".quorum"))
     }
 }
 
-/// Construct the production embedder. Fastembed can fail on first run
-/// (model download needs network) — we log a warning and fall back to
-/// HashEmbedder so reviews still execute. BM25 retrieval still works
-/// in the fallback; only the vector-similarity leg is degraded.
+/// Construct the production embedder for **review/query** paths. Fastembed
+/// can fail on first run (model download needs network) — we log a warning
+/// and fall back to HashEmbedder so reviews still execute. BM25 retrieval
+/// still works in the fallback; only the vector-similarity leg is degraded.
 pub(crate) fn new_prod_embedder() -> ProdEmbedder {
     #[cfg(feature = "embeddings")]
     {
@@ -167,6 +209,33 @@ pub(crate) fn new_prod_embedder() -> ProdEmbedder {
     #[cfg(not(feature = "embeddings"))]
     {
         ProdEmbedder::Hash(HashEmbedder::new(384))
+    }
+}
+
+/// Construct the production embedder for **index/refresh** paths. Unlike
+/// [`new_prod_embedder`], a fastembed init failure here returns `Err`
+/// instead of falling back. Silently rebuilding the `chunks_vec` table
+/// with HashEmbedder noise vectors would corrupt semantic retrieval
+/// until the user discovers the drift and reruns with the model present,
+/// so we refuse to alter the index without the production embedder.
+///
+/// When built without the `embeddings` feature HashEmbedder *is* the
+/// intended production embedder, so this returns `Ok` just like the
+/// lenient factory.
+pub(crate) fn new_prod_embedder_strict() -> anyhow::Result<ProdEmbedder> {
+    #[cfg(feature = "embeddings")]
+    {
+        let e = FastEmbedEmbedder::new().map_err(|e| {
+            anyhow!(
+                "fastembed init failed ({e}); refusing to rebuild the index with \
+                 HashEmbedder fallback — retry once the model is available"
+            )
+        })?;
+        Ok(ProdEmbedder::Fast(e))
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        Ok(ProdEmbedder::Hash(HashEmbedder::new(384)))
     }
 }
 
@@ -475,47 +544,63 @@ pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<Cmd
 // --- Init handler -----------------------------------------------------------
 
 fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
+    use std::io::Write;
+
     // `home_dir()` already points at the quorum state root (e.g. `~/.quorum`
     // in production, a tempdir in tests) — don't append `.quorum` again here.
     let sources_path = deps.home_dir().join("sources.toml");
 
-    // Distinguish "already a regular file" (idempotent success) from "the
-    // path exists but is a directory / symlink / device" (hard error). The
-    // bare `.exists()` check can't tell them apart; without this, a stray
-    // `mkdir sources.toml` under `~/.quorum` makes every future `init` and
-    // `add` silently no-op instead of complaining.
-    if sources_path.exists() {
-        let meta = std::fs::symlink_metadata(&sources_path).map_err(|e| {
-            anyhow!(
-                "cannot stat {}: {e}",
-                sources_path.display()
-            )
-        })?;
-        if !meta.file_type().is_file() {
-            return Err(anyhow!(
-                "{} exists but is not a regular file; refusing to initialize over it",
-                sources_path.display()
-            ));
-        }
-        return Ok(CmdOutput {
-            stdout: format!("context already initialized at {}", sources_path.display()),
-            created_paths: Vec::new(),
-            removed_paths: Vec::new(),
-            warnings: vec![format!(
-                "{} already exists; leaving it untouched",
-                sources_path.display()
-            )],
-        });
+    if let Some(parent) = sources_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("cannot create {}: {e}", parent.display()))?;
     }
 
-    SourcesConfig::write_default(&sources_path)?;
-
-    Ok(CmdOutput {
-        stdout: format!("initialized context at {}", sources_path.display()),
-        created_paths: vec![sources_path],
-        removed_paths: Vec::new(),
-        warnings: Vec::new(),
-    })
+    // Atomic create-or-fail: previously we did `exists()` + `write()`, which
+    // left a TOCTOU window where a concurrent process could slip in and get
+    // its config clobbered. `create_new(true)` hands that race to the OS.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&sources_path)
+    {
+        Ok(mut f) => {
+            f.write_all(crate::context::config::default_sources_toml().as_bytes())
+                .map_err(|e| anyhow!("write {}: {e}", sources_path.display()))?;
+            Ok(CmdOutput {
+                stdout: format!("initialized context at {}", sources_path.display()),
+                created_paths: vec![sources_path],
+                removed_paths: Vec::new(),
+                warnings: Vec::new(),
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Distinguish "already a regular file" (idempotent success) from
+            // "exists but is a directory / symlink / device" (hard error).
+            // Without this, a stray `mkdir sources.toml` under `~/.quorum`
+            // would make every future `init`/`add` silently no-op.
+            let meta = std::fs::symlink_metadata(&sources_path)
+                .map_err(|e| anyhow!("cannot stat {}: {e}", sources_path.display()))?;
+            if !meta.file_type().is_file() {
+                return Err(anyhow!(
+                    "{} exists but is not a regular file; refusing to initialize over it",
+                    sources_path.display()
+                ));
+            }
+            Ok(CmdOutput {
+                stdout: format!(
+                    "context already initialized at {}",
+                    sources_path.display()
+                ),
+                created_paths: Vec::new(),
+                removed_paths: Vec::new(),
+                warnings: vec![format!(
+                    "{} already exists; leaving it untouched",
+                    sources_path.display()
+                )],
+            })
+        }
+        Err(e) => Err(anyhow!("create {}: {e}", sources_path.display())),
+    }
 }
 
 // --- Add handler ------------------------------------------------------------
@@ -1072,7 +1157,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
 
     let conn = Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
 
@@ -1510,7 +1595,7 @@ fn db_chunk_count(db: &Path) -> Result<i64> {
     ensure_vec_loaded();
     let conn = Connection::open_with_flags(
         db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let n: i64 = conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
     Ok(n)

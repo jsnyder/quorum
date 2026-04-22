@@ -290,7 +290,18 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         }
     };
 
-    let deps = match ProdDeps::from_env() {
+    // `index` and `refresh` write to `chunks_vec`; if fastembed fell back to
+    // HashEmbedder we'd rebuild the vector table with hashing-noise vectors
+    // and silently degrade every subsequent retrieval. Use the strict
+    // factory so a fastembed init failure surfaces as a clear error the
+    // user can retry, rather than a corrupted index they have to discover.
+    let needs_strict_embedder = matches!(cmd, ContextCmd::Index(_) | ContextCmd::Refresh(_));
+    let deps_result = if needs_strict_embedder {
+        ProdDeps::from_env_strict()
+    } else {
+        ProdDeps::from_env()
+    };
+    let deps = match deps_result {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {}", e);

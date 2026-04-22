@@ -182,21 +182,32 @@ impl ContextInjectionSource for ContextInjector {
             };
         }
 
-        // Calibrator gate (Task 8.4): drop chunks whose score falls below
-        // their per-chunk injection threshold. `f32::INFINITY` from the
-        // calibrator (N+ ContextMisleading confirmations) is a hard seal.
+        // Post-retrieve gate, two stages:
         //
-        // This is a post-retrieve concern — the raw retriever contract is
-        // unchanged — and runs before precedence/plan so neither sees
-        // chunks the operator has already flagged as misleading.
+        // 1. Global floor (`inject_min_score`) — applied unconditionally, even
+        //    when no calibrator is wired. A prior version only applied the
+        //    floor via `max(floor, threshold)` inside the calibrator branch,
+        //    so reviewers without a calibrator silently skipped it.
+        // 2. Per-chunk calibrator threshold — runs on the survivors of stage 1
+        //    so `suppressed_by_calibrator` strictly counts feedback-driven
+        //    drops (including `f32::INFINITY` seals from N+ `ContextMisleading`
+        //    confirmations). Splitting the counters lets dashboards tell
+        //    "config rejected it" apart from "feedback poisoned this chunk".
+        //
+        // Both stages run before precedence/plan so neither sees chunks the
+        // operator has already flagged as misleading.
+        let floor = self.context.inject_min_score;
+        let before_floor = hits.len();
+        let hits: Vec<ScoredChunk> = hits.into_iter().filter(|h| h.score >= floor).collect();
+        tele.suppressed_by_floor = (before_floor - hits.len()) as u32;
+
         let hits = if let Some(cal) = self.calibrator.as_ref() {
-            let before = hits.len();
-            let floor = self.context.inject_min_score;
+            let before_cal = hits.len();
             let kept: Vec<ScoredChunk> = hits
                 .into_iter()
-                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id).max(floor))
+                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id))
                 .collect();
-            tele.suppressed_by_calibrator = (before - kept.len()) as u32;
+            tele.suppressed_by_calibrator = (before_cal - kept.len()) as u32;
             kept
         } else {
             hits
@@ -356,16 +367,21 @@ mod tests {
     }
 
     #[test]
-    fn gate_applies_config_min_score_when_calibrator_floor_is_lower() {
+    fn gate_applies_config_min_score_before_calibrator() {
         // Calibrator floor = 0.0 (no confirmations -> threshold 0.0), but the
         // configured inject_min_score is 0.5. A chunk scoring 0.3 must be
-        // suppressed by the gate (not just later by plan filtering) so the
-        // telemetry correctly attributes the drop to the calibrator tier.
+        // suppressed by the gate. After the floor/calibrator split the drop
+        // is attributed to the floor tier so dashboards can distinguish
+        // "config rejected it" from "feedback poisoned this chunk".
         let (injector, req) = injector_with(0.5, Calibrator::new(0.0), 0.3);
         let out = injector.inject(&req);
         assert_eq!(
-            out.telemetry.suppressed_by_calibrator, 1,
-            "config min_score must be enforced at the calibrator gate"
+            out.telemetry.suppressed_by_floor, 1,
+            "config min_score must drop the chunk at the floor stage"
+        );
+        assert_eq!(
+            out.telemetry.suppressed_by_calibrator, 0,
+            "calibrator never sees chunks already dropped by the floor"
         );
         assert!(out.rendered.is_none());
     }
@@ -378,5 +394,33 @@ mod tests {
         let (injector, req) = injector_with(0.5, Calibrator::new(0.0), 0.7);
         let out = injector.inject(&req);
         assert_eq!(out.telemetry.suppressed_by_calibrator, 0);
+        assert_eq!(out.telemetry.suppressed_by_floor, 0);
+    }
+
+    #[test]
+    fn gate_applies_floor_when_no_calibrator_is_wired() {
+        // Regression: the previous gate did `if let Some(cal) = self.calibrator
+        // { filter by max(floor, threshold) } else { hits }`, so a reviewer
+        // running without any calibrator wired had `inject_min_score`
+        // silently bypassed and low-score chunks leaked through to plan.
+        let sources = SourcesConfig {
+            sources: vec![],
+            context: ctx_with_min_score(0.5),
+        };
+        let retriever: Arc<RetrieverFn> = Arc::new(|_q| Ok(vec![scored("chunk-a", 0.3)]));
+        let injector = ContextInjector::new(&sources, retriever); // no calibrator
+        let req = InjectionRequest {
+            file_path: "x.rs".into(),
+            language: Some("rust".into()),
+            identifiers: vec!["foo".into()],
+            text: "foo bar".into(),
+        };
+        let out = injector.inject(&req);
+        assert_eq!(
+            out.telemetry.suppressed_by_floor, 1,
+            "inject_min_score must be enforced even without a calibrator"
+        );
+        assert_eq!(out.telemetry.suppressed_by_calibrator, 0);
+        assert!(out.rendered.is_none());
     }
 }

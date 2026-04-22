@@ -66,9 +66,21 @@ pub struct HashEmbedder {
 }
 
 impl HashEmbedder {
+    /// Construct a `HashEmbedder` with a positive dimension.
+    ///
+    /// Returns `Err` when `dim == 0`. Prefer this in any path that derives
+    /// `dim` from configuration or user input; callers with a compile-time
+    /// constant can use [`HashEmbedder::new`], which forwards to this and
+    /// panics on failure.
+    pub fn try_new(dim: usize) -> anyhow::Result<Self> {
+        if dim == 0 {
+            anyhow::bail!("HashEmbedder dim must be positive");
+        }
+        Ok(Self { dim })
+    }
+
     pub fn new(dim: usize) -> Self {
-        assert!(dim > 0, "HashEmbedder dim must be positive");
-        Self { dim }
+        Self::try_new(dim).expect("HashEmbedder dim must be positive")
     }
 }
 
