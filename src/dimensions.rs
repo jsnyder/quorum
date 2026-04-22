@@ -56,7 +56,7 @@ fn aggregate(key: String, records: &[&ReviewRecord]) -> DimensionSlice {
         tokens_out += r.tokens_out;
         tokens_cache_read += r.tokens_cache_read;
         match (r.lines_added, r.lines_removed) {
-            (Some(a), Some(d)) => { lines_touched += (a + d) as u64; has_any_lines = true; }
+            (Some(a), Some(d)) => { lines_touched += a as u64 + d as u64; has_any_lines = true; }
             (Some(a), None) => { lines_touched += a as u64; has_any_lines = true; }
             (None, Some(d)) => { lines_touched += d as u64; has_any_lines = true; }
             (None, None) => {}
@@ -146,20 +146,19 @@ fn sparkline_buckets(records: &[&ReviewRecord], n_buckets: usize) -> Vec<f64> {
     out
 }
 
-/// Display key for records whose `repo` field is `None`. Parentheses are
-/// disallowed in git repo names on any reasonable system, so this cannot
-/// collide with a real repo basename.
+/// Display key for records whose `repo` field is `None`. Bucketing groups
+/// `None` separately from any real repo name (`Option<String>` keys), so a
+/// repo literally named `(no repo)` never collides with the no-repo bucket.
 pub const NO_REPO_KEY: &str = "(no repo)";
 
 pub fn group_by_repo(records: &[ReviewRecord]) -> Vec<DimensionSlice> {
-    let mut buckets: HashMap<String, Vec<&ReviewRecord>> = HashMap::new();
+    let mut buckets: HashMap<Option<String>, Vec<&ReviewRecord>> = HashMap::new();
     for r in records {
-        let key = r.repo.clone().unwrap_or_else(|| NO_REPO_KEY.to_string());
-        buckets.entry(key).or_default().push(r);
+        buckets.entry(r.repo.clone()).or_default().push(r);
     }
     let mut slices: Vec<_> = buckets
         .into_iter()
-        .map(|(k, v)| aggregate(k, &v))
+        .map(|(k, v)| aggregate(k.unwrap_or_else(|| NO_REPO_KEY.to_string()), &v))
         .collect();
     slices.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
     slices
@@ -298,15 +297,14 @@ pub fn aggregate_by_source(records: &[ReviewRecord]) -> Vec<ContextDimensionSlic
 /// context injection behaving per repo?". Sorting matches
 /// `group_by_repo` (most reviews first, then alphabetic tiebreak).
 pub fn aggregate_by_reviewed_repo(records: &[ReviewRecord]) -> Vec<ContextDimensionSlice> {
-    let mut buckets: HashMap<String, Vec<&ReviewRecord>> = HashMap::new();
+    let mut buckets: HashMap<Option<String>, Vec<&ReviewRecord>> = HashMap::new();
     for r in records {
         if !r.context.injector_available { continue; }
-        let key = r.repo.clone().unwrap_or_else(|| NO_REPO_KEY.to_string());
-        buckets.entry(key).or_default().push(r);
+        buckets.entry(r.repo.clone()).or_default().push(r);
     }
     let mut out: Vec<_> = buckets
         .into_iter()
-        .map(|(k, v)| aggregate_context_slice(k, &v))
+        .map(|(k, v)| aggregate_context_slice(k.unwrap_or_else(|| NO_REPO_KEY.to_string()), &v))
         .collect();
     out.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
     out
@@ -366,14 +364,15 @@ pub fn rolling_window(records: &[ReviewRecord], n: usize, max_windows: usize) ->
     let mut out = Vec::new();
     let total = records.len();
     for w in 0..max_windows {
-        let end = total.saturating_sub(w * n);
+        let offset = w.saturating_mul(n);
+        let end = total.saturating_sub(offset);
         if end == 0 { break; }
         let start = end.saturating_sub(n);
         let slice: Vec<&ReviewRecord> = records[start..end].iter().collect();
         let label = match w {
             0 => format!("last {}", n),
             1 => format!("prev {}", n),
-            k => format!("prev {}", k * n),
+            _ => format!("prev {}", offset),
         };
         out.push(aggregate(label, &slice));
     }
@@ -446,6 +445,44 @@ mod tests {
             .expect("real 'unknown' repo must remain addressable by its name");
         assert_eq!(none_slice.n_findings, 5);
         assert_eq!(real_slice.n_findings, 3);
+    }
+
+    #[test]
+    fn group_by_repo_none_does_not_collide_with_repo_literally_named_no_repo() {
+        // Regression: bucketing on the stringified sentinel `(no repo)` would
+        // silently merge a real repo coincidentally named the same string with
+        // None-repo records. Bucket on Option<String> instead.
+        let r_real = rec("(no repo)", "tty", 1, 3);
+        let mut r_none = rec("ignored", "tty", 1, 5);
+        r_none.repo = None;
+        let slices = group_by_repo(&[r_real, r_none]);
+        assert_eq!(slices.len(), 2, "None and real '(no repo)' must bucket separately");
+        let none_total: u32 = slices.iter().map(|s| s.n_findings).sum();
+        assert_eq!(none_total, 8);
+    }
+
+    #[test]
+    fn aggregate_lines_touched_does_not_overflow_on_large_diffs() {
+        // Regression: previously `(a + d) as u64` overflowed u32 before widening,
+        // panicking in debug builds and wrapping in release.
+        let mut a = rec("r", "tty", 1, 1);
+        a.lines_added = Some(u32::MAX);
+        a.lines_removed = Some(u32::MAX);
+        // The fix uses `a as u64 + d as u64`; this call must not panic.
+        let slices = group_by_repo(&[a]);
+        // findings_per_kloc = 1 * 1000 / (2 * u32::MAX) -- tiny but well-defined.
+        let fpk = slices[0].findings_per_kloc.expect("kloc set when lines>0");
+        let expected = 1000.0 / (2.0 * u32::MAX as f64);
+        assert!((fpk - expected).abs() < 1e-12, "got {fpk}, expected {expected}");
+    }
+
+    #[test]
+    fn rolling_window_does_not_panic_on_extreme_window_count() {
+        // Regression: `w * n` could overflow usize for adversarial max_windows.
+        let records: Vec<_> = (0..3).map(|_| rec("r", "tty", 1, 0)).collect();
+        let out = rolling_window(&records, usize::MAX / 2, usize::MAX / 2);
+        // Either returns the single first window or breaks early; must not panic.
+        assert!(out.len() <= 1);
     }
 
     #[test]

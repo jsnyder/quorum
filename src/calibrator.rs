@@ -50,7 +50,11 @@ fn verdict_weight(entry: &FeedbackEntry) -> f64 {
         crate::feedback::Provenance::Unknown => 0.3,
     };
 
-    let age_days = (chrono::Utc::now() - entry.timestamp).num_days().max(0) as f64;
+    // Future-dated entries (clock skew, mis-set system clocks, manual edits)
+    // would otherwise clamp to age=0 and receive maximum recency weight.
+    // Use absolute age so a future-dated entry decays the same as one written
+    // the same delta in the past, instead of being the most-trusted precedent.
+    let age_days = (chrono::Utc::now() - entry.timestamp).num_days().unsigned_abs() as f64;
     let recency_weight = (-age_days / 120.0).exp(); // half-life ~83 days
 
     provenance_weight * recency_weight
@@ -277,10 +281,13 @@ pub fn precedent_metric_compatible(finding_title: &str, precedent_title: &str) -
     let f = extract_complexity_metric(finding_title);
     let p = extract_complexity_metric(precedent_title);
     match (f, p) {
-        (Some(fn_), Some(pn)) => {
-            fn_.abs_diff(pn) <= 2
-        }
-        _ => true,
+        (Some(fn_), Some(pn)) => fn_.abs_diff(pn) <= 2,
+        (None, None) => true,
+        // One-sided metric mismatch: a complexity-specific finding must not
+        // match a non-metric precedent (or vice versa). Without this guard a
+        // CC=11 finding could be suppressed/boosted by a precedent like
+        // "Function `foo` is unused", which has nothing to do with complexity.
+        (Some(_), None) | (None, Some(_)) => false,
     }
 }
 
@@ -306,11 +313,16 @@ pub fn calibrate_with_index(
         let first_evidence = finding.evidence.first().map(String::as_str).unwrap_or("");
         let excerpt = finding.based_on_excerpt.as_deref().unwrap_or("");
         let discriminators: [&str; 3] = [&finding.description, first_evidence, excerpt];
+        // Pull a deeper candidate pool than we ultimately consume so the
+        // downstream provenance and metric-compatibility filters don't starve
+        // calibration when the top-k is dominated by auto-calibrate or
+        // off-metric precedents. The post-filter is used only for weight
+        // accumulation; there is no per-finding cap that requires <=10.
         let similar_entries = index.find_similar_enriched(
             &finding.title,
             &finding.category,
             &discriminators,
-            10,
+            50,
         );
 
         // Filter by similarity threshold, provenance, and metric compatibility.
@@ -618,6 +630,26 @@ mod tests {
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
         }
+    }
+
+    #[test]
+    fn verdict_weight_future_dated_entry_is_not_max_weight() {
+        // Regression: `(now - timestamp).num_days().max(0)` clamped negative
+        // ages to 0 for future-dated entries (clock skew, manual JSONL edits),
+        // giving them maximum recency weight. Use absolute age so a year-future
+        // entry decays the same as a year-old one.
+        let mut future = fb("anything", "x", Verdict::Tp);
+        future.timestamp = Utc::now() + chrono::Duration::days(365);
+        let w_future = verdict_weight(&future);
+
+        let mut now = fb("anything", "x", Verdict::Tp);
+        now.timestamp = Utc::now();
+        let w_now = verdict_weight(&now);
+
+        assert!(
+            w_future < w_now * 0.1,
+            "future-dated entry weight {w_future} should decay below 10% of fresh weight {w_now}"
+        );
     }
 
     // -- No feedback: passthrough --
@@ -1467,6 +1499,22 @@ mod tests {
         assert!(precedent_metric_compatible(
             "SQL injection in query builder",
             "SQL injection risk"
+        ));
+    }
+
+    #[test]
+    fn precedent_metric_compatible_rejects_one_sided_metric_mismatch() {
+        // Regression: previously the `_ => true` arm allowed a metric finding
+        // to match a non-metric precedent (and vice versa). A CC=11 complexity
+        // finding must not be calibrated by an unrelated "function is unused"
+        // precedent that happens to share the same function name.
+        assert!(!precedent_metric_compatible(
+            "Function `foo` has cyclomatic complexity 11",
+            "Function `foo` is unused"
+        ));
+        assert!(!precedent_metric_compatible(
+            "Function `foo` is unused",
+            "Function `foo` has cyclomatic complexity 11"
         ));
     }
 
