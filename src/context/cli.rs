@@ -129,6 +129,19 @@ impl ProdDeps {
         }
     }
 
+    /// Construct a `ProdDeps` whose embedder is the **strict** production
+    /// embedder: fastembed init failures surface as errors instead of
+    /// falling back to HashEmbedder. Use this for paths that would
+    /// otherwise silently corrupt the on-disk index (`index`, `refresh`).
+    pub fn new_strict(home_dir: PathBuf) -> Result<Self> {
+        Ok(Self {
+            git: SystemGit,
+            clock: SystemClock,
+            embedder: new_prod_embedder_strict()?,
+            home_dir,
+        })
+    }
+
     /// Resolve `~/.quorum` from `$HOME` (Unix) or `%USERPROFILE%` (Windows).
     /// Returns an error if neither is set, if either is empty, or if the
     /// value is not an absolute path. An empty or relative value would
@@ -136,6 +149,17 @@ impl ProdDeps {
     /// directory, which is never the user's intent and would silently
     /// scatter state across wherever the binary happened to launch.
     pub fn from_env() -> Result<Self> {
+        Ok(Self::new(Self::resolve_quorum_root()?))
+    }
+
+    /// Like `from_env` but uses the strict embedder factory. Use for paths
+    /// that write to the on-disk index (`index`, `refresh`) so a silent
+    /// fastembed fallback can't corrupt `chunks_vec`.
+    pub fn from_env_strict() -> Result<Self> {
+        Self::new_strict(Self::resolve_quorum_root()?)
+    }
+
+    fn resolve_quorum_root() -> Result<PathBuf> {
         let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
         let home = from("HOME")
             .or_else(|| from("USERPROFILE"))
@@ -147,14 +171,14 @@ impl ProdDeps {
                 home_path
             );
         }
-        Ok(Self::new(home_path.join(".quorum")))
+        Ok(home_path.join(".quorum"))
     }
 }
 
-/// Construct the production embedder. Fastembed can fail on first run
-/// (model download needs network) — we log a warning and fall back to
-/// HashEmbedder so reviews still execute. BM25 retrieval still works
-/// in the fallback; only the vector-similarity leg is degraded.
+/// Construct the production embedder for **review/query** paths. Fastembed
+/// can fail on first run (model download needs network) — we log a warning
+/// and fall back to HashEmbedder so reviews still execute. BM25 retrieval
+/// still works in the fallback; only the vector-similarity leg is degraded.
 pub(crate) fn new_prod_embedder() -> ProdEmbedder {
     #[cfg(feature = "embeddings")]
     {
@@ -175,6 +199,33 @@ pub(crate) fn new_prod_embedder() -> ProdEmbedder {
     #[cfg(not(feature = "embeddings"))]
     {
         ProdEmbedder::Hash(HashEmbedder::new(384))
+    }
+}
+
+/// Construct the production embedder for **index/refresh** paths. Unlike
+/// [`new_prod_embedder`], a fastembed init failure here returns `Err`
+/// instead of falling back. Silently rebuilding the `chunks_vec` table
+/// with HashEmbedder noise vectors would corrupt semantic retrieval
+/// until the user discovers the drift and reruns with the model present,
+/// so we refuse to alter the index without the production embedder.
+///
+/// When built without the `embeddings` feature HashEmbedder *is* the
+/// intended production embedder, so this returns `Ok` just like the
+/// lenient factory.
+pub(crate) fn new_prod_embedder_strict() -> anyhow::Result<ProdEmbedder> {
+    #[cfg(feature = "embeddings")]
+    {
+        let e = FastEmbedEmbedder::new().map_err(|e| {
+            anyhow!(
+                "fastembed init failed ({e}); refusing to rebuild the index with \
+                 HashEmbedder fallback — retry once the model is available"
+            )
+        })?;
+        Ok(ProdEmbedder::Fast(e))
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        Ok(ProdEmbedder::Hash(HashEmbedder::new(384)))
     }
 }
 
