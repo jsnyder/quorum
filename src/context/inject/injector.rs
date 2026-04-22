@@ -184,6 +184,7 @@ impl ContextInjectionSource for ContextInjector {
             }
         };
         tele.retrieved_chunk_count = hits.len() as u32;
+        tele.retrieved_by_leg = crate::review_log::LegCounts::from_chunks(&hits);
         if hits.is_empty() {
             tele.render_duration_ms = started.elapsed().as_millis() as u64;
             return InjectionOutcome {
@@ -251,6 +252,7 @@ impl ContextInjectionSource for ContextInjector {
 
         // Capture injected IDs/sources BEFORE the move into the renderer.
         tele.injected_chunk_count = plan.injected.len() as u32;
+        tele.injected_by_leg = crate::review_log::LegCounts::from_chunks(&plan.injected);
         tele.injected_tokens = plan.token_count as u32;
         tele.injected_chunk_ids = plan
             .injected

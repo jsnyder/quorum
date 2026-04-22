@@ -256,6 +256,12 @@ pub struct ScoredChunk {
     pub source_legs: Vec<RetrievalLeg>,
 }
 
+impl AsRef<[RetrievalLeg]> for ScoredChunk {
+    fn as_ref(&self) -> &[RetrievalLeg] {
+        &self.source_legs
+    }
+}
+
 /// Build an FTS5 phrase match for a free-text query by double-quoting the
 /// whole string and escaping embedded double quotes per FTS5 rules.
 fn quote_as_fts_phrase(s: &str) -> String {
