@@ -435,6 +435,7 @@ pub fn review_file(
                     if let Some(u) = &resp.usage {
                         total_usage.prompt_tokens += u.prompt_tokens;
                         total_usage.completion_tokens += u.completion_tokens;
+                        total_usage.cached_tokens += u.cached_tokens;
                     }
                     match review::parse_llm_response(&resp.content, model) {
                         Ok(mut findings) => {
@@ -729,6 +730,7 @@ pub fn review_file_llm_only(
                         if let Some(u) = &resp.usage {
                             total_usage.prompt_tokens += u.prompt_tokens;
                             total_usage.completion_tokens += u.completion_tokens;
+                            total_usage.cached_tokens += u.cached_tokens;
                         }
                         match review::parse_llm_response(&resp.content, model) {
                             Ok(mut findings) => {

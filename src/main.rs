@@ -475,9 +475,19 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         let effort = opts.reasoning_effort.clone()
             .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()))
             .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
+        // Opt-in: tell the upstream proxy (e.g. LiteLLM) to skip its response
+        // cache so each call reaches the underlying provider. Useful when
+        // benchmarking, A/B comparing, or measuring upstream prompt-cache
+        // hit rate. Default off — production reviews keep the proxy's fast
+        // replay behavior.
+        let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
         Some(std::sync::Arc::new(
             llm_client::OpenAiClient::new(&cfg.base_url, api_key)
                 .with_reasoning_effort(effort)
+                .with_bypass_proxy_cache(bypass_proxy_cache)
         ))
     } else {
         None
@@ -940,6 +950,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
         let total_tokens_in: u64 = file_results.iter().map(|r| r.usage.prompt_tokens).sum();
         let total_tokens_out: u64 = file_results.iter().map(|r| r.usage.completion_tokens).sum();
+        let total_tokens_cache_read: u64 = file_results.iter().map(|r| r.usage.cached_tokens).sum();
         let telem_entry = telemetry::TelemetryEntry {
             ts: chrono::Utc::now(),
             files: opts.files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
@@ -1045,7 +1056,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             suppressed_by_rule: std::collections::HashMap::new(), // per-rule breakdown: future work
             tokens_in: total_tokens_in,
             tokens_out: total_tokens_out,
-            tokens_cache_read: 0,  // cache instrumentation: future work
+            tokens_cache_read: total_tokens_cache_read,
             duration_ms: review_duration.as_millis() as u64,
             flags: review_log::Flags {
                 deep: opts.deep,
