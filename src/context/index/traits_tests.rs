@@ -81,3 +81,14 @@ fn dispatch_reexports_still_work() {
     use crate::context::extract::dispatch::FixedClock as DispatchFixedClock;
     let _ = DispatchFixedClock::epoch();
 }
+
+#[test]
+fn try_new_returns_err_on_zero_dim() {
+    assert!(HashEmbedder::try_new(0).is_err());
+}
+
+#[test]
+fn try_new_succeeds_for_positive_dim() {
+    let e = HashEmbedder::try_new(384).expect("positive dim must succeed");
+    assert_eq!(e.dim(), 384);
+}
