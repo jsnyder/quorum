@@ -95,7 +95,7 @@ impl Default for ContextConfig {
         Self {
             auto_inject: true,
             inject_budget_tokens: 1500,
-            inject_min_score: 0.65,
+            inject_min_score: 0.80,
             inject_max_chunks: 4,
             rerank_recency_halflife_days: 90,
             rerank_recency_floor: 0.25,

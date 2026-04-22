@@ -118,7 +118,7 @@ kind = "rust"
 "#;
     let config = SourcesConfig::from_str(toml).unwrap();
     assert_eq!(config.context.inject_budget_tokens, 1500);
-    assert!((config.context.inject_min_score - 0.65).abs() < f32::EPSILON);
+    assert!((config.context.inject_min_score - 0.80).abs() < f32::EPSILON);
     assert_eq!(config.context.inject_max_chunks, 4);
     assert_eq!(config.context.rerank_recency_halflife_days, 90);
     assert!((config.context.rerank_recency_floor - 0.25).abs() < f32::EPSILON);
