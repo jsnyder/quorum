@@ -91,15 +91,7 @@ pub fn plan_injection(
         injected.push(c);
     }
 
-    // Step 6: 40% floor gate — drop the plan wholesale if it fills less
-    // than 40% of the budget (suggests weak retrieval signal).
-    let floor = budget.saturating_mul(40) / 100;
-    if token_count < floor {
-        injected.clear();
-        token_count = 0;
-    }
-
-    // Step 7: below_threshold_count over both input lists using the
+    // Step 6: below_threshold_count over both input lists using the
     // appropriate threshold for each stream.
     let below_symbols = symbol_hits.iter().filter(|c| c.score < tau).count();
     let below_prose = prose_candidates
