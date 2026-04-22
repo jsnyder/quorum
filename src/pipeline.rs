@@ -323,6 +323,7 @@ pub fn review_file(
             type_definitions: ctx.type_definitions.iter().map(|s| redact::redact_secrets(s)).collect(),
             callers: ctx.callers.clone(),
             import_targets: ctx.import_targets.iter().map(|s| redact::redact_secrets(s)).collect(),
+            qualified_names: ctx.qualified_names.clone(),
         };
 
         // Fetch Context7 framework docs if frameworks are detected
