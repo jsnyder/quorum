@@ -276,6 +276,7 @@ impl ContextInjectionSource for ContextInjector {
             tele.injected_tokens = 0;
             tele.injected_chunk_ids.clear();
             tele.injected_sources.clear();
+            tele.injected_by_leg = crate::review_log::LegCounts::default();
             None
         } else {
             tele.rendered_prompt_hash = Some(hash_rendered_block(&rendered));
