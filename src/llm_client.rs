@@ -275,11 +275,28 @@ impl OpenAiClient {
         }
 
         let json: serde_json::Value = resp.json().await?;
-        let message = &json["choices"][0]["message"];
-        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("stop");
+        // Validate that the upstream returned the expected shape. A missing
+        // `choices[0]` (proxy stripping fields, model returning {}, etc.)
+        // previously fell through to FinalContent(""), silently corrupting
+        // agent turn state and looking like a clean "no findings" response.
+        let choice = json
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .ok_or_else(|| anyhow::anyhow!(
+                "malformed chat response: missing `choices[0]`"
+            ))?;
+        let message = choice
+            .get("message")
+            .ok_or_else(|| anyhow::anyhow!(
+                "malformed chat response: missing `choices[0].message`"
+            ))?;
+        let finish_reason = choice
+            .get("finish_reason")
+            .and_then(|f| f.as_str())
+            .unwrap_or("stop");
 
         // Check for tool calls
-        if let Some(tool_calls) = message["tool_calls"].as_array() {
+        if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
             if !tool_calls.is_empty() {
                 let calls = tool_calls.iter().filter_map(|tc| {
                     let id = tc["id"].as_str()?.to_string();
@@ -291,11 +308,17 @@ impl OpenAiClient {
             }
         }
 
-        // Otherwise, return final content
-        let content = message["content"].as_str().unwrap_or("");
         if finish_reason == "length" {
             anyhow::bail!("Response truncated (finish_reason=length)");
         }
+        // Distinguish a model returning an explicit empty string (treat as
+        // success) from one that omits the field entirely (upstream malformed).
+        let content = message
+            .get("content")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| anyhow::anyhow!(
+                "malformed chat response: `choices[0].message.content` missing or non-string"
+            ))?;
         Ok(LlmTurnResult::FinalContent(content.to_string()))
     }
 

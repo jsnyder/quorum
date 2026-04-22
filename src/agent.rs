@@ -146,8 +146,13 @@ fn force_final_turn(
             crate::review::parse_llm_response(&text, model)
         }
         crate::llm_client::LlmTurnResult::ToolCalls(_) => {
-            // Model returned tool calls when asked for final findings — return empty
-            Ok(vec![])
+            // Model ignored the no-tools instruction. Surface this rather than
+            // silently returning "no findings" — the caller can distinguish a
+            // genuine clean review from an LLM/protocol failure.
+            anyhow::bail!(
+                "agent: model returned tool calls during forced-final turn; \
+                 expected a JSON findings array"
+            )
         }
     }
 }
@@ -195,18 +200,29 @@ pub fn agent_loop(
                 return crate::review::parse_llm_response(&text, model);
             }
             crate::llm_client::LlmTurnResult::ToolCalls(calls) => {
-                append_assistant_tool_calls(&mut messages, &calls);
-
-                for tc in &calls {
-                    let tool_result = match state.execute_tool_call(tc, tools, config) {
-                        Some(r) => r,
+                // Execute first, then record only the calls we actually ran.
+                // Recording the full assistant tool_calls message up-front and
+                // breaking out partway leaves orphaned tool_calls without
+                // matching tool responses, which most chat-completions APIs
+                // reject on the next turn.
+                let mut executed: Vec<(crate::llm_client::ToolCall, String)> = Vec::new();
+                for tc in calls {
+                    match state.execute_tool_call(&tc, tools, config) {
+                        Some(r) => executed.push((tc, r)),
                         None => break,
-                    };
-                    messages.push(serde_json::json!({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": tool_result
-                    }));
+                    }
+                }
+                if !executed.is_empty() {
+                    let executed_calls: Vec<crate::llm_client::ToolCall> =
+                        executed.iter().map(|(tc, _)| tc.clone()).collect();
+                    append_assistant_tool_calls(&mut messages, &executed_calls);
+                    for (tc, result) in &executed {
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result
+                        }));
+                    }
                 }
 
                 if state.limit_reached(config) {

@@ -34,7 +34,7 @@ impl QuorumHandler {
 
     pub fn with_cache(cache: Arc<ParseCache>) -> anyhow::Result<Self> {
         let config = Config::load(&EnvConfigSource)?;
-        let feedback_path = dirs_path().join("feedback.jsonl");
+        let feedback_path = dirs_path()?.join("feedback.jsonl");
         let feedback_store = FeedbackStore::new(feedback_path);
 
         let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
@@ -55,8 +55,16 @@ impl QuorumHandler {
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
-        let feedback = self.feedback_store.load_all().unwrap_or_default();
-        let feedback_path = dirs_path().join("feedback.jsonl");
+        // Surface feedback-store read failures (corrupted/unreadable JSONL)
+        // instead of silently reviewing without precedent. Otherwise persistent
+        // state corruption would mask itself behind degraded review output.
+        let feedback = self
+            .feedback_store
+            .load_all()
+            .map_err(|e| format!("failed to load feedback store: {e}"))?;
+        let feedback_path = dirs_path()
+            .map_err(|e| format!("failed to resolve quorum data directory: {e}"))?
+            .join("feedback.jsonl");
         let pipeline_cfg = PipelineConfig {
             models: vec![self.config.model.clone()],
             feedback,
@@ -264,7 +272,7 @@ impl FeedbackEntry {
     }
 }
 
-fn dirs_path() -> PathBuf {
+fn dirs_path() -> std::io::Result<PathBuf> {
     // Prefer XDG_DATA_HOME, fall back to HOME/.quorum
     let dir = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(xdg).join("quorum")
@@ -274,8 +282,10 @@ fn dirs_path() -> PathBuf {
         // Last resort: use current directory (not ideal, but don't crash)
         PathBuf::from(".quorum")
     };
-    std::fs::create_dir_all(&dir).ok();
-    dir
+    // Surface create_dir_all failures so handler initialization fails fast
+    // instead of returning a path that subsequent writes will reject.
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 #[async_trait]

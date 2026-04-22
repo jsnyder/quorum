@@ -93,6 +93,15 @@ impl FeedbackIndex {
                 } else {
                     embedder.embed_batch(&texts)?
                 };
+                // Retrieval indexes by entry position into self.vectors, so an
+                // off-by-one between texts and vectors would silently attach
+                // similarity scores to the wrong FeedbackEntry.
+                anyhow::ensure!(
+                    vectors.len() == entries.len(),
+                    "embedding alignment mismatch: {} entries vs {} vectors",
+                    entries.len(),
+                    vectors.len(),
+                );
                 Ok(Self {
                     entries,
                     vectors,
@@ -174,6 +183,12 @@ impl FeedbackIndex {
                     } else {
                         embedder.embed_batch(&texts)?
                     };
+                    anyhow::ensure!(
+                        vectors.len() == entries.len(),
+                        "embedding alignment mismatch: {} entries vs {} vectors",
+                        entries.len(),
+                        vectors.len(),
+                    );
                     tracing::debug!(entries = entries.len(), "FeedbackIndex: embedded with bge-small-en-v1.5");
                     return Ok(Self { entries, vectors, embedder: Some(embedder), bm25_engine });
                 }

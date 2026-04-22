@@ -22,11 +22,19 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // Bearer tokens (JWT-like)
         (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
         // Generic secret assignments: KEY="value", PASSWORD='value'
-        // Only matches quoted string literals — two patterns for double and single quotes
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
-         "$1\"[REDACTED]\""),
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
-         "$1'[REDACTED]'"),
+        // Only matches quoted string literals — two patterns for double and single quotes.
+        // The leading `(^|[^A-Za-z])` group anchors the alternation to either
+        // start-of-input or a non-letter character, preventing partial matches
+        // inside longer identifiers like `oauth = "..."` (which used to match
+        // the `auth` substring) or `mytoken = "..."` (matched on `token`).
+        // Underscores ARE allowed as boundaries so legitimate names like
+        // `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY` still redact correctly.
+        // Captured boundary char ($1) is preserved in the replacement so we
+        // don't accidentally rewrite surrounding source.
+        (Regex::new(r#"(?i)(^|[^A-Za-z])((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
+         "$1$2\"[REDACTED]\""),
+        (Regex::new(r#"(?i)(^|[^A-Za-z])((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
+         "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
         // URLs with passwords: protocol://user:password@host
@@ -101,6 +109,19 @@ mod tests {
         let input = "fn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
         let output = redact_secrets(input);
         assert_eq!(input, output);
+    }
+
+    #[test]
+    fn redact_does_not_match_inside_larger_identifier() {
+        // Regression: previously the unanchored alternation matched the `auth`
+        // substring in `oauth` and the `token` substring in `mytoken`, redacting
+        // benign value strings that happened to be assigned to non-secret vars.
+        let input = "let oauth = \"client_id_abc123\";\nlet mytoken = \"opaque_value\";";
+        let output = redact_secrets(input);
+        assert_eq!(
+            input, output,
+            "non-secret identifiers ending in auth/token must not be redacted; got: {output}"
+        );
     }
 
     #[test]
