@@ -82,8 +82,29 @@ const SANDBOX_TAGS: &[&str] = &[
     "historical_findings",
     "truncation_notice",
     "file_metadata",
+    "referenced_context",
     "untrusted_code",
 ];
+
+/// Pick a Markdown fence length longer than any consecutive run of backticks
+/// in `body`. Markdown allows arbitrarily long fences, so a body containing
+/// ``` is safely wrapped in ```` and so on. Floors at 3 to keep the common
+/// case unchanged.
+fn pick_fence_for(body: &str) -> String {
+    let mut max_run = 0usize;
+    let mut current = 0usize;
+    for c in body.chars() {
+        if c == '`' {
+            current += 1;
+            if current > max_run {
+                max_run = current;
+            }
+        } else {
+            current = 0;
+        }
+    }
+    "`".repeat((max_run + 1).max(3))
+}
 
 /// Sanitize a language identifier for safe use as a Markdown code-fence info
 /// string. Restricts to characters that appear in real fence languages
@@ -164,9 +185,13 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     if let Some(block) = &req.context_block {
         let trimmed = block.trim();
         if !trimmed.is_empty() {
-            prompt.push_str("## Referenced context (from indexed sources)\n\n");
+            // Wrap retrieved chunks in a sandbox tag so the model treats them
+            // as untrusted data, not first-class instructions. Without this
+            // wrapper, an indexed source containing "ignore previous
+            // instructions" would render as plain prompt content.
+            prompt.push_str("<referenced_context>\n");
             prompt.push_str(&defang_sandbox_tags(trimmed));
-            prompt.push_str("\n\n");
+            prompt.push_str("\n</referenced_context>\n\n");
         }
     }
 
@@ -196,11 +221,16 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     prompt.push_str(&format!("language: {}\n", safe_language));
     prompt.push_str("</file_metadata>\n\n");
 
-    prompt.push_str("<untrusted_code>\n```");
+    let safe_code = defang_sandbox_tags(&req.code);
+    let fence = pick_fence_for(&safe_code);
+    prompt.push_str("<untrusted_code>\n");
+    prompt.push_str(&fence);
     prompt.push_str(&safe_language);
     prompt.push('\n');
-    prompt.push_str(&defang_sandbox_tags(&req.code));
-    prompt.push_str("\n```\n</untrusted_code>\n");
+    prompt.push_str(&safe_code);
+    prompt.push('\n');
+    prompt.push_str(&fence);
+    prompt.push_str("\n</untrusted_code>\n");
 
     prompt
 }
@@ -481,8 +511,8 @@ mod tests {
         };
         let prompt = build_review_prompt(&req);
         assert!(
-            prompt.contains("## Referenced context (from indexed sources)"),
-            "prompt must label the context block section"
+            prompt.contains("<referenced_context>"),
+            "context_block must be wrapped in a referenced_context sandbox tag"
         );
         assert!(prompt.contains("fn verify_token"));
     }
@@ -894,6 +924,61 @@ mod tests {
         };
         let prompt = build_review_prompt(&req);
         assert_eq!(prompt.matches("</historical_findings>").count(), 1);
+    }
+
+    #[test]
+    fn build_prompt_wraps_context_block_in_sandbox_tag() {
+        // context_block content is retrieved from indexed sources, which can
+        // include attacker-controlled repository text. It must be wrapped in
+        // a sandbox tag so the model treats it as untrusted data, not as
+        // first-class prompt instructions.
+        let req = ReviewRequest {
+            file_path: "t.rs".into(),
+            language: "rust".into(),
+            code: "fn f() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            context_block: Some("retrieved chunk text".into()),
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(prompt.contains("<referenced_context>"),
+            "context_block must open a referenced_context sandbox tag");
+        assert!(prompt.contains("</referenced_context>"),
+            "context_block must close its sandbox tag");
+        assert!(prompt.contains("retrieved chunk text"));
+    }
+
+    #[test]
+    fn build_prompt_uses_fence_longer_than_any_run_in_user_code() {
+        // Adversarial source with a triple-backtick block must not terminate
+        // the outer fence early. pick_fence_for picks N+1 backticks.
+        let req = ReviewRequest {
+            file_path: "t.rs".into(),
+            language: "rust".into(),
+            code: "fn f() {\n    let s = r#\"```\"#;\n}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            context_block: None,
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        // 4-backtick fence opens and closes around the body, the 3-backtick
+        // run inside is preserved verbatim. Total ```` runs in prompt = 2.
+        assert_eq!(prompt.matches("````").count(), 2,
+            "expected exactly 2 four-backtick fences (opener + closer); got {}\nprompt:\n{}",
+            prompt.matches("````").count(), prompt);
+    }
+
+    #[test]
+    fn pick_fence_for_floors_at_three_backticks() {
+        assert_eq!(pick_fence_for("plain code, no backticks"), "```");
+        assert_eq!(pick_fence_for("a single ` is fine"), "```");
+        assert_eq!(pick_fence_for("a ``run of two"), "```");
+        assert_eq!(pick_fence_for("triple ``` requires four"), "````");
+        assert_eq!(pick_fence_for("quadruple ```` requires five"), "`````");
     }
 
     #[test]
