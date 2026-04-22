@@ -42,6 +42,7 @@ fn scored(id: &str, kind: ChunkKind, content: &str, score: f32) -> ScoredChunk {
             recency_mul: 1.0,
             score,
         },
+        source_legs: vec![],
     }
 }
 
@@ -89,7 +90,6 @@ fn below_threshold_never_injected() {
 
 #[test]
 fn symbol_passing_included() {
-    // Budget 5, chunk is 3 tokens -> 3/5 = 60% which clears the 40% floor.
     let cfg = config_with(5, 0.65, 4);
     let counter = tok_counter();
     let sym = scored("s1", ChunkKind::Symbol, "a b c", 0.8);
@@ -102,7 +102,6 @@ fn symbol_passing_included() {
 #[test]
 fn symbol_starvation_lowers_prose_threshold() {
     // Budget 10, prose at 0.55 is below tau=0.65 but above tau-0.10=0.55.
-    // Content is 6 tokens -> 6/10 = 60% clears the 40% floor.
     let cfg = config_with(10, 0.65, 4);
     let counter = tok_counter();
     let prose = scored("p1", ChunkKind::Doc, &tokens(6), 0.55);
@@ -159,44 +158,20 @@ fn max_chunks_caps_output() {
         .map(|i| scored(&format!("s{i}"), ChunkKind::Symbol, &tokens(50), 0.9))
         .collect();
     let plan = plan_injection(symbols, vec![], &cfg, &*counter);
-    // 4 chunks x 50 tokens = 200, 200/1500 = 13% < 40% floor -> cleared.
-    // So to actually test the cap alone, use a bigger budget where 4 chunks
-    // fill >= 40%. Here we use max_chunks cap but not floor; assert floor
-    // wiped since 200/1500 < 40%.
-    assert!(plan.injected.is_empty());
-    assert_eq!(plan.token_count, 0);
-
-    // Now test max_chunks cap directly with a small budget so floor passes.
-    // 4 * 50 = 200 tokens, budget 300, 200/300 = 66% passes floor.
-    let cfg2 = config_with(300, 0.65, 4);
-    let symbols2: Vec<_> = (0..10)
-        .map(|i| scored(&format!("s{i}"), ChunkKind::Symbol, &tokens(50), 0.9))
-        .collect();
-    let plan2 = plan_injection(symbols2, vec![], &cfg2, &*counter);
-    assert_eq!(plan2.injected.len(), 4);
-    assert_eq!(plan2.token_count, 200);
+    assert_eq!(plan.injected.len(), 4);
+    assert_eq!(plan.token_count, 200);
 }
 
 #[test]
-fn under_40pct_floor_skips_injection() {
-    // Budget 1500, floor = 600. One chunk at 100 tokens -> 100 < 600.
+fn small_plan_is_preserved() {
+    // Small plans used to be wiped by a 40% volume floor. Retrieval signal
+    // is now gated only by per-chunk tau, so a single short chunk survives.
     let cfg = config_with(1500, 0.65, 4);
     let counter = tok_counter();
     let sym = scored("s1", ChunkKind::Symbol, &tokens(100), 0.9);
     let plan = plan_injection(vec![sym], vec![], &cfg, &*counter);
-    assert!(plan.injected.is_empty());
-    assert_eq!(plan.token_count, 0);
-}
-
-#[test]
-fn exactly_40pct_floor_passes() {
-    // Budget 1500, floor = 600. One chunk at 600 tokens -> 600 >= 600.
-    let cfg = config_with(1500, 0.65, 4);
-    let counter = tok_counter();
-    let sym = scored("s1", ChunkKind::Symbol, &tokens(600), 0.9);
-    let plan = plan_injection(vec![sym], vec![], &cfg, &*counter);
     assert_eq!(plan.injected.len(), 1);
-    assert_eq!(plan.token_count, 600);
+    assert_eq!(plan.token_count, 100);
 }
 
 #[test]

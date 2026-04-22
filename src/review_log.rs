@@ -127,6 +127,100 @@ pub struct ContextTelemetry {
     /// "config rejected it" apart from "feedback poisoned this chunk".
     #[serde(default)]
     pub suppressed_by_floor: u32,
+    /// Per-leg breakdown of the candidate pool BEFORE top-K truncation.
+    /// Answers: "how often does each leg surface hits at all?"
+    #[serde(default)]
+    pub retrieved_by_leg: LegCounts,
+    /// Per-leg breakdown of the chunks that survived to the final
+    /// rendered block. Answers: "do structural-only hits actually
+    /// appear in the LLM prompt, or are they always outranked?"
+    #[serde(default)]
+    pub injected_by_leg: LegCounts,
+    /// Minimum rerank score across all retrieved chunks. Together with
+    /// p10 this paints the lower tail of the distribution so tau can
+    /// be raised with confidence rather than guesswork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_min: Option<f32>,
+    /// 10th percentile of retrieved rerank scores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_p10: Option<f32>,
+    /// Median of the rerank scores across all retrieved chunks, before
+    /// any filtering. Pair with p90 to see whether `inject_min_score`
+    /// is actually binding — if tau sits below the median, it never
+    /// bites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_median: Option<f32>,
+    /// 90th percentile of retrieved rerank scores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_p90: Option<f32>,
+}
+
+/// Count of chunks attributed to each retrieval leg, plus a
+/// `total_unique` that counts each chunk once regardless of how many
+/// legs surfaced it. `structural_only` is the slice of `structural`
+/// whose chunks were surfaced by NO other leg — the headline signal
+/// for "is structural retrieval adding unique value?"
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegCounts {
+    #[serde(default)]
+    pub bm25: u32,
+    #[serde(default)]
+    pub vector: u32,
+    #[serde(default)]
+    pub structural: u32,
+    #[serde(default)]
+    pub structural_only: u32,
+    #[serde(default)]
+    pub total_unique: u32,
+}
+
+impl LegCounts {
+    /// Saturating per-field sum. Used by the per-run aggregator in
+    /// `main.rs` to combine per-file telemetry into a single record.
+    /// `total_unique` naively sums — when the same chunk appears in
+    /// two files' reviews this double-counts, which is the right
+    /// behavior for a "how much context got injected across the whole
+    /// review" measurement.
+    pub fn saturating_add(&mut self, rhs: &LegCounts) {
+        self.bm25 = self.bm25.saturating_add(rhs.bm25);
+        self.vector = self.vector.saturating_add(rhs.vector);
+        self.structural = self.structural.saturating_add(rhs.structural);
+        self.structural_only = self.structural_only.saturating_add(rhs.structural_only);
+        self.total_unique = self.total_unique.saturating_add(rhs.total_unique);
+    }
+
+    /// Aggregate counts across a slice where each element exposes its
+    /// `source_legs` as a slice of [`RetrievalLeg`].
+    pub fn from_chunks<T>(chunks: &[T]) -> Self
+    where
+        T: AsRef<[crate::context::retrieve::retriever::RetrievalLeg]>,
+    {
+        use crate::context::retrieve::retriever::RetrievalLeg;
+        let mut c = LegCounts::default();
+        for ch in chunks {
+            let legs = ch.as_ref();
+            if legs.is_empty() {
+                continue;
+            }
+            c.total_unique += 1;
+            let has_b = legs.contains(&RetrievalLeg::Bm25);
+            let has_v = legs.contains(&RetrievalLeg::Vector);
+            let has_s = legs.contains(&RetrievalLeg::Structural);
+            if has_b {
+                c.bm25 += 1;
+            }
+            if has_v {
+                c.vector += 1;
+            }
+            if has_s {
+                c.structural += 1;
+                if !has_b && !has_v {
+                    c.structural_only += 1;
+                }
+            }
+        }
+        c
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -551,6 +645,12 @@ mod tests {
             rendered_prompt_hash: Some("deadbeef".into()),
             suppressed_by_calibrator: 0,
             suppressed_by_floor: 0,
+            retrieved_by_leg: super::LegCounts::default(),
+            injected_by_leg: super::LegCounts::default(),
+            rerank_score_min: Some(0.41),
+            rerank_score_p10: Some(0.55),
+            rerank_score_median: Some(0.72),
+            rerank_score_p90: Some(0.88),
         }
     }
 
@@ -649,5 +749,80 @@ mod tests {
         assert_eq!(a, b, "deterministic hasher must agree across calls");
         assert_ne!(a, c, "distinct inputs must produce distinct hashes");
         assert_eq!(a.len(), 64, "sha256 hex digest is 64 chars");
+    }
+
+    mod leg_counts {
+        use super::super::LegCounts;
+        use crate::context::retrieve::retriever::RetrievalLeg;
+
+        fn legs(tags: &[RetrievalLeg]) -> Vec<RetrievalLeg> {
+            tags.to_vec()
+        }
+
+        #[test]
+        fn empty_input_produces_zero_counts() {
+            let counts = LegCounts::from_chunks::<Vec<RetrievalLeg>>(&[]);
+            assert_eq!(counts.bm25, 0);
+            assert_eq!(counts.vector, 0);
+            assert_eq!(counts.structural, 0);
+            assert_eq!(counts.structural_only, 0);
+            assert_eq!(counts.total_unique, 0);
+        }
+
+        #[test]
+        fn single_leg_chunks_count_once_per_leg() {
+            let chunks = vec![
+                legs(&[RetrievalLeg::Bm25]),
+                legs(&[RetrievalLeg::Vector]),
+                legs(&[RetrievalLeg::Structural]),
+            ];
+            let c = LegCounts::from_chunks(&chunks);
+            assert_eq!(c.bm25, 1);
+            assert_eq!(c.vector, 1);
+            assert_eq!(c.structural, 1);
+            assert_eq!(c.structural_only, 1, "lone Structural tag is structural_only");
+            assert_eq!(c.total_unique, 3);
+        }
+
+        #[test]
+        fn multi_leg_chunk_increments_each_leg_but_total_unique_once() {
+            let chunks = vec![legs(&[RetrievalLeg::Bm25, RetrievalLeg::Structural])];
+            let c = LegCounts::from_chunks(&chunks);
+            assert_eq!(c.bm25, 1);
+            assert_eq!(c.vector, 0);
+            assert_eq!(c.structural, 1);
+            assert_eq!(c.structural_only, 0, "Structural+Bm25 is NOT structural_only");
+            assert_eq!(c.total_unique, 1, "multi-leg chunk counts once toward total_unique");
+        }
+
+        #[test]
+        fn structural_only_partition_invariant() {
+            let chunks = vec![
+                legs(&[RetrievalLeg::Structural]),
+                legs(&[RetrievalLeg::Structural]),
+                legs(&[RetrievalLeg::Bm25, RetrievalLeg::Structural]),
+                legs(&[RetrievalLeg::Vector, RetrievalLeg::Structural]),
+            ];
+            let c = LegCounts::from_chunks(&chunks);
+            let with_others = c.structural - c.structural_only;
+            assert_eq!(c.structural, 4);
+            assert_eq!(c.structural_only, 2);
+            assert_eq!(with_others, 2);
+            assert_eq!(c.structural_only + with_others, c.structural);
+        }
+
+        #[test]
+        fn per_leg_counts_never_exceed_total_unique() {
+            let chunks = vec![
+                legs(&[RetrievalLeg::Bm25, RetrievalLeg::Vector]),
+                legs(&[RetrievalLeg::Bm25]),
+                legs(&[RetrievalLeg::Structural]),
+            ];
+            let c = LegCounts::from_chunks(&chunks);
+            assert_eq!(c.total_unique, 3);
+            assert!(c.bm25 <= c.total_unique);
+            assert!(c.vector <= c.total_unique);
+            assert!(c.structural <= c.total_unique);
+        }
     }
 }

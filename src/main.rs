@@ -995,6 +995,20 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     context_telem.precedence_entries.saturating_add(t.precedence_entries);
                 context_telem.render_duration_ms =
                     context_telem.render_duration_ms.saturating_add(t.render_duration_ms);
+                context_telem.retrieved_by_leg.saturating_add(&t.retrieved_by_leg);
+                context_telem.injected_by_leg.saturating_add(&t.injected_by_leg);
+                if context_telem.rerank_score_min.is_none() {
+                    context_telem.rerank_score_min = t.rerank_score_min;
+                }
+                if context_telem.rerank_score_p10.is_none() {
+                    context_telem.rerank_score_p10 = t.rerank_score_p10;
+                }
+                if context_telem.rerank_score_median.is_none() {
+                    context_telem.rerank_score_median = t.rerank_score_median;
+                }
+                if context_telem.rerank_score_p90.is_none() {
+                    context_telem.rerank_score_p90 = t.rerank_score_p90;
+                }
                 // Keep the first non-None hash; if any file rendered a
                 // block, we have a representative hash. When multiple
                 // files inject, they're distinct blocks — we expose the

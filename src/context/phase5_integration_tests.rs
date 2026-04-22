@@ -110,7 +110,11 @@ fn retrieve_plan_render_pipeline_produces_markdown_block() {
 }
 
 #[test]
-fn budget_floor_causes_empty_render() {
+fn small_chunk_under_huge_budget_still_injects() {
+    // Previously a 40% volume floor wiped plans that under-filled the
+    // budget, which nuked ~half of single-file reviews in production.
+    // Gate is now purely relevance-based (tau), so a single small chunk
+    // with a passing score survives regardless of budget headroom.
     let (_dir, conn, emb, clock) = build_retriever("mini-rust");
     let retriever = Retriever::new(&conn, &emb, &clock);
     let hits = retriever
@@ -132,13 +136,13 @@ fn budget_floor_causes_empty_render() {
     let config = context_config_with_budget(100_000, 0.0);
     let plan = plan_injection(symbols, prose, &config, &token_count);
     assert!(
-        plan.injected.is_empty(),
-        "huge budget vs small chunk should trip 40% floor: {:?}",
+        !plan.injected.is_empty(),
+        "small chunk should survive huge budget without a volume floor: {:?}",
         plan
     );
 
     let output = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
-    assert_eq!(output, "", "expected empty output when plan is empty");
+    assert!(!output.is_empty(), "expected non-empty output: {output}");
 }
 
 #[test]
