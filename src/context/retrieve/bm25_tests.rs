@@ -126,6 +126,7 @@ fn source_filter_excludes_other_sources() {
     let filters = Filters {
         sources: vec!["A".to_string()],
         kinds: Vec::new(),
+        exclude_source_paths: vec![],
     };
     let hits = bm25_search(&conn, "token", &filters, 10).unwrap();
     assert_eq!(ids(&hits), vec!["a1"]);
@@ -144,6 +145,7 @@ fn kind_filter_excludes_other_kinds() {
     let filters = Filters {
         sources: Vec::new(),
         kinds: vec![ChunkKind::Doc],
+        exclude_source_paths: vec![],
     };
     let hits = bm25_search(&conn, "token", &filters, 10).unwrap();
     assert_eq!(ids(&hits), vec!["doc"]);
@@ -163,6 +165,7 @@ fn combined_source_and_kind_filter() {
     let filters = Filters {
         sources: vec!["A".to_string()],
         kinds: vec![ChunkKind::Doc],
+        exclude_source_paths: vec![],
     };
     let hits = bm25_search(&conn, "token", &filters, 10).unwrap();
     assert_eq!(ids(&hits), vec!["a_doc"]);

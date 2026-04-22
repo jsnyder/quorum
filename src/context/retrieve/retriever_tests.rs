@@ -183,6 +183,7 @@ fn respects_source_filter() {
         filters: Filters {
             sources: vec!["A".into()],
             kinds: vec![],
+            exclude_source_paths: vec![],
         },
         k: 10,
         ..RetrievalQuery::default()
@@ -211,6 +212,7 @@ fn respects_kind_filter() {
         filters: Filters {
             sources: vec![],
             kinds: vec![ChunkKind::Doc],
+            exclude_source_paths: vec![],
         },
         k: 10,
         ..RetrievalQuery::default()
@@ -448,4 +450,49 @@ fn duplicate_chunk_ids_dont_inflate_results() {
     let mut ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
     ids.sort();
     assert_eq!(ids, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn respects_exclude_source_paths_filter() {
+    // Regression guard for #42 phase 1: retrieval must not return chunks
+    // whose `source_path` appears in `filters.exclude_source_paths`. This
+    // is how the pipeline keeps the file-under-review out of its own
+    // context block — otherwise retrieval collapses the review target
+    // and the reference material into one blurred prompt.
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        vec![
+            // Both chunks match "token flow" by BM25 + vector; only the
+            // exclude filter should break the tie.
+            mk_chunk("under_review", "S", "token flow", Some("under_review"),
+                     ChunkKind::Symbol, "rust", n),
+            mk_chunk("peer", "S", "token flow", Some("peer"),
+                     ChunkKind::Symbol, "rust", n),
+        ],
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "token flow".into(),
+        filters: Filters {
+            sources: vec![],
+            kinds: vec![],
+            exclude_source_paths: vec!["src/under_review.rs".into()],
+        },
+        k: 10,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+    assert!(
+        !ids.contains(&"under_review"),
+        "retrieval returned the excluded file: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&"peer"),
+        "retrieval should still surface sibling chunks: {:?}",
+        ids
+    );
 }

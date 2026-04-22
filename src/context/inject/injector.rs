@@ -151,7 +151,11 @@ impl ContextInjectionSource for ContextInjector {
         let query = RetrievalQuery {
             text: req.text.clone(),
             identifiers: req.identifiers.clone(),
-            filters: Filters::default(),
+            filters: Filters {
+                sources: vec![],
+                kinds: vec![],
+                exclude_source_paths: vec![req.file_path.clone()],
+            },
             k: self.k,
             min_score: 0.0,
             reviewed_file_language: req.language.clone(),

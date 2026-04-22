@@ -1,7 +1,25 @@
 //! Render an [`InjectionPlan`] as a markdown block for LLM review prompts.
 //!
-//! Pure function: no I/O. Layout is a `# Context` header, one card per
-//! injected chunk, a `---` rule, and a footer summary.
+//! Pure function: no I/O. The block is wrapped in a `<retrieved_reference>`
+//! XML tag with a non-authoritative framing line, then a `# Context` header,
+//! one card per injected chunk, a `---` rule, and a footer summary.
+//!
+//! The XML wrapper follows GPT-5 prompting guidance for steering attention
+//! toward and away from reference material; the framing line tells the model
+//! to treat retrieved chunks as *related* code rather than authoritative
+//! patterns so it doesn't drift toward mimicking conventions that may
+//! themselves be under review.
+
+const FRAMING_HEADER: &str = "The following code is retrieved from the codebase for context. \
+It shows how related components are currently implemented, but its patterns are not guaranteed to be correct or authoritative. \
+Evaluate the code under review on its own merits.";
+
+/// Neutralize any literal `</retrieved_reference>` inside chunk content so it
+/// cannot prematurely close the outer XML wrapper. We keep the content
+/// human-readable by breaking the tag with a zero-width backslash escape.
+fn neutralize_closing_tag(s: &str) -> String {
+    s.replace("</retrieved_reference>", "<\\/retrieved_reference>")
+}
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -24,6 +42,9 @@ pub fn render_context_block(
     }
 
     let mut out = String::new();
+    out.push_str("<retrieved_reference>\n");
+    out.push_str(FRAMING_HEADER);
+    out.push_str("\n\n");
     out.push_str("# Context\n\n");
 
     for (i, scored) in plan.injected.iter().enumerate() {
@@ -34,6 +55,10 @@ pub fn render_context_block(
     }
 
     render_footer(&mut out, plan, precedence);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("</retrieved_reference>\n");
     out
 }
 
@@ -77,18 +102,20 @@ fn render_card(
 
     match chunk.kind {
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let fence = fence_for(&chunk.content);
+            let safe = neutralize_closing_tag(&chunk.content);
+            let fence = fence_for(&safe);
             let _ = writeln!(out, "{fence}{lang}");
-            out.push_str(&chunk.content);
-            if !chunk.content.ends_with('\n') {
+            out.push_str(&safe);
+            if !safe.ends_with('\n') {
                 out.push('\n');
             }
             let _ = writeln!(out, "{fence}");
         }
         ChunkKind::Doc => {
             let demoted = demote_h2(&chunk.content);
-            out.push_str(&demoted);
-            if !demoted.ends_with('\n') {
+            let safe = neutralize_closing_tag(&demoted);
+            out.push_str(&safe);
+            if !safe.ends_with('\n') {
                 out.push('\n');
             }
         }

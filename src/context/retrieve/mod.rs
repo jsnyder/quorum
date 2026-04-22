@@ -8,6 +8,14 @@ pub struct Filters {
     pub sources: Vec<String>,
     /// If empty, no kind restriction.
     pub kinds: Vec<ChunkKind>,
+    /// If non-empty, chunks whose `source_path` is in this list are
+    /// excluded from retrieval. Used today to keep the file-under-review
+    /// out of its own context block — otherwise similarity retrieval
+    /// collapses the review target and the reference material. Under
+    /// diff-scoped review (follow-up) the correct filter will drop to the
+    /// chunk / qualified-name level so in-file callees remain valid
+    /// context.
+    pub exclude_source_paths: Vec<String>,
 }
 
 pub mod bm25;

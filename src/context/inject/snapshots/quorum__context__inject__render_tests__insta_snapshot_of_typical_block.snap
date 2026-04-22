@@ -3,6 +3,9 @@ source: src/context/inject/render_tests.rs
 assertion_line: 396
 expression: out
 ---
+<retrieved_reference>
+The following code is retrieved from the codebase for context. It shows how related components are currently implemented, but its patterns are not guaranteed to be correct or authoritative. Evaluate the code under review on its own merits.
+
 # Context
 
 ### Symbol: `verify_token` (rust, src/token.rs:10-22)
@@ -28,3 +31,4 @@ pub fn refresh_token() {}
 ---
 120 tokens across 3 chunks from 2 source(s).
 precedence: internal-auth wins over internal-auth-fork (weight 10 > 5)
+</retrieved_reference>

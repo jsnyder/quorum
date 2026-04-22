@@ -93,7 +93,14 @@ fn retrieve_plan_render_pipeline_produces_markdown_block() {
     assert!(!plan.injected.is_empty(), "plan should inject at least one chunk");
 
     let output = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
-    assert!(output.starts_with("# Context"), "output must open with # Context");
+    assert!(
+        output.starts_with("<retrieved_reference>"),
+        "output must open with <retrieved_reference>, got: {output}"
+    );
+    assert!(
+        output.contains("# Context"),
+        "output must contain # Context header, got: {output}"
+    );
     assert!(output.contains("verify_token"), "output should mention verify_token");
     assert!(
         output.contains("tokens across") && output.contains("chunks from"),
@@ -173,6 +180,7 @@ fn adaptive_threshold_injects_doc_when_symbols_starve() {
             filters: Filters {
                 sources: Vec::new(),
                 kinds: vec![ChunkKind::Doc],
+                exclude_source_paths: vec![],
             },
             k: 4,
             min_score: 0.0,

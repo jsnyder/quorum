@@ -122,8 +122,12 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         .rendered
         .expect("auto_inject=true should produce a block when hits exist");
     assert!(
-        out.starts_with("# Context"),
-        "block must start with '# Context' header, got: {out}"
+        out.starts_with("<retrieved_reference>"),
+        "block must open with <retrieved_reference>, got: {out}"
+    );
+    assert!(
+        out.contains("# Context"),
+        "block must contain '# Context' header, got: {out}"
     );
     assert!(
         out.contains("verify_token"),
