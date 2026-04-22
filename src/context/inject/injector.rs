@@ -32,6 +32,11 @@ pub struct InjectionRequest {
     /// Identifiers harvested from the file under review (callee names, type
     /// names, etc.). Used for FTS MATCH.
     pub identifiers: Vec<String>,
+    /// Bare qualified names for structural (exact-match) retrieval.
+    /// Sourced from AST-driven hydration: the names of callees and
+    /// imports referenced in the reviewed code, stripped of signature
+    /// text. These drive the "go to definition" retrieval leg.
+    pub structural_names: Vec<String>,
     /// Free-text query (e.g., trimmed code slice or import targets joined).
     pub text: String,
 }
@@ -151,7 +156,7 @@ impl ContextInjectionSource for ContextInjector {
         let query = RetrievalQuery {
             text: req.text.clone(),
             identifiers: req.identifiers.clone(),
-            structural_names: vec![],
+            structural_names: req.structural_names.clone(),
             filters: Filters {
                 sources: vec![],
                 kinds: vec![],
@@ -366,6 +371,7 @@ mod tests {
             file_path: "x.rs".into(),
             language: Some("rust".into()),
             identifiers: vec!["foo".into()],
+            structural_names: vec![],
             text: "foo bar".into(),
         };
         (injector, req)
@@ -418,6 +424,7 @@ mod tests {
             file_path: "x.rs".into(),
             language: Some("rust".into()),
             identifiers: vec!["foo".into()],
+            structural_names: vec![],
             text: "foo bar".into(),
         };
         let out = injector.inject(&req);
