@@ -132,6 +132,53 @@ fn duplicate_qname_in_different_chunks_returns_all() {
 }
 
 #[test]
+fn duplicate_qname_ordering_is_deterministic() {
+    // SQLite `IN (...)` returns rows in arbitrary order; when the
+    // same qname maps to multiple chunks the within-group ordering
+    // must still be stable across runs or downstream rerank becomes
+    // flaky.
+    let dir = tempdir().unwrap();
+    let chunks = vec![
+        sample_symbol("zz", "r", "a::validate", "fn validate() {}"),
+        sample_symbol("aa", "r", "a::validate", "fn validate() {}"),
+        sample_symbol("mm", "r", "a::validate", "fn validate() {}"),
+    ];
+    let conn = build_test_db(dir.path(), chunks);
+    let run = || {
+        structural_search(&conn, &["a::validate".into()], &Filters::default())
+            .unwrap()
+            .into_iter()
+            .map(|h| h.chunk_id)
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first.len(), 3);
+    // Chunk ids ascending is the deterministic contract we pin.
+    assert_eq!(first, vec!["aa".to_string(), "mm".into(), "zz".into()]);
+    for _ in 0..5 {
+        assert_eq!(run(), first, "ordering must be stable across runs");
+    }
+}
+
+#[test]
+fn many_qnames_do_not_exceed_sqlite_parameter_limit() {
+    // SQLite's default max parameter count is 32766 (>= 3.32.0) or 999
+    // (older builds). We guard against exceeding either by batching.
+    // Well below prod limits but large enough to catch naive single-stmt
+    // binding regressions.
+    let dir = tempdir().unwrap();
+    let chunks = vec![sample_symbol("c1", "r", "hit", "fn hit(){}")];
+    let conn = build_test_db(dir.path(), chunks);
+    let mut qnames: Vec<String> =
+        (0..2000).map(|i| format!("miss_{i}")).collect();
+    qnames.push("hit".into());
+    let hits =
+        structural_search(&conn, &qnames, &Filters::default()).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].chunk_id, "c1");
+}
+
+#[test]
 fn match_is_case_sensitive() {
     // Decision: Rust and TS both treat identifiers as
     // case-sensitive; any case-folding would produce false hits

@@ -92,15 +92,19 @@ pub fn structural_search(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    // Preserve input order (SQLite `IN` returns rows in arbitrary
-    // order; callers rely on determinism for reranking).
+    // SQLite `IN (...)` returns rows in arbitrary order. Stabilize
+    // it twice: outer loop preserves the caller's qname ordering,
+    // inner sort breaks within-qname ties by chunk_id ascending so
+    // duplicate-qname groups don't flap between runs.
     let mut out = Vec::with_capacity(rows.len());
     for qname in qnames {
-        for hit in &rows {
-            if hit.qualified_name == *qname {
-                out.push(hit.clone());
-            }
-        }
+        let mut group: Vec<StructuralHit> = rows
+            .iter()
+            .filter(|h| h.qualified_name == *qname)
+            .cloned()
+            .collect();
+        group.sort_by(|a, b| a.chunk_id.cmp(&b.chunk_id));
+        out.extend(group);
     }
     Ok(out)
 }
