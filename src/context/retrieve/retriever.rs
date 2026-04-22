@@ -103,6 +103,15 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             return Ok(Vec::new());
         }
 
+        // --- Track per-leg membership so downstream telemetry can answer
+        // "which legs surfaced this chunk?"
+        let bm25_ids: std::collections::HashSet<String> =
+            bm25_hits.iter().map(|h| h.chunk_id.clone()).collect();
+        let vec_ids: std::collections::HashSet<String> =
+            vec_hits.iter().map(|h| h.chunk_id.clone()).collect();
+        let structural_ids: std::collections::HashSet<String> =
+            structural_hits.iter().cloned().collect();
+
         // --- Merge candidate ids, preserving the best raw signal from each
         // source. sqlite-vec's default metric is cosine distance in [0, 2];
         // map to similarity in [0, 1] via `1 - distance / 2`.
@@ -164,10 +173,23 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             .into_iter()
             .filter(|(_, br)| br.score >= q.min_score)
             .filter_map(|(id, components)| {
-                chunks_by_id.get(&id).map(|chunk| ScoredChunk {
-                    chunk: chunk.clone(),
-                    score: components.score,
-                    components,
+                chunks_by_id.get(&id).map(|chunk| {
+                    let mut legs = Vec::with_capacity(3);
+                    if bm25_ids.contains(&id) {
+                        legs.push(RetrievalLeg::Bm25);
+                    }
+                    if vec_ids.contains(&id) {
+                        legs.push(RetrievalLeg::Vector);
+                    }
+                    if structural_ids.contains(&id) {
+                        legs.push(RetrievalLeg::Structural);
+                    }
+                    ScoredChunk {
+                        chunk: chunk.clone(),
+                        score: components.score,
+                        components,
+                        source_legs: legs,
+                    }
                 })
             })
             .collect();
@@ -209,11 +231,29 @@ pub struct RetrievalQuery {
     pub reviewed_file_language: Option<String>,
 }
 
+/// Which retrieval leg(s) produced a candidate. A chunk surfaced by
+/// multiple legs carries all applicable tags — this is the signal
+/// telemetry uses to distinguish "structural added something BM25
+/// didn't" from "structural was redundant with BM25."
+///
+/// Order within `ScoredChunk::source_legs` is deterministic: we emit
+/// Bm25, Vector, Structural in that fixed sequence whenever more than
+/// one leg applies, so snapshot / equality tests remain stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RetrievalLeg {
+    Bm25,
+    Vector,
+    Structural,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScoredChunk {
     pub chunk: Chunk,
     pub score: f32,
     pub components: ScoreBreakdown,
+    /// Legs whose hit-list contained this chunk, in fixed order:
+    /// [Bm25, Vector, Structural]. Non-empty for every surfaced chunk.
+    pub source_legs: Vec<RetrievalLeg>,
 }
 
 /// Build an FTS5 phrase match for a free-text query by double-quoting the

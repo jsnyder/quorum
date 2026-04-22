@@ -41,6 +41,7 @@ fn scored(
             recency_mul: 1.0,
             score,
         },
+        source_legs: vec![],
     }
 }
 

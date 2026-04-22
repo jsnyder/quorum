@@ -42,6 +42,7 @@ fn scored(id: &str, kind: ChunkKind, content: &str, score: f32) -> ScoredChunk {
             recency_mul: 1.0,
             score,
         },
+        source_legs: vec![],
     }
 }
 

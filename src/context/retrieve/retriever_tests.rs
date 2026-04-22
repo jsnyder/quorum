@@ -614,3 +614,151 @@ fn structural_query_is_deterministic() {
         assert_eq!(run_once(), reference, "output order must be stable");
     }
 }
+
+#[test]
+fn structural_only_hit_survives_topk_against_strong_bm25_competitors() {
+    // The decisive calibration test. Structural retrieval is
+    // valuable only if its hits can survive top-K when BM25 is
+    // simultaneously scoring real competitors highly.
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    // Bulk up BM25 competitors to 6, then request top-2 so not
+    // everything trivially fits. Structural_target has to EARN
+    // its slot against the highest-scoring BM25 hits.
+    let mut extra = Vec::new();
+    for i in 0..6 {
+        extra.push(mk_chunk(
+            &format!("bm25_bulk_{i}"),
+            "S",
+            // Each repeats every query term multiple times so BM25
+            // scores them very high.
+            "orchestrate orchestrate pipeline pipeline flow flow tokens tokens bytes bytes flags flags",
+            Some(&format!("extra_{i}")),
+            ChunkKind::Symbol,
+            "rust",
+            n,
+        ));
+    }
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        {
+            let mut v = vec![
+                mk_chunk(
+                    "structural_target",
+                    "S",
+                    "fn validate(x: &str) -> bool { !x.is_empty() }",
+                    Some("validate"),
+                    ChunkKind::Symbol,
+                    "rust",
+                    n,
+                ),
+            ];
+            v.extend(extra);
+            v
+        },
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "orchestrate pipeline flow tokens bytes flags".into(),
+        structural_names: vec!["validate".into()],
+        k: 2,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+    assert!(
+        ids.contains(&"structural_target"),
+        "structural-only hit must survive top-K even when BM25 has strong \
+         competitors — otherwise the id_exact_match boost is too weak and \
+         the retrieval leg is effectively dead code. Got ranking: {:?}",
+        ids
+    );
+}
+
+#[test]
+fn scored_chunk_carries_source_leg_provenance() {
+    // Behavior contract: every returned ScoredChunk records which
+    // leg(s) surfaced it. Single-leg and multi-leg cases both need
+    // to roundtrip correctly so downstream telemetry can answer
+    // "did structural-only hits survive?" without guessing.
+    use crate::context::retrieve::retriever::RetrievalLeg;
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        vec![
+            // Structural only — qname matches, content doesn't.
+            mk_chunk(
+                "s_only",
+                "S",
+                "zzzunrelatedzzz",
+                Some("target"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            // BM25 only — matches query text, qname doesn't.
+            mk_chunk(
+                "b_only",
+                "S",
+                "alpha beta gamma delta",
+                Some("bm25_fn"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            // Both — matches query text AND has the target qname.
+            mk_chunk(
+                "s_and_b",
+                "S",
+                "alpha beta gamma delta",
+                Some("target"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+        ],
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "alpha beta gamma delta".into(),
+        structural_names: vec!["target".into()],
+        k: 10,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let by_id: std::collections::HashMap<_, _> =
+        hits.iter().map(|h| (h.chunk.id.as_str(), h)).collect();
+
+    let s_only = by_id.get("s_only").expect("s_only should appear");
+    assert!(
+        s_only.source_legs.contains(&RetrievalLeg::Structural),
+        "s_only must carry Structural tag; got {:?}",
+        s_only.source_legs
+    );
+    assert!(
+        !s_only.source_legs.contains(&RetrievalLeg::Bm25),
+        "s_only must NOT carry Bm25 tag (content doesn't match query); got {:?}",
+        s_only.source_legs
+    );
+
+    let b_only = by_id.get("b_only").expect("b_only should appear");
+    assert!(
+        b_only.source_legs.contains(&RetrievalLeg::Bm25),
+        "b_only must carry Bm25 tag; got {:?}",
+        b_only.source_legs
+    );
+    assert!(
+        !b_only.source_legs.contains(&RetrievalLeg::Structural),
+        "b_only must NOT carry Structural tag (qname doesn't match); got {:?}",
+        b_only.source_legs
+    );
+
+    let both = by_id.get("s_and_b").expect("s_and_b should appear");
+    assert!(
+        both.source_legs.contains(&RetrievalLeg::Bm25)
+            && both.source_legs.contains(&RetrievalLeg::Structural),
+        "multi-leg hit must carry both Bm25 and Structural; got {:?}",
+        both.source_legs
+    );
+}
