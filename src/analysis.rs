@@ -34,10 +34,14 @@ pub fn analyze_complexity(
                     .child_by_field_name("name")
                     .map(|n| &source[n.byte_range()])
                     .unwrap_or("unknown");
+                // Per the system-prompt severity rubric: maintainability,
+                // naming, and complexity findings belong in low/info unless
+                // they directly hide a bug. Cap complexity at medium so
+                // these don't crowd out real bugs in the high/critical band.
                 let severity = if cc >= threshold.saturating_mul(2) {
-                    Severity::High
-                } else {
                     Severity::Medium
+                } else {
+                    Severity::Low
                 };
                 findings.push(Finding {
                     title: format!("Function `{}` has cyclomatic complexity {}", name, cc),
@@ -2753,7 +2757,10 @@ mod tests {
         assert!(!findings.is_empty(), "complex function should produce a finding");
         assert_eq!(findings[0].source, Source::LocalAst);
         assert_eq!(findings[0].category, "complexity");
-        assert!(findings[0].severity >= Severity::Medium);
+        // Complexity findings are now capped at Medium per the system-prompt
+        // severity rubric; they should never crowd into the high/critical band.
+        assert!(findings[0].severity >= Severity::Low);
+        assert!(findings[0].severity <= Severity::Medium);
     }
 
     #[test]
