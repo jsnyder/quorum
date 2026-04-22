@@ -1072,7 +1072,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
 
     let conn = Connection::open_with_flags(
         &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
 
@@ -1510,7 +1510,7 @@ fn db_chunk_count(db: &Path) -> Result<i64> {
     ensure_vec_loaded();
     let conn = Connection::open_with_flags(
         db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let n: i64 = conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
     Ok(n)

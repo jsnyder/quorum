@@ -78,14 +78,54 @@ pub fn build_production_injector(
         return None;
     }
 
-    let (src_name, db_path) = cfg.sources.iter().find_map(|s| {
+    // Walk registered sources and pick the first one whose `index.db` is
+    // actually openable and queryable. Existence alone isn't enough — a
+    // stale tempfile or truncated db would hand a dead connection to the
+    // retriever and fail on the first real review. Skip those and fall
+    // through so the caller degrades to pre-context behavior.
+    let picked = cfg.sources.iter().find_map(|s| {
         let layout = SourceLayout::for_source(home, &s.name);
-        if layout.db.exists() {
-            Some((s.name.clone(), layout.db))
-        } else {
-            None
+        if !layout.db.exists() {
+            return None;
         }
-    })?;
+        ensure_vec_loaded();
+        match Connection::open_with_flags(&layout.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            Ok(conn) => match conn.query_row::<u32, _, _>(
+                "SELECT COUNT(*) FROM chunks",
+                [],
+                |r| r.get(0),
+            ) {
+                Ok(_) => Some((s.name.clone(), layout.db)),
+                Err(e) => {
+                    tracing::warn!(
+                        source = %s.name,
+                        path = %layout.db.display(),
+                        error = %e,
+                        "context bootstrap: index.db present but unusable; skipping"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    source = %s.name,
+                    path = %layout.db.display(),
+                    error = %e,
+                    "context bootstrap: index.db present but cannot be opened; skipping"
+                );
+                None
+            }
+        }
+    });
+    let (src_name, db_path) = match picked {
+        Some(v) => v,
+        None => {
+            tracing::info!(
+                "context bootstrap: no registered source has a usable index; run `quorum context index` to enable auto-injection"
+            );
+            return None;
+        }
+    };
 
     // Own the db path directly so non-UTF-8 bytes (rare on macOS/Linux but
     // legal on ext4/APFS) survive the hand-off into the `'static` closure
@@ -109,8 +149,7 @@ pub fn build_production_injector(
             ensure_vec_loaded();
             let conn = Connection::open_with_flags(
                 &db_path_owned,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?;
             let clock = SystemClock;
             let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
@@ -247,5 +286,36 @@ weight = 10
         let out = injector.inject(&req);
         assert!(out.telemetry.auto_inject_enabled);
         assert!(out.telemetry.injector_available);
+    }
+
+    #[test]
+    fn returns_none_when_only_index_is_corrupt() {
+        // A file named `index.db` that isn't a valid SQLite database should
+        // not be picked as a usable source. Before the validation was added
+        // bootstrap would hand a dead connection to the retriever and each
+        // query inside a real review would fail, instead of degrading to the
+        // pre-context behavior as the contract states.
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("sources/broken")).unwrap();
+        std::fs::write(
+            home.join("sources/broken/index.db"),
+            b"this is not a sqlite database",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("sources.toml"),
+            r#"
+[context]
+auto_inject = true
+
+[[source]]
+name = "broken"
+kind = "rust"
+path = "/tmp/broken"
+"#,
+        )
+        .unwrap();
+        assert!(build_production_injector(home, &[]).is_none());
     }
 }
