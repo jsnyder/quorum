@@ -285,7 +285,11 @@ fn extract_json_array(text: &str) -> String {
                 start = Some(i);
             }
             depth += 1;
-        } else if b == b']' {
+        } else if b == b']' && depth > 0 {
+            // Only decrement when an array is actually open. Without this guard
+            // a stray `]` in surrounding prose (e.g. "see findings below].")
+            // would push depth negative, then the real `[` later in the response
+            // would not satisfy `depth == 0`, and the array would be missed.
             depth -= 1;
             if depth == 0 {
                 if let Some(s) = start {
@@ -517,6 +521,31 @@ mod tests {
         let text = "Here are the findings:\n[{\"title\":\"X\",\"description\":\"Y\",\"severity\":\"low\",\"category\":\"c\",\"line_start\":1,\"line_end\":1}]\nDone.";
         let findings = parse_llm_response(text, "m").unwrap();
         assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn extract_json_skips_stray_closing_bracket_in_prose() {
+        // Regression: previously every `]` decremented depth even before any
+        // `[` had been seen. An unmatched `]` in prose would push depth to -1;
+        // the real opener could not satisfy `depth == 0`, and the valid array
+        // later in the response was skipped — parse_llm_response then errored
+        // even though a valid array was present.
+        let text = "See findings below]. Findings:\n\
+                    [{\"title\":\"X\",\"description\":\"Y\",\"severity\":\"low\",\"category\":\"c\",\"line_start\":1,\"line_end\":1}]";
+        let findings = parse_llm_response(text, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "X");
+    }
+
+    #[test]
+    fn extract_json_handles_multiple_stray_brackets_before_array() {
+        // Multiple unmatched `]` chars in prose (e.g. emoji-tag-like or
+        // truncated quoted text) must not corrupt depth tracking.
+        let text = "Notes]] and also ] before findings:\n\
+                    [{\"title\":\"Y\",\"description\":\"D\",\"severity\":\"medium\",\"category\":\"c\",\"line_start\":1,\"line_end\":1}]";
+        let findings = parse_llm_response(text, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Y");
     }
 
     // -- Robustness edge cases --
