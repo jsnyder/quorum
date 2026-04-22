@@ -132,15 +132,13 @@ Each retrieved verdict carries a weight:
 |------------|--------|-----------|
 | post_fix (user fixed the issue) | 1.5x | Strongest signal — the user acted on it |
 | human (manual verdict) | 1.0x | Direct judgment |
-| auto_calibrate (LLM triage) | 0.5x, capped at 1.0 total | Prevents self-suppression loops |
+| auto_calibrate (legacy LLM triage) | 0.5x, capped at 1.0 total | Historical entries from a removed second-pass triage feature; weight clamp prevents them from dominating live calibration |
 
 Weights decay exponentially with age. The half-life is 83 days — long enough that a three-month-old verdict still carries 47% of its original weight, because code patterns change slowly.
 
 **Suppression**: If false-positive weight exceeds 1.5 and is more than double the true-positive weight, the finding is removed. This requires human corroboration; auto-calibrate entries alone cannot suppress a finding.
 
 **Boosting**: If true-positive weight exceeds 1.5 and is more than double the false-positive weight, the finding's severity is promoted one level (e.g., medium to high). The finding is annotated with the precedents that informed the decision.
-
-After calibration, an optional **auto-calibrate** pass sends the remaining findings to a second model for triage. The model's verdicts are recorded back into the feedback store with `auto_calibrate` provenance, closing the learning loop.
 
 ## The Feedback Loop
 

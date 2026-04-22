@@ -296,7 +296,6 @@ fn end_to_end_review_with_context_injection_logs_telemetry() {
     let llm = FakeReviewer::always("[]");
     let config = PipelineConfig {
         models: vec!["test-model".into()],
-        auto_calibrate: false,
         skip_context7: true,
         context_injector: Some(Arc::new(injector)),
         ..Default::default()

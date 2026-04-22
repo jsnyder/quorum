@@ -61,7 +61,14 @@ fn review_json_flag_outputs_valid_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.is_empty());
+    // JSON output is a stream containing a `_meta` envelope element plus one
+    // element per reviewed file. clean.rs must produce no `findings`.
+    let total_findings: usize = parsed
+        .iter()
+        .filter_map(|el| el.get("findings").and_then(|f| f.as_array()))
+        .map(|arr| arr.len())
+        .sum();
+    assert_eq!(total_findings, 0, "clean.rs produced findings: {stdout}");
 }
 
 #[test]

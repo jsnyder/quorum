@@ -83,10 +83,8 @@ pub struct PipelineConfig {
     pub complexity_threshold: u32,
     pub similarity_threshold: f64,
     pub models: Vec<String>,
-    pub calibration_model: Option<String>,
     pub feedback: Vec<FeedbackEntry>,
     pub calibrate: bool,
-    pub auto_calibrate: bool,
     pub feedback_store: Option<std::path::PathBuf>,
     /// Per-file changed line ranges from a unified diff (overrides full-file hydration)
     pub diff_ranges: Option<Vec<(String, Vec<(u32, u32)>)>>,
@@ -115,10 +113,8 @@ impl Default for PipelineConfig {
             complexity_threshold: 10,
             similarity_threshold: 0.8,
             models: vec![],
-            calibration_model: None,
             feedback: vec![],
             calibrate: true,
-            auto_calibrate: false,
             feedback_store: None,
             diff_ranges: None,
             max_review_lines: 500,
@@ -518,29 +514,6 @@ pub fn review_file(
         (merged, 0)
     };
 
-    // Auto-calibration: use a second LLM pass to triage findings and record verdicts
-    if pipeline_config.auto_calibrate && !final_findings.is_empty() {
-        if let (Some(reviewer), Some(store_path)) = (llm, &pipeline_config.feedback_store) {
-            // Use dedicated calibration model if configured, otherwise fall back to review model
-            let model = pipeline_config.calibration_model.as_deref()
-                .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
-                .unwrap_or("gpt-5.4");
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            // Redact secrets before sending to auto-calibration LLM
-            let redacted_source = redact::redact_secrets(source);
-            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
-            match crate::auto_calibrate::auto_calibrate(
-                &final_findings, &redacted_source, &file_str, reviewer, model, &store,
-            ) {
-                Ok(result) if result.recorded > 0 => {
-                    eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);
-                }
-                Err(e) => eprintln!("Auto-calibrate warning: {}", e),
-                _ => {}
-            }
-        }
-    }
-
     Ok(FileReviewResult {
         file_path: file_str,
         findings: final_findings,
@@ -795,28 +768,6 @@ pub fn review_file_llm_only(
     } else {
         (merged, 0)
     };
-
-    // Auto-calibration
-    if pipeline_config.auto_calibrate && !final_findings.is_empty() {
-        if let (Some(reviewer), Some(store_path)) = (llm, &pipeline_config.feedback_store) {
-            let model = pipeline_config.calibration_model.as_deref()
-                .or_else(|| pipeline_config.models.first().map(|s| s.as_str()))
-                .unwrap_or("gpt-5.4");
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            // Redact secrets before sending to auto-calibration LLM
-            let redacted_source = redact::redact_secrets(source);
-            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
-            match crate::auto_calibrate::auto_calibrate(
-                &final_findings, &redacted_source, &file_str, reviewer, model, &store,
-            ) {
-                Ok(result) if result.recorded > 0 => {
-                    eprintln!("Auto-calibrate: recorded {} verdicts for {}", result.recorded, file_str);
-                }
-                Err(e) => eprintln!("Auto-calibrate warning: {}", e),
-                _ => {}
-            }
-        }
-    }
 
     Ok(FileReviewResult {
         file_path: file_str,

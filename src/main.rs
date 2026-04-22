@@ -4,7 +4,6 @@ mod agent;
 mod analytics;
 mod analysis;
 mod ast_grep;
-mod auto_calibrate;
 mod cache;
 mod calibrator;
 mod calibrator_trace;
@@ -590,9 +589,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     let pipeline_cfg = PipelineConfig {
         models,
-        calibration_model: opts.calibration_model.clone(),
         feedback: feedback_entries,
-        auto_calibrate: false,
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
         framework_overrides: opts.framework.clone(),
