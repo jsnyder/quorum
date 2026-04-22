@@ -122,6 +122,11 @@ pub struct ContextTelemetry {
     /// wired into the injector.
     #[serde(default)]
     pub suppressed_by_calibrator: u32,
+    /// Chunks dropped post-retrieve by the global `inject_min_score` floor.
+    /// Split out from `suppressed_by_calibrator` so dashboards can tell
+    /// "config rejected it" apart from "feedback poisoned this chunk".
+    #[serde(default)]
+    pub suppressed_by_floor: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -545,6 +550,7 @@ mod tests {
             render_duration_ms: 42,
             rendered_prompt_hash: Some("deadbeef".into()),
             suppressed_by_calibrator: 0,
+            suppressed_by_floor: 0,
         }
     }
 

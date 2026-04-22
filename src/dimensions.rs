@@ -615,6 +615,7 @@ mod tests {
             render_duration_ms: 0,
             rendered_prompt_hash: rendered_hash.map(String::from),
             suppressed_by_calibrator: 0,
+            suppressed_by_floor: 0,
         };
         r
     }
