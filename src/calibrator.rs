@@ -281,10 +281,13 @@ pub fn precedent_metric_compatible(finding_title: &str, precedent_title: &str) -
     let f = extract_complexity_metric(finding_title);
     let p = extract_complexity_metric(precedent_title);
     match (f, p) {
-        (Some(fn_), Some(pn)) => {
-            fn_.abs_diff(pn) <= 2
-        }
-        _ => true,
+        (Some(fn_), Some(pn)) => fn_.abs_diff(pn) <= 2,
+        (None, None) => true,
+        // One-sided metric mismatch: a complexity-specific finding must not
+        // match a non-metric precedent (or vice versa). Without this guard a
+        // CC=11 finding could be suppressed/boosted by a precedent like
+        // "Function `foo` is unused", which has nothing to do with complexity.
+        (Some(_), None) | (None, Some(_)) => false,
     }
 }
 
@@ -1496,6 +1499,22 @@ mod tests {
         assert!(precedent_metric_compatible(
             "SQL injection in query builder",
             "SQL injection risk"
+        ));
+    }
+
+    #[test]
+    fn precedent_metric_compatible_rejects_one_sided_metric_mismatch() {
+        // Regression: previously the `_ => true` arm allowed a metric finding
+        // to match a non-metric precedent (and vice versa). A CC=11 complexity
+        // finding must not be calibrated by an unrelated "function is unused"
+        // precedent that happens to share the same function name.
+        assert!(!precedent_metric_compatible(
+            "Function `foo` has cyclomatic complexity 11",
+            "Function `foo` is unused"
+        ));
+        assert!(!precedent_metric_compatible(
+            "Function `foo` is unused",
+            "Function `foo` has cyclomatic complexity 11"
         ));
     }
 
