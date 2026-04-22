@@ -161,6 +161,16 @@ impl ProdDeps {
 
     fn resolve_quorum_root() -> Result<PathBuf> {
         let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        // On Windows, `USERPROFILE` is the canonical user dir. `HOME` is
+        // often set by MSYS/Cygwin/Git Bash to an MSYS-mangled path that
+        // doesn't match the profile CreateFile + Explorer see. Prefer
+        // USERPROFILE there and fall back to HOME for non-standard envs.
+        // Elsewhere (macOS/Linux), HOME is canonical.
+        #[cfg(windows)]
+        let home = from("USERPROFILE")
+            .or_else(|| from("HOME"))
+            .ok_or_else(|| anyhow!("neither USERPROFILE nor HOME is set"))?;
+        #[cfg(not(windows))]
         let home = from("HOME")
             .or_else(|| from("USERPROFILE"))
             .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;

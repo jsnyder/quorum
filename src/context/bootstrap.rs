@@ -90,22 +90,32 @@ pub fn build_production_injector(
         }
         ensure_vec_loaded();
         match Connection::open_with_flags(&layout.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
-            Ok(conn) => match conn.query_row::<u32, _, _>(
-                "SELECT COUNT(*) FROM chunks",
-                [],
-                |r| r.get(0),
-            ) {
-                Ok(_) => Some((s.name.clone(), layout.db)),
-                Err(e) => {
-                    tracing::warn!(
-                        source = %s.name,
-                        path = %layout.db.display(),
-                        error = %e,
-                        "context bootstrap: index.db present but unusable; skipping"
-                    );
-                    None
+            Ok(conn) => {
+                // Probe all three tables the retriever actually uses. A db
+                // with only `chunks` would pass a naive check but fail the
+                // BM25 leg of the first query; likewise a missing
+                // `chunks_vec` would fail the vector leg. Using one
+                // compound query keeps the cost minimal.
+                let probe = conn.query_row::<u32, _, _>(
+                    "SELECT (SELECT COUNT(*) FROM chunks) \
+                          + (SELECT COUNT(*) FROM chunks_fts) \
+                          + (SELECT COUNT(*) FROM chunks_vec)",
+                    [],
+                    |r| r.get(0),
+                );
+                match probe {
+                    Ok(_) => Some((s.name.clone(), layout.db)),
+                    Err(e) => {
+                        tracing::warn!(
+                            source = %s.name,
+                            path = %layout.db.display(),
+                            error = %e,
+                            "context bootstrap: index.db present but unusable (missing table?); skipping"
+                        );
+                        None
+                    }
                 }
-            },
+            }
             Err(e) => {
                 tracing::warn!(
                     source = %s.name,
@@ -286,6 +296,37 @@ weight = 10
         let out = injector.inject(&req);
         assert!(out.telemetry.auto_inject_enabled);
         assert!(out.telemetry.injector_available);
+    }
+
+    #[test]
+    fn returns_none_when_index_is_missing_fts_table() {
+        // A db that only has `chunks` but no `chunks_fts` would pass the
+        // old single-table probe but fail the BM25 leg of every real
+        // retrieval. Force the smoke test to cover all three tables so
+        // partially-built indexes also fall through to None.
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("sources/partial")).unwrap();
+        let db_path = home.join("sources/partial/index.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE chunks (id TEXT PRIMARY KEY);")
+            .unwrap();
+        // Intentionally omit chunks_fts and chunks_vec.
+        drop(conn);
+        std::fs::write(
+            home.join("sources.toml"),
+            r#"
+[context]
+auto_inject = true
+
+[[source]]
+name = "partial"
+kind = "rust"
+path = "/tmp/partial"
+"#,
+        )
+        .unwrap();
+        assert!(build_production_injector(home, &[]).is_none());
     }
 
     #[test]
