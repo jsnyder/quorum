@@ -40,9 +40,11 @@ fn process(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool) {
             continue;
         }
     }
-    while a {
+    let mut guard = 0;
+    while a && guard < 5 {
         if b {
             break;
         }
+        guard += 1;
     }
 }
