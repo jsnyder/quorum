@@ -524,3 +524,40 @@ fn short_sha_does_not_panic_on_non_ascii_sha() {
     let plan = plan_with(vec![chunk], 2);
     let _ = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
 }
+
+#[test]
+fn rendered_block_is_wrapped_in_retrieved_reference_tags() {
+    let chunk = scored(
+        "s1",
+        "repo",
+        ChunkKind::Symbol,
+        Some("verify_token"),
+        "pub fn verify_token() {}",
+        "rust",
+        "src/token.rs",
+        1,
+        1,
+        "abc1234",
+    );
+    let plan = plan_with(vec![chunk], 4);
+    let out = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
+    assert!(
+        out.starts_with("<retrieved_reference>\n"),
+        "expected block to open with <retrieved_reference>, got: {out}"
+    );
+    assert!(
+        out.trim_end().ends_with("</retrieved_reference>"),
+        "expected block to close with </retrieved_reference>, got: {out}"
+    );
+    assert!(
+        out.contains("Treat it as related implementations"),
+        "expected non-authoritative framing line, got: {out}"
+    );
+}
+
+#[test]
+fn empty_plan_still_renders_nothing_even_with_framing() {
+    let plan = plan_with(vec![], 0);
+    let out = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
+    assert!(out.is_empty(), "empty plan must render empty string");
+}

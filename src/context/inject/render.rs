@@ -1,7 +1,18 @@
 //! Render an [`InjectionPlan`] as a markdown block for LLM review prompts.
 //!
-//! Pure function: no I/O. Layout is a `# Context` header, one card per
-//! injected chunk, a `---` rule, and a footer summary.
+//! Pure function: no I/O. The block is wrapped in a `<retrieved_reference>`
+//! XML tag with a non-authoritative framing line, then a `# Context` header,
+//! one card per injected chunk, a `---` rule, and a footer summary.
+//!
+//! The XML wrapper follows GPT-5 prompting guidance for steering attention
+//! toward and away from reference material; the framing line tells the model
+//! to treat retrieved chunks as *related* code rather than authoritative
+//! patterns so it doesn't drift toward mimicking conventions that may
+//! themselves be under review.
+
+const FRAMING_HEADER: &str = "The following code is retrieved from the same codebase as supporting context. \
+Treat it as related implementations — not as authoritative patterns, not as validated designs. \
+Apply your normal review criteria to any conventions it exhibits; do not infer correctness from its presence.";
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -24,6 +35,9 @@ pub fn render_context_block(
     }
 
     let mut out = String::new();
+    out.push_str("<retrieved_reference>\n");
+    out.push_str(FRAMING_HEADER);
+    out.push_str("\n\n");
     out.push_str("# Context\n\n");
 
     for (i, scored) in plan.injected.iter().enumerate() {
@@ -34,6 +48,10 @@ pub fn render_context_block(
     }
 
     render_footer(&mut out, plan, precedence);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("</retrieved_reference>\n");
     out
 }
 
