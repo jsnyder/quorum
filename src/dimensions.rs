@@ -616,6 +616,8 @@ mod tests {
             rendered_prompt_hash: rendered_hash.map(String::from),
             suppressed_by_calibrator: 0,
             suppressed_by_floor: 0,
+            retrieved_by_leg: crate::review_log::LegCounts::default(),
+            injected_by_leg: crate::review_log::LegCounts::default(),
         };
         r
     }
