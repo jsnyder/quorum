@@ -483,47 +483,63 @@ pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<Cmd
 // --- Init handler -----------------------------------------------------------
 
 fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
+    use std::io::Write;
+
     // `home_dir()` already points at the quorum state root (e.g. `~/.quorum`
     // in production, a tempdir in tests) — don't append `.quorum` again here.
     let sources_path = deps.home_dir().join("sources.toml");
 
-    // Distinguish "already a regular file" (idempotent success) from "the
-    // path exists but is a directory / symlink / device" (hard error). The
-    // bare `.exists()` check can't tell them apart; without this, a stray
-    // `mkdir sources.toml` under `~/.quorum` makes every future `init` and
-    // `add` silently no-op instead of complaining.
-    if sources_path.exists() {
-        let meta = std::fs::symlink_metadata(&sources_path).map_err(|e| {
-            anyhow!(
-                "cannot stat {}: {e}",
-                sources_path.display()
-            )
-        })?;
-        if !meta.file_type().is_file() {
-            return Err(anyhow!(
-                "{} exists but is not a regular file; refusing to initialize over it",
-                sources_path.display()
-            ));
-        }
-        return Ok(CmdOutput {
-            stdout: format!("context already initialized at {}", sources_path.display()),
-            created_paths: Vec::new(),
-            removed_paths: Vec::new(),
-            warnings: vec![format!(
-                "{} already exists; leaving it untouched",
-                sources_path.display()
-            )],
-        });
+    if let Some(parent) = sources_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("cannot create {}: {e}", parent.display()))?;
     }
 
-    SourcesConfig::write_default(&sources_path)?;
-
-    Ok(CmdOutput {
-        stdout: format!("initialized context at {}", sources_path.display()),
-        created_paths: vec![sources_path],
-        removed_paths: Vec::new(),
-        warnings: Vec::new(),
-    })
+    // Atomic create-or-fail: previously we did `exists()` + `write()`, which
+    // left a TOCTOU window where a concurrent process could slip in and get
+    // its config clobbered. `create_new(true)` hands that race to the OS.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&sources_path)
+    {
+        Ok(mut f) => {
+            f.write_all(crate::context::config::default_sources_toml().as_bytes())
+                .map_err(|e| anyhow!("write {}: {e}", sources_path.display()))?;
+            Ok(CmdOutput {
+                stdout: format!("initialized context at {}", sources_path.display()),
+                created_paths: vec![sources_path],
+                removed_paths: Vec::new(),
+                warnings: Vec::new(),
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Distinguish "already a regular file" (idempotent success) from
+            // "exists but is a directory / symlink / device" (hard error).
+            // Without this, a stray `mkdir sources.toml` under `~/.quorum`
+            // would make every future `init`/`add` silently no-op.
+            let meta = std::fs::symlink_metadata(&sources_path)
+                .map_err(|e| anyhow!("cannot stat {}: {e}", sources_path.display()))?;
+            if !meta.file_type().is_file() {
+                return Err(anyhow!(
+                    "{} exists but is not a regular file; refusing to initialize over it",
+                    sources_path.display()
+                ));
+            }
+            Ok(CmdOutput {
+                stdout: format!(
+                    "context already initialized at {}",
+                    sources_path.display()
+                ),
+                created_paths: Vec::new(),
+                removed_paths: Vec::new(),
+                warnings: vec![format!(
+                    "{} already exists; leaving it untouched",
+                    sources_path.display()
+                )],
+            })
+        }
+        Err(e) => Err(anyhow!("create {}: {e}", sources_path.display())),
+    }
 }
 
 // --- Add handler ------------------------------------------------------------
