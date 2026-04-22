@@ -28,10 +28,20 @@ pub struct LlmResponse {
 
 pub fn parse_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     let usage = json.get("usage")?;
-    let prompt = usage.get("prompt_tokens")?.as_u64()?;
-    let completion = usage.get("completion_tokens")?.as_u64()?;
+    // Chat Completions uses `prompt_tokens`/`completion_tokens`. Responses API
+    // (codex models) uses `input_tokens`/`output_tokens`. Same for the cached
+    // breakdown: `prompt_tokens_details.cached_tokens` vs `input_tokens_details.cached_tokens`.
+    let prompt = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))?
+        .as_u64()?;
+    let completion = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))?
+        .as_u64()?;
     let cached = usage
         .get("prompt_tokens_details")
+        .or_else(|| usage.get("input_tokens_details"))
         .and_then(|d| d.get("cached_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
@@ -509,6 +519,24 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 0);
         assert_eq!(usage.completion_tokens, 0);
         assert_eq!(usage.cached_tokens, 0);
+    }
+
+    #[test]
+    fn parse_usage_responses_api_field_names() {
+        // Responses API (codex models) returns input_tokens/output_tokens
+        // and input_tokens_details.cached_tokens. parse_usage must accept
+        // both API shapes.
+        let json = serde_json::json!({
+            "usage": {
+                "input_tokens": 2000,
+                "output_tokens": 400,
+                "input_tokens_details": { "cached_tokens": 1024 }
+            }
+        });
+        let usage = parse_usage(&json).unwrap();
+        assert_eq!(usage.prompt_tokens, 2000);
+        assert_eq!(usage.completion_tokens, 400);
+        assert_eq!(usage.cached_tokens, 1024);
     }
 
     #[test]

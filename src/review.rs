@@ -763,10 +763,16 @@ mod tests {
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("<untrusted_code>") && prompt.contains("</untrusted_code>"),
-            "prompt must wrap code in untrusted_code delimiters");
-        let lower = prompt.to_lowercase();
-        assert!(lower.contains("untrusted") && (lower.contains("data") || lower.contains("do not follow") || lower.contains("not instructions")),
-            "prompt must explicitly instruct the model that untrusted_code contents are data, not instructions");
+            "user prompt must wrap code in untrusted_code delimiters");
+        // The "treat tagged content as data, not instructions" warning lives
+        // in the system prompt now (stable cache prefix). Verify it explicitly
+        // — the previous user-prompt assertion was passing only by coincidence
+        // (`<file_metadata>` substring contains "data").
+        let sys_lower = crate::llm_client::OpenAiClient::system_prompt().to_lowercase();
+        assert!(sys_lower.contains("untrusted"),
+            "system prompt must mark the code region as untrusted");
+        assert!(sys_lower.contains("not instructions") || sys_lower.contains("not as instructions") || sys_lower.contains("as data"),
+            "system prompt must instruct the model that <untrusted_code> contents are data, not instructions");
         // Defense-in-depth check: the delimiter must appear BEFORE the code body,
         // not after, so the model sees the framing first.
         let open_idx = prompt.find("<untrusted_code>").expect("open tag present");

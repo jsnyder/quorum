@@ -431,7 +431,9 @@ pub fn review_file(
             let _permit = acquire_llm_permit(&pipeline_config.semaphore);
             match reviewer.review(&prompt, model) {
                 Ok(resp) => {
-                    let (prompt_tok, completion_tok) = resp.usage.as_ref().map(|u| (u.prompt_tokens, u.completion_tokens)).unwrap_or((0, 0));
+                    let (prompt_tok, completion_tok, cached_tok) = resp.usage.as_ref()
+                        .map(|u| (u.prompt_tokens, u.completion_tokens, u.cached_tokens))
+                        .unwrap_or((0, 0, 0));
                     if let Some(u) = &resp.usage {
                         total_usage.prompt_tokens += u.prompt_tokens;
                         total_usage.completion_tokens += u.completion_tokens;
@@ -448,7 +450,7 @@ pub fn review_file(
                                 }
                             }
                             all_sources.push(findings);
-                            tracing::info!(phase = "llm_call", model = %model, duration_ms = t0.elapsed().as_millis() as u64, findings = n_findings, prompt_tokens = prompt_tok, completion_tokens = completion_tok, "phase complete");
+                            tracing::info!(phase = "llm_call", model = %model, duration_ms = t0.elapsed().as_millis() as u64, findings = n_findings, prompt_tokens = prompt_tok, completion_tokens = completion_tok, cached_tokens = cached_tok, "phase complete");
                         }
                         Err(e) => {
                             tracing::warn!(phase = "llm_call", model = %model, error = %e, "failed to parse response");
