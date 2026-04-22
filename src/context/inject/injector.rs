@@ -193,6 +193,12 @@ impl ContextInjectionSource for ContextInjector {
             };
         }
 
+        // Capture the rerank score distribution before any gating so
+        // dashboards can see whether `inject_min_score` is binding.
+        let (median, p90) = score_percentiles(&hits);
+        tele.rerank_score_median = Some(median);
+        tele.rerank_score_p90 = Some(p90);
+
         // Post-retrieve gate, two stages:
         //
         // 1. Global floor (`inject_min_score`) — applied unconditionally, even
@@ -294,6 +300,19 @@ impl ContextInjectionSource for ContextInjector {
             telemetry: tele,
         }
     }
+}
+
+/// Median and p90 of rerank scores. `hits` must be non-empty.
+fn score_percentiles(hits: &[ScoredChunk]) -> (f32, f32) {
+    debug_assert!(!hits.is_empty());
+    let mut scores: Vec<f32> = hits.iter().map(|h| h.score).collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = scores.len();
+    let median = scores[n / 2];
+    // p90 with nearest-rank: index = ceil(0.9 * n) - 1, clamped.
+    let p90_idx = ((n as f32 * 0.9).ceil() as usize).saturating_sub(1).min(n - 1);
+    let p90 = scores[p90_idx];
+    (median, p90)
 }
 
 impl std::fmt::Debug for ContextInjector {
@@ -443,5 +462,26 @@ mod tests {
         );
         assert_eq!(out.telemetry.suppressed_by_calibrator, 0);
         assert!(out.rendered.is_none());
+    }
+
+    #[test]
+    fn score_percentiles_computes_median_and_p90() {
+        let hits: Vec<ScoredChunk> = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| scored(&format!("c{i}"), *s))
+            .collect();
+        let (median, p90) = super::score_percentiles(&hits);
+        // n=10: median is scores[5] = 0.6; p90 nearest-rank index = ceil(9) - 1 = 8 = 0.9
+        assert!((median - 0.6).abs() < 1e-6, "median={median}");
+        assert!((p90 - 0.9).abs() < 1e-6, "p90={p90}");
+    }
+
+    #[test]
+    fn score_percentiles_single_hit_collapses_both() {
+        let hits = vec![scored("solo", 0.42)];
+        let (median, p90) = super::score_percentiles(&hits);
+        assert!((median - 0.42).abs() < 1e-6);
+        assert!((p90 - 0.42).abs() < 1e-6);
     }
 }
