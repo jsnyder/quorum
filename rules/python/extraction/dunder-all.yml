@@ -1,0 +1,8 @@
+id: py-dunder-all
+language: Python
+rule:
+  kind: assignment
+  has:
+    field: left
+    pattern: __all__
+    stopBy: neighbor

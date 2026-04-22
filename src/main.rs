@@ -10,6 +10,7 @@ mod calibrator;
 mod calibrator_trace;
 mod cli;
 mod config;
+mod context;
 mod context_enrichment;
 mod daemon;
 mod dimensions;
@@ -57,11 +58,61 @@ async fn main() -> anyhow::Result<()> {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             let home_path = std::path::PathBuf::from(&home);
 
-            // Dimensional views (by-repo / by-caller / rolling) read reviews.jsonl
-            // and aggregate via the `dimensions` module. Three output modes:
-            // JSON (pipe/--json), compact (CLAUDE_CODE/--compact), human (TTY).
-            let want_dimensional = opts.by_repo || opts.by_caller || opts.rolling.is_some();
-            if want_dimensional {
+            // Dimensional views read reviews.jsonl and aggregate via the
+            // `dimensions` module. Classic dims: --by-repo/--by-caller/--rolling.
+            // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
+            // Context dims compose with --rolling by restricting aggregation to
+            // the chronologically-last N records.
+            let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
+            let want_classic_dim = !want_context_dim
+                && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
+
+            if want_context_dim {
+                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let all_records = log.load_all().unwrap_or_default();
+                let records: Vec<_> = match opts.rolling {
+                    Some(n) if n < all_records.len() => {
+                        all_records[all_records.len() - n..].to_vec()
+                    }
+                    _ => all_records.clone(),
+                };
+
+                let (mode, slices) = if opts.by_source {
+                    ("by-source", dimensions::aggregate_by_source(&records))
+                } else if opts.by_reviewed_repo {
+                    ("by-reviewed-repo", dimensions::aggregate_by_reviewed_repo(&records))
+                } else {
+                    ("misleading", dimensions::aggregate_misleading(&records))
+                };
+
+                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let use_compact = output::should_use_compact(opts.compact);
+                let use_json = opts.json || (is_pipe && !use_compact);
+
+                if use_json {
+                    let meta = serde_json::json!({
+                        "min_sample": dimensions::MIN_SAMPLE,
+                        "total_reviews": all_records.len(),
+                        "windowed_reviews": records.len(),
+                        "rolling": opts.rolling,
+                    });
+                    let payload = serde_json::json!({
+                        "mode": mode,
+                        "slices": slices,
+                        "meta": meta,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else if use_compact {
+                    println!("{}", stats::format_context_dimension_compact(mode, &slices));
+                } else {
+                    let style = output::Style::detect(false);
+                    let unicode = unicode_ok();
+                    print!("{}", stats::format_context_dimension_table(mode, &slices, &style, unicode));
+                }
+                std::process::exit(0);
+            }
+
+            if want_classic_dim {
                 let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
                 let records = log.load_all().unwrap_or_default();
                 let (mode, slices) = if opts.by_repo {
@@ -136,11 +187,161 @@ async fn main() -> anyhow::Result<()> {
             run_daemon(opts).await?;
         }
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
+        cli::Command::Context(opts) => std::process::exit(run_context(opts)),
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
     }
     Ok(())
+}
+
+/// Translate clap args for `quorum context ...` into a `ContextCmd` and run
+/// it against `ProdDeps`. Prints stdout to stdout, warnings (one per line)
+/// to stderr. Exit code: 0 on success (unless `doctor` reports any failing
+/// check, in which case 1), 1 on handler error.
+fn run_context(opts: cli::ContextOpts) -> i32 {
+    use context::cli::{
+        run_context_cmd, AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat,
+        IndexArgs, ListArgs, ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat,
+        RefreshArgs, SourceSelector,
+    };
+    use std::io::Write;
+
+    // Map `--source X` / `--all` / neither into a SourceSelector. The default
+    // when both are absent is `All` to match the handler's natural semantics
+    // (bulk ops over every registered source).
+    fn selector(source: Option<String>, all: bool) -> SourceSelector {
+        if all {
+            SourceSelector::All
+        } else if let Some(name) = source {
+            SourceSelector::Single(name)
+        } else {
+            SourceSelector::All
+        }
+    }
+
+    let is_doctor = matches!(opts.command, cli::ContextCommand::Doctor(_));
+
+    let cmd = match opts.command {
+        cli::ContextCommand::Init => ContextCmd::Init,
+        cli::ContextCommand::Add(a) => {
+            let location = match (a.path, a.git) {
+                (Some(p), None) => AddLocation::Path(p),
+                (None, Some(url)) => AddLocation::Git { url, rev: a.rev },
+                (Some(_), Some(_)) => {
+                    eprintln!("error: --path and --git are mutually exclusive");
+                    return 1;
+                }
+                (None, None) => {
+                    eprintln!("error: one of --path or --git is required");
+                    return 1;
+                }
+            };
+            ContextCmd::Add(AddArgs {
+                name: a.name,
+                kind: a.kind,
+                location,
+                weight: a.weight,
+                ignore: a.ignore,
+            })
+        }
+        cli::ContextCommand::List(l) => {
+            let format = if l.json {
+                ListFormat::Json
+            } else if l.compact {
+                ListFormat::Compact
+            } else {
+                ListFormat::Human
+            };
+            ContextCmd::List(ListArgs { format })
+        }
+        cli::ContextCommand::Index(i) => {
+            ContextCmd::Index(IndexArgs { selector: selector(i.source, i.all) })
+        }
+        cli::ContextCommand::Refresh(r) => {
+            ContextCmd::Refresh(RefreshArgs { selector: selector(r.source, r.all) })
+        }
+        cli::ContextCommand::Query(q) => {
+            let format = if q.json {
+                QueryFormat::Json
+            } else if q.compact {
+                QueryFormat::Compact
+            } else {
+                QueryFormat::Table
+            };
+            ContextCmd::Query(QueryArgs {
+                text: q.text,
+                source: q.source,
+                k: q.k,
+                explain: q.explain,
+                format,
+            })
+        }
+        cli::ContextCommand::Prune(p) => ContextCmd::Prune(PruneArgs { dry_run: p.dry_run }),
+        cli::ContextCommand::Doctor(d) => {
+            let format = if d.json {
+                DoctorFormat::Json
+            } else if d.compact {
+                DoctorFormat::Compact
+            } else {
+                DoctorFormat::Table
+            };
+            ContextCmd::Doctor(DoctorArgs { format, repair: d.repair })
+        }
+    };
+
+    let deps = match ProdDeps::from_env() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 1;
+        }
+    };
+
+    match run_context_cmd(&cmd, &deps) {
+        Ok(out) => {
+            // Match the signal-safe stdout pattern used elsewhere: write via
+            // a locked handle and flush. We deliberately ignore write errors
+            // (e.g. BrokenPipe from `| head`) so exit code reflects the
+            // handler result rather than the downstream consumer.
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let _ = handle.write_all(out.stdout.as_bytes());
+            if !out.stdout.is_empty() && !out.stdout.ends_with('\n') {
+                let _ = handle.write_all(b"\n");
+            }
+            let _ = handle.flush();
+            for w in &out.warnings {
+                eprintln!("{}", w);
+            }
+            // `doctor` renders its own overall status into stdout. Re-parse
+            // that one signal (JSON `"ok": false`, table `overall: fail`,
+            // or compact `fail\t...` rows) to set the exit code without
+            // changing the handler's CmdOutput contract.
+            if is_doctor && doctor_reports_fail(&out.stdout) {
+                return 1;
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            1
+        }
+    }
+}
+
+/// Detect whether a rendered `context doctor` payload reports any failing
+/// check. Accepts all three output formats (json/table/compact).
+fn doctor_reports_fail(stdout: &str) -> bool {
+    if stdout.contains("\"ok\": false") || stdout.contains("\"ok\":false") {
+        return true;
+    }
+    if stdout.contains("\noverall: fail") || stdout.starts_with("overall: fail") {
+        return true;
+    }
+    // Compact: one status per line, tab-separated. A leading "fail\t" marks
+    // a failing check row.
+    stdout.lines().any(|l| l.starts_with("fail\t"))
 }
 
 async fn run_mcp_server() -> anyhow::Result<()> {
@@ -350,6 +551,22 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
+    // Build the production context injector from `~/.quorum/sources.toml`
+    // (if present and `auto_inject = true`). Returns `None` when context
+    // isn't configured, so reviews without a sources file behave exactly
+    // as before.
+    let context_injector = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| std::path::PathBuf::from(h).join(".quorum"))
+        .and_then(|quorum_home| {
+            context::bootstrap::build_production_injector(&quorum_home, &feedback_entries)
+        });
+    if context_injector.is_some() {
+        tracing::info!(
+            "context injector wired from ~/.quorum/sources.toml — auto-inject is active"
+        );
+    }
+
     let pipeline_cfg = PipelineConfig {
         models,
         calibration_model: opts.calibration_model.clone(),
@@ -362,6 +579,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         fast: opts.fast,
         semaphore,
         feedback_index: shared_feedback_index,
+        context_injector,
         ..Default::default()
     };
 
@@ -601,6 +819,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     findings: sup_result.kept,
                                     usage: Default::default(),
                                     suppressed: sup_result.suppressed.len(),
+                                    context_telemetry: None,
                                 };
                                 return (idx, Ok((result, sup_result.suppressed)));
                             }
@@ -729,6 +948,55 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         let repo = first_file.and_then(review_log::detect_repo);
         let invoked_from = review_log::detect_invoked_from(opts.caller.as_deref());
         let sev_iter = all_findings.iter().map(|f| &f.severity);
+        // Merge per-file context telemetry into a single review-level
+        // record. Counts/durations are summed; thresholds/flags take the
+        // last populated value (all files share the same injector config,
+        // so they're identical in practice); ID lists are concatenated.
+        // When no file reported telemetry, default to semantic zeros
+        // (injector_available=false).
+        let mut context_telem = review_log::ContextTelemetry::default();
+        let mut any_telem = false;
+        for r in &file_results {
+            if let Some(t) = &r.context_telemetry {
+                any_telem = true;
+                context_telem.auto_inject_enabled = t.auto_inject_enabled;
+                context_telem.injector_available = t.injector_available;
+                context_telem.retrieved_chunk_count =
+                    context_telem.retrieved_chunk_count.saturating_add(t.retrieved_chunk_count);
+                context_telem.injected_chunk_count =
+                    context_telem.injected_chunk_count.saturating_add(t.injected_chunk_count);
+                context_telem.injected_tokens =
+                    context_telem.injected_tokens.saturating_add(t.injected_tokens);
+                context_telem.below_threshold_count =
+                    context_telem.below_threshold_count.saturating_add(t.below_threshold_count);
+                context_telem.adaptive_threshold_applied =
+                    context_telem.adaptive_threshold_applied || t.adaptive_threshold_applied;
+                context_telem.effective_prose_threshold = t.effective_prose_threshold;
+                context_telem
+                    .injected_chunk_ids
+                    .extend(t.injected_chunk_ids.iter().cloned());
+                for s in &t.injected_sources {
+                    if !context_telem.injected_sources.iter().any(|x| x == s) {
+                        context_telem.injected_sources.push(s.clone());
+                    }
+                }
+                context_telem.precedence_entries =
+                    context_telem.precedence_entries.saturating_add(t.precedence_entries);
+                context_telem.render_duration_ms =
+                    context_telem.render_duration_ms.saturating_add(t.render_duration_ms);
+                // Keep the first non-None hash; if any file rendered a
+                // block, we have a representative hash. When multiple
+                // files inject, they're distinct blocks — we expose the
+                // first one as a sample.
+                if context_telem.rendered_prompt_hash.is_none() && t.rendered_prompt_hash.is_some() {
+                    context_telem.rendered_prompt_hash = t.rendered_prompt_hash.clone();
+                }
+            }
+        }
+        if !any_telem {
+            context_telem = review_log::ContextTelemetry::default();
+        }
+
         let record = review_log::ReviewRecord {
             run_id: review_log::ReviewRecord::new_ulid(),
             timestamp: chrono::Utc::now(),
@@ -750,6 +1018,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 parallel_n: opts.parallel as u32,
                 ensemble: opts.ensemble,
             },
+            context: context_telem,
         };
         if let Err(e) = review_log.record(&record) {
             eprintln!("Warning: failed to write review log: {}", e);
@@ -921,14 +1190,28 @@ fn run_feedback_inner(
     verdict_str: &str,
     reason: &str,
     model: Option<&str>,
+    blamed_chunks: Option<&str>,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
-    let verdict = match cli::parse_verdict(verdict_str) {
+    let mut verdict = match cli::parse_verdict(verdict_str) {
         Ok(v) => v,
         Err(e) => {
             return (3, format!("Error: {}", e));
         }
     };
+
+    // Merge --blamed-chunks into a ContextMisleading verdict. For other
+    // verdicts, silently ignore the flag (the plan says we shouldn't error
+    // on spurious use — existing validation behavior is unchanged).
+    let parsed_chunks = match cli::parse_blamed_chunks(blamed_chunks) {
+        Ok(v) => v,
+        Err(e) => {
+            return (3, format!("Error: {}", e));
+        }
+    };
+    if let feedback::Verdict::ContextMisleading { blamed_chunk_ids } = &mut verdict {
+        *blamed_chunk_ids = parsed_chunks;
+    }
 
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
@@ -947,7 +1230,13 @@ fn run_feedback_inner(
     }
 
     let total = store.count().unwrap_or(0);
-    let verdict_label = format!("{:?}", entry.verdict).to_lowercase();
+    let verdict_label = match &entry.verdict {
+        feedback::Verdict::Tp => "tp".to_string(),
+        feedback::Verdict::Fp => "fp".to_string(),
+        feedback::Verdict::Partial => "partial".to_string(),
+        feedback::Verdict::Wontfix => "wontfix".to_string(),
+        feedback::Verdict::ContextMisleading { .. } => "context_misleading".to_string(),
+    };
 
     // Format output based on mode
     let use_compact = output::should_use_compact(false);
@@ -979,7 +1268,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
     let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
     let (exit_code, output) = run_feedback_inner(
         &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-        opts.model.as_deref(), &feedback_path,
+        opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
     );
     if exit_code != 0 {
         eprintln!("{}", output);
@@ -1021,7 +1310,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1035,7 +1324,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, &path,
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1046,7 +1335,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1058,7 +1347,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, &path,
+            "src/auth.rs", "Test finding", "fp", "Not real", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1070,7 +1359,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1082,7 +1371,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, &path,
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1100,10 +1389,92 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), &path,
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("gpt-5.4"));
+    }
+
+    #[test]
+    fn feedback_cli_records_context_misleading_with_blamed_chunks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "Injected context described v1 API, code uses v2",
+            None,
+            Some("chunk-abc,chunk-def"),
+            &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        // Serialized struct variant: {"context_misleading":{"blamed_chunk_ids":[...]}}
+        assert!(contents.contains("context_misleading"),
+            "verdict tag missing; got: {}", contents);
+        assert!(contents.contains("chunk-abc"), "first chunk id missing; got: {}", contents);
+        assert!(contents.contains("chunk-def"), "second chunk id missing; got: {}", contents);
+
+        // Round-trip through the store to assert exact structure.
+        let store = feedback::FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert_eq!(blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn feedback_cli_rejects_empty_entry_in_blamed_chunks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, output) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "r",
+            None,
+            Some("a,,b"),
+            &path,
+        );
+        assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
+        assert!(output.to_lowercase().contains("empty"),
+            "error must mention empty entry; got: {}", output);
+        // Nothing should have been written.
+        assert!(!path.exists() || std::fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn feedback_cli_context_misleading_with_no_blamed_chunks_uses_empty_vec() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs",
+            "Missing null check",
+            "context_misleading",
+            "No specific chunks identified",
+            None,
+            None, // user omitted --blamed-chunks entirely
+            &path,
+        );
+        assert_eq!(exit_code, 0,
+            "omitted --blamed-chunks must succeed with an empty default");
+
+        let store = feedback::FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert!(blamed_chunk_ids.is_empty(),
+                    "absent flag must produce empty Vec, not populate with a placeholder");
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
     }
 }

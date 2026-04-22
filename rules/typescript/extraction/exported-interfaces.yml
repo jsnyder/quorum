@@ -1,0 +1,11 @@
+id: ts-exported-interface
+language: TypeScript
+rule:
+  kind: interface_declaration
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor
+  inside:
+    kind: export_statement
+    stopBy: neighbor

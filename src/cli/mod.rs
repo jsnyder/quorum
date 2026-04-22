@@ -20,8 +20,185 @@ pub enum Command {
     Serve,
     /// Run as daemon with file watching and warm caches
     Daemon(DaemonOpts),
+    /// Manage the review-context store (sources, index, retrieval)
+    Context(ContextOpts),
     /// Print version
     Version,
+}
+
+/// Top-level `quorum context` command. Wraps the nested subcommand so that
+/// argparse can keep the context surface area in a single enum.
+#[derive(Parser)]
+#[command(
+    about = "Manage the review-context store",
+    long_about = "Register source repositories or docs, index them for semantic retrieval, \
+                  and surface relevant chunks during review.\n\n\
+                  Examples:\n  \
+                    quorum context init\n  \
+                    quorum context add --name my-app --kind rust --path ./src\n  \
+                    quorum context index --all\n  \
+                    quorum context query \"how is auth done?\" --k 5"
+)]
+pub struct ContextOpts {
+    #[command(subcommand)]
+    pub command: ContextCommand,
+}
+
+#[derive(Subcommand)]
+pub enum ContextCommand {
+    /// Create ~/.quorum/sources.toml with a default empty config.
+    ///
+    /// Example: quorum context init
+    Init,
+
+    /// Register a new source (local path or git repo).
+    ///
+    /// Example: quorum context add --name myapp --kind rust --path ./src
+    Add(ContextAddOpts),
+
+    /// List registered sources.
+    ///
+    /// Example: quorum context list --json
+    List(ContextListOpts),
+
+    /// Extract + embed one or all registered sources.
+    ///
+    /// Example: quorum context index --source myapp
+    Index(ContextIndexOpts),
+
+    /// Re-index sources that have drifted since last extract.
+    ///
+    /// Example: quorum context refresh --all
+    Refresh(ContextRefreshOpts),
+
+    /// Semantic search across indexed chunks.
+    ///
+    /// Example: quorum context query "token refresh" --k 5
+    Query(ContextQueryOpts),
+
+    /// Remove per-source artefacts for sources no longer in sources.toml.
+    ///
+    /// Example: quorum context prune --dry-run
+    Prune(ContextPruneOpts),
+
+    /// Run health checks on the context store.
+    ///
+    /// Example: quorum context doctor --json
+    Doctor(ContextDoctorOpts),
+}
+
+#[derive(Parser)]
+pub struct ContextAddOpts {
+    /// Short unique name for the source (used as a directory key).
+    #[arg(long)]
+    pub name: String,
+
+    /// Source kind: rust, typescript, javascript, python, go, terraform, service, docs.
+    #[arg(long)]
+    pub kind: String,
+
+    /// Local filesystem path to the source. Mutually exclusive with --git.
+    /// Exactly one of --path or --git is required.
+    #[arg(long, conflicts_with = "git", required_unless_present = "git")]
+    pub path: Option<PathBuf>,
+
+    /// Git URL for a remote source. Mutually exclusive with --path.
+    /// Exactly one of --path or --git is required.
+    #[arg(long, conflicts_with = "path", required_unless_present = "path")]
+    pub git: Option<String>,
+
+    /// Optional git rev (branch, tag, sha) to pin when --git is set.
+    #[arg(long, requires = "git")]
+    pub rev: Option<String>,
+
+    /// Relative weight (higher floats further in retrieval).
+    #[arg(long)]
+    pub weight: Option<i32>,
+
+    /// Glob to exclude from extraction (repeatable).
+    #[arg(long = "ignore")]
+    pub ignore: Vec<String>,
+}
+
+#[derive(Parser)]
+pub struct ContextListOpts {
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact single-line-per-source output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextIndexOpts {
+    /// Index a single named source. Mutually exclusive with --all.
+    #[arg(long, conflicts_with = "all")]
+    pub source: Option<String>,
+
+    /// Index every registered source.
+    #[arg(long, conflicts_with = "source")]
+    pub all: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextRefreshOpts {
+    /// Refresh a single named source. Mutually exclusive with --all.
+    #[arg(long, conflicts_with = "all")]
+    pub source: Option<String>,
+
+    /// Refresh every registered source.
+    #[arg(long, conflicts_with = "source")]
+    pub all: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextQueryOpts {
+    /// Natural-language query text.
+    pub text: String,
+
+    /// Restrict results to a single source.
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Return up to this many chunks.
+    #[arg(long)]
+    pub k: Option<usize>,
+
+    /// Include per-chunk scoring details.
+    #[arg(long)]
+    pub explain: bool,
+
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact token-efficient output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextPruneOpts {
+    /// Report what would be removed without touching the filesystem.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Parser)]
+pub struct ContextDoctorOpts {
+    /// Output as JSON.
+    #[arg(long, conflicts_with = "compact")]
+    pub json: bool,
+
+    /// Compact tab-separated output.
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+
+    /// Apply best-effort fixes for any fixable failures.
+    #[arg(long)]
+    pub repair: bool,
 }
 
 #[derive(Parser)]
@@ -49,6 +226,23 @@ pub struct StatsOpts {
     /// Show rolling N-review windows (e.g. --rolling 50)
     #[arg(long, value_parser = parse_rolling_n)]
     pub rolling: Option<usize>,
+
+    /// Group context-injection stats by injected source name.
+    /// Flattens `context.injected_sources`; reviews listing two sources
+    /// contribute to both rows.
+    #[arg(long)]
+    pub by_source: bool,
+
+    /// Group context-injection stats by repo, restricted to reviews
+    /// where an injector was wired (`injector_available = true`).
+    #[arg(long)]
+    pub by_reviewed_repo: bool,
+
+    /// Count reviews with misleading context telemetry: retriever
+    /// errors and "phantom" injections (rendered block recorded but
+    /// zero chunks). Produces a 3-row breakdown.
+    #[arg(long)]
+    pub misleading: bool,
 
     /// Hide dimensional highlights (top repos/callers/rolling) from the
     /// default dashboard. Restores the pre-highlights output shape.
@@ -180,8 +374,8 @@ pub struct FeedbackOpts {
     #[arg(long)]
     pub finding: String,
 
-    /// Verdict: tp, fp, partial, wontfix
-    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["tp", "fp", "partial", "wontfix"]))]
+    /// Verdict: tp, fp, partial, wontfix, context_misleading
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["tp", "fp", "partial", "wontfix", "context_misleading"]))]
     pub verdict: String,
 
     /// Reason for the verdict
@@ -192,19 +386,66 @@ pub struct FeedbackOpts {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Comma-separated chunk IDs blamed for misleading context
+    /// (only meaningful with `--verdict context_misleading`).
+    /// Whitespace is trimmed per entry; empty entries like "a,,b" are rejected.
+    #[arg(long)]
+    pub blamed_chunks: Option<String>,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
 }
 
+/// Parse a comma-separated list of chunk IDs, trimming whitespace per entry.
+/// Rejects empty entries (e.g. "a,,b" or a trailing comma).
+/// Returns `Ok(Vec::new())` for `None` input; callers may supply an empty
+/// default when the verdict is `context_misleading` and no chunks were given.
+pub fn parse_blamed_chunks(raw: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let Some(s) = raw else {
+        return Ok(Vec::new());
+    };
+    // Explicit empty / whitespace-only --blamed-chunks "" is rejected: the
+    // flag was present, so the user meant something. If the intent is "no
+    // chunks blamed", omit the flag entirely (parse_blamed_chunks(None)
+    // returns Ok(vec![])).
+    if s.trim().is_empty() {
+        anyhow::bail!(
+            "--blamed-chunks was provided but is empty; omit the flag if no chunks are blamed"
+        );
+    }
+    let mut out = Vec::new();
+    for part in s.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!(
+                "--blamed-chunks contains an empty entry (check for leading, trailing, or doubled commas): {:?}",
+                s
+            );
+        }
+        out.push(trimmed.to_string());
+    }
+    Ok(out)
+}
+
 /// Parse a verdict string into a Verdict enum.
+///
+/// For `context_misleading`, this returns a variant with an empty
+/// `blamed_chunk_ids` list. Callers that accept `--blamed-chunks` should
+/// override via [`parse_blamed_chunks`] before storing the verdict.
 pub fn parse_verdict(s: &str) -> anyhow::Result<crate::feedback::Verdict> {
     match s.trim().to_lowercase().as_str() {
         "tp" => Ok(crate::feedback::Verdict::Tp),
         "fp" => Ok(crate::feedback::Verdict::Fp),
         "partial" => Ok(crate::feedback::Verdict::Partial),
         "wontfix" => Ok(crate::feedback::Verdict::Wontfix),
-        other => anyhow::bail!("Invalid verdict '{}'. Must be: tp, fp, partial, wontfix", other),
+        "context_misleading" => Ok(crate::feedback::Verdict::ContextMisleading {
+            blamed_chunk_ids: Vec::new(),
+        }),
+        other => anyhow::bail!(
+            "Invalid verdict '{}'. Must be: tp, fp, partial, wontfix, context_misleading",
+            other
+        ),
     }
 }
 
@@ -331,7 +572,7 @@ mod tests {
     #[test]
     fn feedback_accepts_valid_verdicts_at_parse_time() {
         use clap::Parser;
-        for v in ["tp", "fp", "partial", "wontfix"] {
+        for v in ["tp", "fp", "partial", "wontfix", "context_misleading"] {
             let res = Args::try_parse_from([
                 "quorum", "feedback",
                 "--file", "x.rs",
@@ -344,12 +585,134 @@ mod tests {
     }
 
     #[test]
+    fn feedback_parses_blamed_chunks_flag() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "quorum", "feedback",
+            "--file", "src/x.rs",
+            "--finding", "t",
+            "--verdict", "context_misleading",
+            "--reason", "r",
+            "--blamed-chunks", "chunk-abc,chunk-def",
+        ]);
+        match args.command {
+            Command::Feedback(opts) => {
+                assert_eq!(opts.blamed_chunks.as_deref(), Some("chunk-abc,chunk-def"));
+            }
+            _ => panic!("Expected Feedback command"),
+        }
+    }
+
+    #[test]
+    fn feedback_blamed_chunks_optional_for_context_misleading() {
+        // Plan is explicit: missing --blamed-chunks must NOT error at parse time.
+        use clap::Parser;
+        let res = Args::try_parse_from([
+            "quorum", "feedback",
+            "--file", "src/x.rs",
+            "--finding", "t",
+            "--verdict", "context_misleading",
+            "--reason", "r",
+        ]);
+        assert!(res.is_ok(), "--blamed-chunks must remain optional");
+        match res.unwrap().command {
+            Command::Feedback(opts) => assert!(opts.blamed_chunks.is_none()),
+            _ => panic!("Expected Feedback command"),
+        }
+    }
+
+    #[test]
+    fn parse_blamed_chunks_splits_and_trims() {
+        let got = parse_blamed_chunks(Some(" a, b ,c")).unwrap();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn parse_blamed_chunks_rejects_empty_entries() {
+        assert!(parse_blamed_chunks(Some("a,,b")).is_err());
+        assert!(parse_blamed_chunks(Some("a,")).is_err());
+        assert!(parse_blamed_chunks(Some(",a")).is_err());
+        assert!(parse_blamed_chunks(Some("a, ,b")).is_err());
+    }
+
+    #[test]
+    fn parse_blamed_chunks_none_returns_empty_vec() {
+        assert_eq!(parse_blamed_chunks(None).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_blamed_chunks_blank_string_is_rejected() {
+        // Explicit `--blamed-chunks ""` is a user mistake, not shorthand for
+        // "no chunks" — omit the flag entirely for that semantic.
+        assert!(parse_blamed_chunks(Some("")).is_err());
+        assert!(parse_blamed_chunks(Some("   ")).is_err());
+    }
+
+    #[test]
+    fn parse_verdict_accepts_context_misleading() {
+        let v = parse_verdict("context_misleading").unwrap();
+        match v {
+            crate::feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert!(blamed_chunk_ids.is_empty(),
+                    "parse_verdict alone never fills chunks; caller merges --blamed-chunks");
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parse_parallel_default() {
         use clap::Parser;
         let args = Args::parse_from(["quorum", "review", "file.rs"]);
         match args.command {
             Command::Review(opts) => assert_eq!(opts.parallel, 4),
             _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_source_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-source"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.by_source),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_reviewed_repo_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-reviewed-repo"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.by_reviewed_repo),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_misleading_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--misleading"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.misleading),
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_source_composes_with_rolling() {
+        // `--by-source --rolling 50` must parse — the two flags are
+        // intentionally compatible (rolling slices are applied within
+        // the source group).
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-source", "--rolling", "50"]);
+        match args.command {
+            Command::Stats(opts) => {
+                assert!(opts.by_source);
+                assert_eq!(opts.rolling, Some(50));
+            }
+            _ => panic!("Expected Stats command"),
         }
     }
 }

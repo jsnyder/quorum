@@ -73,6 +73,10 @@ pub struct FileReviewResult {
     pub findings: Vec<Finding>,
     pub usage: crate::llm_client::TokenUsage,
     pub suppressed: usize,
+    /// Context-injection telemetry for this file, if an injector was
+    /// wired. `None` when the pipeline ran without `context_injector`
+    /// (reviewers that don't support context, or the LLM-only paths).
+    pub context_telemetry: Option<crate::review_log::ContextTelemetry>,
 }
 
 pub struct PipelineConfig {
@@ -98,6 +102,11 @@ pub struct PipelineConfig {
     pub skip_context7: bool,
     /// Skip fastembed model — fall back to Jaccard word-overlap for calibration.
     pub fast: bool,
+    /// Optional hook into the `quorum context` retrieve→plan→render pipeline.
+    /// When `Some` and the injector returns `Some(markdown)`, the block is
+    /// spliced into the LLM prompt. When `None` (the default), behavior is
+    /// byte-identical to the pre-context pipeline.
+    pub context_injector: Option<std::sync::Arc<dyn crate::context::inject::ContextInjectionSource>>,
 }
 
 impl Default for PipelineConfig {
@@ -118,6 +127,7 @@ impl Default for PipelineConfig {
             feedback_index: None,
             skip_context7: false,
             fast: false,
+            context_injector: None,
         }
     }
 }
@@ -222,6 +232,9 @@ pub fn review_file(
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
+    // Populated inside the LLM branch when a context_injector is wired.
+    // Declared here so the final FileReviewResult construction can see it.
+    let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
 
     // Use pre-built shared index if available (parallel mode), otherwise build locally
     let shared_index = pipeline_config.feedback_index.clone();
@@ -357,6 +370,33 @@ pub fn review_file(
             Vec::new()
         };
 
+        // Optional `quorum context` injection (retrieve → plan → render).
+        // When no injector is wired, this is a no-op and `context_block`
+        // stays `None`, preserving byte-identical prompts.
+        let context_block = match pipeline_config.context_injector.as_ref() {
+            Some(inj) => {
+                let mut identifiers: Vec<String> = redacted_ctx
+                    .callee_signatures
+                    .iter()
+                    .filter_map(|sig| extract_ident_from_signature(sig))
+                    .collect();
+                identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+                identifiers.sort();
+                identifiers.dedup();
+                let text_sample: String = redacted_code.chars().take(400).collect();
+                let req = crate::context::inject::InjectionRequest {
+                    file_path: file_str.clone(),
+                    language: Some(lang_name(lang).to_string()),
+                    identifiers,
+                    text: text_sample,
+                };
+                let outcome = inj.inject(&req);
+                context_telemetry = Some(outcome.telemetry);
+                outcome.rendered
+            }
+            None => None,
+        };
+
         let req = ReviewRequest {
             file_path: file_str.clone(),
             language: lang_name(lang).to_string(),
@@ -364,6 +404,7 @@ pub fn review_file(
             hydration_context: Some(redacted_ctx),
             framework_docs,
             feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
+            context_block,
             truncation_notice: truncation_notice.clone(),
         };
 
@@ -487,7 +528,34 @@ pub fn review_file(
         findings: final_findings,
         usage: total_usage,
         suppressed: suppressed_count,
+        context_telemetry,
     })
+}
+
+/// Best-effort extraction of an identifier from a hydrated callee signature
+/// string like `fn verify_token(s: &str) -> bool` or
+/// `def verify_token(s: str) -> bool`. Returns `None` for shapes we don't
+/// recognize; the retriever treats identifiers as optional hints.
+fn extract_ident_from_signature(sig: &str) -> Option<String> {
+    // Strip leading `pub `/`async `/`fn `/`def ` tokens.
+    let cleaned = sig
+        .trim_start_matches("pub ")
+        .trim_start_matches("async ")
+        .trim();
+    let cleaned = cleaned
+        .strip_prefix("fn ")
+        .or_else(|| cleaned.strip_prefix("def "))
+        .or_else(|| cleaned.strip_prefix("function "))
+        .unwrap_or(cleaned);
+    let ident: String = cleaned
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
 }
 
 /// Walk up from file path to find the project root (directory containing pyproject.toml, package.json, Cargo.toml, etc.)
@@ -634,6 +702,7 @@ pub fn review_file_llm_only(
                 hydration_context: None,
                 framework_docs,
                 feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
+                context_block: None,
                 truncation_notice: truncation_notice.clone(),
             };
 
@@ -735,6 +804,7 @@ pub fn review_file_llm_only(
         findings: final_findings,
         usage: total_usage,
         suppressed: suppressed_count,
+        context_telemetry: None,
     })
 }
 

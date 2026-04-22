@@ -1,16 +1,26 @@
 /// Feedback storage: JSONL file for recording TP/FP verdicts on findings.
+///
+/// Verdict on-disk schema (backward-compatible):
+/// - Unit variants serialize as bare strings: "tp", "fp", "partial", "wontfix".
+/// - Struct variant `ContextMisleading` serializes as an externally-tagged
+///   object: `{"context_misleading": {"blamed_chunk_ids": ["c1", "c2"]}}`.
+///
+/// Legacy entries without the struct variant continue to deserialize unchanged.
 
 use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Tp,
     Fp,
     Partial,
     Wontfix,
+    /// Recorded when the injected retrieval context misled the reviewer.
+    /// `blamed_chunk_ids` may be empty (defaults to "last-injected" downstream).
+    ContextMisleading { blamed_chunk_ids: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +104,30 @@ impl FeedbackStore {
 
     pub fn count(&self) -> anyhow::Result<usize> {
         Ok(self.load_all()?.len())
+    }
+
+    /// Record a `ContextMisleading` verdict — reviewer determined the injected
+    /// retrieval context was wrong or misleading. `blamed_chunk_ids` may be
+    /// empty; callers (e.g. the CLI in task 8.2) supply a sensible default.
+    pub fn record_context_misleading(
+        &self,
+        file: impl Into<String>,
+        finding_title: impl Into<String>,
+        finding_category: impl Into<String>,
+        blamed_chunk_ids: Vec<String>,
+        reason: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        let entry = FeedbackEntry {
+            file_path: file.into(),
+            finding_title: finding_title.into(),
+            finding_category: finding_category.into(),
+            verdict: Verdict::ContextMisleading { blamed_chunk_ids },
+            reason: reason.into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+        };
+        self.record(&entry)
     }
 }
 
@@ -213,5 +247,76 @@ mod tests {
         assert_eq!(serde_json::to_value(&Verdict::Fp).unwrap(), "fp");
         assert_eq!(serde_json::to_value(&Verdict::Partial).unwrap(), "partial");
         assert_eq!(serde_json::to_value(&Verdict::Wontfix).unwrap(), "wontfix");
+    }
+
+    #[test]
+    fn feedback_records_context_misleading_with_chunk_ids() {
+        let (store, _dir) = test_store();
+        store
+            .record_context_misleading(
+                "src/retriever.rs",
+                "Stale API reference",
+                "correctness",
+                vec!["chunk-abc".into(), "chunk-def".into()],
+                "Injected docs described v1, code uses v2",
+            )
+            .unwrap();
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert_eq!(blamed_chunk_ids, &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
+        assert_eq!(all[0].file_path, "src/retriever.rs");
+        assert_eq!(all[0].finding_title, "Stale API reference");
+        assert_eq!(
+            all[0].finding_category, "correctness",
+            "finding_category must round-trip, not be hardcoded empty"
+        );
+        assert_eq!(all[0].provenance, Provenance::Human);
+    }
+
+    #[test]
+    fn legacy_verdicts_still_load_after_adding_context_misleading() {
+        // Entries written before the ContextMisleading variant existed must still parse.
+        let legacy = r#"{"file_path":"a.rs","finding_title":"X","finding_category":"security","verdict":"tp","reason":"r","model":"m","timestamp":"2026-01-01T00:00:00Z","provenance":"human"}
+{"file_path":"b.rs","finding_title":"Y","finding_category":"style","verdict":"fp","reason":"r","model":"m","timestamp":"2026-01-02T00:00:00Z"}
+{"file_path":"c.rs","finding_title":"Z","finding_category":"security","verdict":"partial","reason":"r","model":"m","timestamp":"2026-01-03T00:00:00Z","provenance":"post_fix"}
+{"file_path":"d.rs","finding_title":"W","finding_category":"style","verdict":"wontfix","reason":"r","model":"m","timestamp":"2026-01-04T00:00:00Z","provenance":"human"}
+"#;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        std::fs::write(&path, legacy).unwrap();
+        let store = FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].verdict, Verdict::Tp);
+        assert_eq!(all[1].verdict, Verdict::Fp);
+        assert_eq!(all[2].verdict, Verdict::Partial);
+        assert_eq!(all[3].verdict, Verdict::Wontfix);
+    }
+
+    #[test]
+    fn context_misleading_with_empty_chunk_ids_roundtrips() {
+        let (store, _dir) = test_store();
+        store
+            .record_context_misleading(
+                "src/foo.rs",
+                "No chunks blamed",
+                "",
+                vec![],
+                "Reviewer did not identify specific chunks",
+            )
+            .unwrap();
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].verdict {
+            Verdict::ContextMisleading { blamed_chunk_ids } => {
+                assert!(blamed_chunk_ids.is_empty());
+            }
+            other => panic!("expected ContextMisleading, got {:?}", other),
+        }
     }
 }

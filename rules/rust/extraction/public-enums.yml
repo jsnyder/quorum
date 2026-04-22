@@ -1,0 +1,5 @@
+id: rust-public-enum
+language: Rust
+rule:
+  pattern: 'pub enum $NAME'
+  kind: enum_item

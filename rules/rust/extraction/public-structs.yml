@@ -1,0 +1,5 @@
+id: rust-public-struct
+language: Rust
+rule:
+  pattern: 'pub struct $NAME'
+  kind: struct_item

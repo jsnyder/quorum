@@ -1,0 +1,403 @@
+use super::astgrep_hcl::*;
+use chrono::{DateTime, Utc};
+
+fn when() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap()
+}
+
+#[test]
+fn extracts_variable_with_description() {
+    let src = "\
+variable \"cidr_block\" {
+  description = \"IPv4 CIDR block for the VPC\"
+  type        = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("cidr_block"))
+        .expect("expected cidr_block chunk");
+    assert_eq!(v.kind, super::super::types::ChunkKind::Symbol);
+    assert_eq!(v.signature.as_deref(), Some("variable \"cidr_block\""));
+    assert!(
+        v.content.contains("IPv4 CIDR block"),
+        "content = {:?}",
+        v.content
+    );
+    assert!(v.metadata.is_exported);
+    assert_eq!(v.metadata.language.as_deref(), Some("terraform"));
+    assert_eq!(v.provenance.extractor, "ast-grep-hcl");
+}
+
+#[test]
+fn extracts_output_with_description() {
+    let src = "\
+output \"vpc_id\" {
+  description = \"The ID of the created VPC\"
+  value       = aws_vpc.this.id
+}
+";
+    let chunks = extract_hcl(src, "outputs.tf", "mini-tf", "abc", when()).unwrap();
+    let o = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("vpc_id"))
+        .expect("expected vpc_id chunk");
+    assert_eq!(o.signature.as_deref(), Some("output \"vpc_id\""));
+    assert!(
+        o.content.contains("The ID of the created VPC"),
+        "content = {:?}",
+        o.content
+    );
+}
+
+#[test]
+fn extracts_resource_with_compound_name() {
+    let src = "\
+resource \"aws_vpc\" \"this\" {
+  cidr_block = var.cidr_block
+}
+";
+    let chunks = extract_hcl(src, "main.tf", "mini-tf", "abc", when()).unwrap();
+    let r = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("aws_vpc.this"))
+        .expect("expected aws_vpc.this chunk");
+    assert_eq!(r.signature.as_deref(), Some("resource \"aws_vpc\" \"this\""));
+}
+
+#[test]
+fn extracts_module_block() {
+    let src = "\
+module \"network\" {
+  source     = \"./networking\"
+  cidr_block = \"10.0.0.0/16\"
+}
+";
+    let chunks = extract_hcl(src, "main.tf", "mini-tf", "abc", when()).unwrap();
+    let m = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("network"))
+        .expect("expected network module chunk");
+    assert_eq!(m.signature.as_deref(), Some("module \"network\""));
+    assert!(
+        m.content.contains("./networking"),
+        "module content should include source, got: {:?}",
+        m.content
+    );
+}
+
+#[test]
+fn variable_without_description_falls_back_to_body() {
+    let src = "\
+variable \"untyped\" {
+  default = \"foo\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("untyped"))
+        .expect("expected untyped chunk");
+    assert!(!v.content.is_empty());
+    assert!(
+        v.content.contains("default"),
+        "expected fallback body content to contain 'default', got: {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn skips_terraform_block() {
+    let src = "\
+terraform {
+  required_version = \">= 1.0\"
+}
+";
+    let chunks = extract_hcl(src, "main.tf", "mini-tf", "abc", when()).unwrap();
+    assert!(
+        chunks.is_empty(),
+        "terraform block should not produce symbol chunks, got: {:?}",
+        chunks.iter().map(|c| &c.qualified_name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn skips_nested_blocks() {
+    let src = "\
+resource \"aws_vpc\" \"this\" {
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+";
+    let chunks = extract_hcl(src, "main.tf", "mini-tf", "abc", when()).unwrap();
+    let names: Vec<&str> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert!(
+        names.contains(&"aws_vpc.this"),
+        "expected aws_vpc.this; got {names:?}"
+    );
+    assert!(
+        !names.contains(&"lifecycle"),
+        "nested lifecycle block must not be extracted; got {names:?}"
+    );
+    assert_eq!(chunks.len(), 1, "only one top-level symbol expected");
+}
+
+#[test]
+fn extracts_multiple_blocks_from_fixture() {
+    let base =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context/repos/mini-terraform/networking");
+
+    let main = std::fs::read_to_string(base.join("main.tf")).unwrap();
+    let outs = std::fs::read_to_string(base.join("outputs.tf")).unwrap();
+    let vars = std::fs::read_to_string(base.join("variables.tf")).unwrap();
+
+    let mut all = Vec::new();
+    all.extend(extract_hcl(&main, "networking/main.tf", "mini-tf", "abc", when()).unwrap());
+    all.extend(extract_hcl(&outs, "networking/outputs.tf", "mini-tf", "abc", when()).unwrap());
+    all.extend(extract_hcl(&vars, "networking/variables.tf", "mini-tf", "abc", when()).unwrap());
+
+    let names: Vec<&str> = all
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+
+    for expected in ["aws_vpc.this", "vpc_id", "name", "cidr_block"] {
+        assert!(
+            names.contains(&expected),
+            "expected {expected} in extracted names; got {names:?}"
+        );
+    }
+}
+
+#[test]
+fn line_range_covers_block() {
+    let src = "\
+# header comment
+variable \"foo\" {
+  description = \"hello\"
+  type        = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("foo"))
+        .unwrap();
+    // `variable "foo" {` is on line 2 (1-indexed), `}` is on line 5.
+    assert_eq!(v.metadata.line_range.start, 2);
+    assert_eq!(v.metadata.line_range.end, 5);
+}
+
+#[test]
+fn description_from_function_call_is_ignored() {
+    let src = "\
+variable \"x\" {
+  description = upper(\"not accepted\")
+  default     = \"d\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    // The inner string must not be surfaced as a clean description value.
+    // We reject by checking we fell through to body fallback (which contains
+    // the word `default` from the second attribute and the raw attribute
+    // text, not just the plucked inner string).
+    assert_ne!(
+        v.content.trim(),
+        "not accepted",
+        "must not pluck inner string from function call"
+    );
+    assert!(
+        v.content.contains("default"),
+        "expected fallback body content to include later attributes; got {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn description_from_template_interpolation_is_ignored() {
+    // HCL has no binary `+` on strings; the natural concat is template
+    // interpolation. The inner string literal inside a template_expr must
+    // not be surfaced as the description.
+    let src = "\
+variable \"x\" {
+  description = \"a-${var.env}-b\"
+  type        = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    // A template with interpolation should not be mistaken for a simple
+    // literal. Accept either: fall through to body content, OR accept the
+    // whole template text verbatim. What we must reject is cherry-picking
+    // just `a-` or `-b`.
+    let c = &v.content;
+    assert!(
+        !(c.trim() == "a-" || c.trim() == "-b"),
+        "must not extract a bare inner fragment; got {:?}",
+        c
+    );
+    assert!(
+        c.contains("type") || c.contains("a-${var.env}-b"),
+        "expected body fallback or full template text; got {:?}",
+        c
+    );
+}
+
+#[test]
+fn description_extracted_despite_prior_attribute() {
+    // `type` comes before `description`. Extractor should still find the
+    // description even if the earlier attribute has a non-string value.
+    let src = "\
+variable \"x\" {
+  type        = string
+  description = \"The real description\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    assert!(
+        v.content.contains("The real description"),
+        "description should be found after earlier attribute; got {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn simple_string_description_regression() {
+    let src = "\
+variable \"x\" {
+  description = \"simple\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("x"))
+        .expect("expected x chunk");
+    assert!(
+        v.content.contains("simple"),
+        "simple string description must still work; got {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn same_named_resources_with_different_types() {
+    let src = "\
+resource \"aws_vpc\" \"main\" {
+  cidr_block = \"10.0.0.0/16\"
+}
+
+resource \"aws_subnet\" \"main\" {
+  cidr_block = \"10.0.1.0/24\"
+}
+";
+    let chunks = extract_hcl(src, "main.tf", "mini-tf", "abc", when()).unwrap();
+    let names: Vec<&str> = chunks
+        .iter()
+        .filter_map(|c| c.qualified_name.as_deref())
+        .collect();
+    assert!(
+        names.contains(&"aws_vpc.main"),
+        "expected aws_vpc.main; got {names:?}"
+    );
+    assert!(
+        names.contains(&"aws_subnet.main"),
+        "expected aws_subnet.main; got {names:?}"
+    );
+    assert_eq!(chunks.len(), 2);
+}
+
+#[test]
+fn sensitive_variable_body_is_redacted() {
+    // A variable with `sensitive = true` and no description must not leak
+    // its body (including `default`) into the extracted chunk.
+    let src = "\
+variable \"db_password\" {
+  sensitive = true
+  default   = \"super-secret-123\"
+  type      = string
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("db_password"))
+        .expect("expected db_password chunk");
+    assert!(
+        !v.content.contains("super-secret-123"),
+        "sensitive default leaked into content: {:?}",
+        v.content
+    );
+    let lower = v.content.to_lowercase();
+    assert!(
+        lower.contains("sensitive") || lower.contains("redact"),
+        "expected redaction marker; content = {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn non_sensitive_variable_body_not_redacted() {
+    // Regression guard: a plain variable without `sensitive = true` still
+    // receives its body as the fallback content.
+    let src = "\
+variable \"region\" {
+  type    = string
+  default = \"us-east-1\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("region"))
+        .expect("expected region chunk");
+    assert!(
+        v.content.contains("us-east-1"),
+        "non-sensitive body unexpectedly redacted: {:?}",
+        v.content
+    );
+    let lower = v.content.to_lowercase();
+    assert!(
+        !lower.contains("redact"),
+        "non-sensitive body should not contain redaction marker: {:?}",
+        v.content
+    );
+}
+
+#[test]
+fn sensitive_variable_false_is_not_redacted() {
+    // `sensitive = false` must NOT trigger redaction.
+    let src = "\
+variable \"region\" {
+  sensitive = false
+  default   = \"us-east-1\"
+}
+";
+    let chunks = extract_hcl(src, "variables.tf", "mini-tf", "abc", when()).unwrap();
+    let v = chunks
+        .iter()
+        .find(|c| c.qualified_name.as_deref() == Some("region"))
+        .expect("expected region chunk");
+    assert!(
+        v.content.contains("us-east-1"),
+        "sensitive=false should not redact; content = {:?}",
+        v.content
+    );
+}
+

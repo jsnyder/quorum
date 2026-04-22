@@ -13,6 +13,11 @@ pub struct ReviewRequest {
     pub hydration_context: Option<HydrationContext>,
     pub framework_docs: Option<Vec<String>>,
     pub feedback_precedents: Option<Vec<String>>,
+    /// Pre-rendered markdown block from the `quorum context` retrieval
+    /// pipeline (retrieve → plan → render). When `Some`, it is spliced into
+    /// the prompt as its own section. When `None`, the prompt is byte-identical
+    /// to the pre-context layout.
+    pub context_block: Option<String>,
     /// If the file was truncated, describes what was sent (e.g., "lines 1-150 of 500")
     pub truncation_notice: Option<String>,
 }
@@ -100,6 +105,15 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
                 prompt.push_str(doc);
                 prompt.push_str("\n\n");
             }
+        }
+    }
+
+    if let Some(block) = &req.context_block {
+        let trimmed = block.trim();
+        if !trimmed.is_empty() {
+            prompt.push_str("## Referenced context (from indexed sources)\n\n");
+            prompt.push_str(trimmed);
+            prompt.push_str("\n\n");
         }
     }
 
@@ -355,6 +369,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -378,6 +393,7 @@ mod tests {
             hydration_context: Some(ctx),
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -395,11 +411,64 @@ mod tests {
             hydration_context: None,
             framework_docs: Some(vec!["### React\nuseEffect requires dependency array".into()]),
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
         assert!(prompt.contains("useEffect"));
         assert!(prompt.contains("Framework Documentation"));
+    }
+
+    #[test]
+    fn build_prompt_includes_context_block_when_provided() {
+        let req = ReviewRequest {
+            file_path: "src/auth.rs".into(),
+            language: "rust".into(),
+            code: "fn check() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            context_block: Some(
+                "# Context\n\n## fn verify_token\n```rust\nfn verify_token() {}\n```\n".into(),
+            ),
+            truncation_notice: None,
+        };
+        let prompt = build_review_prompt(&req);
+        assert!(
+            prompt.contains("## Referenced context (from indexed sources)"),
+            "prompt must label the context block section"
+        );
+        assert!(prompt.contains("fn verify_token"));
+    }
+
+    #[test]
+    fn build_prompt_is_byte_identical_when_context_block_is_none() {
+        // Regression guard for Task 6.1: a review with no injector wired MUST
+        // produce exactly the same prompt text as the pre-injection layout.
+        let req_without = ReviewRequest {
+            file_path: "src/lib.rs".into(),
+            language: "rust".into(),
+            code: "fn main() {}".into(),
+            hydration_context: None,
+            framework_docs: None,
+            feedback_precedents: None,
+            context_block: None,
+            truncation_notice: None,
+        };
+        let req_empty_string = ReviewRequest {
+            context_block: Some("   \n  ".into()),
+            ..req_without.clone()
+        };
+        let p_none = build_review_prompt(&req_without);
+        let p_empty = build_review_prompt(&req_empty_string);
+        assert_eq!(
+            p_none, p_empty,
+            "whitespace-only context_block must be treated as None"
+        );
+        assert!(
+            !p_none.contains("Referenced context"),
+            "no 'Referenced context' header without a real block"
+        );
     }
 
     #[test]
@@ -412,6 +481,7 @@ mod tests {
             hydration_context: Some(ctx),
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -523,6 +593,7 @@ mod tests {
                 "[TRUE POSITIVE] open() without encoding: Causes portability issues (similarity: 85%)".into(),
                 "[FALSE POSITIVE] Unused import: Import is used dynamically (similarity: 78%)".into(),
             ]),
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -541,6 +612,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -556,6 +628,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: Some(vec![]),
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -600,6 +673,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: Some("lines 1-150 of 500".into()),
         };
         let prompt = build_review_prompt(&req);
@@ -616,6 +690,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -631,6 +706,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -650,6 +726,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -684,6 +761,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -713,6 +791,7 @@ mod tests {
             hydration_context: None,
             framework_docs: None,
             feedback_precedents: None,
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);
@@ -734,6 +813,7 @@ mod tests {
             feedback_precedents: Some(vec![
                 "[FALSE POSITIVE] states() without check: HA safe form".into(),
             ]),
+            context_block: None,
             truncation_notice: None,
         };
         let prompt = build_review_prompt(&req);

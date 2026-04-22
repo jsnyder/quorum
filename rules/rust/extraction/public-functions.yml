@@ -1,0 +1,5 @@
+id: rust-public-fn
+language: Rust
+rule:
+  pattern: 'pub fn $NAME'
+  kind: function_item

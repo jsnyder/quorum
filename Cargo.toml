@@ -92,6 +92,16 @@ tracing-appender = "0.2"
 toml = "1"
 glob = "0.3"
 bm25 = "2.3.2"
+
+# Markdown parsing (context feature: doc chunk extraction)
+pulldown-cmark = "0.13"
+
+# Filesystem walking (context feature: source extraction dispatch)
+walkdir = "2"
+
+# SQLite + vector search (context feature: chunk index with FTS5 and vec0)
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+sqlite-vec = "0.1"
 # tree-sitter-dockerfile grammar is vendored in grammars/ and compiled via build.rs
 # (the crate depends on tree-sitter 0.20 which conflicts with 0.25)
 

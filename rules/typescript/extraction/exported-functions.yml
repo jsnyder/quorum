@@ -1,0 +1,11 @@
+id: ts-exported-function
+language: TypeScript
+rule:
+  kind: function_declaration
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor
+  inside:
+    kind: export_statement
+    stopBy: neighbor

@@ -1,0 +1,5 @@
+id: rust-public-trait
+language: Rust
+rule:
+  pattern: 'pub trait $NAME'
+  kind: trait_item

@@ -1,0 +1,30 @@
+---
+source: src/context/inject/render_tests.rs
+assertion_line: 396
+expression: out
+---
+# Context
+
+### Symbol: `verify_token` (rust, src/token.rs:10-22)
+> Source: internal-auth, commit abc1234
+
+```rust
+pub fn verify_token(x: &str) -> bool { true }
+```
+
+### Doc: src/README.md:5-18
+> Source: docs, commit abc1234
+
+#### Overview
+Token verification helpers.
+
+### Symbol: `refresh_token` (rust, src/token.rs:30-35)
+> Source: internal-auth, commit abc1234
+
+```rust
+pub fn refresh_token() {}
+```
+
+---
+120 tokens across 3 chunks from 2 source(s).
+precedence: internal-auth wins over internal-auth-fork (weight 10 > 5)

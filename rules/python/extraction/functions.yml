@@ -1,0 +1,8 @@
+id: py-function
+language: Python
+rule:
+  kind: function_definition
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor

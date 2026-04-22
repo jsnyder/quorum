@@ -1,0 +1,11 @@
+id: ts-exported-type-alias
+language: TypeScript
+rule:
+  kind: type_alias_declaration
+  has:
+    field: name
+    pattern: $NAME
+    stopBy: neighbor
+  inside:
+    kind: export_statement
+    stopBy: neighbor

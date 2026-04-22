@@ -76,6 +76,12 @@ Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for ca
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
 
+## Context Injection (v0.16.0+)
+
+`quorum context <init|add|list|index|refresh|query|prune|doctor>` manages a local hybrid search index (FTS5 + sqlite-vec) at `~/.quorum/sources/<name>/`. When a source has been indexed and `~/.quorum/sources.toml` has `context.auto_inject = true`, every `quorum review` builds a `ContextInjector` via `context::bootstrap::build_production_injector`, retrieves top-k chunks, plans under the token budget (40% floor, symbols-first), and renders a fenced Markdown block spliced into the LLM prompt. Per-review telemetry captures retrieved/injected counts, rendered-prompt sha256, and calibrator suppressions in `ContextTelemetry`.
+
+Feedback verdict `context_misleading` (with `blamed_chunks`) raises per-chunk injection thresholds via `Calibrator::injection_threshold_for`; after `inject_suppress_after` confirmations the chunk is permanently sealed (`f32::INFINITY`).
+
 ## Review Telemetry (v0.13.0+)
 
 Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
