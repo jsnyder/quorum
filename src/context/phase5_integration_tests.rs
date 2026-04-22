@@ -173,6 +173,7 @@ fn adaptive_threshold_injects_doc_when_symbols_starve() {
             filters: Filters {
                 sources: Vec::new(),
                 kinds: vec![ChunkKind::Doc],
+                exclude_source_paths: vec![],
             },
             k: 4,
             min_score: 0.0,

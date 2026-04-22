@@ -169,6 +169,7 @@ pub fn build_production_injector(
             q.filters = Filters {
                 sources: vec![src_for_filter.clone()],
                 kinds: q.filters.kinds,
+                exclude_source_paths: q.filters.exclude_source_paths,
             };
             retriever.query(q)
         })

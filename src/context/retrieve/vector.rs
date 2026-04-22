@@ -87,7 +87,9 @@ fn apply_filters(
     filters: &Filters,
     k: usize,
 ) -> rusqlite::Result<Vec<VecHit>> {
-    let no_filters = filters.sources.is_empty() && filters.kinds.is_empty();
+    let no_filters = filters.sources.is_empty()
+        && filters.kinds.is_empty()
+        && filters.exclude_source_paths.is_empty();
 
     let allowed_ids: std::collections::HashSet<String> = if no_filters {
         rows.iter().map(|(id, _)| id.clone()).collect()
@@ -109,10 +111,17 @@ fn apply_filters(
                 .join(",");
             sql.push_str(&format!(" AND kind IN ({kind_placeholders})"));
         }
+        if !filters.exclude_source_paths.is_empty() {
+            let excl_placeholders = std::iter::repeat_n("?", filters.exclude_source_paths.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND source_path NOT IN ({excl_placeholders})"));
+        }
 
         let mut params: Vec<String> = rows.iter().map(|(id, _)| id.clone()).collect();
         params.extend(filters.sources.iter().cloned());
         params.extend(filters.kinds.iter().map(kind_to_sql_str));
+        params.extend(filters.exclude_source_paths.iter().cloned());
 
         let mut q = conn.prepare(&sql)?;
         q.query_map(params_from_iter(params.iter()), |r| r.get::<_, String>(0))?

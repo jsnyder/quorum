@@ -112,6 +112,7 @@ fn kind_filter_restricts_to_docs() {
         filters: Filters {
             sources: Vec::new(),
             kinds: vec![ChunkKind::Doc],
+            exclude_source_paths: vec![],
         },
         k: 10,
         min_score: 0.0,

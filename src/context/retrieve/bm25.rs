@@ -32,7 +32,11 @@ pub fn bm25_search(
         return Ok(Vec::new());
     }
 
-    let sql = build_query_sql(filters.sources.len(), filters.kinds.len());
+    let sql = build_query_sql(
+        filters.sources.len(),
+        filters.kinds.len(),
+        filters.exclude_source_paths.len(),
+    );
 
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
     params.push(Box::new(query.to_string()));
@@ -41,6 +45,9 @@ pub fn bm25_search(
     }
     for kind in &filters.kinds {
         params.push(Box::new(kind_to_sql_string(kind)));
+    }
+    for path in &filters.exclude_source_paths {
+        params.push(Box::new(path.clone()));
     }
     params.push(Box::new(k as i64));
 
@@ -79,7 +86,7 @@ pub fn build_match_expression(identifiers: &[String]) -> Option<String> {
     }
 }
 
-fn build_query_sql(source_count: usize, kind_count: usize) -> String {
+fn build_query_sql(source_count: usize, kind_count: usize, exclude_path_count: usize) -> String {
     let source_clause = if source_count == 0 {
         "1=1".to_string()
     } else {
@@ -92,11 +99,17 @@ fn build_query_sql(source_count: usize, kind_count: usize) -> String {
         let placeholders = vec!["?"; kind_count].join(",");
         format!("c.kind IN ({placeholders})")
     };
+    let exclude_clause = if exclude_path_count == 0 {
+        "1=1".to_string()
+    } else {
+        let placeholders = vec!["?"; exclude_path_count].join(",");
+        format!("c.source_path NOT IN ({placeholders})")
+    };
     format!(
         "SELECT f.id, bm25(chunks_fts) AS rank \
          FROM chunks_fts AS f \
          JOIN chunks AS c ON c.id = f.id \
-         WHERE chunks_fts MATCH ?1 AND {source_clause} AND {kind_clause} \
+         WHERE chunks_fts MATCH ?1 AND {source_clause} AND {kind_clause} AND {exclude_clause} \
          ORDER BY rank \
          LIMIT ?"
     )

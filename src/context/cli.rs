@@ -1166,6 +1166,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
         Filters {
             sources: vec![source_name.clone()],
             kinds: Vec::new(),
+            exclude_source_paths: vec![],
         }
     } else {
         Filters::default()

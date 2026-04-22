@@ -127,6 +127,7 @@ fn source_filter_limits_results() {
     let filters = Filters {
         sources: vec!["A".into()],
         kinds: vec![],
+        exclude_source_paths: vec![],
     };
     let hits = vec_search(&conn, &q, &filters, 6).unwrap();
 
@@ -151,6 +152,7 @@ fn kind_filter_limits_results() {
     let filters = Filters {
         sources: vec![],
         kinds: vec![ChunkKind::Doc],
+        exclude_source_paths: vec![],
     };
     let hits = vec_search(&conn, &q, &filters, 4).unwrap();
 
@@ -247,6 +249,7 @@ fn filter_narrows_to_empty_when_no_matches() {
     let filters = Filters {
         sources: vec!["nonexistent".into()],
         kinds: vec![],
+        exclude_source_paths: vec![],
     };
     let hits = vec_search(&conn, &q, &filters, 3).unwrap();
     assert!(hits.is_empty());
@@ -279,6 +282,7 @@ fn strict_filter_still_returns_k_when_possible() {
     let filters = Filters {
         sources: vec!["A".into()],
         kinds: vec![],
+        exclude_source_paths: vec![],
     };
     let hits = vec_search(&conn, &q, &filters, 4).unwrap();
     assert_eq!(hits.len(), 4);
