@@ -620,6 +620,7 @@ mod tests {
             rerank_score_p90: None,
             suppressed_by_calibrator: 0,
             suppressed_by_floor: 0,
+            nan_scores_dropped: 0,
             retrieved_by_leg: crate::review_log::LegCounts::default(),
             injected_by_leg: crate::review_log::LegCounts::default(),
         };
