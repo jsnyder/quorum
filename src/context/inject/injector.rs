@@ -236,7 +236,12 @@ impl ContextInjectionSource for ContextInjector {
             .into_iter()
             .partition(|h| matches!(h.chunk.kind, ChunkKind::Symbol));
 
-        let token_counter = |s: &str| s.split_whitespace().count();
+        // Rough LLM-token estimator: ~4 chars per token is accurate within
+        // ~25% for English and most code. The prior split_whitespace
+        // counter undercounted code heavily (punctuation, operators, and
+        // `::`/`<T>` sequences collapsed to single tokens), which made
+        // `inject_budget_tokens` semantically meaningless.
+        let token_counter = |s: &str| s.len().div_ceil(4);
         let plan = plan_injection(symbols, prose, &self.context, &token_counter);
         tele.below_threshold_count = plan.below_threshold_count as u32;
         tele.effective_prose_threshold = plan.effective_prose_threshold;
