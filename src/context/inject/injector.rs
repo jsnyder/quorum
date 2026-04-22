@@ -195,11 +195,13 @@ impl ContextInjectionSource for ContextInjector {
 
         // Capture the rerank score distribution before any gating so
         // dashboards can see whether `inject_min_score` is binding.
-        let dist = score_distribution(&hits);
-        tele.rerank_score_min = Some(dist.min);
-        tele.rerank_score_p10 = Some(dist.p10);
-        tele.rerank_score_median = Some(dist.median);
-        tele.rerank_score_p90 = Some(dist.p90);
+        // Returns None only if every score was NaN — an upstream bug.
+        if let Some(dist) = score_distribution(&hits) {
+            tele.rerank_score_min = Some(dist.min);
+            tele.rerank_score_p10 = Some(dist.p10);
+            tele.rerank_score_median = Some(dist.median);
+            tele.rerank_score_p90 = Some(dist.p90);
+        }
 
         // Post-retrieve gate, two stages:
         //
@@ -244,9 +246,11 @@ impl ContextInjectionSource for ContextInjector {
             .into_iter()
             .partition(|h| matches!(h.chunk.kind, ChunkKind::Symbol));
 
-        // Rough LLM-token estimator: ~4 chars per token is accurate within
-        // ~25% for English and most code. The prior split_whitespace
-        // counter undercounted code heavily (punctuation, operators, and
+        // Rough LLM-token estimator: ~4 bytes per token. For ASCII this
+        // equals the "4 chars per token" heuristic; for UTF-8 with
+        // multibyte code points it slightly over-counts, which biases
+        // the budget conservatively. The prior split_whitespace counter
+        // undercounted code heavily (punctuation, operators, and
         // `::`/`<T>` sequences collapsed to single tokens), which made
         // `inject_budget_tokens` semantically meaningless.
         let token_counter = |s: &str| s.len().div_ceil(4);
@@ -312,23 +316,34 @@ struct ScoreDist {
     p90: f32,
 }
 
-fn score_distribution(hits: &[ScoredChunk]) -> ScoreDist {
-    debug_assert!(!hits.is_empty());
-    let mut scores: Vec<f32> = hits.iter().map(|h| h.score).collect();
-    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+fn score_distribution(hits: &[ScoredChunk]) -> Option<ScoreDist> {
+    // Strip NaN scores — partial_cmp returns None for them, and any
+    // tiebreak policy yields nondeterministic ordering. A NaN in the
+    // retrieval path is a bug upstream; we record nothing rather than
+    // serve a misleading distribution.
+    let mut scores: Vec<f32> = hits.iter().map(|h| h.score).filter(|s| !s.is_nan()).collect();
+    if scores.is_empty() {
+        return None;
+    }
+    scores.sort_by(|a, b| a.partial_cmp(b).expect("NaNs filtered above"));
     let n = scores.len();
     let min = scores[0];
     // Nearest-rank percentile: index = max(0, ceil(p * n) - 1).
     let pct_idx = |p: f32| ((n as f32 * p).ceil() as usize).saturating_sub(1).min(n - 1);
     let p10 = scores[pct_idx(0.10)];
-    let median = scores[n / 2];
+    // Proper median: average the two middle values for even n.
+    let median = if n % 2 == 0 {
+        (scores[n / 2 - 1] + scores[n / 2]) / 2.0
+    } else {
+        scores[n / 2]
+    };
     let p90 = scores[pct_idx(0.90)];
-    ScoreDist {
+    Some(ScoreDist {
         min,
         p10,
         median,
         p90,
-    }
+    })
 }
 
 impl std::fmt::Debug for ContextInjector {
@@ -481,28 +496,58 @@ mod tests {
     }
 
     #[test]
-    fn score_distribution_computes_all_percentiles() {
+    fn score_distribution_even_n_averages_middle_pair() {
         let hits: Vec<ScoredChunk> = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
             .iter()
             .enumerate()
             .map(|(i, s)| scored(&format!("c{i}"), *s))
             .collect();
-        let d = super::score_distribution(&hits);
-        // n=10: min=0.1; p10 idx = ceil(1)-1 = 0 = 0.1;
-        // median = scores[5] = 0.6; p90 idx = ceil(9)-1 = 8 = 0.9
+        let d = super::score_distribution(&hits).expect("no NaNs");
+        // n=10: median averages scores[4] and scores[5] = (0.5 + 0.6) / 2 = 0.55.
+        // p10 idx = ceil(1)-1 = 0 = 0.1; p90 idx = ceil(9)-1 = 8 = 0.9.
         assert!((d.min - 0.1).abs() < 1e-6, "min={}", d.min);
         assert!((d.p10 - 0.1).abs() < 1e-6, "p10={}", d.p10);
-        assert!((d.median - 0.6).abs() < 1e-6, "median={}", d.median);
+        assert!((d.median - 0.55).abs() < 1e-6, "median={}", d.median);
         assert!((d.p90 - 0.9).abs() < 1e-6, "p90={}", d.p90);
+    }
+
+    #[test]
+    fn score_distribution_odd_n_picks_middle() {
+        let hits: Vec<ScoredChunk> = [0.2, 0.4, 0.6, 0.8, 1.0]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| scored(&format!("c{i}"), *s))
+            .collect();
+        let d = super::score_distribution(&hits).expect("no NaNs");
+        assert!((d.median - 0.6).abs() < 1e-6, "median={}", d.median);
     }
 
     #[test]
     fn score_distribution_single_hit_collapses_all() {
         let hits = vec![scored("solo", 0.42)];
-        let d = super::score_distribution(&hits);
+        let d = super::score_distribution(&hits).expect("no NaNs");
         assert!((d.min - 0.42).abs() < 1e-6);
         assert!((d.p10 - 0.42).abs() < 1e-6);
         assert!((d.median - 0.42).abs() < 1e-6);
         assert!((d.p90 - 0.42).abs() < 1e-6);
+    }
+
+    #[test]
+    fn score_distribution_filters_nan() {
+        // NaN scores are dropped; distribution is computed from the rest.
+        let hits = vec![
+            scored("a", 0.2),
+            scored("nan", f32::NAN),
+            scored("b", 0.8),
+        ];
+        let d = super::score_distribution(&hits).expect("non-NaN scores remain");
+        assert!((d.min - 0.2).abs() < 1e-6);
+        assert!((d.median - 0.5).abs() < 1e-6, "median={}", d.median);
+    }
+
+    #[test]
+    fn score_distribution_all_nan_returns_none() {
+        let hits = vec![scored("x", f32::NAN), scored("y", f32::NAN)];
+        assert!(super::score_distribution(&hits).is_none());
     }
 }
