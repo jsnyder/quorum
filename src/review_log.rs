@@ -158,6 +158,20 @@ pub struct LegCounts {
 }
 
 impl LegCounts {
+    /// Saturating per-field sum. Used by the per-run aggregator in
+    /// `main.rs` to combine per-file telemetry into a single record.
+    /// `total_unique` naively sums — when the same chunk appears in
+    /// two files' reviews this double-counts, which is the right
+    /// behavior for a "how much context got injected across the whole
+    /// review" measurement.
+    pub fn saturating_add(&mut self, rhs: &LegCounts) {
+        self.bm25 = self.bm25.saturating_add(rhs.bm25);
+        self.vector = self.vector.saturating_add(rhs.vector);
+        self.structural = self.structural.saturating_add(rhs.structural);
+        self.structural_only = self.structural_only.saturating_add(rhs.structural_only);
+        self.total_unique = self.total_unique.saturating_add(rhs.total_unique);
+    }
+
     /// Aggregate counts across a slice where each element exposes its
     /// `source_legs` as a slice of [`RetrievalLeg`].
     pub fn from_chunks<T>(chunks: &[T]) -> Self
