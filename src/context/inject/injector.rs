@@ -151,6 +151,7 @@ impl ContextInjectionSource for ContextInjector {
         let query = RetrievalQuery {
             text: req.text.clone(),
             identifiers: req.identifiers.clone(),
+            structural_names: vec![],
             filters: Filters {
                 sources: vec![],
                 kinds: vec![],

@@ -1174,6 +1174,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
     let q = RetrievalQuery {
         text: args.text.clone(),
         identifiers: Vec::new(),
+        structural_names: Vec::new(),
         filters,
         k,
         min_score: 0.0,

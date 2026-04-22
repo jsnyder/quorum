@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
+use super::Filters;
 use super::structural::{StructuralHit, structural_search};
 use crate::context::index::builder::IndexBuilder;
 use crate::context::index::traits::{FixedClock, HashEmbedder};
@@ -62,7 +63,7 @@ fn empty_input_returns_empty_without_touching_db() {
     // Pass a connection that points nowhere useful; if the impl
     // runs any SQL we'd error. Empty vec is the only correct answer.
     let conn = Connection::open_in_memory().unwrap();
-    let hits = structural_search(&conn, &[]).unwrap();
+    let hits = structural_search(&conn, &[], &Filters::default()).unwrap();
     assert!(hits.is_empty());
 }
 
@@ -77,7 +78,7 @@ fn single_exact_match_returns_one_hit() {
     )];
     let conn = build_test_db(dir.path(), chunks);
     let hits =
-        structural_search(&conn, &["MyCrate::validate".into()]).unwrap();
+        structural_search(&conn, &["MyCrate::validate".into()], &Filters::default()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].chunk_id, "c1");
     assert_eq!(hits[0].qualified_name, "MyCrate::validate");
@@ -94,7 +95,7 @@ fn no_match_returns_empty() {
     )];
     let conn = build_test_db(dir.path(), chunks);
     let hits =
-        structural_search(&conn, &["nonexistent::fn".into()]).unwrap();
+        structural_search(&conn, &["nonexistent::fn".into()], &Filters::default()).unwrap();
     assert!(hits.is_empty());
 }
 
@@ -106,11 +107,7 @@ fn multiple_qnames_mixed_hit_and_miss() {
         sample_symbol("c2", "repo", "a::two", "fn two() {}"),
     ];
     let conn = build_test_db(dir.path(), chunks);
-    let hits = structural_search(
-        &conn,
-        &["a::one".into(), "never::seen".into(), "a::two".into()],
-    )
-    .unwrap();
+    let hits = structural_search(&conn, &["a::one".into(), "never::seen".into(), "a::two".into()], &Filters::default()).unwrap();
     assert_eq!(hits.len(), 2);
     // Order follows the input qname order, not DB order.
     assert_eq!(hits[0].qualified_name, "a::one");
@@ -127,7 +124,7 @@ fn duplicate_qname_in_different_chunks_returns_all() {
         sample_symbol("c2", "lib-b", "a::validate", "fn validate() {}"),
     ];
     let conn = build_test_db(dir.path(), chunks);
-    let hits = structural_search(&conn, &["a::validate".into()]).unwrap();
+    let hits = structural_search(&conn, &["a::validate".into()], &Filters::default()).unwrap();
     assert_eq!(hits.len(), 2);
     let ids: Vec<&str> = hits.iter().map(|h| h.chunk_id.as_str()).collect();
     assert!(ids.contains(&"c1"));
@@ -148,7 +145,7 @@ fn match_is_case_sensitive() {
     )];
     let conn = build_test_db(dir.path(), chunks);
     let hits =
-        structural_search(&conn, &["mycrate::validate".into()]).unwrap();
+        structural_search(&conn, &["mycrate::validate".into()], &Filters::default()).unwrap();
     assert!(hits.is_empty(), "case-folded match must NOT succeed");
 }
 
@@ -166,10 +163,10 @@ fn qname_with_sql_metachars_is_safely_bound() {
     )];
     let conn = build_test_db(dir.path(), chunks);
     let payload = "'); DROP TABLE chunks;--".to_string();
-    let hits = structural_search(&conn, &[payload]).unwrap();
+    let hits = structural_search(&conn, &[payload], &Filters::default()).unwrap();
     assert!(hits.is_empty());
     // Prove the table still exists:
     let surviving: Vec<StructuralHit> =
-        structural_search(&conn, &["harmless".into()]).unwrap();
+        structural_search(&conn, &["harmless".into()], &Filters::default()).unwrap();
     assert_eq!(surviving.len(), 1);
 }

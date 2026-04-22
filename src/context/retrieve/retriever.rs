@@ -83,7 +83,23 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             None => Vec::new(),
         };
 
-        if bm25_hits.is_empty() && vec_hits.is_empty() {
+        // --- Structural leg: exact qname match on chunks.qualified_name,
+        // respecting the same filters as BM25 / vector. Returns hits in
+        // input-qname order for determinism.
+        let structural_hits: Vec<String> = if q.structural_names.is_empty() {
+            Vec::new()
+        } else {
+            super::structural::structural_search(
+                self.conn,
+                &q.structural_names,
+                &q.filters,
+            )?
+            .into_iter()
+            .map(|h| h.chunk_id)
+            .collect()
+        };
+
+        if bm25_hits.is_empty() && vec_hits.is_empty() && structural_hits.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -98,6 +114,11 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             let clamped = h.distance.clamp(0.0, 2.0);
             let sim = 1.0 - clamped / 2.0;
             candidates.entry(h.chunk_id.clone()).or_insert((0.0, 0.0)).1 = sim;
+        }
+        // Structural hits enter the candidate pool with zero BM25/vector
+        // raw scores; the `id_exact_match` boost in rerank promotes them.
+        for id in &structural_hits {
+            candidates.entry(id.clone()).or_insert((0.0, 0.0));
         }
 
         // --- Fetch full chunks by id ---
@@ -114,7 +135,10 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                 let chunk = chunks_by_id.get(id)?;
                 let (bm25_raw, vec_raw) = candidates.get(id).copied().unwrap_or((0.0, 0.0));
                 let id_exact_match = match &chunk.qualified_name {
-                    Some(qn) => q.identifiers.iter().any(|i| i == qn),
+                    Some(qn) => {
+                        q.identifiers.iter().any(|i| i == qn)
+                            || q.structural_names.iter().any(|i| i == qn)
+                    }
                     None => false,
                 };
                 let language_match = match (&chunk.metadata.language, &q.reviewed_file_language) {
@@ -168,6 +192,13 @@ pub struct RetrievalQuery {
     /// (OR-joined) as the match expression; text is still used for the
     /// embedding query.
     pub identifiers: Vec<String>,
+    /// Bare qualified names to look up structurally (exact match on
+    /// `chunks.qualified_name`). Sourced from AST-driven hydration:
+    /// callee names + import targets of the reviewed code. Structural
+    /// hits join the BM25 + vector candidate pool and ride the existing
+    /// rerank path — a chunk whose qname matches gets the `id_exact_match`
+    /// boost already encoded in `rerank.rs`.
+    pub structural_names: Vec<String>,
     pub filters: Filters,
     /// Top-K to return after rerank.
     pub k: usize,
