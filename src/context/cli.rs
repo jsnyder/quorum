@@ -130,16 +130,24 @@ impl ProdDeps {
     }
 
     /// Resolve `~/.quorum` from `$HOME` (Unix) or `%USERPROFILE%` (Windows).
-    /// Returns an error if neither is set or if either is empty (an empty
-    /// value would yield a relative `.quorum` path that resolves against
-    /// the current working directory, which is never the user's intent).
+    /// Returns an error if neither is set, if either is empty, or if the
+    /// value is not an absolute path. An empty or relative value would
+    /// yield a `.quorum` path that resolves against the current working
+    /// directory, which is never the user's intent and would silently
+    /// scatter state across wherever the binary happened to launch.
     pub fn from_env() -> Result<Self> {
         let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
         let home = from("HOME")
             .or_else(|| from("USERPROFILE"))
             .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
-        let root = PathBuf::from(home).join(".quorum");
-        Ok(Self::new(root))
+        let home_path = PathBuf::from(&home);
+        if !home_path.is_absolute() {
+            anyhow::bail!(
+                "HOME/USERPROFILE must be an absolute path, got {:?}",
+                home_path
+            );
+        }
+        Ok(Self::new(home_path.join(".quorum")))
     }
 }
 

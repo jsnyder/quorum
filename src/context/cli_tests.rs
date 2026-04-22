@@ -115,6 +115,36 @@ fn prod_deps_from_env_rejects_empty_home() {
 }
 
 #[test]
+fn prod_deps_from_env_rejects_relative_home() {
+    // A non-empty but *relative* HOME (e.g. accidentally set to "foo" by a
+    // test harness or container init) would also yield a relative
+    // `.quorum` path. The doc comment on from_env promises an anchored
+    // state dir; reject relative values so the promise holds.
+    use super::cli::ProdDeps;
+    let prev_home = std::env::var_os("HOME");
+    let prev_up = std::env::var_os("USERPROFILE");
+    unsafe {
+        std::env::set_var("HOME", "relative/path");
+        std::env::remove_var("USERPROFILE");
+    }
+    let r = ProdDeps::from_env();
+    unsafe {
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+    assert!(
+        r.is_err(),
+        "relative HOME must error rather than silently anchor state to cwd"
+    );
+}
+
+#[test]
 fn run_context_cmd_init_errors_when_sources_path_is_a_directory() {
     // If something created a *directory* at <home>/sources.toml, treating it
     // as an already-initialized regular file would silently disable future
