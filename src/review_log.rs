@@ -136,6 +136,14 @@ pub struct ContextTelemetry {
     /// appear in the LLM prompt, or are they always outranked?"
     #[serde(default)]
     pub injected_by_leg: LegCounts,
+    /// Minimum rerank score across all retrieved chunks. Together with
+    /// p10 this paints the lower tail of the distribution so tau can
+    /// be raised with confidence rather than guesswork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_min: Option<f32>,
+    /// 10th percentile of retrieved rerank scores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score_p10: Option<f32>,
     /// Median of the rerank scores across all retrieved chunks, before
     /// any filtering. Pair with p90 to see whether `inject_min_score`
     /// is actually binding — if tau sits below the median, it never
@@ -639,6 +647,8 @@ mod tests {
             suppressed_by_floor: 0,
             retrieved_by_leg: super::LegCounts::default(),
             injected_by_leg: super::LegCounts::default(),
+            rerank_score_min: Some(0.41),
+            rerank_score_p10: Some(0.55),
             rerank_score_median: Some(0.72),
             rerank_score_p90: Some(0.88),
         }

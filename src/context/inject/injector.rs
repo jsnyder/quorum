@@ -195,9 +195,11 @@ impl ContextInjectionSource for ContextInjector {
 
         // Capture the rerank score distribution before any gating so
         // dashboards can see whether `inject_min_score` is binding.
-        let (median, p90) = score_percentiles(&hits);
-        tele.rerank_score_median = Some(median);
-        tele.rerank_score_p90 = Some(p90);
+        let dist = score_distribution(&hits);
+        tele.rerank_score_min = Some(dist.min);
+        tele.rerank_score_p10 = Some(dist.p10);
+        tele.rerank_score_median = Some(dist.median);
+        tele.rerank_score_p90 = Some(dist.p90);
 
         // Post-retrieve gate, two stages:
         //
@@ -302,17 +304,31 @@ impl ContextInjectionSource for ContextInjector {
     }
 }
 
-/// Median and p90 of rerank scores. `hits` must be non-empty.
-fn score_percentiles(hits: &[ScoredChunk]) -> (f32, f32) {
+/// Score distribution summary. `hits` must be non-empty.
+struct ScoreDist {
+    min: f32,
+    p10: f32,
+    median: f32,
+    p90: f32,
+}
+
+fn score_distribution(hits: &[ScoredChunk]) -> ScoreDist {
     debug_assert!(!hits.is_empty());
     let mut scores: Vec<f32> = hits.iter().map(|h| h.score).collect();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = scores.len();
+    let min = scores[0];
+    // Nearest-rank percentile: index = max(0, ceil(p * n) - 1).
+    let pct_idx = |p: f32| ((n as f32 * p).ceil() as usize).saturating_sub(1).min(n - 1);
+    let p10 = scores[pct_idx(0.10)];
     let median = scores[n / 2];
-    // p90 with nearest-rank: index = ceil(0.9 * n) - 1, clamped.
-    let p90_idx = ((n as f32 * 0.9).ceil() as usize).saturating_sub(1).min(n - 1);
-    let p90 = scores[p90_idx];
-    (median, p90)
+    let p90 = scores[pct_idx(0.90)];
+    ScoreDist {
+        min,
+        p10,
+        median,
+        p90,
+    }
 }
 
 impl std::fmt::Debug for ContextInjector {
@@ -465,23 +481,28 @@ mod tests {
     }
 
     #[test]
-    fn score_percentiles_computes_median_and_p90() {
+    fn score_distribution_computes_all_percentiles() {
         let hits: Vec<ScoredChunk> = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
             .iter()
             .enumerate()
             .map(|(i, s)| scored(&format!("c{i}"), *s))
             .collect();
-        let (median, p90) = super::score_percentiles(&hits);
-        // n=10: median is scores[5] = 0.6; p90 nearest-rank index = ceil(9) - 1 = 8 = 0.9
-        assert!((median - 0.6).abs() < 1e-6, "median={median}");
-        assert!((p90 - 0.9).abs() < 1e-6, "p90={p90}");
+        let d = super::score_distribution(&hits);
+        // n=10: min=0.1; p10 idx = ceil(1)-1 = 0 = 0.1;
+        // median = scores[5] = 0.6; p90 idx = ceil(9)-1 = 8 = 0.9
+        assert!((d.min - 0.1).abs() < 1e-6, "min={}", d.min);
+        assert!((d.p10 - 0.1).abs() < 1e-6, "p10={}", d.p10);
+        assert!((d.median - 0.6).abs() < 1e-6, "median={}", d.median);
+        assert!((d.p90 - 0.9).abs() < 1e-6, "p90={}", d.p90);
     }
 
     #[test]
-    fn score_percentiles_single_hit_collapses_both() {
+    fn score_distribution_single_hit_collapses_all() {
         let hits = vec![scored("solo", 0.42)];
-        let (median, p90) = super::score_percentiles(&hits);
-        assert!((median - 0.42).abs() < 1e-6);
-        assert!((p90 - 0.42).abs() < 1e-6);
+        let d = super::score_distribution(&hits);
+        assert!((d.min - 0.42).abs() < 1e-6);
+        assert!((d.p10 - 0.42).abs() < 1e-6);
+        assert!((d.median - 0.42).abs() < 1e-6);
+        assert!((d.p90 - 0.42).abs() < 1e-6);
     }
 }

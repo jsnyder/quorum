@@ -614,6 +614,8 @@ mod tests {
             precedence_entries: 0,
             render_duration_ms: 0,
             rendered_prompt_hash: rendered_hash.map(String::from),
+            rerank_score_min: None,
+            rerank_score_p10: None,
             rerank_score_median: None,
             rerank_score_p90: None,
             suppressed_by_calibrator: 0,
