@@ -307,7 +307,7 @@ impl OpenAiClient {
 "\n",
 "Deprioritize pure style, naming, formatting, and documentation issues. Only report a style issue when it directly causes or hides a defect (e.g. an identifier whose name actively contradicts its behavior, a comment that disagrees with the code and could mislead a maintainer, an API surface whose shape misleads callers into unsafe usage).\n",
 "\n",
-"Do not flag hypothetical issues whose severity depends on context you cannot see. Prefer fewer, higher-confidence findings to many speculative ones. Do not invent defects to fill the array.\n",
+"Do not invent defects to fill the array, and do not flag speculative issues whose severity depends on context you cannot see. But do flag genuinely missing checks, validations, or invariants — even if the trigger condition is uncommon — and do flag overflow, sentinel-collision, time-handling, and data-validation issues when the code path is reachable. A real bug missed is worse than a real bug flagged with moderate confidence.\n",
 "</review_spec>\n",
 "\n",
 "<severity_rubric>\n",
