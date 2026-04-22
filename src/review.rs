@@ -246,11 +246,6 @@ fn sanitize_json_escapes(json: &str) -> String {
     result
 }
 
-/// Public alias for use by auto_calibrate module.
-pub fn extract_json_array_public(text: &str) -> String {
-    extract_json_array(text)
-}
-
 fn extract_json_array(text: &str) -> String {
     // Strip markdown code fences if present
     let text = text.trim();

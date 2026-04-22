@@ -294,10 +294,6 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub ensemble: bool,
 
-    /// Model for auto-calibration triage (disabled -- auto-calibrate is off)
-    #[arg(long, hide = true)]
-    pub calibration_model: Option<String>,
-
     /// Reasoning effort: none, minimal, low, medium, high, xhigh
     #[arg(long)]
     pub reasoning_effort: Option<String>,
@@ -309,10 +305,6 @@ pub struct ReviewOpts {
     /// Show finding provenance
     #[arg(long)]
     pub provenance: bool,
-
-    /// Disable auto-calibration (no-op: auto-calibrate is off by default)
-    #[arg(long, hide = true)]
-    pub no_auto_calibrate: bool,
 
     /// Send review request to running daemon instead of parsing locally
     #[arg(long)]
@@ -446,12 +438,6 @@ pub fn parse_verdict(s: &str) -> anyhow::Result<crate::feedback::Verdict> {
             "Invalid verdict '{}'. Must be: tp, fp, partial, wontfix, context_misleading",
             other
         ),
-    }
-}
-
-impl ReviewOpts {
-    pub fn no_auto_calibrate(&self) -> bool {
-        self.no_auto_calibrate
     }
 }
 
