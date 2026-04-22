@@ -193,6 +193,28 @@ impl ContextInjectionSource for ContextInjector {
             };
         }
 
+        // Strip NaN scores up front. The gate filters below use `>=`,
+        // which already drops NaNs (NaN is unordered), but the drop is
+        // silent — a retriever that suddenly emits NaN would look like
+        // "everything scored below threshold" on dashboards. Counting
+        // NaN drops separately makes the upstream bug visible.
+        let before_nan = hits.len();
+        let hits: Vec<ScoredChunk> = hits.into_iter().filter(|h| !h.score.is_nan()).collect();
+        tele.nan_scores_dropped = (before_nan - hits.len()) as u32;
+        if tele.nan_scores_dropped > 0 {
+            tracing::warn!(
+                dropped = tele.nan_scores_dropped,
+                "retriever emitted NaN scores; dropped before gating"
+            );
+        }
+        if hits.is_empty() {
+            tele.render_duration_ms = started.elapsed().as_millis() as u64;
+            return InjectionOutcome {
+                rendered: None,
+                telemetry: tele,
+            };
+        }
+
         // Capture the rerank score distribution before any gating so
         // dashboards can see whether `inject_min_score` is binding.
         // Returns None only if every score was NaN — an upstream bug.
@@ -226,7 +248,16 @@ impl ContextInjectionSource for ContextInjector {
             let before_cal = hits.len();
             let kept: Vec<ScoredChunk> = hits
                 .into_iter()
-                .filter(|h| h.score >= cal.injection_threshold_for(&h.chunk.id))
+                .filter(|h| {
+                    let thr = cal.injection_threshold_for(&h.chunk.id);
+                    // Calibrator invariant: thresholds are either finite
+                    // or f32::INFINITY (sealed). A NaN would silently
+                    // nuke every remaining chunk via a `>=` that can
+                    // never be true — fail loud in debug builds and
+                    // drop defensively in release.
+                    debug_assert!(!thr.is_nan(), "calibrator returned NaN threshold for {}", h.chunk.id);
+                    !thr.is_nan() && h.score >= thr
+                })
                 .collect();
             tele.suppressed_by_calibrator = (before_cal - kept.len()) as u32;
             kept
@@ -549,5 +580,57 @@ mod tests {
     fn score_distribution_all_nan_returns_none() {
         let hits = vec![scored("x", f32::NAN), scored("y", f32::NAN)];
         assert!(super::score_distribution(&hits).is_none());
+    }
+
+    #[test]
+    fn nan_score_is_counted_and_dropped_before_gating() {
+        // A single chunk with NaN score is dropped up front. Before the
+        // explicit filter, the floor gate's `>=` would drop it silently
+        // and attribute the drop to `suppressed_by_floor`, masking an
+        // upstream retriever bug.
+        let sources = SourcesConfig {
+            sources: vec![],
+            context: ctx_with_min_score(0.5),
+        };
+        let retriever: Arc<RetrieverFn> = Arc::new(|_q| {
+            Ok(vec![scored("ok", 0.9), scored("bad", f32::NAN)])
+        });
+        let injector = ContextInjector::new(&sources, retriever);
+        let req = InjectionRequest {
+            file_path: "x.rs".into(),
+            language: Some("rust".into()),
+            identifiers: vec!["foo".into()],
+            structural_names: vec![],
+            text: "foo".into(),
+        };
+        let out = injector.inject(&req);
+        assert_eq!(out.telemetry.nan_scores_dropped, 1);
+        assert_eq!(out.telemetry.retrieved_chunk_count, 2);
+        assert_eq!(out.telemetry.suppressed_by_floor, 0,
+            "NaN was counted as a NaN drop, not as a floor drop");
+    }
+
+    #[test]
+    fn all_nan_scores_short_circuit_to_no_render() {
+        let sources = SourcesConfig {
+            sources: vec![],
+            context: ctx_with_min_score(0.5),
+        };
+        let retriever: Arc<RetrieverFn> = Arc::new(|_q| {
+            Ok(vec![scored("a", f32::NAN), scored("b", f32::NAN)])
+        });
+        let injector = ContextInjector::new(&sources, retriever);
+        let req = InjectionRequest {
+            file_path: "x.rs".into(),
+            language: Some("rust".into()),
+            identifiers: vec![],
+            structural_names: vec![],
+            text: "x".into(),
+        };
+        let out = injector.inject(&req);
+        assert_eq!(out.telemetry.nan_scores_dropped, 2);
+        assert!(out.rendered.is_none());
+        assert!(out.telemetry.rerank_score_median.is_none(),
+            "score distribution must not be populated when every score was NaN");
     }
 }

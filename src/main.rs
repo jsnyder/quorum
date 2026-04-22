@@ -997,6 +997,15 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     context_telem.render_duration_ms.saturating_add(t.render_duration_ms);
                 context_telem.retrieved_by_leg.saturating_add(&t.retrieved_by_leg);
                 context_telem.injected_by_leg.saturating_add(&t.injected_by_leg);
+                context_telem.nan_scores_dropped = context_telem
+                    .nan_scores_dropped
+                    .saturating_add(t.nan_scores_dropped);
+                context_telem.suppressed_by_floor = context_telem
+                    .suppressed_by_floor
+                    .saturating_add(t.suppressed_by_floor);
+                context_telem.suppressed_by_calibrator = context_telem
+                    .suppressed_by_calibrator
+                    .saturating_add(t.suppressed_by_calibrator);
                 if context_telem.rerank_score_min.is_none() {
                     context_telem.rerank_score_min = t.rerank_score_min;
                 }

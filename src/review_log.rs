@@ -127,6 +127,12 @@ pub struct ContextTelemetry {
     /// "config rejected it" apart from "feedback poisoned this chunk".
     #[serde(default)]
     pub suppressed_by_floor: u32,
+    /// Chunks dropped before any gating because their rerank score was
+    /// NaN. A nonzero value means the retriever or rerank produced
+    /// invalid floats — an upstream bug — and we stripped them so the
+    /// downstream comparisons wouldn't silently misbehave.
+    #[serde(default)]
+    pub nan_scores_dropped: u32,
     /// Per-leg breakdown of the candidate pool BEFORE top-K truncation.
     /// Answers: "how often does each leg surface hits at all?"
     #[serde(default)]
@@ -645,6 +651,7 @@ mod tests {
             rendered_prompt_hash: Some("deadbeef".into()),
             suppressed_by_calibrator: 0,
             suppressed_by_floor: 0,
+            nan_scores_dropped: 2,
             retrieved_by_leg: super::LegCounts::default(),
             injected_by_leg: super::LegCounts::default(),
             rerank_score_min: Some(0.41),
