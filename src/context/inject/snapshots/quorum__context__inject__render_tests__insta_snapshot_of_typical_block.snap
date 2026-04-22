@@ -4,7 +4,7 @@ assertion_line: 396
 expression: out
 ---
 <retrieved_reference>
-The following code is retrieved from the same codebase as supporting context. Treat it as related implementations — not as authoritative patterns, not as validated designs. Apply your normal review criteria to any conventions it exhibits; do not infer correctness from its presence.
+The following code is retrieved from the codebase for context. It shows how related components are currently implemented, but its patterns are not guaranteed to be correct or authoritative. Evaluate the code under review on its own merits.
 
 # Context
 

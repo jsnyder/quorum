@@ -10,9 +10,16 @@
 //! patterns so it doesn't drift toward mimicking conventions that may
 //! themselves be under review.
 
-const FRAMING_HEADER: &str = "The following code is retrieved from the same codebase as supporting context. \
-Treat it as related implementations — not as authoritative patterns, not as validated designs. \
-Apply your normal review criteria to any conventions it exhibits; do not infer correctness from its presence.";
+const FRAMING_HEADER: &str = "The following code is retrieved from the codebase for context. \
+It shows how related components are currently implemented, but its patterns are not guaranteed to be correct or authoritative. \
+Evaluate the code under review on its own merits.";
+
+/// Neutralize any literal `</retrieved_reference>` inside chunk content so it
+/// cannot prematurely close the outer XML wrapper. We keep the content
+/// human-readable by breaking the tag with a zero-width backslash escape.
+fn neutralize_closing_tag(s: &str) -> String {
+    s.replace("</retrieved_reference>", "<\\/retrieved_reference>")
+}
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -95,18 +102,20 @@ fn render_card(
 
     match chunk.kind {
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let fence = fence_for(&chunk.content);
+            let safe = neutralize_closing_tag(&chunk.content);
+            let fence = fence_for(&safe);
             let _ = writeln!(out, "{fence}{lang}");
-            out.push_str(&chunk.content);
-            if !chunk.content.ends_with('\n') {
+            out.push_str(&safe);
+            if !safe.ends_with('\n') {
                 out.push('\n');
             }
             let _ = writeln!(out, "{fence}");
         }
         ChunkKind::Doc => {
             let demoted = demote_h2(&chunk.content);
-            out.push_str(&demoted);
-            if !demoted.ends_with('\n') {
+            let safe = neutralize_closing_tag(&demoted);
+            out.push_str(&safe);
+            if !safe.ends_with('\n') {
                 out.push('\n');
             }
         }
