@@ -179,6 +179,7 @@ fn respects_source_filter() {
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
+            structural_names: vec![],
         text: "token".into(),
         filters: Filters {
             sources: vec!["A".into()],
@@ -208,6 +209,7 @@ fn respects_kind_filter() {
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
+            structural_names: vec![],
         text: "token".into(),
         filters: Filters {
             sources: vec![],
@@ -474,6 +476,7 @@ fn respects_exclude_source_paths_filter() {
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
+            structural_names: vec![],
         text: "token flow".into(),
         filters: Filters {
             sources: vec![],
@@ -495,4 +498,119 @@ fn respects_exclude_source_paths_filter() {
         "retrieval should still surface sibling chunks: {:?}",
         ids
     );
+}
+
+#[test]
+fn structural_names_surface_callee_definitions_even_without_similarity_match() {
+    // The reviewer calls `validate`. Today's BM25 + vector might surface
+    // lexically/semantically similar code but miss the actual callee.
+    // Structural retrieval must surface the `validate` definition.
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        vec![
+            mk_chunk(
+                "validate_def",
+                "S",
+                "fn validate(x: &str) -> bool { !x.is_empty() }",
+                Some("validate"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "distractor",
+                "S",
+                "orchestrate the pipeline and flow control",
+                Some("orchestrate"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+        ],
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "orchestrate pipeline flow".into(),
+        structural_names: vec!["validate".into()],
+        k: 10,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+    assert!(
+        ids.contains(&"validate_def"),
+        "structural leg should surface the callee definition: {:?}",
+        ids
+    );
+}
+
+#[test]
+fn structural_names_respect_exclude_source_paths() {
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        vec![mk_chunk(
+            "under_review",
+            "S",
+            "fn validate() {}",
+            Some("validate"),
+            ChunkKind::Symbol,
+            "rust",
+            n,
+        )],
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let q = RetrievalQuery {
+        text: "irrelevant".into(),
+        structural_names: vec!["validate".into()],
+        filters: Filters {
+            sources: vec![],
+            kinds: vec![],
+            exclude_source_paths: vec!["src/under_review.rs".into()],
+        },
+        k: 10,
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+    assert!(
+        !ids.contains(&"under_review"),
+        "structural leg must also respect exclude_source_paths: {:?}",
+        ids
+    );
+}
+
+#[test]
+fn structural_query_is_deterministic() {
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+    let (conn, emb, clock) = mk_retriever_ctx(
+        dir.path(),
+        vec![
+            mk_chunk("a", "S", "aa", Some("a"), ChunkKind::Symbol, "rust", n),
+            mk_chunk("b", "S", "bb", Some("b"), ChunkKind::Symbol, "rust", n),
+            mk_chunk("c", "S", "cc", Some("c"), ChunkKind::Symbol, "rust", n),
+        ],
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+    let run_once = || -> Vec<String> {
+        let q = RetrievalQuery {
+            text: "aa bb cc".into(),
+            structural_names: vec!["a".into(), "b".into(), "c".into()],
+            k: 10,
+            ..RetrievalQuery::default()
+        };
+        r.query(q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.chunk.id)
+            .collect()
+    };
+    let reference = run_once();
+    for _ in 0..5 {
+        assert_eq!(run_once(), reference, "output order must be stable");
+    }
 }

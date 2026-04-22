@@ -385,6 +385,7 @@ mod tests {
             type_definitions: vec!["struct Request { auth: Option<String> }".into()],
             callers: vec!["handle_request".into()],
             import_targets: vec![],
+            qualified_names: vec![],
         };
         let req = ReviewRequest {
             file_path: "test.rs".into(),

@@ -76,6 +76,7 @@ fn retrieve_plan_render_pipeline_produces_markdown_block() {
         .query(RetrievalQuery {
             text: "jwt validation signing key".to_string(),
             identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
             filters: Filters::default(),
             k: 8,
             min_score: 0.0,
@@ -116,6 +117,7 @@ fn budget_floor_causes_empty_render() {
         .query(RetrievalQuery {
             text: "jwt verification".to_string(),
             identifiers: Vec::new(),
+            structural_names: vec![],
             filters: Filters::default(),
             k: 1,
             min_score: 0.0,
@@ -147,6 +149,7 @@ fn precedence_filters_duplicates_before_planning() {
         .query(RetrievalQuery {
             text: "verify token".to_string(),
             identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
             filters: Filters::default(),
             k: 8,
             min_score: 0.0,
@@ -177,6 +180,7 @@ fn adaptive_threshold_injects_doc_when_symbols_starve() {
         .query(RetrievalQuery {
             text: "architectural decision jwt authentication".to_string(),
             identifiers: Vec::new(),
+            structural_names: vec![],
             filters: Filters {
                 sources: Vec::new(),
                 kinds: vec![ChunkKind::Doc],

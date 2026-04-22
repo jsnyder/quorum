@@ -323,6 +323,7 @@ pub fn review_file(
             type_definitions: ctx.type_definitions.iter().map(|s| redact::redact_secrets(s)).collect(),
             callers: ctx.callers.clone(),
             import_targets: ctx.import_targets.iter().map(|s| redact::redact_secrets(s)).collect(),
+            qualified_names: ctx.qualified_names.clone(),
         };
 
         // Fetch Context7 framework docs if frameworks are detected
@@ -384,10 +385,24 @@ pub fn review_file(
                 identifiers.sort();
                 identifiers.dedup();
                 let text_sample: String = redacted_code.chars().take(400).collect();
+                // Structural retrieval keys: bare qualified names of
+                // callees + imports, drawn from AST hydration. Redact for
+                // parity with the rest of the request surface.
+                let structural_names: Vec<String> = {
+                    let mut v: Vec<String> = redacted_ctx
+                        .qualified_names
+                        .iter()
+                        .map(|s| redact::redact_secrets(s))
+                        .collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                };
                 let req = crate::context::inject::InjectionRequest {
                     file_path: file_str.clone(),
                     language: Some(lang_name(lang).to_string()),
                     identifiers,
+                    structural_names,
                     text: text_sample,
                 };
                 let outcome = inj.inject(&req);

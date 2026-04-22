@@ -114,6 +114,7 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -149,6 +150,7 @@ fn injector_returns_none_when_auto_inject_disabled() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -172,6 +174,7 @@ fn injector_returns_none_when_query_yields_no_hits() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: Vec::new(),
+            structural_names: vec![],
         text: String::new(),
     };
 
@@ -195,6 +198,7 @@ fn injector_returns_none_when_retriever_closure_returns_empty_vec() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -219,6 +223,7 @@ fn injector_returns_none_when_retriever_errors() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -251,6 +256,7 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -376,6 +382,7 @@ fn verify_token_request() -> InjectionRequest {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
+            structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     }
 }

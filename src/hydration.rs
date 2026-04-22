@@ -11,6 +11,12 @@ pub struct HydrationContext {
     pub callers: Vec<String>,
     /// Import/use targets referenced in the changed region.
     pub import_targets: Vec<String>,
+    /// Bare identifiers for callees + imports referenced in the
+    /// changed region. Used by structural retrieval for exact
+    /// match against `chunks.qualified_name`. Complement to
+    /// `callee_signatures` / `import_targets` which carry the
+    /// richer LLM-facing context.
+    pub qualified_names: Vec<String>,
 }
 
 /// Hydrate context for a set of changed line ranges within a single file.
@@ -47,13 +53,13 @@ pub fn hydrate(
 
     for &(start, end) in changed_lines {
         collect_calls_in_range(&root, source, lang, &call_kinds, start, end,
-            &all_funcs, &mut ctx.callee_signatures, &mut seen_callees);
+            &all_funcs, &mut ctx.callee_signatures, &mut ctx.qualified_names, &mut seen_callees);
 
         collect_type_refs_in_range(&root, source, lang, &type_kinds, start, end,
             &all_types, &mut ctx.type_definitions, &mut seen_types);
 
         collect_import_refs_in_range(&root, source, &import_kinds, start, end,
-            &all_imports, &mut ctx.import_targets);
+            &all_imports, &mut ctx.import_targets, &mut ctx.qualified_names);
     }
 
     // Caller blast radius: if changed lines contain a function definition,
@@ -233,6 +239,7 @@ fn collect_calls_in_range(
     end_line: u32,
     all_funcs: &[(String, String, u32, u32)],
     out: &mut Vec<String>,
+    qnames_out: &mut Vec<String>,
     seen: &mut std::collections::HashSet<String>,
 ) {
     let node_line = node.start_position().row as u32 + 1;
@@ -254,6 +261,7 @@ fn collect_calls_in_range(
                 for (name, sig, _, _) in all_funcs {
                     if name == call_name {
                         out.push(sig.clone());
+                        qnames_out.push(call_name.to_string());
                         seen.insert(call_name.to_string());
                         break;
                     }
@@ -265,7 +273,7 @@ fn collect_calls_in_range(
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
             collect_calls_in_range(&child, source, _lang, call_kinds, start_line, end_line,
-                all_funcs, out, seen);
+                all_funcs, out, qnames_out, seen);
         }
     }
 }
@@ -314,6 +322,7 @@ fn collect_import_refs_in_range(
     _end_line: u32,
     all_imports: &[(String, String)],
     out: &mut Vec<String>,
+    qnames_out: &mut Vec<String>,
 ) {
     // Check which imports are referenced: for now, include all imports
     // whose imported name appears to be used. We simply include imports
@@ -321,7 +330,7 @@ fn collect_import_refs_in_range(
     // identifier usage in the changed range, but for Phase 1 this suffices.
     // We include imports whose declaration line falls within the changed range,
     // OR whose imported name is used in the changed range.
-    // For simplicity, include all file-level imports (they're context).
+    // For simplicity, include all file-level imports (they're cheap context).
     let mut seen = std::collections::HashSet::new();
     for (name, text) in all_imports {
         if !seen.contains(name) {
@@ -329,6 +338,7 @@ fn collect_import_refs_in_range(
             // Simple heuristic: include all imports (they're cheap context)
             if start_line > 0 { // always true when we have changed lines
                 out.push(format!("{}: {}", name, text.trim()));
+                qnames_out.push(name.clone());
                 seen.insert(name.clone());
             }
         }
@@ -741,5 +751,48 @@ fn another_unrelated() -> i32 { 99 }
         assert_eq!(parsed[0].1.len(), 2);
         assert_eq!(parsed[0].1[0], (5, 8));   // +5,4
         assert_eq!(parsed[0].1[1], (21, 25));  // +21,5
+    }
+
+    #[test]
+    fn hydrate_exposes_bare_callee_qualified_names() {
+        // Structural retrieval needs bare identifiers to match
+        // chunks.qualified_name. The full signature is useful for
+        // the LLM prompt; the bare name is useful for lookup.
+        let source = "\
+fn validate(input: &str) -> bool {
+    !input.is_empty()
+}
+
+fn process(data: &str) {
+    if validate(data) {
+        println!(\"ok\");
+    }
+}
+";
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(5, 8)]);
+        assert!(
+            ctx.qualified_names.iter().any(|n| n == "validate"),
+            "expected bare 'validate' in qualified_names, got {:?}",
+            ctx.qualified_names
+        );
+    }
+
+    #[test]
+    fn hydrate_exposes_bare_import_qualified_names() {
+        let source = "\
+use std::collections::HashMap;
+
+fn uses_map() {
+    let _m: HashMap<String, u32> = HashMap::new();
+}
+";
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(3, 5)]);
+        assert!(
+            ctx.qualified_names.iter().any(|n| n == "HashMap"),
+            "expected bare 'HashMap' in qualified_names, got {:?}",
+            ctx.qualified_names
+        );
     }
 }

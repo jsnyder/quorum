@@ -23,6 +23,7 @@ pub mod identifiers;
 pub mod precedence;
 pub mod rerank;
 pub mod retriever;
+pub mod structural;
 pub mod vector;
 
 // Public re-exports for consumers of the retrieve module. Clippy's unused
@@ -44,5 +45,7 @@ mod precedence_tests;
 mod rerank_tests;
 #[cfg(test)]
 mod retriever_tests;
+#[cfg(test)]
+mod structural_tests;
 #[cfg(test)]
 mod vector_tests;

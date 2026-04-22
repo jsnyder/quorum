@@ -292,6 +292,7 @@ weight = 10
             file_path: "x.rs".into(),
             language: Some("rust".into()),
             identifiers: vec!["verify_token".into()],
+            structural_names: vec![],
             text: "jwt signing".into(),
         };
         let out = injector.inject(&req);
