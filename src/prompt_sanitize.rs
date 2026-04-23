@@ -69,15 +69,23 @@ pub(crate) fn sanitize_fence_lang(language: &str) -> String {
 }
 
 /// Sanitize a string for safe interpolation into a single-line markdown
-/// construct (heading, blockquote, or table cell). Strips newlines,
-/// carriage returns, and other ASCII control characters that would let the
-/// value escape its line, then defangs sandbox closing tags. Backticks are
-/// stripped so callers can wrap the result in inline-code spans without the
-/// content closing the span early.
+/// construct (heading, blockquote, or table cell). Strips:
+/// - ASCII control characters (incl. newlines and carriage returns)
+/// - Unicode line/paragraph separators that many renderers and LLMs
+///   treat as logical newlines (U+0085, U+2028, U+2029)
+/// - Backticks (so callers can wrap the result in inline-code spans)
+/// - Pipes (so the value can't split a markdown table cell)
+///
+/// then defangs sandbox closing tags.
 pub(crate) fn sanitize_inline_metadata(s: &str) -> String {
     let stripped: String = s
         .chars()
-        .filter(|c| !c.is_ascii_control() && *c != '`')
+        .filter(|c| {
+            if c.is_ascii_control() {
+                return false;
+            }
+            !matches!(*c, '`' | '|' | '\u{0085}' | '\u{2028}' | '\u{2029}')
+        })
         .collect();
     defang_sandbox_tags(&stripped)
 }
@@ -124,6 +132,27 @@ mod tests {
             "foobarbaz",
             "newlines and backticks must be stripped from inline metadata"
         );
+    }
+
+    #[test]
+    fn sanitize_inline_metadata_strips_unicode_line_separators() {
+        // U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR) and
+        // U+0085 (NEXT LINE) are all line-break characters in many
+        // markdown/text renderers (and the LLM may treat them as
+        // logical newlines too). The contract promises single-line
+        // safety, so they must be stripped along with ASCII control
+        // chars.
+        let input = "foo\u{2028}bar\u{2029}baz\u{0085}qux";
+        let out = sanitize_inline_metadata(input);
+        assert_eq!(out, "foobarbazqux");
+    }
+
+    #[test]
+    fn sanitize_inline_metadata_strips_table_pipes() {
+        // The contract includes "table cell" as a safe interpolation
+        // target; an unescaped `|` would split the cell into multiple
+        // columns and inject adjacent content.
+        assert_eq!(sanitize_inline_metadata("col|injected"), "colinjected");
     }
 
     #[test]

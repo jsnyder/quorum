@@ -164,7 +164,9 @@ fn render_footer(out: &mut String, plan: &InjectionPlan, precedence: &Precedence
             let _ = writeln!(
                 out,
                 "precedence: {} wins over {} ({})",
-                entry.winner_source, entry.loser_source, entry.reason
+                sanitize_inline_metadata(&entry.winner_source),
+                sanitize_inline_metadata(&entry.loser_source),
+                sanitize_inline_metadata(&entry.reason),
             );
         }
     }
