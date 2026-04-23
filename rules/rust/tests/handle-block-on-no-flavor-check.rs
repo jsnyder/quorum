@@ -16,16 +16,30 @@ fn buggy_use() {
     let _ = Handle::current().block_on(async { 42 });
 }
 
-fn safe_try_current() {
-    // no-match: degrades on no-runtime
-    let _ = Handle::try_current()
-        .ok()
-        .and_then(|h| h.block_on(async { 42 }).into());
-}
-
-fn safe_block_in_place_on_multi_thread() {
-    // no-match: block_in_place wraps the block_on, which is the
-    // documented multi-thread-safe pattern.
-    let handle = Handle::try_current().expect("runtime");
-    let _ = tokio::task::block_in_place(|| handle.block_on(async { 42 }));
+fn safe_with_flavor_match() {
+    // no-match: try_current() handles no-runtime, RuntimeFlavor match
+    // dispatches block_in_place on multi-thread (safe in async context)
+    // vs a separate-thread fallback on current-thread. This is the only
+    // pattern that's safe at any call site (the block_on_async impl in
+    // src/llm_client.rs uses this shape).
+    use tokio::runtime::RuntimeFlavor;
+    let _ = match Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(async { 42 }))
+            }
+            _ => std::thread::scope(|s| {
+                s.spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("build fallback runtime");
+                    rt.block_on(async { 42 })
+                })
+                .join()
+                .expect("fallback thread panicked")
+            }),
+        },
+        Err(_) => 42,
+    };
 }

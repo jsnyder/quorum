@@ -143,7 +143,13 @@ pub struct Context7HttpFetcher {
 }
 
 impl Context7HttpFetcher {
-    pub fn new() -> Self {
+    /// Build a fetcher.
+    ///
+    /// Returns `Err` if the underlying reqwest client builder fails
+    /// (rare in practice — bad TLS backend, exotic environment) so the
+    /// 10s timeout config doesn't get silently dropped via
+    /// `unwrap_or_default()` (issue #66).
+    pub fn new() -> anyhow::Result<Self> {
         let api_key = std::env::var("CONTEXT7_API_KEY")
             .ok()
             .filter(|k| !k.trim().is_empty())
@@ -153,13 +159,11 @@ impl Context7HttpFetcher {
                     .map(|s| s.trim().to_string())
                     .filter(|k| !k.is_empty())
             });
-        Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("build reqwest client (infallible for current config)"),
-            api_key,
-        }
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build Context7 reqwest client: {e}"))?;
+        Ok(Self { http, api_key })
     }
 
     fn block_on<F>(&self, f: F) -> F::Output

@@ -367,7 +367,7 @@ pub fn review_file(
             }
             if !domain.frameworks.is_empty() {
                 tracing::debug!(frameworks = ?domain.frameworks, "detected frameworks");
-                let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
+                let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
                 let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
                 let ctx7_t0 = std::time::Instant::now();
                 let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
@@ -693,7 +693,7 @@ pub fn review_file_llm_only(
                     }
                 }
                 if !domain.frameworks.is_empty() {
-                    let fetcher = crate::context_enrichment::Context7HttpFetcher::new();
+                    let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
                     let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
                     let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &[]);
                     if !docs.is_empty() {
