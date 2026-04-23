@@ -15,28 +15,24 @@ pub trait ContextFetcher: Send + Sync {
 }
 
 /// Map framework names to (library_name, query) pairs for Context7.
-pub fn framework_queries(frameworks: &[String]) -> Vec<(String, String)> {
-    let mut queries = Vec::new();
-    for fw in frameworks {
-        let pair = match fw.as_str() {
-            "react" => Some(("react".into(), "hooks rules component lifecycle common pitfalls".into())),
-            "nextjs" => Some(("next.js".into(), "server components data fetching security".into())),
-            "django" => Some(("django".into(), "ORM security CSRF protection middleware".into())),
-            "fastapi" => Some(("fastapi".into(), "dependency injection security validation".into())),
-            "flask" => Some(("flask".into(), "request handling security session management".into())),
-            "express" => Some(("express".into(), "middleware security input validation".into())),
-            "vue" => Some(("vue".into(), "reactivity composition API common pitfalls".into())),
-            "fastify" => Some(("fastify".into(), "plugin system validation security hooks".into())),
-            "home-assistant" => Some(("home-assistant".into(), "automations templates blueprints Jinja2 states triggers conditions actions".into())),
-            "esphome" => Some(("esphome".into(), "yaml components lambda sensors substitutions".into())),
-            "terraform" => Some(("terraform".into(), "provider resource data module security best practices".into())),
-            _ => None,
-        };
-        if let Some(p) = pair {
-            queries.push(p);
-        }
-    }
-    queries
+/// Look up the curated Context7 query for a known framework name.
+/// Returns None for uncurated names — callers should fall back to a generic query.
+pub fn curated_query_for(name: &str) -> Option<String> {
+    let q = match name {
+        "react" => "hooks rules component lifecycle common pitfalls",
+        "nextjs" | "next" | "next.js" => "server components data fetching security",
+        "django" => "ORM security CSRF protection middleware",
+        "fastapi" => "dependency injection security validation",
+        "flask" => "request handling security session management",
+        "express" => "middleware security input validation",
+        "vue" => "reactivity composition API common pitfalls",
+        "fastify" => "plugin system validation security hooks",
+        "home-assistant" => "automations templates blueprints Jinja2 states triggers conditions actions",
+        "esphome" => "yaml components lambda sensors substitutions",
+        "terraform" => "provider resource data module security best practices",
+        _ => return None,
+    };
+    Some(q.into())
 }
 
 /// Build a code-aware Context7 query by appending relevant import targets to the baseline query.
@@ -58,14 +54,17 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
 }
 
 /// Fetch docs for detected frameworks using a ContextFetcher.
+/// (Kept temporarily as a thin wrapper over curated_query_for; replaced by
+/// enrich_for_review in Task 11 + deleted in Task 15.)
 pub fn fetch_framework_docs(frameworks: &[String], fetcher: &dyn ContextFetcher, import_targets: &[String]) -> Vec<ContextDoc> {
-    let queries = framework_queries(frameworks);
     let mut docs = Vec::new();
-    for (lib_name, query) in queries {
-        if let Some(library_id) = fetcher.resolve_library(&lib_name) {
-            let enriched_query = build_code_aware_query(&query, import_targets);
-            if let Some(content) = fetcher.query_docs(&library_id, &enriched_query, 5000) {
-                docs.push(ContextDoc { library: lib_name, content });
+    for fw in frameworks {
+        if let Some(query) = curated_query_for(fw) {
+            if let Some(library_id) = fetcher.resolve_library(fw) {
+                let enriched_query = build_code_aware_query(&query, import_targets);
+                if let Some(content) = fetcher.query_docs(&library_id, &enriched_query, 5000) {
+                    docs.push(ContextDoc { library: fw.clone(), content });
+                }
             }
         }
     }
@@ -281,52 +280,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn framework_queries_react() {
-        let queries = framework_queries(&["react".into()]);
-        assert!(!queries.is_empty());
-        assert!(queries.iter().any(|(lib, _)| lib == "react"));
+    fn curated_query_for_known_frameworks_contains_semantic_markers() {
+        // Each framework's curated query MUST contain a load-bearing keyword.
+        // Catches the "silently changed to empty string" failure mode without
+        // brittling on exact wording.
+        let cases = [
+            ("react", "hooks"),
+            ("nextjs", "server"),
+            ("django", "ORM"),
+            ("fastapi", "dependency"),
+            ("flask", "session"),
+            ("express", "middleware"),
+            ("vue", "reactivity"),
+            ("fastify", "plugin"),
+            ("home-assistant", "Jinja2"),
+            ("esphome", "lambda"),
+            ("terraform", "provider"),
+        ];
+        for (name, marker) in cases {
+            let q = curated_query_for(name)
+                .unwrap_or_else(|| panic!("missing curated query for {name}"));
+            assert!(q.contains(marker),
+                "curated query for {name} missing marker '{marker}': got {q:?}");
+        }
     }
 
     #[test]
-    fn framework_queries_django() {
-        let queries = framework_queries(&["django".into()]);
-        assert!(queries.iter().any(|(lib, _)| lib == "django"));
-    }
-
-    #[test]
-    fn framework_queries_empty() {
-        let queries = framework_queries(&[]);
-        assert!(queries.is_empty());
-    }
-
-    #[test]
-    fn framework_queries_unknown_framework_skipped() {
-        let queries = framework_queries(&["unknown-framework".into()]);
-        assert!(queries.is_empty());
-    }
-
-    #[test]
-    fn framework_queries_home_assistant() {
-        let queries = framework_queries(&["home-assistant".into()]);
-        assert_eq!(queries.len(), 1);
-        assert_eq!(queries[0].0, "home-assistant");
-        assert!(queries[0].1.contains("automation"));
-    }
-
-    #[test]
-    fn framework_queries_esphome() {
-        let queries = framework_queries(&["esphome".into()]);
-        assert_eq!(queries.len(), 1);
-        assert_eq!(queries[0].0, "esphome");
-        assert!(queries[0].1.contains("yaml"));
-    }
-
-    #[test]
-    fn framework_queries_terraform() {
-        let queries = framework_queries(&["terraform".into()]);
-        assert_eq!(queries.len(), 1);
-        assert_eq!(queries[0].0, "terraform");
-        assert!(queries[0].1.contains("provider"));
+    fn curated_query_for_unknown_returns_none() {
+        assert!(curated_query_for("tokio").is_none());
+        assert!(curated_query_for("xyz-does-not-exist").is_none());
     }
 
     #[test]
