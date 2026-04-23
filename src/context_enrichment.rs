@@ -121,13 +121,17 @@ fn try_fetch_one(
     metrics: &mut EnrichmentMetrics,
     seen: &mut std::collections::HashSet<String>,
 ) {
+    // Insert into `seen` unconditionally so a name attempted in the import-matched
+    // loop isn't re-attempted in the curated-frameworks loop. Without this, a
+    // resolve-success/query-failure pair would double-count `context7_query_failed`
+    // (and a resolve-failure would double-count `context7_resolve_failed`).
+    seen.insert(name.into());
     match fetcher.resolve_library(name) {
         Some(lib_id) => {
             metrics.context7_resolved += 1;
             let enriched = build_code_aware_query(query, imports);
             if let Some(content) = fetcher.query_docs(&lib_id, &enriched, 5000) {
                 docs.push(ContextDoc { library: name.into(), content });
-                seen.insert(name.into());
             } else {
                 metrics.context7_query_failed += 1;
             }
@@ -797,6 +801,27 @@ axum = "0.7"
         let _ = cached.resolve_library("missing");
         assert_eq!(*inner.calls.lock().unwrap(), 2,
             "expired entry must trigger fresh inner call");
+    }
+
+    #[test]
+    fn enrich_does_not_double_count_when_dep_appears_in_both_paths_and_query_fails() {
+        // Regression test: if a name is in both deps (import-matched) AND
+        // curated_frameworks, AND resolve succeeds but query fails, the curated
+        // loop must NOT retry — telemetry counters must be incremented once each.
+        use crate::dep_manifest::Dependency;
+        struct ResolveOkButQueryFails;
+        impl ContextFetcher for ResolveOkButQueryFails {
+            fn resolve_library(&self, name: &str) -> Option<String> { Some(format!("/lib/{name}")) }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let imports = vec!["react".into()];
+        let frameworks = vec!["react".into()];
+        let result = enrich_for_review(&deps, &frameworks, &imports, &ResolveOkButQueryFails);
+        assert_eq!(result.metrics.context7_resolved, 1,
+            "resolve must not double-count");
+        assert_eq!(result.metrics.context7_query_failed, 1,
+            "query_failed must not double-count");
     }
 
     #[test]

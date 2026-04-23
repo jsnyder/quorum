@@ -396,10 +396,10 @@ pub fn review_file(
                 // No curated framework was requested — silently skip if dep path
                 // also produced nothing. Long-tail dep failures are NOT fatal.
                 None
-            } else if pipeline_config.skip_context7 {
-                tracing::debug!("Context7: no docs fetched (skipped via --skip-context7)");
-                None
             } else {
+                // skip_context7 is impossible here: the outer if-let returned None
+                // already if it was set. Only the explicit-framework + Context7-down
+                // case reaches this arm.
                 anyhow::bail!(
                     "Context7: failed to fetch docs for frameworks {:?}. \
                      This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
@@ -728,10 +728,8 @@ pub fn review_file_llm_only(
                     Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
                 } else if domain.frameworks.is_empty() {
                     None
-                } else if pipeline_config.skip_context7 {
-                    eprintln!("Context7: no docs fetched (skipped via --skip-context7)");
-                    None
                 } else {
+                    // skip_context7 unreachable: outer if-let returned None already.
                     anyhow::bail!(
                         "Context7: failed to fetch docs for frameworks {:?}. \
                          This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",

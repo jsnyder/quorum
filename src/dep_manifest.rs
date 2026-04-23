@@ -87,6 +87,17 @@ fn parse_pyproject(path: &Path) -> Vec<Dependency> {
     if let Some(arr) = pep621_array {
         for v in arr {
             if let Some(s) = v.as_str() {
+                let trimmed = s.trim();
+                // Skip PEP 508 direct-reference URLs without a leading `name @`.
+                // (The `name @ url` form survives because strip_python_dep_spec
+                // stops at the space after `name`.)
+                if trimmed.starts_with("git+")
+                    || trimmed.starts_with("http://")
+                    || trimmed.starts_with("https://")
+                    || trimmed.starts_with("file://")
+                {
+                    continue;
+                }
                 if let Some(name) = strip_python_dep_spec(s) {
                     out.push(Dependency { name, language: "python".into() });
                 }
@@ -392,6 +403,32 @@ django = "*"
         let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, Vec::<String>::new(),
             "empty PEP 621 array must win, not fall through to Poetry: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_pep621_skips_pep508_direct_url_refs() {
+        // PEP 508 direct refs in [project.dependencies] would otherwise parse to
+        // garbage names like "git+https". parse_requirements_txt already filters
+        // these; parse_pyproject must too.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = [
+  "fastapi",
+  "git+https://github.com/x/y.git",
+  "https://example.com/pkg.whl",
+  "name @ git+https://github.com/a/b.git",
+]
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        // Only "fastapi" (a clean PEP 508 name) and "name" (the PEP 508 direct-ref
+        // form: `name @ url` — the name half is legitimate) should survive.
+        // Bare URLs without a leading `name @` are unusable as Context7 lookup keys.
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert!(sorted.contains(&"fastapi".to_string()), "fastapi missing: {names:?}");
+        assert!(!sorted.iter().any(|n| n.contains("://") || n.starts_with("git+")),
+            "URL-shaped names must be filtered: {names:?}");
     }
 
     #[test]
