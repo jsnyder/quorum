@@ -207,18 +207,18 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
     // Try to extract JSON array from the response (LLM may wrap in markdown fences)
     let cleaned = extract_json_array(&stripped);
 
-    // Strategy 1: parse the array-extracted slice as a bare or envelope shape.
-    if let Ok(findings) = try_parse_findings(&cleaned) {
-        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
-    }
-
-    // Strategy 2: maybe the WHOLE stripped payload is an envelope object
-    // and extract_json_array picked the wrong inner array (e.g., a
-    // `warnings` field came before `findings`). Try the unstripped
-    // envelope before falling back to escape sanitization.
+    // Strategy 1: prefer the FULL envelope shape over any inner array so
+    // sibling arrays like `warnings: []` (which extract_json_array would
+    // pick first) can't mask the real findings array.
     let trimmed_payload = strip_markdown_fence(&stripped);
     if let Ok(envelope) = serde_json::from_str::<FindingsEnvelope>(trimmed_payload.trim()) {
         return Ok(envelope.findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+    }
+
+    // Strategy 2: parse the array-extracted slice as a bare or envelope
+    // shape. (Most common path when the model emits a bare array.)
+    if let Ok(findings) = try_parse_findings(&cleaned) {
+        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
     }
 
     // Strategy 3: sanitize invalid JSON escapes (LLMs emit \d, \s, etc.)
@@ -673,6 +673,19 @@ mod tests {
         let json = r#"{"warnings":["truncated output"],"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
         let findings = parse_llm_response(json, "m").unwrap();
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Bug");
+    }
+
+    #[test]
+    fn parse_object_envelope_with_empty_preceding_sibling_array() {
+        // CodeRabbit catch on PR #70: {"warnings":[],"findings":[...]}.
+        // extract_json_array picks the FIRST array (empty `warnings`),
+        // try_parse_findings("[]") succeeds, returns 0 findings — real
+        // findings silently lost. Fix is to try the envelope on the full
+        // payload BEFORE falling back to the extracted slice.
+        let json = r#"{"warnings":[],"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1, "envelope must win over empty sibling array; got {} findings", findings.len());
         assert_eq!(findings[0].title, "Bug");
     }
 
