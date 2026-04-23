@@ -181,7 +181,7 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
             if let Some(stripped) = imp.strip_prefix('@') {
                 stripped.split('/').next().map(|s| s.to_string())
             } else {
-                imp.split(&['.', '/', ':'][..]).last().map(|s| s.to_string())
+                imp.split(&['.', '/', ':'][..]).next_back().map(|s| s.to_string())
             }
         })
         .filter(|s| s.len() > 2) // skip very short names like "os", "re"
@@ -191,24 +191,6 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
         return base_query.to_string();
     }
     format!("{} {}", base_query, keywords.join(" "))
-}
-
-/// Fetch docs for detected frameworks using a ContextFetcher.
-/// (Kept temporarily as a thin wrapper over curated_query_for; replaced by
-/// enrich_for_review in Task 11 + deleted in Task 15.)
-pub fn fetch_framework_docs(frameworks: &[String], fetcher: &dyn ContextFetcher, import_targets: &[String]) -> Vec<ContextDoc> {
-    let mut docs = Vec::new();
-    for fw in frameworks {
-        if let Some(query) = curated_query_for(fw) {
-            if let Some(library_id) = fetcher.resolve_library(fw) {
-                let enriched_query = build_code_aware_query(&query, import_targets);
-                if let Some(content) = fetcher.query_docs(&library_id, &enriched_query, 5000) {
-                    docs.push(ContextDoc { library: fw.clone(), content });
-                }
-            }
-        }
-    }
-    docs
 }
 
 /// Format context docs as a prompt section.
@@ -849,50 +831,6 @@ axum = "0.7"
         let query = build_code_aware_query("base", &["@nestjs/core".into()]);
         assert!(query.contains("nestjs"), "got: {query}");
         assert!(!query.split_whitespace().any(|w| w == "core"), "got: {query}");
-    }
-
-    #[test]
-    fn async_fetcher_resolves_library() {
-        struct FakeAsyncFetcher;
-        impl ContextFetcher for FakeAsyncFetcher {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(format!("/ctx/{}", name))
-            }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
-                Some("async docs content".into())
-            }
-        }
-        let docs = fetch_framework_docs(&["react".into()], &FakeAsyncFetcher, &[]);
-        assert_eq!(docs.len(), 1);
-        assert!(docs[0].content.contains("async"));
-    }
-
-    #[test]
-    fn fetch_with_fake_fetcher() {
-        struct FakeFetcher;
-        impl ContextFetcher for FakeFetcher {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(format!("/context7/{}", name))
-            }
-            fn query_docs(&self, library_id: &str, _query: &str, _max_tokens: usize) -> Option<String> {
-                Some(format!("Docs for {}: use hooks correctly", library_id))
-            }
-        }
-        let docs = fetch_framework_docs(&["react".into()], &FakeFetcher, &[]);
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].library, "react");
-        assert!(docs[0].content.contains("hooks"));
-    }
-
-    #[test]
-    fn fetch_missing_library_skipped() {
-        struct NullFetcher;
-        impl ContextFetcher for NullFetcher {
-            fn resolve_library(&self, _: &str) -> Option<String> { None }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
-        }
-        let docs = fetch_framework_docs(&["react".into()], &NullFetcher, &[]);
-        assert!(docs.is_empty());
     }
 
     #[test]
