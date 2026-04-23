@@ -157,7 +157,7 @@ impl Context7HttpFetcher {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .unwrap_or_default(),
+                .expect("build reqwest client (infallible for current config)"),
             api_key,
         }
     }
