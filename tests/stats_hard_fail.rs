@@ -75,6 +75,25 @@ fn stats_by_rolling_fails_loudly_on_unreadable_log() {
 }
 
 #[test]
+fn stats_by_source_fails_loudly_on_unreadable_log() {
+    // Context-dim branch (main.rs:72) shares the same load_all + exit 3
+    // pattern as the classic-dim branch (main.rs:126). Both code paths
+    // were fixed in #69; this test pins the context-dim path so a
+    // future refactor can't regress only one of them.
+    let tmp = unreadable_log_dir();
+    let output = Command::cargo_bin("quorum")
+        .unwrap()
+        .arg("stats")
+        .arg("--by-source")
+        .env("HOME", tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(".quorum/reviews.jsonl"));
+}
+
+#[test]
 fn stats_succeeds_when_log_missing() {
     // Guard against an over-fix that promotes "missing file" to error.
     // load_all on a non-existent file currently returns Ok(empty vec) via
