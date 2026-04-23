@@ -214,45 +214,89 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     section
 }
 
-/// Caching wrapper around a ContextFetcher. Caches query_docs results by (library_id, query, max_tokens) key.
+/// Cache entry for resolve_library results, with TTL gating.
+struct ResolveCacheEntry {
+    result: Option<String>,
+    cached_at: std::time::Instant,
+}
+
+type Clock = Box<dyn Fn() -> std::time::Instant + Send + Sync>;
+
+const DEFAULT_RESOLVE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Caching wrapper around a ContextFetcher.
+/// - query_docs results cached by (library_id, query, max_tokens).
+/// - resolve_library results cached by name with a TTL (default 24h).
+///   Negative results (None) are cached too — avoids re-hammering Context7
+///   for known-missing names (private crates, typos).
 pub struct CachedContextFetcher<'a> {
     inner: &'a dyn ContextFetcher,
-    cache: std::sync::Mutex<std::collections::HashMap<(String, String, usize), Option<String>>>,
+    query_cache: std::sync::Mutex<std::collections::HashMap<(String, String, usize), Option<String>>>,
+    resolve_cache: std::sync::Mutex<std::collections::HashMap<String, ResolveCacheEntry>>,
     max_entries: usize,
+    resolve_ttl: std::time::Duration,
+    now: Clock,
 }
 
 impl<'a> CachedContextFetcher<'a> {
     pub fn new(inner: &'a dyn ContextFetcher, max_entries: usize) -> Self {
+        Self::new_with_clock(inner, max_entries, DEFAULT_RESOLVE_TTL, std::time::Instant::now)
+    }
+
+    pub fn new_with_clock(
+        inner: &'a dyn ContextFetcher,
+        max_entries: usize,
+        resolve_ttl: std::time::Duration,
+        now: impl Fn() -> std::time::Instant + Send + Sync + 'static,
+    ) -> Self {
         Self {
             inner,
-            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            query_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            resolve_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             max_entries,
+            resolve_ttl,
+            now: Box::new(now),
         }
     }
 }
 
 impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn resolve_library(&self, name: &str) -> Option<String> {
-        self.inner.resolve_library(name)
+        let now = (self.now)();
+        if let Ok(cache) = self.resolve_cache.lock() {
+            if let Some(entry) = cache.get(name) {
+                if now.duration_since(entry.cached_at) < self.resolve_ttl {
+                    return entry.result.clone();
+                }
+            }
+        }
+        let result = self.inner.resolve_library(name);
+        if let Ok(mut cache) = self.resolve_cache.lock() {
+            if cache.len() >= self.max_entries {
+                cache.clear();  // simple eviction: clear all when full
+            }
+            cache.insert(name.to_string(), ResolveCacheEntry {
+                result: result.clone(),
+                cached_at: now,
+            });
+        }
+        result
     }
 
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let key = (library_id.to_string(), query.to_string(), max_tokens);
 
-        // Check cache
-        if let Ok(cache) = self.cache.lock() {
+        if let Ok(cache) = self.query_cache.lock() {
             if let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
         }
 
-        // Cache miss — fetch from inner
         let result = self.inner.query_docs(library_id, query, max_tokens);
 
-        // Store in cache
-        if let Ok(mut cache) = self.cache.lock() {
+        if let Ok(mut cache) = self.query_cache.lock() {
             if cache.len() >= self.max_entries {
-                cache.clear(); // simple eviction: clear all when full
+                cache.clear();
             }
             cache.insert(key, result.clone());
         }
@@ -656,6 +700,73 @@ mod tests {
         let frameworks = vec!["home-assistant".into()];
         let result = enrich_for_review(&[], &frameworks, &[], &Spy);
         assert!(result.docs.iter().any(|d| d.library == "home-assistant"));
+    }
+
+    #[test]
+    fn cached_fetcher_negative_resolve_result_is_cached() {
+        use std::sync::Mutex;
+        struct CountingSpy { calls: Mutex<u32> }
+        impl ContextFetcher for CountingSpy {
+            fn resolve_library(&self, _: &str) -> Option<String> {
+                *self.calls.lock().unwrap() += 1;
+                None
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+        let inner = CountingSpy { calls: Mutex::new(0) };
+        let cached = CachedContextFetcher::new(&inner, 16);
+        assert!(cached.resolve_library("missing").is_none());
+        assert!(cached.resolve_library("missing").is_none());
+        assert!(cached.resolve_library("missing").is_none());
+        assert_eq!(*inner.calls.lock().unwrap(), 1,
+            "subsequent calls must hit negative cache");
+    }
+
+    #[test]
+    fn cached_fetcher_positive_resolve_result_is_cached() {
+        use std::sync::Mutex;
+        struct CountingSpy { calls: Mutex<u32> }
+        impl ContextFetcher for CountingSpy {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                *self.calls.lock().unwrap() += 1;
+                Some(format!("/lib/{name}"))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+        let inner = CountingSpy { calls: Mutex::new(0) };
+        let cached = CachedContextFetcher::new(&inner, 16);
+        assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
+        assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
+        assert_eq!(*inner.calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn cached_fetcher_negative_resolve_cache_expires_after_ttl() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        struct CountingSpy { calls: Mutex<u32> }
+        impl ContextFetcher for CountingSpy {
+            fn resolve_library(&self, _: &str) -> Option<String> {
+                *self.calls.lock().unwrap() += 1;
+                None
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+        let inner = CountingSpy { calls: Mutex::new(0) };
+        let now = Instant::now();
+        let time = Arc::new(Mutex::new(now));
+        let time_clone = time.clone();
+        let cached = CachedContextFetcher::new_with_clock(
+            &inner,
+            16,
+            Duration::from_secs(60),
+            move || *time_clone.lock().unwrap(),
+        );
+        let _ = cached.resolve_library("missing");
+        *time.lock().unwrap() = now + Duration::from_secs(120);
+        let _ = cached.resolve_library("missing");
+        assert_eq!(*inner.calls.lock().unwrap(), 2,
+            "expired entry must trigger fresh inner call");
     }
 
     #[test]
