@@ -74,22 +74,57 @@ fn write_calibrator_traces(
     }
 }
 
-/// Acquire a semaphore permit if configured. Uses Handle::block_on (not block_in_place)
-/// because this may be called from spawn_blocking threads.
-/// Returns an owned permit that is released on drop (RAII).
+/// Acquire a semaphore permit if configured. Returns an owned permit
+/// that is released on drop (RAII).
 ///
-/// Degrades gracefully (returns `None`) in three failure modes that
-/// shouldn't crash the caller — same observable behavior as the
-/// no-semaphore path:
-/// - No semaphore configured (the common case)
-/// - Semaphore closed (shutdown in flight)
-/// - No Tokio runtime in the current thread (issue #58 — happens when a
-///   pipeline is wired lazily from a sync caller; throttling can't work
-///   without a runtime, so degrade rather than panic)
+/// This is a *synchronous* function that may be called from any of:
+/// `spawn_blocking` threads, plain sync callers with no runtime, or
+/// from inside an async context (via deeply-nested sync wrappers).
+/// To handle all three without panicking we mirror the runtime-flavor
+/// pattern from `llm_client::block_on_async` (issue #71):
+///
+/// - `MultiThread` runtime: use `block_in_place` + `Handle::block_on`
+///   so the worker can pick up other tasks while we wait.
+/// - `CurrentThread` (or any future flavor where `block_in_place` is
+///   disallowed): drive the future on a dedicated OS thread with its
+///   own current-thread runtime. We can't reuse the calling runtime
+///   (`block_on` panics inside an async context) and `block_in_place`
+///   is not allowed there either, so we hand the work off to a fresh
+///   executor. Throttling still works because the new runtime awaits
+///   the same `Arc<Semaphore>`.
+/// - No runtime at all (issue #58): degrade to `None`. Throttling
+///   can't work without a runtime, but the caller (lazy sync wiring,
+///   embedders, tests) shouldn't crash — same observable behavior as
+///   the no-semaphore path.
+///
+/// Degrades to `None` (rather than panicking) on: no semaphore
+/// configured, semaphore closed, no runtime, or a transient failure
+/// to build the fallback runtime.
 fn acquire_llm_permit(sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    use tokio::runtime::{Handle, RuntimeFlavor};
     let sem = sem.as_ref()?.clone();
-    let handle = tokio::runtime::Handle::try_current().ok()?;
-    handle.block_on(sem.acquire_owned()).ok()
+    let handle = Handle::try_current().ok()?;
+    match handle.runtime_flavor() {
+        RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| handle.block_on(sem.acquire_owned()).ok())
+        }
+        // CurrentThread or any future flavor where block_in_place is
+        // disallowed: drive on a separate thread with its own runtime.
+        // Throttling still works (the new runtime awaits the same
+        // semaphore arc) and we don't re-enter the calling runtime.
+        _ => std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(sem.acquire_owned()).ok()
+            })
+            .join()
+            .ok()
+            .flatten()
+        }),
+    }
 }
 
 /// Trait for LLM review — allows testing with fake implementations.
@@ -857,6 +892,36 @@ mod tests {
     fn acquire_llm_permit_returns_none_when_no_semaphore() {
         let result = acquire_llm_permit(&None);
         assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_does_not_panic_inside_current_thread_runtime() {
+        // Issue #71: handle.block_on(...) panics inside an async
+        // execution context ("Cannot start a runtime from within a
+        // runtime"). Mirror block_on_async's RuntimeFlavor pattern.
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            acquire_llm_permit(&sem)
+        }));
+        assert!(
+            result.is_ok(),
+            "acquire_llm_permit panicked inside current_thread runtime: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acquire_llm_permit_does_not_panic_inside_multi_thread_runtime() {
+        // Multi-thread coverage so the fix isn't current_thread-specific.
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            acquire_llm_permit(&sem)
+        }));
+        assert!(
+            result.is_ok(),
+            "acquire_llm_permit panicked inside multi_thread runtime: {:?}",
+            result.err()
+        );
     }
 
     // -- Complexity threshold default --

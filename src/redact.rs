@@ -35,9 +35,15 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         //
         // Captured boundary char ($1) is preserved in the replacement so we
         // don't accidentally rewrite surrounding source.
-        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
+        // Issue #68: value class is escape-aware: `\\.` matches any
+        // backslash-escape sequence (`\"`, `\\`, etc.); `[^\n"]` matches
+        // any other non-quote/non-newline char. Greedy `+` still stops at
+        // the first UNESCAPED closing quote, so we don't over-match across
+        // adjacent quoted values on the same line. The `{6,}` floor is
+        // dropped — the secret-keyword anchor is sufficient (cf. #61).
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"((?:\\.|[^\n"])+)""#).unwrap(),
          "$1$2\"[REDACTED]\""),
-        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'((?:\\.|[^\n'])+)'"#).unwrap(),
          "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
@@ -216,5 +222,65 @@ mod tests {
         let input = "STRIPE_KEY=sk_live_abc123def456ghi789jkl012";
         let output = redact_secrets(input);
         assert!(!output.contains("sk_live_"));
+    }
+
+    #[test]
+    fn redact_quoted_secret_with_escaped_quote_in_value() {
+        // Issue #68: PASSWORD="pa\"ssword" — the value class [^\n"]{6,}
+        // stops at the first " and the {6,} floor fails on the 3-char
+        // prefix `pa\`, so the secret leaks through.
+        let cases = [
+            r#"PASSWORD = "pa\"ssword""#,
+            r#"API_KEY = "abc\"def""#,
+        ];
+        for input in cases {
+            let output = redact_secrets(input);
+            assert!(
+                output.contains("[REDACTED]"),
+                "expected redaction for {input:?}; got: {output}"
+            );
+            // Tighten: assert inner secret bytes are gone.
+            assert!(
+                !output.contains("ssword") && !output.contains("def"),
+                "secret bytes leaked through; got: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_quoted_secret_with_escaped_single_quote_in_value() {
+        let input = r#"TOKEN = 'it\'s-secret'"#;
+        let output = redact_secrets(input);
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("s-secret"));
+    }
+
+    #[test]
+    fn redact_does_not_consume_trailing_quote_after_escaped_quoted_value() {
+        // Greedy escape-aware class must still stop at the FIRST unescaped
+        // closing quote — not consume everything between first and last "
+        // on the line.
+        let input = r#"PASSWORD = "pa\"ssword" PUBLIC = "visible""#;
+        let output = redact_secrets(input);
+        assert!(output.contains("[REDACTED]"), "expected redaction; got: {output}");
+        // The non-secret keyword `PUBLIC` is not in the secret-keyword
+        // anchor list, so its value should remain literally visible.
+        assert!(
+            output.contains("visible"),
+            "regex over-matched and ate trailing keyword's value; got: {output}"
+        );
+    }
+
+    #[test]
+    fn redact_does_not_match_empty_quoted_value() {
+        // Without the {6,} floor, the value class (?:\\.|[^\n"])+ requires
+        // at least one char — empty quoted value should not redact.
+        // (`+` is one-or-more; this pins that we didn't accidentally use `*`.)
+        let input = r#"PASSWORD = """#;
+        let output = redact_secrets(input);
+        assert!(
+            !output.contains("[REDACTED]"),
+            "empty quoted value should not match; got: {output}"
+        );
     }
 }
