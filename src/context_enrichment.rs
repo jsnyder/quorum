@@ -52,9 +52,17 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
     if import_targets.is_empty() {
         return base_query.to_string();
     }
-    // Extract short names from import paths (e.g., "os.path.join" -> "join")
-    let keywords: Vec<&str> = import_targets.iter()
-        .filter_map(|imp| imp.split(&['.', '/', ':'][..]).last())
+    // Extract keywords from import paths.
+    // For scoped npm packages (@scope/pkg), use the scope (the framework hint),
+    // not the trailing pkg name. For regular paths, use the trailing segment.
+    let keywords: Vec<String> = import_targets.iter()
+        .filter_map(|imp| {
+            if let Some(stripped) = imp.strip_prefix('@') {
+                stripped.split('/').next().map(|s| s.to_string())
+            } else {
+                imp.split(&['.', '/', ':'][..]).last().map(|s| s.to_string())
+            }
+        })
         .filter(|s| s.len() > 2) // skip very short names like "os", "re"
         .take(10)
         .collect();
@@ -350,6 +358,14 @@ mod tests {
     fn generic_query_for_unknown_language_falls_back_to_minimal_security() {
         let q = generic_query_for_language("brainfuck");
         assert!(q.contains("security"), "fallback must mention security: {q:?}");
+    }
+
+    #[test]
+    fn build_code_aware_query_extracts_scope_for_scoped_packages() {
+        // @nestjs/core should yield "nestjs" (the framework hint), not "core" (useless).
+        let query = build_code_aware_query("base", &["@nestjs/core".into()]);
+        assert!(query.contains("nestjs"), "got: {query}");
+        assert!(!query.split_whitespace().any(|w| w == "core"), "got: {query}");
     }
 
     #[test]
