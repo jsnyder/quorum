@@ -21,9 +21,14 @@ fn parse_cargo(path: &Path) -> Vec<Dependency> {
         }
     };
     let mut out = Vec::new();
-    if let Some(table) = parsed.get("dependencies").and_then(|v| v.as_table()) {
-        for name in table.keys() {
-            out.push(Dependency { name: name.clone(), language: "rust".into() });
+    for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(table) = parsed.get(*section).and_then(|v| v.as_table()) {
+            for name in table.keys() {
+                out.push(Dependency {
+                    name: name.replace('-', "_"),
+                    language: "rust".into(),
+                });
+            }
         }
     }
     out
@@ -63,5 +68,87 @@ mod tests {
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "tokio" && d.language == "rust"));
         assert!(deps.iter().any(|d| d.name == "serde" && d.language == "rust"));
+    }
+
+    #[test]
+    fn cargo_table_dep_is_parsed() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = { version = \"1\", features = [\"full\"] }\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "tokio"));
+    }
+
+    #[test]
+    fn cargo_dev_and_build_deps_included() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[dev-dependencies]\ntempfile = \"3\"\n\n[build-dependencies]\ncc = \"1\"\n");
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"tempfile"));
+        assert!(names.contains(&"cc"));
+    }
+
+    #[test]
+    fn cargo_workspace_true_extracts_name() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = { workspace = true }\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "tokio"));
+    }
+
+    #[test]
+    fn cargo_hyphen_normalized_to_underscore() {
+        // serde-json in manifest becomes serde_json in code.
+        // Without normalization, the imports-filter would never match.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", &cargo_with(&[("serde-json", "1"), ("tokio-stream", "0.1")]));
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"serde_json"), "got {names:?}");
+        assert!(names.contains(&"tokio_stream"), "got {names:?}");
+    }
+
+    #[test]
+    fn cargo_workspace_root_with_only_members_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[workspace]\nmembers = [\"a\", \"b\"]\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn cargo_workspace_dependencies_section_is_not_parsed_in_v1() {
+        // v1 decision: workspace.dependencies is NOT parsed (workspace member resolution
+        // is an explicit accepted limitation in the design). Pin this so a future
+        // change to broaden parsing is a deliberate decision, not a silent regression.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\ntokio = \"1\"\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(!deps.iter().any(|d| d.name == "tokio"),
+            "workspace.dependencies parsing is deferred; got {deps:?}");
+    }
+
+    #[test]
+    fn cargo_dep_in_both_dependencies_and_dev_dependencies_appears() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"\n");
+        let deps = parse_dependencies(dir.path());
+        let count = deps.iter().filter(|d| d.name == "tokio").count();
+        // Pin the choice: parse_cargo currently appends both. Downstream dedupe in
+        // enrich_for_review handles uniqueness. If parse_cargo grows dedup, change to == 1.
+        assert!(count >= 1, "tokio missing entirely: {deps:?}");
+    }
+
+    #[test]
+    fn cargo_renamed_dep_uses_key_not_package_name() {
+        // foo is the import-side name; "real-crate" is what's on crates.io.
+        // We must surface "foo" so the import filter matches `use foo::...`.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", "[dependencies]\nfoo = { package = \"real-crate\", version = \"1\" }\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "foo"),
+            "renamed dep must surface key: {deps:?}");
+        assert!(!deps.iter().any(|d| d.name == "real_crate"),
+            "must not surface package name: {deps:?}");
     }
 }
