@@ -34,11 +34,40 @@ fn parse_cargo(path: &Path) -> Vec<Dependency> {
     out
 }
 
+fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "package.json parse failed");
+            return Vec::new();
+        }
+    };
+    let lang = if has_tsconfig { "typescript" } else { "javascript" };
+    let mut out = Vec::new();
+    for key in &["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
+        if let Some(obj) = parsed.get(*key).and_then(|v| v.as_object()) {
+            for name in obj.keys() {
+                out.push(Dependency { name: name.clone(), language: lang.into() });
+            }
+        }
+    }
+    out
+}
+
 pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     let mut out = Vec::new();
     let cargo = project_dir.join("Cargo.toml");
     if cargo.exists() {
         out.extend(parse_cargo(&cargo));
+    }
+    let pkg = project_dir.join("package.json");
+    if pkg.exists() {
+        let has_tsconfig = project_dir.join("tsconfig.json").exists();
+        out.extend(parse_package_json(&pkg, has_tsconfig));
     }
     out
 }
@@ -137,6 +166,55 @@ mod tests {
         // Pin the choice: parse_cargo currently appends both. Downstream dedupe in
         // enrich_for_review handles uniqueness. If parse_cargo grows dedup, change to == 1.
         assert!(count >= 1, "tokio missing entirely: {deps:?}");
+    }
+
+    #[test]
+    fn package_json_all_dep_kinds_included() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{
+            "dependencies": {"react": "^18"},
+            "devDependencies": {"vitest": "^1"},
+            "peerDependencies": {"@types/react": "^18"},
+            "optionalDependencies": {"fsevents": "*"}
+        }"#);
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        for n in ["react", "vitest", "@types/react", "fsevents"] {
+            assert!(names.contains(&n), "missing {n} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn package_json_scoped_packages_kept_verbatim() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{"dependencies": {"@nestjs/core": "^10"}}"#);
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "@nestjs/core"));
+    }
+
+    #[test]
+    fn package_json_dependencies_get_typescript_language_when_project_is_typescript() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{"dependencies": {"react": "^18"}}"#);
+        write(dir.path(), "tsconfig.json", "{}");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().all(|d| d.language == "typescript"));
+    }
+
+    #[test]
+    fn package_json_dependencies_get_javascript_language_when_project_is_not_typescript() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{"dependencies": {"react": "^18"}}"#);
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().all(|d| d.language == "javascript"));
+    }
+
+    #[test]
+    fn package_json_malformed_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", "{not json");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.is_empty());
     }
 
     #[test]
