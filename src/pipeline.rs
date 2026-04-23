@@ -34,17 +34,42 @@ fn write_calibrator_traces(
     }
     if let Some(store_path) = feedback_store {
         let trace_path = store_path.with_file_name("calibrator_traces.jsonl");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+        // Serialize all in-process trace writes through a single mutex so
+        // parallel review tasks can't interleave bytes within a JSONL line.
+        // (Cross-process safety still relies on append-write atomicity below
+        // PIPE_BUF; trace records are well under that threshold in practice.)
+        static TRACE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = TRACE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&trace_path)
         {
-            use std::io::Write;
-            for trace in traces {
-                if let Ok(json) = serde_json::to_string(trace) {
-                    let _ = writeln!(file, "{}", json);
+            Ok(mut file) => {
+                use std::io::Write;
+                for trace in traces {
+                    match serde_json::to_string(trace) {
+                        Ok(json) => {
+                            if let Err(e) = writeln!(file, "{}", json) {
+                                tracing::warn!(
+                                    path = %trace_path.display(),
+                                    error = %e,
+                                    "calibrator trace write failed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "calibrator trace serialize failed"
+                        ),
+                    }
                 }
             }
+            Err(e) => tracing::warn!(
+                path = %trace_path.display(),
+                error = %e,
+                "calibrator trace file open failed"
+            ),
         }
     }
 }
@@ -54,11 +79,13 @@ fn write_calibrator_traces(
 /// Returns an owned permit that is released on drop (RAII).
 fn acquire_llm_permit(sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>) -> Option<tokio::sync::OwnedSemaphorePermit> {
     let sem = sem.as_ref()?.clone();
-    Some(
-        tokio::runtime::Handle::current()
-            .block_on(sem.acquire_owned())
-            .expect("semaphore closed unexpectedly")
-    )
+    // A closed semaphore (typically shutdown) returns Err; degrade to "no
+    // permit, run unthrottled" rather than panicking. Same observable
+    // behavior as the no-semaphore path above; lets the LLM call itself
+    // surface any shutdown-related failure.
+    tokio::runtime::Handle::current()
+        .block_on(sem.acquire_owned())
+        .ok()
 }
 
 /// Trait for LLM review — allows testing with fake implementations.
@@ -237,11 +264,14 @@ pub fn review_file(
     let mut local_index = if shared_index.is_none() {
         if let Some(store_path) = &pipeline_config.feedback_store {
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            if pipeline_config.fast {
-                crate::feedback_index::FeedbackIndex::build_bm25(&store).ok()
+            // Surface I/O / corrupted-store errors instead of silently
+            // proceeding without precedent injection. The embedder-unavailable
+            // path is already a soft fall-back inside FeedbackIndex::build.
+            Some(if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
             } else {
-                crate::feedback_index::FeedbackIndex::build(&store).ok()
-            }
+                crate::feedback_index::FeedbackIndex::build(&store)?
+            })
         } else {
             None
         }
@@ -625,11 +655,14 @@ pub fn review_file_llm_only(
     let mut local_index = if shared_index.is_none() {
         if let Some(store_path) = &pipeline_config.feedback_store {
             let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            if pipeline_config.fast {
-                crate::feedback_index::FeedbackIndex::build_bm25(&store).ok()
+            // Surface I/O / corrupted-store errors instead of silently
+            // proceeding without precedent injection. The embedder-unavailable
+            // path is already a soft fall-back inside FeedbackIndex::build.
+            Some(if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
             } else {
-                crate::feedback_index::FeedbackIndex::build(&store).ok()
-            }
+                crate::feedback_index::FeedbackIndex::build(&store)?
+            })
         } else {
             None
         }

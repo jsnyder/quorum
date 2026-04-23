@@ -26,6 +26,73 @@ pub struct LlmResponse {
     pub usage: Option<TokenUsage>,
 }
 
+/// Parse the JSON body of a chat-completions response into either tool
+/// calls or final content. Errors on missing required fields and on
+/// malformed individual tool calls; previously such failures fell through
+/// to FinalContent("") or were silently dropped from the tool_calls vec.
+pub fn parse_chat_response(json: &serde_json::Value) -> anyhow::Result<LlmTurnResult> {
+    let choice = json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .ok_or_else(|| anyhow::anyhow!("malformed chat response: missing `choices[0]`"))?;
+    let message = choice
+        .get("message")
+        .ok_or_else(|| anyhow::anyhow!("malformed chat response: missing `choices[0].message`"))?;
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(|f| f.as_str())
+        .unwrap_or("stop");
+
+    if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
+        if !tool_calls.is_empty() {
+            // Error on any malformed entry rather than silently dropping it
+            // via filter_map. A partial tool_calls vec leaves orphaned
+            // assistant calls without matching tool responses, which most
+            // chat APIs reject on the next turn — same failure mode as the
+            // agent.rs limit-reached bug, just at the parser layer.
+            let mut calls = Vec::with_capacity(tool_calls.len());
+            for (i, tc) in tool_calls.iter().enumerate() {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "malformed tool_calls[{i}]: missing `id`"
+                    ))?
+                    .to_string();
+                let name = tc
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "malformed tool_calls[{i}]: missing `function.name`"
+                    ))?
+                    .to_string();
+                let arguments = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str())
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "malformed tool_calls[{i}]: missing `function.arguments`"
+                    ))?
+                    .to_string();
+                calls.push(ToolCall { id, name, arguments });
+            }
+            return Ok(LlmTurnResult::ToolCalls(calls));
+        }
+    }
+
+    if finish_reason == "length" {
+        anyhow::bail!("Response truncated (finish_reason=length)");
+    }
+    let content = message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| anyhow::anyhow!(
+            "malformed chat response: `choices[0].message.content` missing or non-string"
+        ))?;
+    Ok(LlmTurnResult::FinalContent(content.to_string()))
+}
+
 pub fn parse_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     let usage = json.get("usage")?;
     // Chat Completions uses `prompt_tokens`/`completion_tokens`. Responses API
@@ -275,28 +342,7 @@ impl OpenAiClient {
         }
 
         let json: serde_json::Value = resp.json().await?;
-        let message = &json["choices"][0]["message"];
-        let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("stop");
-
-        // Check for tool calls
-        if let Some(tool_calls) = message["tool_calls"].as_array() {
-            if !tool_calls.is_empty() {
-                let calls = tool_calls.iter().filter_map(|tc| {
-                    let id = tc["id"].as_str()?.to_string();
-                    let name = tc["function"]["name"].as_str()?.to_string();
-                    let arguments = tc["function"]["arguments"].as_str()?.to_string();
-                    Some(ToolCall { id, name, arguments })
-                }).collect();
-                return Ok(LlmTurnResult::ToolCalls(calls));
-            }
-        }
-
-        // Otherwise, return final content
-        let content = message["content"].as_str().unwrap_or("");
-        if finish_reason == "length" {
-            anyhow::bail!("Response truncated (finish_reason=length)");
-        }
-        Ok(LlmTurnResult::FinalContent(content.to_string()))
+        parse_chat_response(&json)
     }
 
     pub(crate) fn system_prompt() -> &'static str {
@@ -479,6 +525,86 @@ mod tests {
         assert_eq!(arr[0]["function"]["name"], "read_file");
         assert_eq!(arr[0]["function"]["description"], "Read a file");
         assert!(arr[0]["function"]["parameters"]["properties"]["path"].is_object());
+    }
+
+    // -- parse_chat_response --
+
+    #[test]
+    fn parse_chat_response_returns_final_content() {
+        let json = serde_json::json!({
+            "choices": [{
+                "message": {"content": "[]"},
+                "finish_reason": "stop"
+            }]
+        });
+        match parse_chat_response(&json).unwrap() {
+            LlmTurnResult::FinalContent(c) => assert_eq!(c, "[]"),
+            _ => panic!("expected FinalContent"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_response_returns_tool_calls() {
+        let json = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "tc_1",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"a.rs\"}"}
+                    }]
+                }
+            }]
+        });
+        match parse_chat_response(&json).unwrap() {
+            LlmTurnResult::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "tc_1");
+                assert_eq!(calls[0].name, "read_file");
+            }
+            _ => panic!("expected ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_response_errors_on_missing_choices() {
+        let json = serde_json::json!({});
+        let err = parse_chat_response(&json).unwrap_err();
+        assert!(err.to_string().contains("choices[0]"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_chat_response_errors_on_missing_content_field() {
+        // Regression: previously message.content.as_str().unwrap_or("") fell
+        // through to FinalContent("") when the field was absent, masking
+        // upstream malformedness as a clean "no findings" review.
+        let json = serde_json::json!({
+            "choices": [{"message": {}, "finish_reason": "stop"}]
+        });
+        let err = parse_chat_response(&json).unwrap_err();
+        assert!(err.to_string().contains("content"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_chat_response_errors_on_malformed_tool_call_entry() {
+        // Regression: filter_map silently dropped malformed entries, which
+        // could return ToolCalls([]) even though the model requested tools.
+        // Now any malformed entry surfaces an error so the caller knows.
+        let json = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [
+                        // Missing arguments field on second call — used to be dropped.
+                        {"id": "ok", "function": {"name": "read_file", "arguments": "{}"}},
+                        {"id": "bad", "function": {"name": "read_file"}}
+                    ]
+                }
+            }]
+        });
+        let err = parse_chat_response(&json).unwrap_err();
+        assert!(
+            err.to_string().contains("tool_calls[1]") && err.to_string().contains("arguments"),
+            "expected error pointing at malformed entry; got: {err}"
+        );
     }
 
     // -- parse_usage --

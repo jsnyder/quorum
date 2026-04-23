@@ -22,11 +22,23 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // Bearer tokens (JWT-like)
         (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
         // Generic secret assignments: KEY="value", PASSWORD='value'
-        // Only matches quoted string literals — two patterns for double and single quotes
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
-         "$1\"[REDACTED]\""),
-        (Regex::new(r#"(?i)((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
-         "$1'[REDACTED]'"),
+        // Only matches quoted string literals — two patterns for double and single quotes.
+        //
+        // Boundary class is `[^A-Za-z0-9]` (NOT `_` or `-`) so identifier
+        // separators count as boundaries: `oauth` (no separator before `auth`)
+        // does NOT match, but `MY_SECRET`, `GITHUB_TOKEN`, `DB-PASSWORD` do.
+        //
+        // The trailing `(?:[_-][A-Za-z0-9]+)*` allows the secret keyword to
+        // be followed by additional `_WORD` / `-word` segments — required
+        // for composite names like `AWS_SECRET_ACCESS_KEY` (matches on
+        // `SECRET_ACCESS_KEY`) and `DB_PASSWORD_PRIMARY`.
+        //
+        // Captured boundary char ($1) is preserved in the replacement so we
+        // don't accidentally rewrite surrounding source.
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
+         "$1$2\"[REDACTED]\""),
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
+         "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
         // URLs with passwords: protocol://user:password@host
@@ -104,6 +116,19 @@ mod tests {
     }
 
     #[test]
+    fn redact_does_not_match_inside_larger_identifier() {
+        // Regression: previously the unanchored alternation matched the `auth`
+        // substring in `oauth` and the `token` substring in `mytoken`, redacting
+        // benign value strings that happened to be assigned to non-secret vars.
+        let input = "let oauth = \"client_id_abc123\";\nlet mytoken = \"opaque_value\";";
+        let output = redact_secrets(input);
+        assert_eq!(
+            input, output,
+            "non-secret identifiers ending in auth/token must not be redacted; got: {output}"
+        );
+    }
+
+    #[test]
     fn redact_multiple_secrets_in_one_text() {
         let input = "KEY=\"sk-test-123\"\nPASSWORD=\"hunter2-pass\"\nfn safe() {}";
         let output = redact_secrets(input);
@@ -118,6 +143,30 @@ mod tests {
         let output = redact_secrets(input);
         assert!(!output.contains("MIIEpAIBAAKCAQEA"));
         assert!(output.contains("[REDACTED"));
+    }
+
+    #[test]
+    fn redact_aws_secret_access_key_composite_name() {
+        // The current alternation requires the secret keyword to sit
+        // immediately before `=` or `:`. AWS_SECRET_ACCESS_KEY suffixes
+        // `secret` with `_ACCESS_KEY`, so without composite-name handling
+        // the value goes through to the LLM verbatim.
+        let input = r#"AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY""#;
+        let output = redact_secrets(input);
+        assert!(
+            !output.contains("wJalrXUtnFEMI"),
+            "AWS_SECRET_ACCESS_KEY value must be redacted; got: {output}"
+        );
+    }
+
+    #[test]
+    fn redact_db_password_composite_name() {
+        let input = r#"DB_PASSWORD_PRIMARY = "hunter2-prod""#;
+        let output = redact_secrets(input);
+        assert!(
+            !output.contains("hunter2-prod"),
+            "composite *_PASSWORD_* name must be redacted; got: {output}"
+        );
     }
 
     #[test]
