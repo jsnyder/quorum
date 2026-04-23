@@ -1,0 +1,7 @@
+id: builder-unwrap-or-default
+language: Rust
+severity: warning
+message: "`.build().unwrap_or_default()` silently drops the configured builder's failure and returns the type's default — which usually means none of the builder configuration (timeouts, headers, auth, retries) takes effect. Either propagate the error with `?` or use `.expect(\"...\")` so misconfiguration surfaces loudly."
+note: "Captured from issue #66: reqwest::Client::builder().timeout(...).build().unwrap_or_default() silently dropped the 10s connect / 300s overall timeout when builder failed. The default reqwest::Client has NO timeouts."
+rule:
+  pattern: $X.build().unwrap_or_default()

@@ -1,0 +1,9 @@
+id: handle-block-on-no-flavor-check
+language: Rust
+severity: warning
+message: "`Handle::current().block_on(...)` (or `Handle::block_on`) panics when called from inside an async context, and `Handle::current()` itself panics when no Tokio runtime exists. Detect runtime flavor via `Handle::try_current()` + `RuntimeFlavor` and degrade gracefully (or use `tokio::task::block_in_place` on multi-thread runtimes)."
+note: "Captured from issues #57, #58, #71. The safe pattern is: `Handle::try_current()` + match on `RuntimeFlavor` — use `tokio::task::block_in_place(|| handle.block_on(f))` on `MultiThread`, fall back to `std::thread::scope` + a fresh runtime on `CurrentThread`. The src/llm_client.rs `block_on_async` impl is the canonical example."
+rule:
+  any:
+    - pattern: tokio::runtime::Handle::current().block_on($_)
+    - pattern: Handle::current().block_on($_)
