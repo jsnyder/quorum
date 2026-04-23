@@ -80,11 +80,11 @@ fn parse_pyproject(path: &Path) -> Vec<Dependency> {
         }
     };
     let mut out = Vec::new();
-    if let Some(arr) = parsed
+    let pep621_array = parsed
         .get("project")
         .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_array())
-    {
+        .and_then(|d| d.as_array());
+    if let Some(arr) = pep621_array {
         for v in arr {
             if let Some(s) = v.as_str() {
                 if let Some(name) = strip_python_dep_spec(s) {
@@ -92,9 +92,10 @@ fn parse_pyproject(path: &Path) -> Vec<Dependency> {
                 }
             }
         }
-        if !out.is_empty() {
-            return out;  // PEP 621 wins over Poetry
-        }
+        // PEP 621 section is present (possibly empty) → it wins over Poetry.
+        // An explicit empty array means "this project has no deps" — do not
+        // fall through to [tool.poetry.dependencies].
+        return out;
     }
     if let Some(table) = parsed
         .get("tool")
@@ -371,6 +372,26 @@ httpx = { version = "*" }
         write(dir.path(), "requirements.txt", "django\n");
         let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn pyproject_empty_pep621_array_wins_over_poetry() {
+        // [project.dependencies = []] means "this project explicitly has no deps".
+        // Without an explicit "section was present" check, the previous logic
+        // silently fell through to [tool.poetry.dependencies], merging two
+        // dep-source-of-truth sections.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = []
+
+[tool.poetry.dependencies]
+django = "*"
+"#);
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new(),
+            "empty PEP 621 array must win, not fall through to Poetry: {names:?}");
     }
 
     #[test]

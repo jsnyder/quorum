@@ -361,7 +361,12 @@ pub fn review_file(
         };
 
         // Fetch Context7 framework docs (curated frameworks + dep-based enrichment).
-        let framework_docs = {
+        let framework_docs = if pipeline_config.skip_context7 {
+            // --skip-context7: opt out entirely, no Context7 client constructed,
+            // no HTTP calls. Metrics stay at defaults.
+            tracing::debug!("Context7: enrichment skipped via --skip-context7");
+            None
+        } else {
             let project_root = find_project_root(file_path);
             let mut domain = crate::domain::detect_domain(&project_root);
             for fw in &pipeline_config.framework_overrides {
@@ -698,7 +703,10 @@ pub fn review_file_llm_only(
             let language = lang_name_from_path(file_path);
 
             // Context7 framework docs (metrics aggregate into the function-scoped var)
-            let framework_docs = {
+            let framework_docs = if pipeline_config.skip_context7 {
+                tracing::debug!("Context7: enrichment skipped via --skip-context7");
+                None
+            } else {
                 let project_root = find_project_root(file_path);
                 let mut domain = crate::domain::detect_domain(&project_root);
                 for fw in &pipeline_config.framework_overrides {
