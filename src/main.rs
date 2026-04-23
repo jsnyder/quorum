@@ -484,11 +484,16 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        Some(std::sync::Arc::new(
-            llm_client::OpenAiClient::new(&cfg.base_url, api_key)
-                .with_reasoning_effort(effort)
-                .with_bypass_proxy_cache(bypass_proxy_cache)
-        ))
+        match llm_client::OpenAiClient::new(&cfg.base_url, api_key) {
+            Ok(c) => Some(std::sync::Arc::new(
+                c.with_reasoning_effort(effort)
+                    .with_bypass_proxy_cache(bypass_proxy_cache),
+            )),
+            Err(e) => {
+                eprintln!("error: cannot construct LLM client: {e}");
+                return 3;
+            }
+        }
     } else {
         None
     };

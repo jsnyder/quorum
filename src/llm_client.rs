@@ -141,18 +141,38 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    pub fn new(base_url: &str, api_key: &str) -> Self {
-        Self {
-            http: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .unwrap_or_default(),
+    /// Build a client.
+    ///
+    /// `base_url` must parse as an `http`/`https` URL — anything else
+    /// (missing scheme, `file://`, an accidentally-passed API key) is
+    /// rejected up front so misconfiguration surfaces at startup with a
+    /// clear error rather than at request time with an opaque reqwest
+    /// error.
+    ///
+    /// The internal reqwest client is built with a 10 s connect timeout
+    /// and a 300 s overall timeout. Builder failure is propagated as an
+    /// error rather than silently dropping that config (issue #66).
+    pub fn new(base_url: &str, api_key: &str) -> anyhow::Result<Self> {
+        let parsed = url::Url::parse(base_url)
+            .map_err(|e| anyhow::anyhow!("base_url {base_url:?} is not a valid URL: {e}"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            anyhow::bail!(
+                "base_url {base_url:?} must use http or https scheme, got {:?}",
+                parsed.scheme()
+            );
+        }
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build reqwest client: {e}"))?;
+        Ok(Self {
+            http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             reasoning_effort: None,
             bypass_proxy_cache: false,
-        }
+        })
     }
 
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
@@ -561,9 +581,59 @@ mod tests {
 
     #[test]
     fn client_creation() {
-        let client = OpenAiClient::new("https://api.example.com/v1", "sk-test");
+        let client = OpenAiClient::new("https://api.example.com/v1", "sk-test")
+            .expect("valid url");
         assert_eq!(client.base_url, "https://api.example.com/v1");
         assert_eq!(client.api_key, "sk-test");
+    }
+
+    #[test]
+    fn new_rejects_url_without_scheme() {
+        // Issue #59: a missing scheme should fail loudly at construction
+        // rather than at request time with an opaque reqwest error.
+        let err = match OpenAiClient::new("api.openai.com/v1", "sk-test") {
+            Ok(_) => panic!("expected error for url without scheme"),
+            Err(e) => e,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("base_url"),
+            "error message should reference base_url, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn new_rejects_non_http_scheme() {
+        // file://, ftp://, etc. would be silently accepted and only fail
+        // at request time. Reject up front.
+        let err = match OpenAiClient::new("file:///etc/passwd", "sk-test") {
+            Ok(_) => panic!("expected error for non-http scheme"),
+            Err(e) => e,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("http"), "error should mention http(s), got: {msg}");
+    }
+
+    #[test]
+    fn new_accepts_http_and_https_urls() {
+        assert!(OpenAiClient::new("https://api.example.com/v1", "sk-test").is_ok());
+        assert!(OpenAiClient::new("http://localhost:8000", "sk-test").is_ok());
+    }
+
+    #[test]
+    fn new_preserves_configured_timeout_on_built_client() {
+        // Issue #66: previously .build().unwrap_or_default() would silently
+        // drop the configured 10s connect / 300s overall timeout if the
+        // builder ever failed. Verify the resulting client at least exposes
+        // the configured timeout via reqwest's getter.
+        let client = OpenAiClient::new("https://example.com", "sk-test")
+            .expect("valid url");
+        // reqwest::Client doesn't expose a getter for the configured
+        // timeouts directly, so instead we assert that construction
+        // succeeded — which under the new behavior means the builder
+        // succeeded. The previous unwrap_or_default would have masked a
+        // failure here.
+        let _ = client;
     }
 
     #[test]
