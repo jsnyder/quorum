@@ -69,7 +69,16 @@ async fn main() -> anyhow::Result<()> {
 
             if want_context_dim {
                 let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
-                let all_records = log.load_all().unwrap_or_default();
+                let all_records = match log.load_all() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!(
+                            "error: cannot read reviews log at {}: {e}",
+                            log.path().display()
+                        );
+                        std::process::exit(3);
+                    }
+                };
                 let records: Vec<_> = match opts.rolling {
                     Some(n) if n < all_records.len() => {
                         all_records[all_records.len() - n..].to_vec()
@@ -114,7 +123,16 @@ async fn main() -> anyhow::Result<()> {
 
             if want_classic_dim {
                 let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
-                let records = log.load_all().unwrap_or_default();
+                let records = match log.load_all() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!(
+                            "error: cannot read reviews log at {}: {e}",
+                            log.path().display()
+                        );
+                        std::process::exit(3);
+                    }
+                };
                 let (mode, slices) = if opts.by_repo {
                     ("by-repo", dimensions::group_by_repo(&records))
                 } else if opts.by_caller {
