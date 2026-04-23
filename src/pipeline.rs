@@ -40,17 +40,36 @@ fn write_calibrator_traces(
         // PIPE_BUF; trace records are well under that threshold in practice.)
         static TRACE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = TRACE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&trace_path)
         {
-            use std::io::Write;
-            for trace in traces {
-                if let Ok(json) = serde_json::to_string(trace) {
-                    let _ = writeln!(file, "{}", json);
+            Ok(mut file) => {
+                use std::io::Write;
+                for trace in traces {
+                    match serde_json::to_string(trace) {
+                        Ok(json) => {
+                            if let Err(e) = writeln!(file, "{}", json) {
+                                tracing::warn!(
+                                    path = %trace_path.display(),
+                                    error = %e,
+                                    "calibrator trace write failed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "calibrator trace serialize failed"
+                        ),
+                    }
                 }
             }
+            Err(e) => tracing::warn!(
+                path = %trace_path.display(),
+                error = %e,
+                "calibrator trace file open failed"
+            ),
         }
     }
 }

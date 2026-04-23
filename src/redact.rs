@@ -23,17 +23,21 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
         // Generic secret assignments: KEY="value", PASSWORD='value'
         // Only matches quoted string literals — two patterns for double and single quotes.
-        // The leading `(^|[^A-Za-z])` group anchors the alternation to either
-        // start-of-input or a non-letter character, preventing partial matches
-        // inside longer identifiers like `oauth = "..."` (which used to match
-        // the `auth` substring) or `mytoken = "..."` (matched on `token`).
-        // Underscores ARE allowed as boundaries so legitimate names like
-        // `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY` still redact correctly.
+        //
+        // Boundary class is `[^A-Za-z0-9]` (NOT `_` or `-`) so identifier
+        // separators count as boundaries: `oauth` (no separator before `auth`)
+        // does NOT match, but `MY_SECRET`, `GITHUB_TOKEN`, `DB-PASSWORD` do.
+        //
+        // The trailing `(?:[_-][A-Za-z0-9]+)*` allows the secret keyword to
+        // be followed by additional `_WORD` / `-word` segments — required
+        // for composite names like `AWS_SECRET_ACCESS_KEY` (matches on
+        // `SECRET_ACCESS_KEY`) and `DB_PASSWORD_PRIMARY`.
+        //
         // Captured boundary char ($1) is preserved in the replacement so we
         // don't accidentally rewrite surrounding source.
-        (Regex::new(r#"(?i)(^|[^A-Za-z])((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"([^\n"]{6,})""#).unwrap(),
          "$1$2\"[REDACTED]\""),
-        (Regex::new(r#"(?i)(^|[^A-Za-z])((?:api[_-]?key|password|secret|token|passwd|auth)\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'([^\n']{6,})'"#).unwrap(),
          "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
@@ -139,6 +143,30 @@ mod tests {
         let output = redact_secrets(input);
         assert!(!output.contains("MIIEpAIBAAKCAQEA"));
         assert!(output.contains("[REDACTED"));
+    }
+
+    #[test]
+    fn redact_aws_secret_access_key_composite_name() {
+        // The current alternation requires the secret keyword to sit
+        // immediately before `=` or `:`. AWS_SECRET_ACCESS_KEY suffixes
+        // `secret` with `_ACCESS_KEY`, so without composite-name handling
+        // the value goes through to the LLM verbatim.
+        let input = r#"AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY""#;
+        let output = redact_secrets(input);
+        assert!(
+            !output.contains("wJalrXUtnFEMI"),
+            "AWS_SECRET_ACCESS_KEY value must be redacted; got: {output}"
+        );
+    }
+
+    #[test]
+    fn redact_db_password_composite_name() {
+        let input = r#"DB_PASSWORD_PRIMARY = "hunter2-prod""#;
+        let output = redact_secrets(input);
+        assert!(
+            !output.contains("hunter2-prod"),
+            "composite *_PASSWORD_* name must be redacted; got: {output}"
+        );
     }
 
     #[test]

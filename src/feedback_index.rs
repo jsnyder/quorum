@@ -88,14 +88,30 @@ impl FeedbackIndex {
                         )
                     })
                     .collect();
+                // Match the LocalEmbedder::new() fall-back below: if the
+                // embedder initializes but a single batch call fails (model
+                // I/O hiccup, runtime quirk), degrade to BM25-only instead
+                // of failing the whole index build. The vector-alignment
+                // ensure! still applies on the success path.
                 let vectors = if texts.is_empty() {
                     vec![]
                 } else {
-                    embedder.embed_batch(&texts)?
+                    match embedder.embed_batch(&texts) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!(
+                                "FeedbackIndex: embed_batch failed ({}), falling back to BM25+Jaccard",
+                                e
+                            );
+                            return Ok(Self {
+                                entries,
+                                vectors: vec![],
+                                embedder: None,
+                                bm25_engine,
+                            });
+                        }
+                    }
                 };
-                // Retrieval indexes by entry position into self.vectors, so an
-                // off-by-one between texts and vectors would silently attach
-                // similarity scores to the wrong FeedbackEntry.
                 anyhow::ensure!(
                     vectors.len() == entries.len(),
                     "embedding alignment mismatch: {} entries vs {} vectors",
@@ -181,7 +197,21 @@ impl FeedbackIndex {
                     let vectors = if texts.is_empty() {
                         vec![]
                     } else {
-                        embedder.embed_batch(&texts)?
+                        match embedder.embed_batch(&texts) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!(
+                                    "FeedbackIndex: embed_batch failed ({}), falling back to BM25+Jaccard",
+                                    e
+                                );
+                                return Ok(Self {
+                                    entries,
+                                    vectors: vec![],
+                                    embedder: None,
+                                    bm25_engine,
+                                });
+                            }
+                        }
                     };
                     anyhow::ensure!(
                         vectors.len() == entries.len(),
