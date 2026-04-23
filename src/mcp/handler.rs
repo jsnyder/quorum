@@ -38,7 +38,7 @@ impl QuorumHandler {
         let feedback_store = FeedbackStore::new(feedback_path);
 
         let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-            Some(Box::new(OpenAiClient::new(&config.base_url, api_key)))
+            Some(Box::new(OpenAiClient::new(&config.base_url, api_key)?))
         } else {
             None
         };

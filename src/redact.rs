@@ -41,8 +41,11 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
          "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
-        // URLs with passwords: protocol://user:password@host
-        (Regex::new(r"(://[^:/@]+:)([^@\s]{3,})(@)").unwrap(), "${1}[REDACTED]${3}"),
+        // URLs with passwords: protocol://user:password@host.
+        // Floor at 1 char: short passwords are rare in practice, but the
+        // surrounding `://USER:` ... `@` context anchors the match well
+        // enough that we don't need a length floor as a precision filter.
+        (Regex::new(r"(://[^:/@]+:)([^@\s]+)(@)").unwrap(), "${1}[REDACTED]${3}"),
     ]
 });
 
@@ -106,6 +109,24 @@ mod tests {
         let input = "postgres://user:s3cretP4ss@localhost:5432/db";
         let output = redact_secrets(input);
         assert!(!output.contains("s3cretP4ss"));
+    }
+
+    #[test]
+    fn redact_short_password_in_url() {
+        // Issue #61: previously the URL-password regex required {3,}
+        // characters, letting 1- and 2-char passwords leak through. Real
+        // short passwords are rare but the floor was arbitrary.
+        let cases = [
+            ("postgres://user:a@host", "a"),
+            ("postgres://user:ab@host", "ab"),
+        ];
+        for (input, password) in cases {
+            let output = redact_secrets(input);
+            assert!(
+                !output.contains(&format!(":{password}@")),
+                "short password {password:?} leaked through; output: {output}"
+            );
+        }
     }
 
     #[test]

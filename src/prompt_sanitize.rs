@@ -19,21 +19,82 @@ pub(crate) const SANDBOX_TAGS: &[&str] = &[
     "untrusted_code",
 ];
 
-/// Replace each literal `</sandbox_tag>` in `s` with a defanged form that
-/// inserts a zero-width space immediately after `</`. Visually identical for
-/// humans but no longer matches the literal closing-tag string the prompt
-/// builder uses as a sandbox boundary.
+/// Replace each closing tag for a known sandbox tag with a defanged form
+/// that inserts a zero-width space immediately after `</`. Visually
+/// identical for humans but no longer matches the literal closing-tag
+/// string the prompt builder uses as a sandbox boundary.
+///
+/// Matching is permissive on inputs the LLM treats as equivalent to a
+/// canonical closing tag, even though strict XML parsers wouldn't:
+/// - ASCII case-insensitive on the tag name
+/// - Optional ASCII whitespace inside the brackets (e.g. `</tag >`,
+///   `</tag\t>`, `</  tag  >`)
+///
+/// Non-sandbox tags (e.g. `</div>`) pass through unchanged.
 pub(crate) fn defang_sandbox_tags(s: &str) -> String {
-    let mut out = s.to_string();
-    for tag in SANDBOX_TAGS {
-        let raw = format!("</{tag}>");
-        if !out.contains(&raw) {
-            continue;
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Look for `</`.
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            // Skip optional whitespace after `</`.
+            let mut j = i + 2;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            // Read the tag name (ASCII alnum + underscore).
+            let name_start = j;
+            while j < bytes.len()
+                && ((bytes[j] as char).is_ascii_alphanumeric() || bytes[j] == b'_')
+            {
+                j += 1;
+            }
+            let name = &s[name_start..j];
+            if !name.is_empty() {
+                // Skip optional whitespace before `>`.
+                let mut k = j;
+                while k < bytes.len() && (bytes[k] as char).is_ascii_whitespace() {
+                    k += 1;
+                }
+                if k < bytes.len() && bytes[k] == b'>' {
+                    let lower_name = name.to_ascii_lowercase();
+                    if SANDBOX_TAGS.iter().any(|t| *t == lower_name.as_str()) {
+                        out.push_str("</\u{200B}");
+                        out.push_str(name);
+                        out.push('>');
+                        i = k + 1;
+                        continue;
+                    }
+                }
+            }
         }
-        let defanged = format!("</\u{200B}{tag}>");
-        out = out.replace(&raw, &defanged);
+        // Push current char (handle multi-byte safely via the source slice).
+        let ch_end = next_char_end(s, i);
+        out.push_str(&s[i..ch_end]);
+        i = ch_end;
     }
     out
+}
+
+/// Return the byte index of the end of the UTF-8 character starting at `i`.
+fn next_char_end(s: &str, i: usize) -> usize {
+    let bytes = s.as_bytes();
+    let lead = bytes[i];
+    let len = if lead < 0x80 {
+        1
+    } else if lead < 0xC0 {
+        // Continuation byte: shouldn't happen if `i` is a char boundary,
+        // but advance one byte to make progress.
+        1
+    } else if lead < 0xE0 {
+        2
+    } else if lead < 0xF0 {
+        3
+    } else {
+        4
+    };
+    (i + len).min(bytes.len())
 }
 
 /// Pick a Markdown fence length longer than any consecutive run of backticks
@@ -104,6 +165,53 @@ mod tests {
                 "tag {tag} not defanged in {out}"
             );
         }
+    }
+
+    #[test]
+    fn defangs_uppercase_and_mixed_case_variants() {
+        // The LLM treats case-equivalent closing tags as boundaries even
+        // though XML is technically case-sensitive. All-lowercase /
+        // all-uppercase / mixed-case must each be defanged.
+        let cases = [
+            "</RETRIEVED_REFERENCE>",
+            "</Retrieved_Reference>",
+            "</retrieved_REFERENCE>",
+        ];
+        for input in cases {
+            let out = defang_sandbox_tags(input);
+            assert!(
+                !out.contains(input),
+                "case variant {input} was not defanged: got {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn defangs_whitespace_inside_closing_tag() {
+        // Whitespace tolerance: </tag >, </tag\t>, </tag\n> are all
+        // recognized as closing tags by lenient parsers and by the LLM.
+        let cases = [
+            "</retrieved_reference >",
+            "</retrieved_reference\t>",
+            "</retrieved_reference\n>",
+            "</  retrieved_reference  >",
+        ];
+        for input in cases {
+            let out = defang_sandbox_tags(input);
+            assert!(
+                !out.contains(input),
+                "whitespace variant {input:?} was not defanged: got {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_defang_non_sandbox_tag_lookalikes() {
+        // Tags that aren't in SANDBOX_TAGS must pass through unchanged.
+        // Avoid over-broad matching of </anything> structures.
+        let input = "</div> </span> </not_a_real_sandbox_tag>";
+        let out = defang_sandbox_tags(input);
+        assert_eq!(input, out);
     }
 
     #[test]
