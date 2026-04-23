@@ -43,35 +43,31 @@ fn stats_by_repo_fails_loudly_on_unreadable_log() {
     );
 }
 
-#[test]
-fn stats_by_caller_fails_loudly_on_unreadable_log() {
+/// Helper for the three near-identical `stats <flag>` hard-fail tests.
+/// `stats_by_repo_fails_loudly_on_unreadable_log` is intentionally NOT
+/// collapsed into this — it carries the verbose assertion messages that
+/// surface useful context the first time the contract regresses.
+fn assert_stats_flag_fails_loudly(flag_args: &[&str]) {
     let tmp = unreadable_log_dir();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
-        .arg("stats")
-        .arg("--by-caller")
-        .env("HOME", tmp.path())
-        .output()
-        .unwrap();
+    let mut cmd = Command::cargo_bin("quorum").unwrap();
+    cmd.arg("stats");
+    for arg in flag_args {
+        cmd.arg(arg);
+    }
+    let output = cmd.env("HOME", tmp.path()).output().unwrap();
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(".quorum/reviews.jsonl"));
 }
 
 #[test]
+fn stats_by_caller_fails_loudly_on_unreadable_log() {
+    assert_stats_flag_fails_loudly(&["--by-caller"]);
+}
+
+#[test]
 fn stats_by_rolling_fails_loudly_on_unreadable_log() {
-    let tmp = unreadable_log_dir();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
-        .arg("stats")
-        .arg("--rolling")
-        .arg("5")
-        .env("HOME", tmp.path())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(".quorum/reviews.jsonl"));
+    assert_stats_flag_fails_loudly(&["--rolling", "5"]);
 }
 
 #[test]
@@ -80,17 +76,7 @@ fn stats_by_source_fails_loudly_on_unreadable_log() {
     // pattern as the classic-dim branch (main.rs:126). Both code paths
     // were fixed in #69; this test pins the context-dim path so a
     // future refactor can't regress only one of them.
-    let tmp = unreadable_log_dir();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
-        .arg("stats")
-        .arg("--by-source")
-        .env("HOME", tmp.path())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(".quorum/reviews.jsonl"));
+    assert_stats_flag_fails_loudly(&["--by-source"]);
 }
 
 #[test]
