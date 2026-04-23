@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod context_enrichment;
 mod daemon;
+mod dep_manifest;
 mod dimensions;
 mod glyphs;
 mod http_server;
