@@ -58,6 +58,58 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
     out
 }
 
+fn strip_python_dep_spec(raw: &str) -> Option<String> {
+    let no_extras = raw.split('[').next()?.trim();
+    let name_end = no_extras
+        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';'))
+        .unwrap_or(no_extras.len());
+    let name = no_extras[..name_end].trim();
+    if name.is_empty() { None } else { Some(name.to_string()) }
+}
+
+fn parse_pyproject(path: &Path) -> Vec<Dependency> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "pyproject.toml parse failed");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = parsed
+        .get("project")
+        .and_then(|p| p.get("dependencies"))
+        .and_then(|d| d.as_array())
+    {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                if let Some(name) = strip_python_dep_spec(s) {
+                    out.push(Dependency { name, language: "python".into() });
+                }
+            }
+        }
+        if !out.is_empty() {
+            return out;  // PEP 621 wins over Poetry
+        }
+    }
+    if let Some(table) = parsed
+        .get("tool")
+        .and_then(|t| t.get("poetry"))
+        .and_then(|p| p.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for name in table.keys() {
+            if name == "python" { continue; }
+            out.push(Dependency { name: name.clone(), language: "python".into() });
+        }
+    }
+    out
+}
+
 pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     let mut out = Vec::new();
     let cargo = project_dir.join("Cargo.toml");
@@ -68,6 +120,10 @@ pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     if pkg.exists() {
         let has_tsconfig = project_dir.join("tsconfig.json").exists();
         out.extend(parse_package_json(&pkg, has_tsconfig));
+    }
+    let pyp = project_dir.join("pyproject.toml");
+    if pyp.exists() {
+        out.extend(parse_pyproject(&pyp));
     }
     out
 }
@@ -215,6 +271,51 @@ mod tests {
         write(dir.path(), "package.json", "{not json");
         let deps = parse_dependencies(dir.path());
         assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn pyproject_pep621_deps_parsed_with_extras_and_versions_stripped() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+name = "x"
+dependencies = ["fastapi>=0.100", "pydantic[email]>=2", "httpx"]
+"#);
+        let deps = parse_dependencies(dir.path());
+        let mut names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "httpx", "pydantic"]);
+        assert!(deps.iter().all(|d| d.language == "python"));
+    }
+
+    #[test]
+    fn pyproject_poetry_deps_parsed_excluding_python_key() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.100"
+httpx = { version = "*" }
+"#);
+        let deps = parse_dependencies(dir.path());
+        let mut names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "httpx"]);
+    }
+
+    #[test]
+    fn pyproject_pep621_wins_when_both_sections_present() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = ["fastapi"]
+
+[tool.poetry.dependencies]
+django = "*"
+"#);
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"], "PEP 621 must win, not be merged with Poetry: {names:?}");
     }
 
     #[test]
