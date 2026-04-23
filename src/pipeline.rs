@@ -77,15 +77,19 @@ fn write_calibrator_traces(
 /// Acquire a semaphore permit if configured. Uses Handle::block_on (not block_in_place)
 /// because this may be called from spawn_blocking threads.
 /// Returns an owned permit that is released on drop (RAII).
+///
+/// Degrades gracefully (returns `None`) in three failure modes that
+/// shouldn't crash the caller — same observable behavior as the
+/// no-semaphore path:
+/// - No semaphore configured (the common case)
+/// - Semaphore closed (shutdown in flight)
+/// - No Tokio runtime in the current thread (issue #58 — happens when a
+///   pipeline is wired lazily from a sync caller; throttling can't work
+///   without a runtime, so degrade rather than panic)
 fn acquire_llm_permit(sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>) -> Option<tokio::sync::OwnedSemaphorePermit> {
     let sem = sem.as_ref()?.clone();
-    // A closed semaphore (typically shutdown) returns Err; degrade to "no
-    // permit, run unthrottled" rather than panicking. Same observable
-    // behavior as the no-semaphore path above; lets the LLM call itself
-    // surface any shutdown-related failure.
-    tokio::runtime::Handle::current()
-        .block_on(sem.acquire_owned())
-        .ok()
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    handle.block_on(sem.acquire_owned()).ok()
 }
 
 /// Trait for LLM review — allows testing with fake implementations.
@@ -825,6 +829,34 @@ mod tests {
             ..Default::default()
         };
         review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).unwrap()
+    }
+
+    #[test]
+    fn acquire_llm_permit_does_not_panic_outside_tokio_runtime() {
+        // Issue #58: acquire_llm_permit calls Handle::current() which
+        // panics if no Tokio runtime exists. Callers that lazily wire a
+        // Pipeline from a sync context (e.g., embedders, tests) would
+        // crash on the first throttled review. Degrade to "no permit"
+        // instead — same observable behavior as the no-semaphore path.
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            acquire_llm_permit(&sem)
+        }));
+        assert!(
+            result.is_ok(),
+            "acquire_llm_permit panicked outside Tokio runtime: {:?}",
+            result.err()
+        );
+        // None is acceptable here: throttling can't work without a runtime,
+        // so we degrade rather than crash.
+        let permit = result.unwrap();
+        let _ = permit;
+    }
+
+    #[test]
+    fn acquire_llm_permit_returns_none_when_no_semaphore() {
+        let result = acquire_llm_permit(&None);
+        assert!(result.is_none());
     }
 
     // -- Complexity threshold default --

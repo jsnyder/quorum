@@ -178,6 +178,27 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     prompt
 }
 
+/// Wrapper for providers that return `{"findings": [...]}` instead of a
+/// bare array (issue #64).
+#[derive(serde::Deserialize)]
+struct FindingsEnvelope {
+    findings: Vec<LlmFinding>,
+}
+
+/// Try every parse strategy for a candidate JSON string, in order:
+/// bare `Vec<LlmFinding>` first, then `{"findings": [...]}` envelope.
+/// Returns `Ok` on the first success, the bare-array error otherwise.
+fn try_parse_findings(s: &str) -> anyhow::Result<Vec<LlmFinding>> {
+    if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(s) {
+        return Ok(findings);
+    }
+    if let Ok(envelope) = serde_json::from_str::<FindingsEnvelope>(s) {
+        return Ok(envelope.findings);
+    }
+    // Fall through: produce the bare-array error for the best message.
+    Ok(serde_json::from_str::<Vec<LlmFinding>>(s)?)
+}
+
 /// Parse LLM JSON response into findings.
 pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Vec<Finding>> {
     // Strip control characters that reasoning models sometimes emit
@@ -186,20 +207,49 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
     // Try to extract JSON array from the response (LLM may wrap in markdown fences)
     let cleaned = extract_json_array(&stripped);
 
-    // Try parsing directly first
-    if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(&cleaned) {
+    // Strategy 1: parse the array-extracted slice as a bare or envelope shape.
+    if let Ok(findings) = try_parse_findings(&cleaned) {
         return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
     }
 
-    // If that fails, try sanitizing invalid JSON escapes (LLMs emit \d, \s, etc.)
+    // Strategy 2: maybe the WHOLE stripped payload is an envelope object
+    // and extract_json_array picked the wrong inner array (e.g., a
+    // `warnings` field came before `findings`). Try the unstripped
+    // envelope before falling back to escape sanitization.
+    let trimmed_payload = strip_markdown_fence(&stripped);
+    if let Ok(envelope) = serde_json::from_str::<FindingsEnvelope>(trimmed_payload.trim()) {
+        return Ok(envelope.findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+    }
+
+    // Strategy 3: sanitize invalid JSON escapes (LLMs emit \d, \s, etc.)
     let sanitized = sanitize_json_escapes(&cleaned);
-    if let Ok(findings) = serde_json::from_str::<Vec<LlmFinding>>(&sanitized) {
+    if let Ok(findings) = try_parse_findings(&sanitized) {
         return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
     }
 
-    // Last resort: try the sanitized string for a better error message
+    // Strategy 4: same sanitize-then-envelope pass on the full payload.
+    let sanitized_payload = sanitize_json_escapes(trimmed_payload.trim());
+    if let Ok(envelope) = serde_json::from_str::<FindingsEnvelope>(&sanitized_payload) {
+        return Ok(envelope.findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+    }
+
+    // Last resort: try the sanitized array for a better error message
     let llm_findings: Vec<LlmFinding> = serde_json::from_str(&sanitized)?;
     Ok(llm_findings.into_iter().map(|f| f.into_finding(model_name)).collect())
+}
+
+/// Strip surrounding ```json / ``` markdown fences if present. Used for
+/// envelope-shape fallbacks where extract_json_array's inner-bracket
+/// scan would pick the wrong array.
+fn strip_markdown_fence(text: &str) -> String {
+    let t = text.trim();
+    if let Some(rest) = t.strip_prefix("```json") {
+        rest.trim_end_matches("```").trim().to_string()
+    } else if let Some(rest) = t.strip_prefix("```") {
+        rest.trim_end_matches("```").trim().to_string()
+    } else {
+        t.to_string()
+    }
 }
 
 /// Strip raw control characters from LLM output while preserving JSON structure.
@@ -584,6 +634,46 @@ mod tests {
     fn parse_invalid_json_escapes() {
         // LLMs sometimes emit invalid escapes like \x1b or unescaped backslashes in regex
         let json = r#"[{"title":"Bad regex pattern \\d+ in code","description":"The pattern uses \d+ which is invalid","severity":"low","category":"c","line_start":1,"line_end":1}]"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn parse_object_envelope_with_findings_array() {
+        // Issue #64: some providers (and structured-output modes) wrap the
+        // findings array in an object envelope: {"findings": [...]}.
+        // The parser must accept either shape.
+        let json = r#"{"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Bug");
+    }
+
+    #[test]
+    fn parse_object_envelope_with_empty_findings_array() {
+        let json = r#"{"findings":[]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn parse_object_envelope_with_preceding_array_field() {
+        // Issue #64 edge case: extract_json_array returns the FIRST `[...]`
+        // it finds. If the envelope has another array field before
+        // `findings`, the parser extracts the wrong array and fails the
+        // deserialization. The fix must unwrap the envelope semantically,
+        // not lexically.
+        let json = r#"{"warnings":["truncated output"],"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Bug");
+    }
+
+    #[test]
+    fn parse_object_envelope_inside_markdown_fence() {
+        // The combined real-world shape: provider returns the envelope
+        // wrapped in a ```json fence.
+        let json = "```json\n{\"findings\":[{\"title\":\"Bug\",\"description\":\"D\",\"severity\":\"low\",\"category\":\"c\",\"line_start\":1,\"line_end\":1,\"confidence\":\"low\"}]}\n```";
         let findings = parse_llm_response(json, "m").unwrap();
         assert_eq!(findings.len(), 1);
     }
