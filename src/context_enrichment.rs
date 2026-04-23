@@ -162,7 +162,11 @@ impl Context7HttpFetcher {
         }
     }
 
-    fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+    fn block_on<F>(&self, f: F) -> F::Output
+    where
+        F: std::future::Future + Send,
+        F::Output: Send,
+    {
         crate::llm_client::block_on_async(f)
     }
 }

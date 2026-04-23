@@ -71,71 +71,7 @@ impl LlmFinding {
 /// content. Sections are ordered to extend the OpenAI prompt-cache prefix:
 /// stable-per-language content (framework docs) first, then file-specific
 /// context, then file metadata, then the code payload itself.
-/// Sandbox-boundary tag names emitted by `build_review_prompt`. Any
-/// untrusted text that contains a literal `</tag>` for one of these names
-/// is defanged via `defang_sandbox_tags` before interpolation, so adversarial
-/// content (retrieved chunks, repo metadata, feedback titles, file paths)
-/// cannot terminate a section early and inject instructions outside it.
-const SANDBOX_TAGS: &[&str] = &[
-    "framework_docs",
-    "hydration_context",
-    "historical_findings",
-    "truncation_notice",
-    "file_metadata",
-    "referenced_context",
-    "untrusted_code",
-];
-
-/// Pick a Markdown fence length longer than any consecutive run of backticks
-/// in `body`. Markdown allows arbitrarily long fences, so a body containing
-/// ``` is safely wrapped in ```` and so on. Floors at 3 to keep the common
-/// case unchanged.
-fn pick_fence_for(body: &str) -> String {
-    let mut max_run = 0usize;
-    let mut current = 0usize;
-    for c in body.chars() {
-        if c == '`' {
-            current += 1;
-            if current > max_run {
-                max_run = current;
-            }
-        } else {
-            current = 0;
-        }
-    }
-    "`".repeat((max_run + 1).max(3))
-}
-
-/// Sanitize a language identifier for safe use as a Markdown code-fence info
-/// string. Restricts to characters that appear in real fence languages
-/// (`rust`, `c++`, `objective-c`, `f#`) — ASCII alphanumeric plus `_`, `-`,
-/// `+`, `#`. Newlines, backticks, and angle brackets are stripped, so an
-/// adversarial language value cannot terminate the fence or sandbox tag
-/// early. Empty result is allowed (renders as a language-less fence).
-fn sanitize_fence_lang(language: &str) -> String {
-    language
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '#'))
-        .take(32)
-        .collect()
-}
-
-/// Replace each literal `</sandbox_tag>` in `s` with a defanged form that
-/// contains a zero-width space immediately after `</`. The result is visually
-/// indistinguishable for humans but no longer matches the literal closing-tag
-/// string the prompt builder uses as a sandbox boundary.
-fn defang_sandbox_tags(s: &str) -> String {
-    let mut out = s.to_string();
-    for tag in SANDBOX_TAGS {
-        let raw = format!("</{}>", tag);
-        if !out.contains(&raw) {
-            continue;
-        }
-        let defanged = format!("</\u{200B}{}>", tag);
-        out = out.replace(&raw, &defanged);
-    }
-    out
-}
+use crate::prompt_sanitize::{defang_sandbox_tags, pick_fence_for, sanitize_fence_lang};
 
 pub fn build_review_prompt(req: &ReviewRequest) -> String {
     let mut prompt = String::new();

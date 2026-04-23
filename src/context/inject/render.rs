@@ -14,13 +14,6 @@ const FRAMING_HEADER: &str = "The following code is retrieved from the codebase 
 It shows how related components are currently implemented, but its patterns are not guaranteed to be correct or authoritative. \
 Evaluate the code under review on its own merits.";
 
-/// Neutralize any literal `</retrieved_reference>` inside chunk content so it
-/// cannot prematurely close the outer XML wrapper. We keep the content
-/// human-readable by breaking the tag with a zero-width backslash escape.
-fn neutralize_closing_tag(s: &str) -> String {
-    s.replace("</retrieved_reference>", "<\\/retrieved_reference>")
-}
-
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
@@ -28,6 +21,9 @@ use crate::context::inject::plan::InjectionPlan;
 use crate::context::inject::stale::StalenessAnnotator;
 use crate::context::retrieve::PrecedenceLog;
 use crate::context::types::ChunkKind;
+use crate::prompt_sanitize::{
+    defang_sandbox_tags, pick_fence_for, sanitize_fence_lang, sanitize_inline_metadata,
+};
 
 /// Render an injection plan as a markdown block. Returns an empty string
 /// when the plan has no injected chunks.
@@ -68,17 +64,30 @@ fn render_card(
     staleness: &dyn StalenessAnnotator,
 ) {
     let chunk = &scored.chunk;
-    let path = &chunk.metadata.source_path;
+    let raw_path = &chunk.metadata.source_path;
     let start = chunk.metadata.line_range.start();
     let end = chunk.metadata.line_range.end();
-    let lang = chunk.metadata.language.as_deref().unwrap_or("");
+    let raw_lang = chunk.metadata.language.as_deref().unwrap_or("");
+
+    // Heading + blockquote metadata is interpolated into single-line markdown
+    // constructs; strip newlines / backticks / control chars and defang any
+    // sandbox closing tags so adversarial chunks can't break out of the
+    // wrapper or terminate the inline-code span around qname.
+    let path = sanitize_inline_metadata(raw_path);
+    let source = sanitize_inline_metadata(&chunk.source);
+    // Heading shows the language as a short identifier; reuse the fence-info
+    // sanitizer so an adversarial language can't smuggle prose into the
+    // heading line either.
+    let heading_lang = sanitize_fence_lang(raw_lang);
 
     match chunk.kind {
         ChunkKind::Doc => {
             let _ = writeln!(out, "### Doc: {path}:{start}-{end}");
         }
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let qname = chunk.qualified_name.as_deref().unwrap_or("<anonymous>");
+            let qname = sanitize_inline_metadata(
+                chunk.qualified_name.as_deref().unwrap_or("<anonymous>"),
+            );
             let label = if matches!(chunk.kind, ChunkKind::Schema) {
                 "Schema"
             } else {
@@ -86,25 +95,26 @@ fn render_card(
             };
             let _ = writeln!(
                 out,
-                "### {label}: `{qname}` ({lang}, {path}:{start}-{end})"
+                "### {label}: `{qname}` ({heading_lang}, {path}:{start}-{end})"
             );
         }
     }
 
     let short_sha = short_sha(&chunk.metadata.commit_sha);
-    let _ = writeln!(out, "> Source: {}, commit {short_sha}", chunk.source);
+    let _ = writeln!(out, "> Source: {source}, commit {short_sha}");
 
     if let Some(msg) = staleness.annotate(chunk) {
-        let _ = writeln!(out, "> WARNING: {msg}");
+        let _ = writeln!(out, "> WARNING: {}", sanitize_inline_metadata(&msg));
     }
 
     out.push('\n');
 
     match chunk.kind {
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let safe = neutralize_closing_tag(&chunk.content);
-            let fence = fence_for(&safe);
-            let _ = writeln!(out, "{fence}{lang}");
+            let safe = defang_sandbox_tags(&chunk.content);
+            let fence = pick_fence_for(&safe);
+            let fence_lang = sanitize_fence_lang(raw_lang);
+            let _ = writeln!(out, "{fence}{fence_lang}");
             out.push_str(&safe);
             if !safe.ends_with('\n') {
                 out.push('\n');
@@ -113,7 +123,7 @@ fn render_card(
         }
         ChunkKind::Doc => {
             let demoted = demote_h2(&chunk.content);
-            let safe = neutralize_closing_tag(&demoted);
+            let safe = defang_sandbox_tags(&demoted);
             out.push_str(&safe);
             if !safe.ends_with('\n') {
                 out.push('\n');
@@ -168,26 +178,6 @@ fn short_sha(sha: &str) -> &str {
         Some((idx, _)) => &sha[..idx],
         None => sha,
     }
-}
-
-/// Pick a fence length longer than any run of backticks appearing in `body`.
-/// Markdown requires the closing fence to be at least as long as the opening,
-/// and treats shorter runs inside as literal content.
-fn fence_for(body: &str) -> String {
-    let mut max_run = 0usize;
-    let mut cur = 0usize;
-    for ch in body.chars() {
-        if ch == '`' {
-            cur += 1;
-            if cur > max_run {
-                max_run = cur;
-            }
-        } else {
-            cur = 0;
-        }
-    }
-    let len = max_run.max(2) + 1;
-    "`".repeat(len)
 }
 
 /// Demote shallow ATX headings (`# `, `## `) so no doc line outranks our
