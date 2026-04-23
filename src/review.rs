@@ -241,15 +241,22 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
 /// Strip surrounding ```json / ``` markdown fences if present. Used for
 /// envelope-shape fallbacks where extract_json_array's inner-bracket
 /// scan would pick the wrong array.
+///
+/// Strips at most ONE trailing ``` (the matching closing fence) so a
+/// JSON string value that happens to end with backticks is not silently
+/// truncated.
 fn strip_markdown_fence(text: &str) -> String {
     let t = text.trim();
-    if let Some(rest) = t.strip_prefix("```json") {
-        rest.trim_end_matches("```").trim().to_string()
+    let after_prefix = if let Some(rest) = t.strip_prefix("```json") {
+        rest
     } else if let Some(rest) = t.strip_prefix("```") {
-        rest.trim_end_matches("```").trim().to_string()
+        rest
     } else {
-        t.to_string()
-    }
+        return t.to_string();
+    };
+    let trimmed = after_prefix.trim_end();
+    let inner = trimmed.strip_suffix("```").unwrap_or(trimmed);
+    inner.trim().to_string()
 }
 
 /// Strip raw control characters from LLM output while preserving JSON structure.
@@ -667,6 +674,22 @@ mod tests {
         let findings = parse_llm_response(json, "m").unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].title, "Bug");
+    }
+
+    #[test]
+    fn parse_object_envelope_with_trailing_backticks_in_string_value() {
+        // Defensive: even if a finding's string value ends with ``` (e.g.
+        // a suggested_fix that itself contains a fenced block), the
+        // outer fence stripping must only remove ONE trailing ```, not
+        // every trailing run, so the JSON content stays intact.
+        let json = "```json\n{\"findings\":[{\"title\":\"X\",\"description\":\"see ```\",\"severity\":\"low\",\"category\":\"c\",\"line_start\":1,\"line_end\":1,\"confidence\":\"low\"}]}\n```";
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(findings.len(), 1);
+        assert!(
+            findings[0].description.contains("```"),
+            "trailing ``` in string value was stripped; got description: {}",
+            findings[0].description
+        );
     }
 
     #[test]
