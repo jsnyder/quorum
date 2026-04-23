@@ -964,6 +964,9 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             tokens_out: total_tokens_out,
             duration_ms: review_duration.as_millis() as u64,
             suppressed: file_results.iter().map(|r| r.suppressed).sum(),
+            context7_resolved: 0,        // populated by pipeline in Task 14
+            context7_resolve_failed: 0,  // populated by pipeline in Task 14
+            context7_query_failed: 0,    // populated by pipeline in Task 14
         };
         let _ = telem_store.record(&telem_entry);
 
