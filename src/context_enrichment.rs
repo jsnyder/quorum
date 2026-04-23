@@ -15,6 +15,32 @@ pub trait ContextFetcher: Send + Sync {
 }
 
 /// Map framework names to (library_name, query) pairs for Context7.
+/// Per-review counters tracking Context7 enrichment outcomes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnrichmentMetrics {
+    pub context7_resolved: u32,
+    pub context7_resolve_failed: u32,
+    pub context7_query_failed: u32,
+}
+
+/// Result of enrich_for_review: docs to splice into the prompt + telemetry counters.
+#[derive(Debug, Default)]
+pub struct EnrichmentResult {
+    pub docs: Vec<ContextDoc>,
+    pub metrics: EnrichmentMetrics,
+}
+
+/// Orchestrator: parse-aware Context7 enrichment.
+/// (Skeleton; body lands in Task 10.)
+pub fn enrich_for_review(
+    _deps: &[crate::dep_manifest::Dependency],
+    _curated_frameworks: &[String],
+    _imports: &[String],
+    _fetcher: &dyn ContextFetcher,
+) -> EnrichmentResult {
+    EnrichmentResult::default()
+}
+
 /// Generic Context7 query baseline for an arbitrary dep, parameterized by language.
 /// Used when the dep name is not in the curated allow-list.
 pub fn generic_query_for_language(lang: &str) -> &'static str {
@@ -358,6 +384,20 @@ mod tests {
     fn generic_query_for_unknown_language_falls_back_to_minimal_security() {
         let q = generic_query_for_language("brainfuck");
         assert!(q.contains("security"), "fallback must mention security: {q:?}");
+    }
+
+    #[test]
+    fn enrich_for_review_with_empty_inputs_returns_no_docs_and_zero_metrics() {
+        struct Spy;
+        impl ContextFetcher for Spy {
+            fn resolve_library(&self, _: &str) -> Option<String> { None }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+        let result = enrich_for_review(&[], &[], &[], &Spy);
+        assert!(result.docs.is_empty());
+        assert_eq!(result.metrics.context7_resolved, 0);
+        assert_eq!(result.metrics.context7_resolve_failed, 0);
+        assert_eq!(result.metrics.context7_query_failed, 0);
     }
 
     #[test]
