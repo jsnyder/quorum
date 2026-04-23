@@ -30,15 +30,98 @@ pub struct EnrichmentResult {
     pub metrics: EnrichmentMetrics,
 }
 
+/// Normalize an import target to the dep name(s) it could match.
+/// - Rust `tokio::sync::Mutex` -> `["tokio"]`
+/// - Python `fastapi.routing` -> `["fastapi"]`
+/// - JS `react` -> `["react"]`
+/// - JS scoped `@nestjs/core` -> `["@nestjs/core"]` (verbatim, two segments)
+/// - JS scoped deep `@nestjs/common/decorators` -> `["@nestjs/common"]`
+/// - Bare `@foo` -> `["@foo"]`
+/// - Leading `::std::ptr` -> `["std"]` (skips empty heads)
+pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
+    if let Some(stripped) = imp.strip_prefix('@') {
+        let parts: Vec<&str> = stripped.splitn(3, '/').collect();
+        if parts.len() >= 2 {
+            return vec![format!("@{}/{}", parts[0], parts[1])];
+        }
+        return vec![imp.to_string()];
+    }
+    let head = imp
+        .split(&['.', '/', ':'][..])
+        .find(|s| !s.is_empty())
+        .unwrap_or(imp)
+        .to_string();
+    vec![head]
+}
+
+const ENRICH_K: usize = 5;
+
 /// Orchestrator: parse-aware Context7 enrichment.
-/// (Skeleton; body lands in Task 10.)
+///
+/// 1. Filter `deps` to those whose name matches an import in `imports` (in import order).
+/// 2. Cap at K=5 (drops tail in import order, not random).
+/// 3. For each kept dep, use curated query if available, else language-aware generic.
+/// 4. Then add directory-detected `curated_frameworks` (HA/ESPHome) — additive, deduped.
 pub fn enrich_for_review(
-    _deps: &[crate::dep_manifest::Dependency],
-    _curated_frameworks: &[String],
-    _imports: &[String],
-    _fetcher: &dyn ContextFetcher,
+    deps: &[crate::dep_manifest::Dependency],
+    curated_frameworks: &[String],
+    imports: &[String],
+    fetcher: &dyn ContextFetcher,
 ) -> EnrichmentResult {
-    EnrichmentResult::default()
+    let mut metrics = EnrichmentMetrics::default();
+    let mut docs: Vec<ContextDoc> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
+    for imp in imports {
+        for name in normalize_import_to_dep_names(imp) {
+            if let Some(dep) = deps.iter().find(|d| d.name == name) {
+                if !import_matched.iter().any(|d| d.name == dep.name) {
+                    import_matched.push(dep);
+                }
+            }
+        }
+    }
+
+    for dep in import_matched.into_iter().take(ENRICH_K) {
+        if seen.contains(&dep.name) { continue; }
+        let query = curated_query_for(&dep.name)
+            .unwrap_or_else(|| generic_query_for_language(&dep.language).into());
+        try_fetch_one(&dep.name, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+    }
+
+    for fw in curated_frameworks {
+        if seen.contains(fw) { continue; }
+        if let Some(query) = curated_query_for(fw) {
+            try_fetch_one(fw, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+        }
+    }
+
+    EnrichmentResult { docs, metrics }
+}
+
+fn try_fetch_one(
+    name: &str,
+    query: &str,
+    imports: &[String],
+    fetcher: &dyn ContextFetcher,
+    docs: &mut Vec<ContextDoc>,
+    metrics: &mut EnrichmentMetrics,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match fetcher.resolve_library(name) {
+        Some(lib_id) => {
+            metrics.context7_resolved += 1;
+            let enriched = build_code_aware_query(query, imports);
+            if let Some(content) = fetcher.query_docs(&lib_id, &enriched, 5000) {
+                docs.push(ContextDoc { library: name.into(), content });
+                seen.insert(name.into());
+            } else {
+                metrics.context7_query_failed += 1;
+            }
+        }
+        None => { metrics.context7_resolve_failed += 1; }
+    }
 }
 
 /// Generic Context7 query baseline for an arbitrary dep, parameterized by language.
@@ -321,6 +404,32 @@ impl ContextFetcher for Context7HttpFetcher {
 }
 
 #[cfg(test)]
+mod test_support {
+    use super::*;
+    use std::sync::Mutex;
+
+    pub struct Spy;
+    impl ContextFetcher for Spy {
+        fn resolve_library(&self, name: &str) -> Option<String> { Some(format!("/lib/{name}")) }
+        fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
+            Some(format!("docs for {lib}"))
+        }
+    }
+
+    pub struct CapturingSpy { pub queries: Mutex<Vec<(String, String)>> }
+    impl CapturingSpy {
+        pub fn new() -> Self { Self { queries: Mutex::new(Vec::new()) } }
+    }
+    impl ContextFetcher for CapturingSpy {
+        fn resolve_library(&self, name: &str) -> Option<String> { Some(name.into()) }
+        fn query_docs(&self, lib: &str, query: &str, _: usize) -> Option<String> {
+            self.queries.lock().unwrap().push((lib.into(), query.into()));
+            Some("doc".into())
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -384,6 +493,94 @@ mod tests {
     fn generic_query_for_unknown_language_falls_back_to_minimal_security() {
         let q = generic_query_for_language("brainfuck");
         assert!(q.contains("security"), "fallback must mention security: {q:?}");
+    }
+
+    // --- normalize_import_to_dep_names: direct unit tests ---
+
+    #[test]
+    fn normalize_bare_import_returns_root() {
+        assert_eq!(normalize_import_to_dep_names("tokio"), vec!["tokio"]);
+    }
+
+    #[test]
+    fn normalize_module_path_returns_root_segment() {
+        assert_eq!(normalize_import_to_dep_names("tokio::sync::Mutex"), vec!["tokio"]);
+        assert_eq!(normalize_import_to_dep_names("fastapi.routing"), vec!["fastapi"]);
+    }
+
+    #[test]
+    fn normalize_local_paths_yield_keyword_that_wont_match_real_deps() {
+        // crate::foo / super::foo / self::foo: yield "crate"/"super"/"self".
+        // These won't appear in any real Cargo.toml so import-set lookup misses harmlessly.
+        // Pin this so a future "filter locals" change doesn't accidentally match a "crate" dep.
+        assert_eq!(normalize_import_to_dep_names("crate::foo"), vec!["crate"]);
+        assert_eq!(normalize_import_to_dep_names("super::foo"), vec!["super"]);
+        assert_eq!(normalize_import_to_dep_names("self::foo"), vec!["self"]);
+    }
+
+    #[test]
+    fn normalize_leading_colon_does_not_yield_empty_string() {
+        let out = normalize_import_to_dep_names("::std::ptr");
+        assert!(out.iter().all(|s| !s.is_empty()),
+            "leading :: must not yield empty head: {out:?}");
+    }
+
+    #[test]
+    fn normalize_scoped_pkg_with_subpath_keeps_first_two_segments() {
+        assert_eq!(
+            normalize_import_to_dep_names("@nestjs/common/decorators"),
+            vec!["@nestjs/common"]
+        );
+    }
+
+    #[test]
+    fn normalize_scoped_pkg_without_slash_kept_verbatim() {
+        assert_eq!(normalize_import_to_dep_names("@foo"), vec!["@foo"]);
+    }
+
+    // --- enrich_for_review: behavior tests ---
+
+    #[test]
+    fn enrich_skips_deps_not_in_imports() {
+        use crate::dep_manifest::Dependency;
+        use test_support::Spy;
+        let deps = vec![
+            Dependency { name: "tokio".into(), language: "rust".into() },
+            Dependency { name: "serde".into(), language: "rust".into() },
+            Dependency { name: "axum".into(), language: "rust".into() },
+        ];
+        let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
+        let result = enrich_for_review(&deps, &[], &imports, &Spy);
+        let libs: Vec<_> = result.docs.iter().map(|d| d.library.as_str()).collect();
+        assert!(libs.contains(&"tokio"));
+        assert!(libs.contains(&"serde"));
+        assert!(!libs.contains(&"axum"), "axum not in imports — must be skipped");
+    }
+
+    #[test]
+    fn enrich_uses_curated_query_when_available() {
+        use crate::dep_manifest::Dependency;
+        use test_support::CapturingSpy;
+        let spy = CapturingSpy::new();
+        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let imports = vec!["react".into()];
+        let _ = enrich_for_review(&deps, &[], &imports, &spy);
+        let captured = spy.queries.lock().unwrap();
+        assert!(captured.iter().any(|(_, q)| q.contains("hooks")),
+            "curated query expected, got {captured:?}");
+    }
+
+    #[test]
+    fn enrich_uses_generic_query_when_no_curated_match() {
+        use crate::dep_manifest::Dependency;
+        use test_support::CapturingSpy;
+        let spy = CapturingSpy::new();
+        let deps = vec![Dependency { name: "tokio".into(), language: "rust".into() }];
+        let imports = vec!["tokio::spawn".into()];
+        let _ = enrich_for_review(&deps, &[], &imports, &spy);
+        let captured = spy.queries.lock().unwrap();
+        assert!(captured.iter().any(|(_, q)| q.contains("async")),
+            "rust generic query expected, got {captured:?}");
     }
 
     #[test]
