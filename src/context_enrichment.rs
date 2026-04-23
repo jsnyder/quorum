@@ -598,6 +598,93 @@ mod tests {
     }
 
     #[test]
+    fn enrich_with_exactly_five_matched_deps_returns_five_docs() {
+        use crate::dep_manifest::Dependency;
+        use test_support::Spy;
+        let deps: Vec<_> = (0..5).map(|i| Dependency {
+            name: format!("dep{i}"), language: "rust".into(),
+        }).collect();
+        let imports: Vec<_> = (0..5).map(|i| format!("dep{i}::x")).collect();
+        let result = enrich_for_review(&deps, &[], &imports, &Spy);
+        assert_eq!(result.docs.len(), 5);
+    }
+
+    #[test]
+    fn enrich_with_six_matched_drops_the_last_in_import_order() {
+        use crate::dep_manifest::Dependency;
+        use test_support::Spy;
+        let deps: Vec<_> = (0..6).map(|i| Dependency {
+            name: format!("dep{i}"), language: "rust".into(),
+        }).collect();
+        let imports: Vec<_> = (0..6).map(|i| format!("dep{i}::x")).collect();
+        let result = enrich_for_review(&deps, &[], &imports, &Spy);
+        let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
+        assert_eq!(libs.len(), 5);
+        assert!(!libs.contains(&"dep5".to_string()),
+            "dep5 should be dropped; got {libs:?}");
+    }
+
+    #[test]
+    fn enrich_returns_first_five_in_import_occurrence_order() {
+        use crate::dep_manifest::Dependency;
+        use test_support::Spy;
+        let deps: Vec<_> = (0..10).map(|i| Dependency {
+            name: format!("dep{i}"), language: "rust".into(),
+        }).collect();
+        let imports: Vec<_> = (0..10).map(|i| format!("dep{i}::x")).collect();
+        let result = enrich_for_review(&deps, &[], &imports, &Spy);
+        let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
+        assert_eq!(libs, vec!["dep0", "dep1", "dep2", "dep3", "dep4"],
+            "must be import-order, not HashMap iteration order");
+    }
+
+    #[test]
+    fn enrich_dedupes_curated_framework_already_in_deps() {
+        use crate::dep_manifest::Dependency;
+        use test_support::Spy;
+        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let imports = vec!["react".into()];
+        let frameworks = vec!["react".into()];
+        let result = enrich_for_review(&deps, &frameworks, &imports, &Spy);
+        let count = result.docs.iter().filter(|d| d.library == "react").count();
+        assert_eq!(count, 1, "react must appear exactly once");
+    }
+
+    #[test]
+    fn enrich_ha_framework_path_runs_without_manifest_match() {
+        use test_support::Spy;
+        let frameworks = vec!["home-assistant".into()];
+        let result = enrich_for_review(&[], &frameworks, &[], &Spy);
+        assert!(result.docs.iter().any(|d| d.library == "home-assistant"));
+    }
+
+    #[test]
+    fn enrich_telemetry_counts_resolves_resolve_fails_and_query_fails_separately() {
+        use crate::dep_manifest::Dependency;
+        struct PartialSpy;
+        impl ContextFetcher for PartialSpy {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                if name == "good" { Some("/lib/good".into()) }
+                else if name == "query_fails" { Some("/lib/qf".into()) }
+                else { None }
+            }
+            fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
+                if lib == "/lib/good" { Some("doc".into()) } else { None }
+            }
+        }
+        let deps = vec![
+            Dependency { name: "good".into(), language: "rust".into() },
+            Dependency { name: "missing".into(), language: "rust".into() },
+            Dependency { name: "query_fails".into(), language: "rust".into() },
+        ];
+        let imports = vec!["good".into(), "missing".into(), "query_fails".into()];
+        let result = enrich_for_review(&deps, &[], &imports, &PartialSpy);
+        assert_eq!(result.metrics.context7_resolved, 2);
+        assert_eq!(result.metrics.context7_resolve_failed, 1);
+        assert_eq!(result.metrics.context7_query_failed, 1);
+    }
+
+    #[test]
     fn build_code_aware_query_extracts_scope_for_scoped_packages() {
         // @nestjs/core should yield "nestjs" (the framework hint), not "core" (useless).
         let query = build_code_aware_query("base", &["@nestjs/core".into()]);
