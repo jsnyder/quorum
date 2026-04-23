@@ -211,20 +211,32 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
     // sibling arrays like `warnings: []` (which extract_json_array would
     // pick first) can't mask the real findings array.
     let trimmed_payload = strip_markdown_fence(&stripped);
+    let payload_is_object = trimmed_payload.trim_start().starts_with('{');
     if let Ok(envelope) = serde_json::from_str::<FindingsEnvelope>(trimmed_payload.trim()) {
         return Ok(envelope.findings.into_iter().map(|f| f.into_finding(model_name)).collect());
     }
 
     // Strategy 2: parse the array-extracted slice as a bare or envelope
     // shape. (Most common path when the model emits a bare array.)
+    //
+    // Important: if the original payload is an object AND the slice
+    // parses as empty, we're almost certainly looking at an empty
+    // sibling array (e.g., `warnings: []` ahead of `findings: [...]`
+    // that strategy 1 couldn't deserialize because of invalid JSON
+    // escapes). Fall through to the sanitize-then-envelope retry
+    // instead of returning an empty result.
     if let Ok(findings) = try_parse_findings(&cleaned) {
-        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+        if !findings.is_empty() || !payload_is_object {
+            return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+        }
     }
 
     // Strategy 3: sanitize invalid JSON escapes (LLMs emit \d, \s, etc.)
     let sanitized = sanitize_json_escapes(&cleaned);
     if let Ok(findings) = try_parse_findings(&sanitized) {
-        return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+        if !findings.is_empty() || !payload_is_object {
+            return Ok(findings.into_iter().map(|f| f.into_finding(model_name)).collect());
+        }
     }
 
     // Strategy 4: same sanitize-then-envelope pass on the full payload.
@@ -673,6 +685,28 @@ mod tests {
         let json = r#"{"warnings":["truncated output"],"findings":[{"title":"Bug","description":"D","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
         let findings = parse_llm_response(json, "m").unwrap();
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Bug");
+    }
+
+    #[test]
+    fn parse_object_envelope_with_invalid_escape_and_empty_sibling_array() {
+        // CodeRabbit's deeper catch: even with envelope-first ordering,
+        // if the envelope parse fails because of invalid JSON escapes
+        // (LLMs emit \d, \s in regex patterns), the array-extracted-slice
+        // path picks the empty `warnings` array and returns [] before
+        // the sanitize-then-envelope path can recover the real findings.
+        //
+        // The fix must let the sanitized-envelope retry actually run —
+        // i.e., don't return early with empty findings when the original
+        // payload is an object containing more.
+        let json = r#"{"warnings":[],"findings":[{"title":"Bug","description":"matches regex \d+","severity":"high","category":"c","line_start":1,"line_end":1,"confidence":"high"}]}"#;
+        let findings = parse_llm_response(json, "m").unwrap();
+        assert_eq!(
+            findings.len(),
+            1,
+            "envelope retry must recover real findings even with invalid \\d escape; got {} findings",
+            findings.len()
+        );
         assert_eq!(findings[0].title, "Bug");
     }
 
