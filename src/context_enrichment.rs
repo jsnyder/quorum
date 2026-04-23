@@ -15,6 +15,17 @@ pub trait ContextFetcher: Send + Sync {
 }
 
 /// Map framework names to (library_name, query) pairs for Context7.
+/// Generic Context7 query baseline for an arbitrary dep, parameterized by language.
+/// Used when the dep name is not in the curated allow-list.
+pub fn generic_query_for_language(lang: &str) -> &'static str {
+    match lang {
+        "rust" => "common pitfalls async safety error handling",
+        "python" => "common pitfalls security type safety",
+        "typescript" | "javascript" => "common pitfalls security type safety async",
+        _ => "common pitfalls security",
+    }
+}
+
 /// Look up the curated Context7 query for a known framework name.
 /// Returns None for uncurated names — callers should fall back to a generic query.
 pub fn curated_query_for(name: &str) -> Option<String> {
@@ -309,6 +320,36 @@ mod tests {
     fn curated_query_for_unknown_returns_none() {
         assert!(curated_query_for("tokio").is_none());
         assert!(curated_query_for("xyz-does-not-exist").is_none());
+    }
+
+    #[test]
+    fn generic_query_for_rust_targets_async_and_errors() {
+        let q = generic_query_for_language("rust");
+        assert!(q.contains("async"), "rust query missing async: {q:?}");
+        assert!(q.contains("error"), "rust query missing error: {q:?}");
+    }
+
+    #[test]
+    fn generic_query_for_python_targets_security_and_types() {
+        let q = generic_query_for_language("python");
+        assert!(q.contains("security"));
+        assert!(q.contains("type"));
+    }
+
+    #[test]
+    fn generic_query_for_typescript_and_javascript_target_async_security_types() {
+        for lang in ["typescript", "javascript"] {
+            let q = generic_query_for_language(lang);
+            assert!(q.contains("async"), "{lang}: {q:?}");
+            assert!(q.contains("security"), "{lang}: {q:?}");
+            assert!(q.contains("type"), "{lang}: {q:?}");
+        }
+    }
+
+    #[test]
+    fn generic_query_for_unknown_language_falls_back_to_minimal_security() {
+        let q = generic_query_for_language("brainfuck");
+        assert!(q.contains("security"), "fallback must mention security: {q:?}");
     }
 
     #[test]
