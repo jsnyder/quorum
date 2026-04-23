@@ -31,6 +31,7 @@ mod parser;
 mod patterns;
 mod pipeline;
 mod progress;
+mod prompt_sanitize;
 mod redact;
 mod review;
 mod review_log;

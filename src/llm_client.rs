@@ -432,13 +432,45 @@ impl OpenAiClient {
     }
 }
 
-/// Bridge async future to sync context.
-/// Uses block_in_place on multi-thread runtime, spawns a new runtime otherwise.
-/// Note: block_in_place requires multi-thread runtime. Quorum's #[tokio::main]
-/// guarantees this; the Err branch handles the no-runtime case (e.g. plain tests).
-pub fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
-    match tokio::runtime::Handle::try_current() {
-        Ok(rt) => tokio::task::block_in_place(|| rt.block_on(f)),
+/// Bridge an async future to a sync caller, regardless of which Tokio
+/// runtime flavor (or none) is currently active.
+///
+/// - Multi-thread runtime: use `block_in_place` so the future runs on the
+///   current worker without spawning a new runtime.
+/// - Current-thread runtime (or any other flavor where `block_in_place`
+///   is not allowed): drive the future on a dedicated OS thread with its
+///   own runtime via `std::thread::scope`. We can't reuse the calling
+///   runtime — re-entering it would panic — and we can't `block_in_place`
+///   either, so we hand the work off to a fresh executor.
+/// - No runtime: build a transient runtime and drive the future on it.
+pub fn block_on_async<F>(f: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(f))
+            }
+            // RuntimeFlavor is #[non_exhaustive]; the wildcard covers
+            // CurrentThread and any future flavor that disallows
+            // block_in_place. We hand the future off to a separate
+            // thread with its own runtime so we never re-enter the
+            // calling runtime.
+            _ => std::thread::scope(|s| {
+                s.spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("build fallback current-thread runtime");
+                    rt.block_on(f)
+                })
+                .join()
+                .expect("fallback runtime thread panicked")
+            }),
+        },
         Err(_) => {
             let rt = tokio::runtime::Runtime::new()
                 .expect("Failed to create tokio runtime");
@@ -503,6 +535,29 @@ pub struct ToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn block_on_async_works_from_within_current_thread_runtime() {
+        // Regression for issue #57: a sync trait method called directly
+        // from an async task on a current_thread runtime must not panic.
+        // The realistic shape is `OpenAiClient::review` invoked from
+        // within a `#[tokio::main(flavor = "current_thread")]` server
+        // — block_in_place panics in that flavor, so detection +
+        // fallback is required.
+        //
+        // The call is wrapped in catch_unwind so a panic inside
+        // block_on_async fails the assertion with a clear message rather
+        // than tearing down the test runtime opaquely.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            block_on_async(async { 42 })
+        }));
+        assert!(
+            result.is_ok(),
+            "block_on_async panicked under current_thread runtime: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), 42);
+    }
 
     #[test]
     fn client_creation() {
