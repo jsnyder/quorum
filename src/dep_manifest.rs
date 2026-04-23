@@ -110,6 +110,31 @@ fn parse_pyproject(path: &Path) -> Vec<Dependency> {
     out
 }
 
+fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with("-r")
+            || line.starts_with("-e")
+        {
+            continue;
+        }
+        if line.contains("://") || line.starts_with("git+") {
+            continue;
+        }
+        if let Some(name) = strip_python_dep_spec(line) {
+            out.push(Dependency { name, language: "python".into() });
+        }
+    }
+    out
+}
+
 pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     let mut out = Vec::new();
     let cargo = project_dir.join("Cargo.toml");
@@ -122,8 +147,11 @@ pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
         out.extend(parse_package_json(&pkg, has_tsconfig));
     }
     let pyp = project_dir.join("pyproject.toml");
+    let req = project_dir.join("requirements.txt");
     if pyp.exists() {
         out.extend(parse_pyproject(&pyp));
+    } else if req.exists() {
+        out.extend(parse_requirements_txt(&req));
     }
     out
 }
@@ -301,6 +329,48 @@ httpx = { version = "*" }
         let mut names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["fastapi", "httpx"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_comments_and_blanks() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt", "# top comment\n\nfastapi\n# inline comment after\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_includes_and_editable() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt", "fastapi\n-r dev.txt\n-e .\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_vcs_urls() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt", "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_strips_version_specifiers() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt", "fastapi>=0.100\nrequests==2.31.0\n");
+        let mut names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "requests"]);
+    }
+
+    #[test]
+    fn requirements_txt_skipped_when_pyproject_present() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", "[project]\ndependencies = [\"fastapi\"]\n");
+        write(dir.path(), "requirements.txt", "django\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
     }
 
     #[test]
