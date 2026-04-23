@@ -100,6 +100,18 @@ pub fn enrich_for_review(
     EnrichmentResult { docs, metrics }
 }
 
+/// Convenience wrapper: parse the project's manifests, then run enrich_for_review.
+/// This is the main public entry point used by pipeline.rs.
+pub fn enrich_for_review_in_project(
+    project_root: &std::path::Path,
+    imports: &[String],
+    curated_frameworks: &[String],
+    fetcher: &dyn ContextFetcher,
+) -> EnrichmentResult {
+    let deps = crate::dep_manifest::parse_dependencies(project_root);
+    enrich_for_review(&deps, curated_frameworks, imports, fetcher)
+}
+
 fn try_fetch_one(
     name: &str,
     query: &str,
@@ -700,6 +712,42 @@ mod tests {
         let frameworks = vec!["home-assistant".into()];
         let result = enrich_for_review(&[], &frameworks, &[], &Spy);
         assert!(result.docs.iter().any(|d| d.library == "home-assistant"));
+    }
+
+    #[test]
+    fn enrich_for_review_in_project_parses_cargo_and_filters_by_imports() {
+        // Integration test: manifest parsing + enrich orchestration end-to-end.
+        // Given a tempdir with Cargo.toml [dependencies] tokio + serde + axum,
+        // and imports referencing tokio + serde only, the spy fetcher must be
+        // asked to resolve only tokio and serde — NOT axum.
+        use tempfile::TempDir;
+        use test_support::CapturingSpy;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), r#"
+[package]
+name = "x"
+version = "0.1.0"
+
+[dependencies]
+tokio = "1"
+serde = "1"
+axum = "0.7"
+"#).unwrap();
+
+        let spy = CapturingSpy::new();
+        let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
+        let result = enrich_for_review_in_project(dir.path(), &imports, &[], &spy);
+
+        let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
+        assert!(libs.contains(&"tokio".to_string()));
+        assert!(libs.contains(&"serde".to_string()));
+        assert!(!libs.contains(&"axum".to_string()), "axum not in imports — must be skipped");
+
+        // Telemetry: 2 deps were import-matched and resolved.
+        assert_eq!(result.metrics.context7_resolved, 2);
+        assert_eq!(result.metrics.context7_resolve_failed, 0);
+        assert_eq!(result.metrics.context7_query_failed, 0);
     }
 
     #[test]
