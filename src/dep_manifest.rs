@@ -64,10 +64,17 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
     };
     let lang = if has_tsconfig { "typescript" } else { "javascript" };
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Dedupe across sections — a package legitimately appearing in
+    // both `dependencies` and `peerDependencies` (common during
+    // migrations) used to emit duplicate entries. Mirrors parse_cargo's
+    // HashSet-based dedup for parser-symmetry.
     for key in &["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
         if let Some(obj) = parsed.get(*key).and_then(|v| v.as_object()) {
             for name in obj.keys() {
-                out.push(Dependency { name: name.clone(), language: lang.into() });
+                if seen.insert(name.clone()) {
+                    out.push(Dependency { name: name.clone(), language: lang.into() });
+                }
             }
         }
     }
@@ -392,6 +399,26 @@ cc = "1"
         for n in ["react", "vitest", "@types/react", "fsevents"] {
             assert!(names.contains(&n), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn package_json_dep_in_multiple_sections_dedupes() {
+        // A package legitimately appearing in `dependencies` and
+        // `peerDependencies` (common during migrations or for shared
+        // runtime+peer libs) used to emit two `Dependency` entries.
+        // parse_cargo dedupes via HashSet — make parse_package_json
+        // match for parser-symmetry. Downstream import-matching already
+        // dedupes by name, so this is a cleanliness/consistency fix
+        // rather than a behavioral one.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{
+            "dependencies": {"react": "^18"},
+            "peerDependencies": {"react": "^18"},
+            "devDependencies": {"react": "^18"}
+        }"#);
+        let deps = parse_dependencies(dir.path());
+        let count = deps.iter().filter(|d| d.name == "react").count();
+        assert_eq!(count, 1, "react should appear exactly once after dedupe: {deps:?}");
     }
 
     #[test]
