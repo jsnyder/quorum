@@ -16,6 +16,44 @@
 
 **Existing test style:** inline `#[cfg(test)] mod tests` at bottom of module. See `src/feedback.rs::tests` and `src/calibrator.rs::tests` for canonical patterns. Use `tempfile::TempDir` for any filesystem state.
 
+**Confirmed via code inspection (2026-04-24):**
+- `ulid = { version = "1", features = ["serde"] }`, `assert_cmd = "2"`, `predicates = "3"`, `tempfile = "3"` — all already in Cargo.toml, no additions needed.
+- `cli::FeedbackOpts` lives at `src/cli/mod.rs:360` — fields: `file, finding, verdict, reason, model, blamed_chunks, json`. **There is no `--provenance` flag today.** Plan does NOT introduce one — `--from-agent` stands alone as the External trigger.
+- `mcp::tools::FeedbackTool` uses `file_path` (not `file`). Test fields match exactly.
+- `src/mcp/handler.rs` has NO shared `test_handler()` helper — existing tests construct `McpHandler` directly with `feedback_store: FeedbackStore::new(dir.path().join("fb.jsonl"))`. See lines 370/394/422/453 for reference.
+- `src/analytics.rs::compute_stats` aggregates by `entry.model` (per-source), NOT by provenance tier. Task 9 ADDS a new `compute_tier_stats` function in parallel — it does NOT refactor `compute_stats`.
+
+---
+
+## Task 0: Baseline verification (prerequisite check)
+
+**Files:** none (read-only check)
+
+**Why this task exists:** TDD relies on failing for the *right* reason. If the baseline has a compile error or a flaky test, Task 1's "failing test" diagnosis becomes noise.
+
+**Step 1: Confirm deps are already present**
+
+```bash
+rg '^(ulid|assert_cmd|predicates|tempfile)' Cargo.toml
+```
+Expected: 4 lines match. If any are missing, add them before proceeding.
+
+**Step 2: Establish green baseline**
+
+```bash
+cargo test --bin quorum 2>&1 | tail -20
+```
+Expected: `test result: ok.` at the end. If anything fails, STOP and investigate — don't proceed to Task 1.
+
+**Step 3: Confirm no in-flight work**
+
+```bash
+rtk git status
+```
+Expected: clean working tree (`nothing to commit`). If dirty, decide whether to stash.
+
+**Step 4: No commit.** This task only verifies.
+
 ---
 
 ## Task 1: Add `External` variant to `Provenance` enum (schema only, no weight yet)
@@ -607,6 +645,20 @@ git commit -m "feat(feedback): add ExternalVerdictInput + record_external (issue
 
 ```rust
 #[test]
+fn drain_inbox_missing_dir_returns_zero_work() {
+    // Inbox dir doesn't exist at all (first-run scenario). Must NOT error.
+    let dir = tempfile::TempDir::new().unwrap();
+    let inbox = dir.path().join("nonexistent-inbox");
+    let processed = dir.path().join("processed");
+    let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+    let report = store.drain_inbox(&inbox, &processed).unwrap();
+    assert_eq!(report.drained_files, 0);
+    assert_eq!(report.entries, 0);
+    assert!(report.errors.is_empty());
+    assert!(!processed.exists(), "processed/ must not be created when inbox is absent");
+}
+
+#[test]
 fn drain_inbox_empty_returns_zero_work() {
     let dir = tempfile::TempDir::new().unwrap();
     let inbox = dir.path().join("inbox");
@@ -763,21 +815,19 @@ impl FeedbackStore {
             drained_files: 0, entries: 0, errors: vec![], processed_bytes: 0
         };
 
-        // Fast path
-        if !inbox_dir.exists() {
-            return Ok(report);
-        }
-        let mut entries_iter = std::fs::read_dir(inbox_dir)?;
-        if entries_iter.next().is_none() {
-            return Ok(report);
-        }
-        // Re-open the iterator (we consumed one entry above just to peek)
-        let read = std::fs::read_dir(inbox_dir)?;
+        // Fast path: ENOENT → zero work, idiomatic pattern (no double-read_dir,
+        // no TOCTOU). An empty dir yields an empty iterator which is also a no-op.
+        let read = match std::fs::read_dir(inbox_dir) {
+            Ok(r) => r,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(report),
+            Err(e) => return Err(e.into()),
+        };
 
         let mut files: Vec<PathBuf> = read
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+            .filter(|p| !p.is_dir())  // skip the processed/ subdir
             .collect();
         files.sort();  // deterministic order for tests
 
@@ -1062,18 +1112,19 @@ fn from_agent_writes_external_provenance() {
 }
 
 #[test]
-fn from_agent_conflicts_with_provenance_flag() {
+fn agent_model_without_from_agent_is_rejected() {
+    // --agent-model/--confidence only make sense with --from-agent.
+    // clap's `requires = "from_agent"` enforces this.
     let home = TempDir::new().unwrap();
     run_feedback(home.path(), &[
         "--file", "a.rs",
         "--finding", "X",
         "--verdict", "tp",
         "--reason", "r",
-        "--from-agent", "pal",
-        "--provenance", "human",
+        "--agent-model", "gpt-5.4",
     ])
     .failure()
-    .stderr(predicates::str::contains("cannot be used with"));
+    .stderr(predicates::str::contains("the following required arguments"));
 }
 
 #[test]
@@ -1101,14 +1152,15 @@ Expected: FAIL — `--from-agent` is not a recognized flag yet.
 
 **Step 3: Extend `FeedbackOpts`**
 
-In `src/cli.rs`, find `struct FeedbackOpts` (grep: `rg 'struct FeedbackOpts' src/`). Add:
+In `src/cli/mod.rs` around line 360 (`pub struct FeedbackOpts`), add:
 
 ```rust
-/// Record the verdict as coming from an external review agent.
-#[arg(long, conflicts_with = "provenance")]
+/// Record the verdict as coming from an external review agent (pal, third-opinion, etc.).
+/// Triggers External provenance instead of the default Human path.
+#[arg(long)]
 pub from_agent: Option<String>,
 
-/// Optional: the LLM model the external agent used.
+/// Optional: the LLM model the external agent used (only meaningful with --from-agent).
 #[arg(long, requires = "from_agent")]
 pub agent_model: Option<String>,
 
@@ -1116,6 +1168,8 @@ pub agent_model: Option<String>,
 #[arg(long, requires = "from_agent")]
 pub confidence: Option<f32>,
 ```
+
+**No `conflicts_with` needed** — `FeedbackOpts` has no `--provenance` flag today. `--from-agent` stands alone as the External trigger. If we later add `--provenance`, mutual exclusion goes in at that time.
 
 **Step 4: Update `run_feedback` in `src/main.rs`**
 
@@ -1165,18 +1219,34 @@ git commit -m "feat(cli): add --from-agent flag to feedback subcommand (issue #3
 
 **Step 1: Write failing handler tests**
 
-Extend `src/mcp/handler.rs::tests` (grep for existing `fn handle_feedback` tests):
+**Note:** There is NO `test_handler()` helper in `src/mcp/handler.rs`. Existing tests construct `McpHandler` directly with a tempdir-backed `FeedbackStore`. See lines 370, 394, 422, 453 for reference. Use the same pattern here — a small inline helper at the top of the new tests keeps boilerplate down.
+
+Add to `src/mcp/handler.rs::tests`:
 
 ```rust
+fn handler_with_tempdir() -> (McpHandler, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("fb.jsonl");
+    // Minimal handler construction — match the existing pattern at handler.rs:422
+    let handler = McpHandler {
+        feedback_store: FeedbackStore::new(path),
+        // fill remaining fields following existing test construction; copy
+        // verbatim from the nearest existing test (handler.rs:420-460).
+    };
+    (handler, dir)
+}
+
 #[test]
 fn mcp_from_agent_writes_external_provenance() {
-    let (handler, _dir) = test_handler();  // assume existing helper; if not, follow existing test pattern
+    let (handler, _dir) = handler_with_tempdir();
+    // NOTE: FeedbackTool uses `file_path` not `file` — see src/mcp/tools.rs:30
     let params = FeedbackTool {
-        file: "src/a.rs".into(),
+        file_path: "src/a.rs".into(),
         finding: "SQL injection".into(),
         verdict: "tp".into(),
         reason: "confirmed".into(),
-        category: None,
+        model: None,
+        blamed_chunks: None,
         from_agent: Some("pal".into()),
         agent_model: Some("gemini-3-pro-preview".into()),
         confidence: Some(0.9),
@@ -1189,13 +1259,14 @@ fn mcp_from_agent_writes_external_provenance() {
 
 #[test]
 fn mcp_feedback_without_from_agent_still_writes_human() {
-    let (handler, _dir) = test_handler();
+    let (handler, _dir) = handler_with_tempdir();
     let params = FeedbackTool {
-        file: "src/a.rs".into(),
+        file_path: "src/a.rs".into(),
         finding: "Bug".into(),
         verdict: "tp".into(),
         reason: "r".into(),
-        category: None,
+        model: None,
+        blamed_chunks: None,
         from_agent: None,
         agent_model: None,
         confidence: None,
@@ -1206,7 +1277,7 @@ fn mcp_feedback_without_from_agent_still_writes_human() {
 }
 ```
 
-If `test_handler` helper doesn't exist, create it (following the existing MCP test patterns).
+**Prep step before writing the tests:** read the nearest existing MCP handler test (e.g. lines 420-460 of `src/mcp/handler.rs`) to copy the exact McpHandler struct-construction fields. The shape differs from what the plan can infer — read the code, don't guess.
 
 **Step 2: Run tests to verify they fail**
 
@@ -1271,104 +1342,196 @@ git commit -m "feat(mcp): accept from_agent in feedback tool (issue #32)"
 
 ---
 
-## Task 9: Stats — External tier row + top agents
+## Task 9: Stats — add tier-level aggregation alongside existing per-source stats
+
+**Important scope note from code inspection:** `src/analytics.rs::compute_stats` aggregates by `entry.model.as_deref()` (the *reviewer* model, e.g. `"gpt-5.4"`), NOT by provenance tier. The existing `SourceStats` has fields `tp, fp, partial, wontfix` — it's per-source TP/FP, not per-tier.
+
+This task ADDS a new parallel function `compute_tier_stats` that groups by provenance tier (Human / PostFix / AutoCalibrate / External / Unknown) and returns `SourceStats` per tier. For External, the "source" key is the agent name, so `compute_tier_stats` returns a `TierSummary` struct that has a nested per-agent breakdown only for the External tier.
 
 **Files:**
-- Modify: `src/analytics.rs` (feedback-tier aggregation)
-- Modify: `src/main.rs::run_stats` or its helper (output formatting)
+- Modify: `src/analytics.rs` (add new types + `compute_tier_stats` + formatter)
+- Modify: `src/main.rs::run_stats` (or its helper — grep to locate) to print the new summary block
 - Test: `src/analytics.rs` inline tests
 
-**Step 1: Locate the existing tier aggregator**
+**Step 1: Write failing tier-aggregator tests**
 
-```bash
-rg -n 'AutoCalibrate|PostFix|Human' src/analytics.rs | head -20
-```
-
-Identify the struct/function that counts entries per provenance tier and the print path.
-
-**Step 2: Write failing aggregator test**
-
-Add to `src/analytics.rs::tests`:
+Add to `src/analytics.rs::tests` (reuse the existing `fn entry(...)` helper at line 143 — note it hardcodes `provenance: Provenance::Unknown`, so write a new `fn entry_with(provenance, verdict) -> FeedbackEntry` variant rather than mutating the existing one):
 
 ```rust
-#[test]
-fn tier_summary_counts_external_and_top_agents() {
-    let fb = vec![
-        mk_entry(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Tp),
-        mk_entry(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Fp),
-        mk_entry(Provenance::External { agent: "third-opinion".into(), model: None, confidence: None }, Verdict::Tp),
-        mk_entry(Provenance::Human, Verdict::Tp),
-    ];
-    let summary = build_tier_summary(&fb);  // or whatever existing helper is named
-    assert_eq!(summary.external.total, 3);
-    assert_eq!(summary.external.tp, 2);
-    assert_eq!(summary.external.fp, 1);
-    assert_eq!(summary.external.top_agents[0].0, "pal");
-    assert_eq!(summary.external.top_agents[0].1, 2);
-    assert_eq!(summary.human.total, 1);
-}
-```
-
-Fill in `mk_entry` and `build_tier_summary` per existing helpers — grep for similar patterns in `src/analytics.rs::tests`.
-
-**Step 3: Run test to verify it fails**
-
-```bash
-cargo test --bin quorum analytics::tests::tier_summary_counts_external_and_top_agents
-```
-Expected: FAIL — External tier not aggregated yet.
-
-**Step 4: Extend the aggregator**
-
-Add an `external: TierCounts` field (or whatever the existing struct is) with `tp/fp/partial/wontfix/total` and a `top_agents: Vec<(String, usize)>` field (sorted desc by count, capped at 3). Extend the match on provenance to populate it.
-
-Sample code skeleton (adapt to actual aggregator shape):
-
-```rust
-#[derive(Default)]
-pub struct TierCounts {
-    pub total: usize, pub tp: usize, pub fp: usize, pub partial: usize, pub wontfix: usize,
-}
-
-#[derive(Default)]
-pub struct ExternalTierCounts {
-    pub counts: TierCounts,
-    pub top_agents: Vec<(String, usize)>,
-}
-
-// in build_tier_summary:
-let mut agent_counts: std::collections::HashMap<String, usize> = Default::default();
-for entry in feedback {
-    match &entry.provenance {
-        Provenance::External { agent, .. } => {
-            *agent_counts.entry(agent.clone()).or_insert(0) += 1;
-            summary.external.counts.total += 1;
-            bump_verdict(&mut summary.external.counts, &entry.verdict);
-        }
-        // ...existing arms
+fn entry_with(provenance: crate::feedback::Provenance, verdict: Verdict) -> FeedbackEntry {
+    FeedbackEntry {
+        file_path: "a.rs".into(),
+        finding_title: "t".into(),
+        finding_category: "c".into(),
+        verdict,
+        reason: "r".into(),
+        model: Some("gpt-5.4".into()),
+        timestamp: chrono::Utc::now(),
+        provenance,
     }
 }
-let mut agents: Vec<_> = agent_counts.into_iter().collect();
-agents.sort_by(|a, b| b.1.cmp(&a.1));
-summary.external.top_agents = agents.into_iter().take(3).collect();
+
+#[test]
+fn tier_stats_group_by_provenance() {
+    use crate::feedback::Provenance;
+    let fb = vec![
+        entry_with(Provenance::Human, Verdict::Tp),
+        entry_with(Provenance::Human, Verdict::Fp),
+        entry_with(Provenance::PostFix, Verdict::Tp),
+        entry_with(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Tp),
+        entry_with(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Fp),
+        entry_with(Provenance::External { agent: "third-opinion".into(), model: None, confidence: None }, Verdict::Tp),
+    ];
+    let summary = compute_tier_stats(&fb);
+    assert_eq!(summary.human.total(), 2);
+    assert_eq!(summary.human.tp, 1);
+    assert_eq!(summary.human.fp, 1);
+    assert_eq!(summary.post_fix.total(), 1);
+    assert_eq!(summary.external.total.total(), 3);
+    assert_eq!(summary.external.total.tp, 2);
+    assert_eq!(summary.external.total.fp, 1);
+    // Per-agent breakdown, sorted desc by count
+    assert_eq!(summary.external.per_agent[0].0, "pal");
+    assert_eq!(summary.external.per_agent[0].1.total(), 2);
+    assert_eq!(summary.external.per_agent[1].0, "third-opinion");
+    assert_eq!(summary.external.per_agent[1].1.total(), 1);
+}
+
+#[test]
+fn tier_stats_format_includes_external_row_and_top_agents() {
+    use crate::feedback::Provenance;
+    let fb = vec![
+        entry_with(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Tp),
+        entry_with(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Tp),
+        entry_with(Provenance::External { agent: "third-opinion".into(), model: None, confidence: None }, Verdict::Fp),
+    ];
+    let summary = compute_tier_stats(&fb);
+    let report = format_tier_report(&summary);
+    assert!(report.contains("External"), "report must mention External tier: {report}");
+    assert!(report.contains("pal"), "report must list top agents: {report}");
+    assert!(report.contains("third-opinion"), "{report}");
+}
 ```
 
-**Step 5: Update stats print path**
-
-Find the feedback-tier print block in `src/main.rs::run_stats` (or helper). Add an "External" row after `PostFix` with count + verdict breakdown + a sub-line `    top agents: pal (142), third-opinion (43), gemini (22)` when `top_agents` is non-empty.
-
-**Step 6: Run test to verify it passes**
+**Step 2: Run tests to verify they fail**
 
 ```bash
-cargo test --bin quorum analytics::tests::tier_summary_counts_external_and_top_agents
+cargo test --bin quorum analytics::tests::tier_stats_
 ```
-Expected: PASS.
+Expected: compile error — `compute_tier_stats`, `format_tier_report`, `TierSummary` undefined.
 
-**Step 7: Commit**
+**Step 3: Implement the new API**
+
+Add to `src/analytics.rs` (below the existing `compute_stats` block, NOT replacing it):
+
+```rust
+/// Tier-level aggregation of feedback entries by `Provenance`.
+/// Parallel to (and does not replace) `compute_stats`, which aggregates by reviewer model.
+#[derive(Debug, Clone, Default)]
+pub struct TierSummary {
+    pub human: SourceStats,
+    pub post_fix: SourceStats,
+    pub auto_calibrate: SourceStats,
+    pub external: ExternalTierStats,
+    pub unknown: SourceStats,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExternalTierStats {
+    pub total: SourceStats,
+    /// Per-agent breakdown, sorted desc by total count.
+    pub per_agent: Vec<(String, SourceStats)>,
+}
+
+pub fn compute_tier_stats(entries: &[FeedbackEntry]) -> TierSummary {
+    use crate::feedback::Provenance;
+    let mut summary = TierSummary::default();
+    let mut per_agent: std::collections::HashMap<String, SourceStats> = Default::default();
+
+    let bump = |s: &mut SourceStats, v: &Verdict| match v {
+        Verdict::Tp => s.tp += 1,
+        Verdict::Fp => s.fp += 1,
+        Verdict::Partial => s.partial += 1,
+        Verdict::Wontfix => s.wontfix += 1,
+        Verdict::ContextMisleading { .. } => {}  // excluded — retrieval signal, not finding verdict
+    };
+
+    for entry in entries {
+        match &entry.provenance {
+            Provenance::Human => bump(&mut summary.human, &entry.verdict),
+            Provenance::PostFix => bump(&mut summary.post_fix, &entry.verdict),
+            Provenance::AutoCalibrate(_) => bump(&mut summary.auto_calibrate, &entry.verdict),
+            Provenance::External { agent, .. } => {
+                bump(&mut summary.external.total, &entry.verdict);
+                bump(per_agent.entry(agent.clone()).or_default(), &entry.verdict);
+            }
+            Provenance::Unknown => bump(&mut summary.unknown, &entry.verdict),
+        }
+    }
+
+    let mut agents: Vec<_> = per_agent.into_iter().collect();
+    agents.sort_by(|a, b| b.1.total().cmp(&a.1.total()));
+    summary.external.per_agent = agents;
+    summary
+}
+
+pub fn format_tier_report(summary: &TierSummary) -> String {
+    let mut lines = Vec::new();
+    lines.push("Feedback by provenance tier:".into());
+    lines.push("-".repeat(65));
+    let rows: [(&str, &SourceStats); 4] = [
+        ("Human      ", &summary.human),
+        ("PostFix    ", &summary.post_fix),
+        ("External   ", &summary.external.total),
+        ("AutoCalib  ", &summary.auto_calibrate),
+    ];
+    for (label, s) in rows {
+        lines.push(format!(
+            "{label}: {:>5} total  (tp {:>3}  fp {:>3}  partial {:>2}  wontfix {:>2})  {:>5.0}% prec",
+            s.total(), s.tp, s.fp, s.partial, s.wontfix, s.precision() * 100.0
+        ));
+    }
+    if !summary.external.per_agent.is_empty() {
+        let top: Vec<String> = summary.external.per_agent.iter().take(3)
+            .map(|(name, s)| format!("{name} ({})", s.total()))
+            .collect();
+        lines.push(format!("    top agents: {}", top.join(", ")));
+    }
+    if summary.unknown.total() > 0 {
+        let s = &summary.unknown;
+        lines.push(format!(
+            "Unknown    : {:>5} total  (legacy rows with no provenance field)",
+            s.total()
+        ));
+    }
+    lines.join("\n")
+}
+```
+
+**Step 4: Wire into `run_stats`**
+
+```bash
+rg -n 'format_stats_report' src/main.rs
+```
+Find the print site and add a second block right after the existing per-source report:
+
+```rust
+let tier_summary = crate::analytics::compute_tier_stats(&feedback);
+println!("\n{}", crate::analytics::format_tier_report(&tier_summary));
+```
+
+**Step 5: Run tests to verify they pass**
+
+```bash
+cargo test --bin quorum analytics::tests::tier_stats_
+```
+Expected: both PASS.
+
+**Step 6: Commit**
 
 ```bash
 git add src/analytics.rs src/main.rs
-git commit -m "feat(stats): surface External tier + top agents (issue #32)"
+git commit -m "feat(stats): add tier-level summary with External + top agents (issue #32)"
 ```
 
 ---
