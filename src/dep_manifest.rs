@@ -166,6 +166,11 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
         if line.contains("://") || line.starts_with("git+") {
             continue;
         }
+        // Skip local path references (./dist/pkg.whl, ../lib, /opt/pkg.tar.gz).
+        // pip accepts these but they're paths, not package names.
+        if line.starts_with('.') || line.starts_with('/') || line.contains('/') {
+            continue;
+        }
         if let Some(name) = strip_python_dep_spec(line) {
             out.push(Dependency { name, language: "python".into() });
         }
@@ -469,6 +474,23 @@ httpx = { version = "*" }
              https://user@example.com/pkg.whl\n\
              git+ssh://git@github.com/foo/bar.git\n\
              git+https://token:x-oauth-basic@github.com/foo/bar.git\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_local_paths() {
+        // pre-existing bug exposed by re-review: vendored wheels, editable
+        // local installs, and absolute paths in requirements.txt would
+        // previously be emitted as fake deps named "./dist/pkg.whl" etc.
+        // Path-shaped tokens are NOT package names; skip them.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "fastapi\n\
+             ./dist/pkg.whl\n\
+             ../lib\n\
+             /opt/pkg.tar.gz\n");
         let names: Vec<_> = parse_dependencies(dir.path())
             .iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["fastapi"]);
