@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod context_enrichment;
 mod daemon;
+mod dep_manifest;
 mod dimensions;
 mod glyphs;
 mod http_server;
@@ -862,6 +863,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     usage: Default::default(),
                                     suppressed: sup_result.suppressed.len(),
                                     context_telemetry: None,
+                                    enrichment_metrics: Default::default(),
                                 };
                                 return (idx, Ok((result, sup_result.suppressed)));
                             }
@@ -981,6 +983,9 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
             tokens_out: total_tokens_out,
             duration_ms: review_duration.as_millis() as u64,
             suppressed: file_results.iter().map(|r| r.suppressed).sum(),
+            context7_resolved: file_results.iter().map(|r| r.enrichment_metrics.context7_resolved).sum(),
+            context7_resolve_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_resolve_failed).sum(),
+            context7_query_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_query_failed).sum(),
         };
         let _ = telem_store.record(&telem_entry);
 

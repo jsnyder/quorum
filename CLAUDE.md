@@ -76,6 +76,10 @@ Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for ca
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
 
+## Context7 Framework Enrichment
+
+`src/context_enrichment.rs::enrich_for_review_in_project` parses the project's dep manifests (Cargo.toml, package.json, pyproject.toml + requirements.txt fallback) via `src/dep_manifest.rs::parse_dependencies`, filters to deps whose name appears in the file's `import_targets`, caps at K=5 in import-occurrence order, and queries Context7 with either a curated query (`curated_query_for(name)`) or a language-aware generic (`generic_query_for_language(lang)`). Curated frameworks detected by directory layout (HA/ESPHome) flow through additively. Per-review counters (`context7_resolved`, `context7_resolve_failed`, `context7_query_failed`) land in `TelemetryEntry`. Resolve results are cached with a 24h TTL (negative results too — avoids re-hammering Context7 for private crates / typos); the clock is injectable via `CachedContextFetcher::new_with_clock` for tests.
+
 ## Context Injection (v0.16.0+)
 
 `quorum context <init|add|list|index|refresh|query|prune|doctor>` manages a local hybrid search index (FTS5 + sqlite-vec) at `~/.quorum/sources/<name>/`. When a source has been indexed and `~/.quorum/sources.toml` has `context.auto_inject = true`, every `quorum review` builds a `ContextInjector` via `context::bootstrap::build_production_injector`, retrieves top-k chunks, plans under the token budget (40% floor, symbols-first), and renders a fenced Markdown block spliced into the LLM prompt. Per-review telemetry captures retrieved/injected counts, rendered-prompt sha256, and calibrator suppressions in `ContextTelemetry`.
@@ -84,7 +88,7 @@ Feedback verdict `context_misleading` (with `blamed_chunks`) raises per-chunk in
 
 ## Review Telemetry (v0.13.0+)
 
-Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
+Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags, context7_resolved, context7_resolve_failed, context7_query_failed`. Cost is computed at display time, not stored (model pricing drifts). New `context7_*` counters use `serde(default)` for backward-compat with pre-bump rows.
 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 
