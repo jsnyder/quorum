@@ -92,16 +92,27 @@ fn strip_verb<'a>(rest: &'a str, verb: &str) -> Option<&'a str> {
 }
 
 fn parse_rust_use(stmt: &str) -> Vec<String> {
-    let stmt = stmt.trim().trim_end_matches(';');
-    // Skip empty leading segments so absolute paths (`use ::tokio::...`) work
-    // the same as relative ones.
-    let head = stmt
-        .split("::")
-        .find(|s| !s.is_empty())
-        .unwrap_or("")
-        .trim();
-    if head.is_empty() { return Vec::new(); }
-    vec![head.to_string()]
+    let stmt = stmt.trim().trim_end_matches(';').trim();
+
+    // Outer-grouped form: `use {crate_a::A, crate_b::B};`. Each comma-separated
+    // member contributes its own crate. Without this, `split("::")` returns
+    // `"{crate_a"` and the whole import silently misses dep enrichment (CR6).
+    if let Some(inner) = stmt.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        return inner
+            .split(',')
+            .filter_map(|seg| first_use_segment(seg.trim()))
+            .collect();
+    }
+
+    // Standard form: `use crate::sub::Item;`, `use crate::{A, B};`, or
+    // `use ::crate::Item;`. Skip empty leading segments so absolute paths
+    // resolve to their crate (CR3).
+    first_use_segment(stmt).map(|s| vec![s]).unwrap_or_default()
+}
+
+fn first_use_segment(s: &str) -> Option<String> {
+    let head = s.split("::").find(|seg| !seg.is_empty())?.trim();
+    (!head.is_empty()).then(|| head.to_string())
 }
 
 fn parse_python_from(stmt: &str) -> Vec<String> {
@@ -768,6 +779,42 @@ mod tests {
         assert_eq!(
             normalize_import_to_dep_names("baz: use super::baz;"),
             vec!["super"]
+        );
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_extracts_all_crates_from_outer_grouped_use() {
+        // CR6: outer-grouped `use {tokio::sync::Mutex, serde::Serialize};`
+        // used to return `["{tokio"]` because parse_rust_use only handled the
+        // inner-group form (`use serde::{A, B}`). Production hydration emits
+        // one entry per imported symbol, so callers see N copies of the same
+        // statement; each must extract every crate so dep-name lookup matches
+        // any of them.
+        let mut got = normalize_import_to_dep_names(
+            "Mutex: use {tokio::sync::Mutex, serde::Serialize};",
+        );
+        got.sort();
+        assert_eq!(got, vec!["serde", "tokio"]);
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_outer_grouped_use_with_absolute_paths() {
+        // Same fix applied per-segment: empty leading segments inside the
+        // group must be skipped, so `use {::tokio::A, ::serde::B};` yields
+        // both crates, not `["{"]`.
+        let mut got = normalize_import_to_dep_names(
+            "A: use {::tokio::A, ::serde::B};",
+        );
+        got.sort();
+        assert_eq!(got, vec!["serde", "tokio"]);
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_outer_grouped_use_with_single_member() {
+        // Degenerate single-member group still works.
+        assert_eq!(
+            normalize_import_to_dep_names("Mutex: use {tokio::sync::Mutex};"),
+            vec!["tokio"]
         );
     }
 
