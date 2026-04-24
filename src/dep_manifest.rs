@@ -462,6 +462,19 @@ httpx = { version = "*" }
     }
 
     #[test]
+    fn requirements_txt_keeps_pep508_named_url_with_extras_and_whitespace() {
+        // PEP 508 grammar allows whitespace between name and `[extras]`.
+        // strip_python_dep_spec splits on whitespace first, so it handles this
+        // — pin it so a future tightening doesn't regress.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "mypkg [email,async] @ git+https://github.com/foo/bar.git\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["mypkg"]);
+    }
+
+    #[test]
     fn requirements_txt_skips_unnamed_url_with_at_in_authority() {
         // Bug 4 (regression from Bug 3 fix): a bare URL like
         // `https://user@example.com/pkg.whl` or `git+ssh://user@host/repo.git`

@@ -829,6 +829,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_python_from_relative_import_returns_empty() {
+        // `from . import x` / `from .. import y` are package-relative imports;
+        // the "module" is a dot, not a real dep. Must not yield "" or ".".
+        assert_eq!(
+            normalize_import_to_dep_names("x: from . import x"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("y: from .. import y"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn parse_python_import_does_not_break_ts_quoted_source_branch() {
         // Antipatterns reviewer MUST-FIX 1.2: a naive comma-split before the
         // quoted-source check would mangle `import 'reflect-metadata'` (which
