@@ -84,6 +84,33 @@ fn agent_model_alone_is_rejected_and_writes_nothing() {
 }
 
 #[test]
+fn confidence_out_of_range_is_rejected_at_cli_boundary() {
+    // clap value_parser must reject confidence outside [0,1] before it ever
+    // reaches record_external. Both negative and >1 must fail.
+    let home = TempDir::new().unwrap();
+    for bad in &["-0.5", "1.5", "nan", "inf"] {
+        run_feedback(
+            home.path(),
+            &[
+                "--file",
+                "a.rs",
+                "--finding",
+                "X",
+                "--verdict",
+                "tp",
+                "--reason",
+                "r",
+                "--from-agent",
+                "pal",
+                "--confidence",
+                bad,
+            ],
+        )
+        .failure();
+    }
+}
+
+#[test]
 fn feedback_without_from_agent_still_writes_human() {
     let home = TempDir::new().unwrap();
     run_feedback(

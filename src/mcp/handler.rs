@@ -140,7 +140,13 @@ impl QuorumHandler {
         let entry = FeedbackEntry {
             file_path: params.file_path,
             finding_title: params.finding,
-            finding_category: String::new(),
+            // Honor caller-supplied category on the Human path too — keeps
+            // analytics aligned across the three ingestion surfaces. Falls
+            // back to "manual" to match the CLI Human default.
+            finding_category: params
+                .category
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "manual".to_string()),
             verdict: verdict.clone(),
             reason: params.reason,
             model: params.model,
