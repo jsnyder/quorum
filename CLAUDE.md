@@ -88,7 +88,9 @@ Feedback verdict `context_misleading` (with `blamed_chunks`) raises per-chunk in
 
 ## Review Telemetry (v0.13.0+)
 
-Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags, context7_resolved, context7_resolve_failed, context7_query_failed`. Cost is computed at display time, not stored (model pricing drifts). New `context7_*` counters use `serde(default)` for backward-compat with pre-bump rows.
+Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
+
+The `context7_resolved`, `context7_resolve_failed`, and `context7_query_failed` counters live on `TelemetryEntry` in `~/.quorum/telemetry.jsonl` (written from `src/main.rs`), not on `ReviewRecord`. They use `serde(default)` for backward-compat with pre-bump rows.
 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 
