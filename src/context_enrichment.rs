@@ -364,9 +364,8 @@ const DEFAULT_RESOLVE_TTL: std::time::Duration = std::time::Duration::from_secs(
 ///   for known-missing names (private crates, typos).
 pub struct CachedContextFetcher<'a> {
     inner: &'a dyn ContextFetcher,
-    query_cache: std::sync::Mutex<std::collections::HashMap<(String, String, usize), Option<String>>>,
-    resolve_cache: std::sync::Mutex<std::collections::HashMap<String, ResolveCacheEntry>>,
-    max_entries: usize,
+    query_cache: std::sync::Mutex<lru::LruCache<(String, String, usize), Option<String>>>,
+    resolve_cache: std::sync::Mutex<lru::LruCache<String, ResolveCacheEntry>>,
     resolve_ttl: std::time::Duration,
     now: Clock,
 }
@@ -382,11 +381,14 @@ impl<'a> CachedContextFetcher<'a> {
         resolve_ttl: std::time::Duration,
         now: impl Fn() -> std::time::Instant + Send + Sync + 'static,
     ) -> Self {
+        // LruCache requires a non-zero capacity. Floor at 1 so callers can't
+        // accidentally create a zero-capacity cache that silently fails to cache.
+        let cap = std::num::NonZeroUsize::new(max_entries.max(1))
+            .expect("max_entries.max(1) is non-zero");
         Self {
             inner,
-            query_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            resolve_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            max_entries,
+            query_cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
+            resolve_cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
             resolve_ttl,
             now: Box::new(now),
         }
@@ -396,7 +398,7 @@ impl<'a> CachedContextFetcher<'a> {
 impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn resolve_library(&self, name: &str) -> Option<String> {
         let now = (self.now)();
-        if let Ok(cache) = self.resolve_cache.lock() {
+        if let Ok(mut cache) = self.resolve_cache.lock() {
             if let Some(entry) = cache.get(name) {
                 if now.duration_since(entry.cached_at) < self.resolve_ttl {
                     return entry.result.clone();
@@ -405,10 +407,10 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         }
         let result = self.inner.resolve_library(name);
         if let Ok(mut cache) = self.resolve_cache.lock() {
-            if cache.len() >= self.max_entries {
-                cache.clear();  // simple eviction: clear all when full
-            }
-            cache.insert(name.to_string(), ResolveCacheEntry {
+            // LruCache::put auto-evicts the LRU entry at capacity — preserves
+            // hot entries instead of dropping the entire cache like the prior
+            // `clear()` did.
+            cache.put(name.to_string(), ResolveCacheEntry {
                 result: result.clone(),
                 cached_at: now,
             });
@@ -419,7 +421,7 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let key = (library_id.to_string(), query.to_string(), max_tokens);
 
-        if let Ok(cache) = self.query_cache.lock() {
+        if let Ok(mut cache) = self.query_cache.lock() {
             if let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
@@ -428,10 +430,7 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         let result = self.inner.query_docs(library_id, query, max_tokens);
 
         if let Ok(mut cache) = self.query_cache.lock() {
-            if cache.len() >= self.max_entries {
-                cache.clear();
-            }
-            cache.insert(key, result.clone());
+            cache.put(key, result.clone());
         }
 
         result
@@ -1318,6 +1317,87 @@ axum = "0.7"
         // Different query hits inner again
         let _r3 = cached.query_docs("/lib/react", "different query", 5000);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cached_fetcher_evicts_lru_entry_at_capacity_not_whole_cache() {
+        // CR4 regression: previous code did `cache.clear()` when len ==
+        // max_entries, dropping every entry at once. With LRU semantics, only
+        // the *least-recently-used* entry should be evicted. Most-recently-used
+        // entries must still hit cache after the wrap.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingResolver { calls: Arc<AtomicUsize> }
+        impl ContextFetcher for CountingResolver {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(format!("/lib/{}", name))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingResolver { calls: calls.clone() };
+        let cached = CachedContextFetcher::new(&inner, 3);
+
+        // Fill cache to capacity.
+        let _ = cached.resolve_library("a"); // 1 call
+        let _ = cached.resolve_library("b"); // 2 calls
+        let _ = cached.resolve_library("c"); // 3 calls
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // Insert a 4th entry. With proper LRU eviction, "a" is dropped but
+        // "b" and "c" remain. With the old `clear()`, "b" and "c" would also
+        // be dropped, forcing them to be re-fetched below.
+        let _ = cached.resolve_library("d"); // 4 calls (cold)
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+
+        // Re-query "b" and "c" — they MUST hit cache (not increment calls).
+        let _ = cached.resolve_library("b");
+        let _ = cached.resolve_library("c");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "LRU eviction must keep hot entries; old clear() would push this to 6"
+        );
+
+        // "a" was the LRU victim, so it does require a fresh call.
+        let _ = cached.resolve_library("a");
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn cached_fetcher_query_docs_evicts_lru_entry_at_capacity() {
+        // Same regression check for query_docs cache.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingQuery { calls: Arc<AtomicUsize> }
+        impl ContextFetcher for CountingQuery {
+            fn resolve_library(&self, name: &str) -> Option<String> { Some(name.into()) }
+            fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(format!("docs:{lib}"))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingQuery { calls: calls.clone() };
+        let cached = CachedContextFetcher::new(&inner, 2);
+
+        let _ = cached.query_docs("a", "q", 5000);
+        let _ = cached.query_docs("b", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // 3rd entry — evicts "a" (LRU), keeps "b".
+        let _ = cached.query_docs("c", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // "b" must hit cache.
+        let _ = cached.query_docs("b", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 3,
+            "LRU eviction must keep hot entries; old clear() would push this to 4");
     }
 
     #[test]
