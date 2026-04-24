@@ -152,25 +152,18 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         );
         return Some(Vec::new());
     }
-    let poetry_dependencies_value = parsed
-        .get("tool")
-        .and_then(|t| t.get("poetry"))
-        .and_then(|p| p.get("dependencies"));
-    let Some(value) = poetry_dependencies_value else {
-        // Neither PEP 621 nor Poetry section recognized — let requirements.txt
-        // handle this project.
+    // Probe ALL three Poetry section forms. Any present section means
+    // Poetry owns this project — falling through to requirements.txt
+    // for a dev-tooling-only or group-only project would lose those deps.
+    let poetry_root = parsed.get("tool").and_then(|t| t.get("poetry"));
+    let main_deps_value = poetry_root.and_then(|p| p.get("dependencies"));
+    let legacy_dev_value = poetry_root.and_then(|p| p.get("dev-dependencies"));
+    let group_value = poetry_root.and_then(|p| p.get("group"));
+    if main_deps_value.is_none() && legacy_dev_value.is_none() && group_value.is_none() {
+        // Neither PEP 621 nor any Poetry section recognized — fall through
+        // to requirements.txt.
         return None;
-    };
-    // CR7: same shape as the [project].dependencies wrong-type guard above.
-    // The user *tried* to declare Poetry deps; falling through to
-    // requirements.txt would mask that error. Treat as explicitly empty.
-    let Some(table) = value.as_table() else {
-        tracing::warn!(
-            kind = ?value.type_str(),
-            "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); treating as explicitly empty"
-        );
-        return Some(Vec::new());
-    };
+    }
     // Mirrors parse_cargo's multi-section pattern: dedupe via HashSet so
     // the same name in multiple Poetry sections (e.g. main + dev pin
     // override) yields one entry.
@@ -186,23 +179,26 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
             }
         }
     };
-    push_table(table, &mut out, &mut seen);
-    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies]. Surfaced by
-    // quorum review of #86 — pre-existing parser gap mirroring the Cargo
-    // target.* fix from #83.
-    let poetry_root = parsed.get("tool").and_then(|t| t.get("poetry"));
-    if let Some(dev_table) = poetry_root
-        .and_then(|p| p.get("dev-dependencies"))
-        .and_then(|v| v.as_table())
-    {
+    if let Some(value) = main_deps_value {
+        // CR7: same shape as the [project].dependencies wrong-type guard above.
+        // The user *tried* to declare Poetry deps; falling through to
+        // requirements.txt would mask that error. Treat as explicitly empty.
+        let Some(table) = value.as_table() else {
+            tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); treating as explicitly empty"
+            );
+            return Some(Vec::new());
+        };
+        push_table(table, &mut out, &mut seen);
+    }
+    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies].
+    if let Some(dev_table) = legacy_dev_value.and_then(|v| v.as_table()) {
         push_table(dev_table, &mut out, &mut seen);
     }
     // Modern Poetry 1.2+ syntax: [tool.poetry.group.<name>.dependencies].
     // Iterate every named group (dev, test, lint, docs, ...).
-    if let Some(groups) = poetry_root
-        .and_then(|p| p.get("group"))
-        .and_then(|v| v.as_table())
-    {
+    if let Some(groups) = group_value.and_then(|v| v.as_table()) {
         for group in groups.values().filter_map(|v| v.as_table()) {
             if let Some(deps) = group.get("dependencies").and_then(|v| v.as_table()) {
                 push_table(deps, &mut out, &mut seen);
@@ -864,6 +860,56 @@ ruff = "^0.5"
         for n in ["django", "pytest", "ruff"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn pyproject_poetry_dev_only_no_main_deps_still_returns_some() {
+        // Quorum HIGH (2nd pass on PR #86 review). Dev-tooling-only Poetry
+        // projects (no [tool.poetry.dependencies] table at all) used to
+        // hit the early-return guard and fall through to requirements.txt
+        // — losing the dev-deps entirely. The fix must treat any of
+        // {main, dev, group} as a valid signal that Poetry owns this project.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "devtools-only"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+black = "^23"
+"#);
+        // Sentinel: if we incorrectly fall through, this would leak in.
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
+        assert!(names.contains(&"black".into()), "black missing in {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_poetry_groups_only_no_main_deps_still_returns_some() {
+        // Same shape as the legacy-only case, but with modern Poetry 1.2+
+        // groups and no main [tool.poetry.dependencies] table.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "groups-only"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"ruff".into()), "ruff missing in {names:?}");
+        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
     }
 
     #[test]
