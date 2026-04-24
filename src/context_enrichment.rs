@@ -54,17 +54,17 @@ pub struct EnrichmentResult {
 ///    - Leading `::std::ptr` -> `["std"]` (skips empty heads)
 pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
     // Production hydration form: "{symbol}: {statement}". Detection requires
-    // both ": " and a recognized verb (`use `, `from `, `import `) — a clean
+    // both ": " and a recognized verb (`use`, `from`, `import`) — a clean
     // path like `tokio::sync::Mutex` has no ": " (no space) and falls through.
     if let Some((_symbol, rest)) = imp.split_once(": ") {
-        let rest = rest.trim();
-        if let Some(stmt) = rest.strip_prefix("use ") {
+        let rest = rest.trim_start();
+        if let Some(stmt) = strip_verb(rest, "use") {
             return parse_rust_use(stmt);
         }
-        if let Some(stmt) = rest.strip_prefix("from ") {
+        if let Some(stmt) = strip_verb(rest, "from") {
             return parse_python_from(stmt);
         }
-        if let Some(stmt) = rest.strip_prefix("import ") {
+        if let Some(stmt) = strip_verb(rest, "import") {
             // TS forms always carry a quoted source (`from '<pkg>'` or bare
             // `'<pkg>'` for side-effect imports). Python `import X.Y` does not.
             if let Some(pkg) = extract_quoted_source(stmt) {
@@ -74,6 +74,21 @@ pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
         }
     }
     normalize_clean(imp)
+}
+
+/// Return body after `verb` if `rest` starts with `verb` followed by EOS or whitespace.
+/// Distinguishes a degenerate empty body (`"import "` -> `Some("")`) from a similar-looking
+/// identifier (`"importable"` -> `None`), so detection doesn't fall through to
+/// `normalize_clean` on a malformed-but-recognized statement.
+fn strip_verb<'a>(rest: &'a str, verb: &str) -> Option<&'a str> {
+    let tail = rest.strip_prefix(verb)?;
+    if tail.is_empty() { return Some(""); }
+    let first = tail.chars().next()?;
+    if first.is_whitespace() {
+        Some(tail.trim_start())
+    } else {
+        None
+    }
 }
 
 fn parse_rust_use(stmt: &str) -> Vec<String> {
@@ -92,11 +107,21 @@ fn parse_python_from(stmt: &str) -> Vec<String> {
 }
 
 fn parse_python_import(stmt: &str) -> Vec<String> {
-    // stmt = "sys" or "os.path as p"
-    let module = stmt.split_whitespace().next().unwrap_or("");
-    let head = module.split('.').next().unwrap_or("");
-    if head.is_empty() { return Vec::new(); }
-    vec![head.to_string()]
+    // stmt is the body after "import ": "sys", "os.path as p",
+    // "os, sys, json", "os.path, urllib.parse as up", possibly with a
+    // trailing inline comment ("os  # bootstrap") or trailing comma.
+    // For each comma-separated segment: drop `as <alias>`, collapse
+    // dotted submodule to root, skip empties.
+    let body = stmt.split('#').next().unwrap_or(stmt);
+    let mut out = Vec::new();
+    for seg in body.split(',') {
+        let token = seg.split_whitespace().next().unwrap_or("");
+        let head = token.split('.').next().unwrap_or("");
+        if !head.is_empty() {
+            out.push(head.to_string());
+        }
+    }
+    out
 }
 
 fn extract_quoted_source(stmt: &str) -> Option<String> {
@@ -742,6 +767,75 @@ mod tests {
         assert_eq!(
             normalize_import_to_dep_names("FastAPI: from fastapi import FastAPI"),
             vec!["fastapi"]
+        );
+    }
+
+    // --- Bug 1: parse_python_import dropped trailing modules ---
+    // Tests assert through the production hydrated form (not the bare helper)
+    // because the original-sin antipattern from issue #29 was tests using a
+    // synthetic input shape that didn't match what hydration emits.
+
+    #[test]
+    fn parse_python_import_returns_all_modules_in_comma_list() {
+        assert_eq!(
+            normalize_import_to_dep_names("join: import os, sys, json"),
+            vec!["os", "sys", "json"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_strips_as_alias() {
+        // `import sys as s` — alias is a local rename, the module is `sys`.
+        assert_eq!(
+            normalize_import_to_dep_names("s: import sys as s"),
+            vec!["sys"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_dotted_returns_root_only_per_module() {
+        // Dotted submodule collapses to root; alias must not leak as a fake module.
+        assert_eq!(
+            normalize_import_to_dep_names("path: import os.path, urllib.parse as up"),
+            vec!["os", "urllib"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_skips_empty_segments_and_whitespace() {
+        // Trailing comma + irregular whitespace must not yield empty heads.
+        assert_eq!(
+            normalize_import_to_dep_names("x: import   os  ,  sys ,"),
+            vec!["os", "sys"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_strips_trailing_inline_comment() {
+        // "import os  # bootstrap" -> ["os"], not ["os  # bootstrap"].
+        assert_eq!(
+            normalize_import_to_dep_names("os: import os  # bootstrap"),
+            vec!["os"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_empty_body_returns_empty() {
+        // No panic, no spurious empty-string head.
+        assert_eq!(
+            normalize_import_to_dep_names("nothing: import "),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn parse_python_import_does_not_break_ts_quoted_source_branch() {
+        // Antipatterns reviewer MUST-FIX 1.2: a naive comma-split before the
+        // quoted-source check would mangle `import 'reflect-metadata'` (which
+        // has no `from` clause). The TS branch must stay exclusive.
+        assert_eq!(
+            normalize_import_to_dep_names("reflect-metadata: import 'reflect-metadata'"),
+            vec!["reflect-metadata"]
         );
     }
 
