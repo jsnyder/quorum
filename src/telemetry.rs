@@ -16,6 +16,9 @@ pub struct TelemetryEntry {
     pub tokens_out: u64,
     pub duration_ms: u64,
     pub suppressed: usize,
+    #[serde(default)] pub context7_resolved: u32,
+    #[serde(default)] pub context7_resolve_failed: u32,
+    #[serde(default)] pub context7_query_failed: u32,
 }
 
 pub struct TelemetryStore {
@@ -85,7 +88,40 @@ mod tests {
             tokens_out: 1800,
             duration_ms: 3400,
             suppressed: 2,
+            context7_resolved: 0,
+            context7_resolve_failed: 0,
+            context7_query_failed: 0,
         }
+    }
+
+    #[test]
+    fn telemetry_entry_context7_fields_default_to_zero() {
+        let entry = sample_entry();
+        assert_eq!(entry.context7_resolved, 0);
+        assert_eq!(entry.context7_resolve_failed, 0);
+        assert_eq!(entry.context7_query_failed, 0);
+    }
+
+    #[test]
+    fn telemetry_entry_old_jsonl_row_deserializes_with_zero_context7_fields() {
+        // CRITICAL backward-compat: every existing user's `quorum stats`
+        // breaks if this fails. Shape matches the actual TelemetryEntry
+        // as it existed before the schema bump.
+        let old = r#"{
+            "ts": "2026-01-01T00:00:00Z",
+            "files": [],
+            "findings": {},
+            "model": "gpt-5.4",
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "duration_ms": 0,
+            "suppressed": 0
+        }"#;
+        let entry: TelemetryEntry = serde_json::from_str(old)
+            .expect("old JSONL rows must deserialize after schema bump");
+        assert_eq!(entry.context7_resolved, 0);
+        assert_eq!(entry.context7_resolve_failed, 0);
+        assert_eq!(entry.context7_query_failed, 0);
     }
 
     #[test]

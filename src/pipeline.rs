@@ -143,6 +143,9 @@ pub struct FileReviewResult {
     /// wired. `None` when the pipeline ran without `context_injector`
     /// (reviewers that don't support context, or the LLM-only paths).
     pub context_telemetry: Option<crate::review_log::ContextTelemetry>,
+    /// Per-file Context7 enrichment counters (resolved/resolve_failed/query_failed).
+    /// Aggregated into TelemetryEntry by main.rs.
+    pub enrichment_metrics: crate::context_enrichment::EnrichmentMetrics,
 }
 
 pub struct PipelineConfig {
@@ -171,6 +174,17 @@ pub struct PipelineConfig {
     /// spliced into the LLM prompt. When `None` (the default), behavior is
     /// byte-identical to the pre-context pipeline.
     pub context_injector: Option<std::sync::Arc<dyn crate::context::inject::ContextInjectionSource>>,
+    /// Shared Context7 fetcher (typically a `CachedContextFetcher` wrapping
+    /// a single `Context7HttpFetcher`). Built once at the review-level scope
+    /// in main.rs so cache hits / 24h negative-resolve TTL apply across all
+    /// files in a multi-file review. When `None`, each file builds its own
+    /// ad-hoc fetcher (suitable for tests / single-file CLI invocations).
+    pub context7_fetcher: Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>>,
+    /// Set by main.rs when the shared `Context7HttpFetcher::new()` returns
+    /// Err at review start. Pipeline checks this BEFORE the per-file
+    /// fallback so a single bootstrap failure cleanly disables enrichment
+    /// instead of re-failing per file (CR8).
+    pub context7_disabled: bool,
 }
 
 impl Default for PipelineConfig {
@@ -190,8 +204,23 @@ impl Default for PipelineConfig {
             skip_context7: false,
             fast: false,
             context_injector: None,
+            context7_fetcher: None,
+            context7_disabled: false,
         }
     }
+}
+
+/// Reasons Context7 enrichment may be skipped at the pipeline level.
+/// Returns `Some(reason)` when the per-file enrichment block must NOT run.
+/// `--skip-context7` wins over `context7_disabled` for log-message clarity.
+fn context7_skip_reason(cfg: &PipelineConfig) -> Option<&'static str> {
+    if cfg.skip_context7 {
+        return Some("--skip-context7");
+    }
+    if cfg.context7_disabled {
+        return Some("init failed");
+    }
+    None
 }
 
 /// Truncate source code for LLM review if it exceeds the line limit.
@@ -294,6 +323,7 @@ pub fn review_file(
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
+    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
     // Populated inside the LLM branch when a context_injector is wired.
     // Declared here so the final FileReviewResult construction can see it.
     let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
@@ -391,8 +421,13 @@ pub fn review_file(
             qualified_names: ctx.qualified_names.clone(),
         };
 
-        // Fetch Context7 framework docs if frameworks are detected
-        let framework_docs = {
+        // Fetch Context7 framework docs (curated frameworks + dep-based enrichment).
+        let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+            // --skip-context7 OR upstream init failed: no Context7 client
+            // constructed, no HTTP calls. Metrics stay at defaults.
+            tracing::debug!(reason, "Context7: enrichment skipped");
+            None
+        } else {
             let project_root = find_project_root(file_path);
             let mut domain = crate::domain::detect_domain(&project_root);
             for fw in &pipeline_config.framework_overrides {
@@ -400,29 +435,50 @@ pub fn review_file(
                     domain.frameworks.push(fw.clone());
                 }
             }
-            if !domain.frameworks.is_empty() {
-                tracing::debug!(frameworks = ?domain.frameworks, "detected frameworks");
-                let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
-                let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
-                let ctx7_t0 = std::time::Instant::now();
-                let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
-                let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &redacted_ctx.import_targets);
-                tracing::info!(phase = "context7", duration_ms = ctx7_t0.elapsed().as_millis() as u64, frameworks = domain.frameworks.len(), docs = docs.len(), "phase complete");
-                if !docs.is_empty() {
-                    tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
-                    Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
-                } else if pipeline_config.skip_context7 {
-                    tracing::debug!("Context7: no docs fetched (skipped via --skip-context7)");
-                    None
-                } else {
-                    anyhow::bail!(
-                        "Context7: failed to fetch docs for frameworks {:?}. \
-                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                        domain.frameworks
-                    );
-                }
+            // Always run enrichment: dep-based path may produce docs even when no
+            // curated framework was detected (e.g. a Rust project with tokio).
+            // Prefer a shared review-level cache from PipelineConfig so cache
+            // state (positive AND negative resolves with 24h TTL) is shared
+            // across all files in this review. Fall back to a per-file ad-hoc
+            // cache when no shared one is wired (tests, single-file CLI).
+            let ctx7_t0 = std::time::Instant::now();
+            let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
+            let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &redacted_ctx.import_targets,
+                    &domain.frameworks,
+                    shared.as_ref(),
+                )
             } else {
+                let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+                let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &redacted_ctx.import_targets,
+                    &domain.frameworks,
+                    &cached,
+                )
+            };
+            let docs = result.docs;
+            enrichment_metrics = result.metrics;
+            tracing::info!(phase = "context7", duration_ms = ctx7_t0.elapsed().as_millis() as u64, frameworks = domain.frameworks.len(), docs = docs.len(), resolved = enrichment_metrics.context7_resolved, resolve_failed = enrichment_metrics.context7_resolve_failed, query_failed = enrichment_metrics.context7_query_failed, "phase complete");
+            if !docs.is_empty() {
+                tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
+                Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
+            } else if domain.frameworks.is_empty() {
+                // No curated framework was requested — silently skip if dep path
+                // also produced nothing. Long-tail dep failures are NOT fatal.
                 None
+            } else {
+                // skip_context7 is impossible here: the outer if-let returned None
+                // already if it was set. Only the explicit-framework + Context7-down
+                // case reaches this arm.
+                anyhow::bail!(
+                    "Context7: failed to fetch docs for frameworks {:?}. \
+                     This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                    domain.frameworks
+                );
             }
         };
 
@@ -589,6 +645,7 @@ pub fn review_file(
         usage: total_usage,
         suppressed: suppressed_count,
         context_telemetry,
+        enrichment_metrics,
     })
 }
 
@@ -688,6 +745,7 @@ pub fn review_file_llm_only(
     let file_str = file_path.to_string_lossy().to_string();
     let mut all_sources: Vec<Vec<Finding>> = Vec::new();
     let mut total_usage = crate::llm_client::TokenUsage::default();
+    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
 
     // Use pre-built shared index if available (parallel mode), otherwise build locally
     let shared_index = pipeline_config.feedback_index.clone();
@@ -718,8 +776,11 @@ pub fn review_file_llm_only(
             let (review_code, truncation_notice) = truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
             let language = lang_name_from_path(file_path);
 
-            // Context7 framework docs
-            let framework_docs = {
+            // Context7 framework docs (metrics aggregate into the function-scoped var)
+            let framework_docs = if pipeline_config.skip_context7 {
+                tracing::debug!("Context7: enrichment skipped via --skip-context7");
+                None
+            } else {
                 let project_root = find_project_root(file_path);
                 let mut domain = crate::domain::detect_domain(&project_root);
                 for fw in &pipeline_config.framework_overrides {
@@ -727,24 +788,36 @@ pub fn review_file_llm_only(
                         domain.frameworks.push(fw.clone());
                     }
                 }
-                if !domain.frameworks.is_empty() {
-                    let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
-                    let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
-                    let docs = crate::context_enrichment::fetch_framework_docs(&domain.frameworks, &cached_fetcher, &[]);
-                    if !docs.is_empty() {
-                        Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
-                    } else if pipeline_config.skip_context7 {
-                        eprintln!("Context7: no docs fetched (skipped via --skip-context7)");
-                        None
-                    } else {
-                        anyhow::bail!(
-                            "Context7: failed to fetch docs for frameworks {:?}. \
-                             This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                            domain.frameworks
-                        );
-                    }
+                let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+                    crate::context_enrichment::enrich_for_review_in_project(
+                        &project_root,
+                        &[],
+                        &domain.frameworks,
+                        shared.as_ref(),
+                    )
                 } else {
+                    let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+                    let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+                    crate::context_enrichment::enrich_for_review_in_project(
+                        &project_root,
+                        &[],
+                        &domain.frameworks,
+                        &cached,
+                    )
+                };
+                let docs = result.docs;
+                enrichment_metrics = result.metrics;
+                if !docs.is_empty() {
+                    Some(docs.iter().map(|d| crate::context_enrichment::format_context_section(&[d.clone()])).collect())
+                } else if domain.frameworks.is_empty() {
                     None
+                } else {
+                    // skip_context7 unreachable: outer if-let returned None already.
+                    anyhow::bail!(
+                        "Context7: failed to fetch docs for frameworks {:?}. \
+                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                        domain.frameworks
+                    );
                 }
             };
 
@@ -847,6 +920,7 @@ pub fn review_file_llm_only(
         usage: total_usage,
         suppressed: suppressed_count,
         context_telemetry: None,
+        enrichment_metrics,
     })
 }
 
@@ -864,6 +938,37 @@ mod tests {
             ..Default::default()
         };
         review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).unwrap()
+    }
+
+    #[test]
+    fn context7_skip_reason_default_is_none() {
+        // Default config: enrichment runs. Pin so a future struct-init
+        // change can't silently flip the default to "skipped".
+        let cfg = PipelineConfig::default();
+        assert!(context7_skip_reason(&cfg).is_none());
+    }
+
+    #[test]
+    fn context7_skip_reason_honors_skip_context7_flag() {
+        // CLI --skip-context7 wins regardless of bootstrap state.
+        let cfg = PipelineConfig {
+            skip_context7: true,
+            ..Default::default()
+        };
+        assert_eq!(context7_skip_reason(&cfg), Some("--skip-context7"));
+    }
+
+    #[test]
+    fn context7_skip_reason_honors_context7_disabled_flag() {
+        // CR8: when main.rs fails to construct the shared HTTP fetcher
+        // it sets context7_disabled = true. Pipeline must skip cleanly
+        // instead of falling through to per-file Context7HttpFetcher::new()
+        // which would re-fail and abort each file's review.
+        let cfg = PipelineConfig {
+            context7_disabled: true,
+            ..Default::default()
+        };
+        assert_eq!(context7_skip_reason(&cfg), Some("init failed"));
     }
 
     #[test]
