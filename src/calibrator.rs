@@ -46,6 +46,12 @@ fn verdict_weight(entry: &FeedbackEntry) -> f64 {
     let provenance_weight = match &entry.provenance {
         crate::feedback::Provenance::PostFix => 1.5,
         crate::feedback::Provenance::Human => 1.0,
+        // External: verdict from another review agent (pal, third-opinion, etc.).
+        // 0.7x sits between Human (1.0) and AutoCalibrate (0.5) — cross-model
+        // precedent is more trustworthy than the old self-verification loop but
+        // less than a human who can see full PR context. `confidence` field is
+        // deliberately ignored in v1 (stored for future use).
+        crate::feedback::Provenance::External { .. } => 0.7,
         crate::feedback::Provenance::AutoCalibrate(_) => 0.5,
         crate::feedback::Provenance::Unknown => 0.3,
     };
@@ -1829,5 +1835,82 @@ mod tests {
         }
         cal.record_misleading(id, "fp");
         assert!(cal.injection_threshold_for(id).is_infinite());
+    }
+
+    // --- Task 2: External provenance weight (issue #32) ---
+
+    #[test]
+    fn external_provenance_weights_0_7() {
+        use chrono::Utc;
+        let entry = FeedbackEntry {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+        };
+        let w = verdict_weight(&entry);
+        assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
+    }
+
+    #[test]
+    fn external_weight_independent_of_confidence_in_v1() {
+        // confidence is stored but IGNORED by calibrator in v1.
+        // Table-driven so one failure doesn't mask the others.
+        use chrono::Utc;
+        let mk = |conf: Option<f32>| FeedbackEntry {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: conf,
+            },
+        };
+        let cases: &[(&str, Option<f32>)] = &[
+            ("None", None),
+            ("low", Some(0.1)),
+            ("high", Some(0.99)),
+            ("zero", Some(0.0)),
+            ("one", Some(1.0)),
+        ];
+        for (label, conf) in cases {
+            let w = verdict_weight(&mk(*conf));
+            // Tolerance 1e-4: accommodates Utc::now() jitter between test-setup
+            // and verdict_weight's internal clock read (flagged by quorum self-review).
+            assert!(
+                (w - 0.7).abs() < 1e-4,
+                "confidence={label}: expected 0.7, got {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_weight_remains_0_3_regression_guard() {
+        use chrono::Utc;
+        let entry = FeedbackEntry {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Unknown,
+        };
+        let w = verdict_weight(&entry);
+        assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
     }
 }

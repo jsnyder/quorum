@@ -23,12 +23,20 @@ pub enum Verdict {
     ContextMisleading { blamed_chunk_ids: Vec<String> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
     Human,
     PostFix,                // verdict recorded after applying a fix (strongest signal)
     AutoCalibrate(String),  // model name used for auto-calibration
+    /// Verdict from another review agent (pal, third-opinion, gemini, reviewdog, ...).
+    /// Calibrator weight: 0.7x (see calibrator.rs). `confidence` is stored but
+    /// IGNORED by the calibrator in v1 — reserved for future confidence-aware weighting.
+    External {
+        agent: String,
+        model: Option<String>,
+        confidence: Option<f32>,
+    },
     Unknown,
 }
 
@@ -317,6 +325,72 @@ mod tests {
                 assert!(blamed_chunk_ids.is_empty());
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
+        }
+    }
+
+    // --- Task 1: External provenance variant (issue #32) ---
+
+    #[test]
+    fn external_variant_roundtrips_through_jsonl() {
+        let (store, _dir) = test_store();
+        let entry = FeedbackEntry {
+            file_path: "src/auth.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "Confirmed".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::External {
+                agent: "pal".into(),
+                model: Some("gemini-3-pro-preview".into()),
+                confidence: Some(0.9),
+            },
+        };
+        store.record(&entry).unwrap();
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].provenance {
+            Provenance::External { agent, model, confidence } => {
+                assert_eq!(agent, "pal");
+                assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
+                assert_eq!(*confidence, Some(0.9));
+            }
+            other => panic!("expected External, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn external_serializes_with_external_tag() {
+        let p = Provenance::External {
+            agent: "pal".into(),
+            model: Some("gpt-5.4".into()),
+            confidence: None,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        // Externally tagged: {"external": {...}}
+        assert!(v.get("external").is_some(), "expected 'external' tag, got {v}");
+        let inner = v.get("external").unwrap();
+        assert_eq!(inner.get("agent").and_then(|x| x.as_str()), Some("pal"));
+        // `confidence: None` may serialize as `null` OR be absent (if serde is
+        // later configured with skip_serializing_if). Both are valid wire forms.
+        assert!(inner.get("confidence").map_or(true, |c| c.is_null()),
+            "confidence must be null or absent, got {:?}", inner.get("confidence"));
+    }
+
+    #[test]
+    fn external_deserializes_when_confidence_key_absent() {
+        // Agents may omit the confidence key entirely. Must round-trip to
+        // Provenance::External { confidence: None, .. }.
+        let json = r#"{"external":{"agent":"pal","model":"gpt-5.4"}}"#;
+        let p: Provenance = serde_json::from_str(json).unwrap();
+        match p {
+            Provenance::External { agent, model, confidence } => {
+                assert_eq!(agent, "pal");
+                assert_eq!(model.as_deref(), Some("gpt-5.4"));
+                assert_eq!(confidence, None);
+            }
+            o => panic!("{o:?}"),
         }
     }
 }
