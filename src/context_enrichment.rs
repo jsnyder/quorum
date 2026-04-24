@@ -93,7 +93,13 @@ fn strip_verb<'a>(rest: &'a str, verb: &str) -> Option<&'a str> {
 
 fn parse_rust_use(stmt: &str) -> Vec<String> {
     let stmt = stmt.trim().trim_end_matches(';');
-    let head = stmt.split("::").next().unwrap_or(stmt).trim();
+    // Skip empty leading segments so absolute paths (`use ::tokio::...`) work
+    // the same as relative ones.
+    let head = stmt
+        .split("::")
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .trim();
     if head.is_empty() { return Vec::new(); }
     vec![head.to_string()]
 }
@@ -729,6 +735,21 @@ mod tests {
         assert_eq!(
             normalize_import_to_dep_names("Result: use anyhow::Result;"),
             vec!["anyhow"]
+        );
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_handles_absolute_paths() {
+        // CR3: `use ::tokio::sync::Mutex;` (absolute path) used to return no
+        // dep because split("::").next() yielded an empty leading segment.
+        // Skip empties so absolute paths work like relative ones.
+        assert_eq!(
+            normalize_import_to_dep_names("Mutex: use ::tokio::sync::Mutex;"),
+            vec!["tokio"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("HashMap: use ::std::collections::HashMap;"),
+            vec!["std"]
         );
     }
 

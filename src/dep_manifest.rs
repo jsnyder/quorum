@@ -21,13 +21,29 @@ fn parse_cargo(path: &Path) -> Vec<Dependency> {
         }
     };
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let push_table = |table: &toml::value::Table, out: &mut Vec<Dependency>, seen: &mut std::collections::HashSet<String>| {
+        for name in table.keys() {
+            let normalized = name.replace('-', "_");
+            if seen.insert(normalized.clone()) {
+                out.push(Dependency { name: normalized, language: "rust".into() });
+            }
+        }
+    };
     for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parsed.get(*section).and_then(|v| v.as_table()) {
-            for name in table.keys() {
-                out.push(Dependency {
-                    name: name.replace('-', "_"),
-                    language: "rust".into(),
-                });
+            push_table(table, &mut out, &mut seen);
+        }
+    }
+    // `[target.<spec>.dependencies]` (and dev/build variants). Common in real
+    // crates for cfg-gated platform deps (winapi, nix, inotify). Iterate every
+    // child of [target.*] and pull the same three sub-tables.
+    if let Some(targets) = parsed.get("target").and_then(|v| v.as_table()) {
+        for spec_table in targets.values().filter_map(|v| v.as_table()) {
+            for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
+                if let Some(table) = spec_table.get(*section).and_then(|v| v.as_table()) {
+                    push_table(table, &mut out, &mut seen);
+                }
             }
         }
     }
@@ -234,6 +250,33 @@ mod tests {
         write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = { version = \"1\", features = [\"full\"] }\n");
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "tokio"));
+    }
+
+    #[test]
+    fn cargo_target_specific_dependencies_collected() {
+        // Quorum MED: `[target.<spec>.dependencies]` (and dev/build variants)
+        // are common in real Rust projects. Skipping them silently drops deps
+        // like winapi/nix from enrichment.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "Cargo.toml", r#"
+[target.'cfg(unix)'.dependencies]
+nix = "0.27"
+
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3"
+
+[target.x86_64-unknown-linux-gnu.dev-dependencies]
+inotify = "0.10"
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for expected in ["nix", "winapi", "inotify", "cc"] {
+            assert!(names.contains(&expected.to_string()),
+                "missing {expected} in {names:?}");
+        }
     }
 
     #[test]
