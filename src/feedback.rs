@@ -92,6 +92,70 @@ pub(crate) fn normalize_agent(raw: &str) -> anyhow::Result<String> {
     Ok(t.to_lowercase())
 }
 
+/// Summary of a single `drain_inbox` call. `processed_dir_total_bytes` is
+/// the CUMULATIVE size of `processed_dir` after drain (drives the 50MB warning),
+/// NOT the per-run size (quorum self-review 2026-04-24).
+#[derive(Debug, Clone, Default)]
+pub struct DrainReport {
+    pub drained_files: usize,
+    pub entries: usize,
+    pub errors: Vec<DrainError>,
+    pub processed_dir_total_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrainError {
+    pub file: PathBuf,
+    /// Line number (1-indexed). `0` = file-level error (read/rename failure).
+    pub line: usize,
+    pub message: String,
+}
+
+/// Wire format that agents drop into `~/.quorum/inbox/*.jsonl`.
+/// Structurally mirrors `ExternalVerdictInput` — kept as a separate type so
+/// the on-disk schema can evolve independently of the in-memory DTO.
+#[derive(Debug, Deserialize)]
+struct ExternalVerdictInputWire {
+    file_path: String,
+    finding_title: String,
+    finding_category: Option<String>,
+    verdict: Verdict,
+    reason: String,
+    agent: String,
+    agent_model: Option<String>,
+    confidence: Option<f32>,
+}
+
+impl From<ExternalVerdictInputWire> for ExternalVerdictInput {
+    fn from(w: ExternalVerdictInputWire) -> Self {
+        Self {
+            file_path: w.file_path,
+            finding_title: w.finding_title,
+            finding_category: w.finding_category,
+            verdict: w.verdict,
+            reason: w.reason,
+            agent: w.agent,
+            agent_model: w.agent_model,
+            confidence: w.confidence,
+        }
+    }
+}
+
+/// Rename `src` to `dst`. Returns `Ok(true)` on success, `Ok(false)` if the
+/// source disappeared between enumeration and rename (benign multi-process
+/// race — another process claimed it first). Any other IO error propagates.
+/// Extracted so the ENOENT arm is directly unit-testable.
+pub(crate) fn rename_or_tolerate_race(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<bool> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 pub struct FeedbackStore {
     path: PathBuf,
 }
@@ -145,6 +209,153 @@ impl FeedbackStore {
 
     pub fn count(&self) -> anyhow::Result<usize> {
         Ok(self.load_all()?.len())
+    }
+
+    /// Drain all `*.jsonl` files from `inbox_dir` into this store as External
+    /// verdicts. Claim-then-ingest: atomically rename each file into an
+    /// `<inbox>/processing/` claim-path FIRST (making ownership exclusive so
+    /// concurrent quorum processes don't double-ingest), then parse and
+    /// `record_external` each line, then archive to `<processed_dir>/` with
+    /// a ULID suffix. Non-ENOENT errors leave the file in `processing/` for
+    /// operator inspection — never silent duplicate writes (quorum self-review
+    /// 2026-04-24).
+    ///
+    /// Malformed lines land in `DrainReport.errors` and are skipped; the rest
+    /// of the file still drains. ENOENT on any rename is treated as a benign
+    /// race (another process got it first).
+    ///
+    /// `processed_dir_total_bytes` in the returned report is cumulative
+    /// (drives the 50MB warning threshold).
+    pub fn drain_inbox(
+        &self,
+        inbox_dir: &std::path::Path,
+        processed_dir: &std::path::Path,
+    ) -> anyhow::Result<DrainReport> {
+        use std::io::ErrorKind;
+        let mut report = DrainReport::default();
+
+        // Fast path: ENOENT → zero work. Empty dir yields an empty iterator.
+        let read = match std::fs::read_dir(inbox_dir) {
+            Ok(r) => r,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(report),
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut files: Vec<PathBuf> = read
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+            .filter(|p| !p.is_dir())
+            .collect();
+        files.sort();
+
+        if files.is_empty() {
+            return Ok(report);
+        }
+
+        // Claim-then-ingest: create processing/ (sibling of files in inbox)
+        // and processed/ lazily.
+        let processing_dir = inbox_dir.join("processing");
+        std::fs::create_dir_all(&processing_dir)?;
+        std::fs::create_dir_all(processed_dir)?;
+
+        for file in files {
+            // STEP A: CLAIM. Atomic rename into processing/. ENOENT → another
+            // process already claimed it; skip.
+            let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown.jsonl");
+            let claim_ulid = ulid::Ulid::new().to_string();
+            let claimed = processing_dir.join(format!("{fname}.{claim_ulid}.jsonl"));
+            match rename_or_tolerate_race(&file, &claimed) {
+                Ok(true) => { /* we exclusively own the file now */ }
+                Ok(false) => continue,
+                Err(e) => {
+                    report.errors.push(DrainError {
+                        file: file.clone(),
+                        line: 0,
+                        message: format!("claim rename failed: {e}"),
+                    });
+                    continue;
+                }
+            }
+
+            // STEP B: INGEST from the claimed path.
+            let content = match std::fs::read_to_string(&claimed) {
+                Ok(c) => c,
+                Err(e) => {
+                    report.errors.push(DrainError {
+                        file: claimed.clone(),
+                        line: 0,
+                        message: format!("read failed: {e}"),
+                    });
+                    // Leave in processing/ for operator inspection.
+                    continue;
+                }
+            };
+            for (idx, line) in content.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<ExternalVerdictInputWire>(line) {
+                    Ok(wire) => {
+                        let input: ExternalVerdictInput = wire.into();
+                        if let Err(e) = self.record_external(input) {
+                            report.errors.push(DrainError {
+                                file: claimed.clone(),
+                                line: idx + 1,
+                                message: format!("record failed: {e}"),
+                            });
+                        } else {
+                            report.entries += 1;
+                        }
+                    }
+                    Err(e) => {
+                        report.errors.push(DrainError {
+                            file: claimed.clone(),
+                            line: idx + 1,
+                            message: format!("parse failed: {e}"),
+                        });
+                    }
+                }
+            }
+
+            // STEP C: ARCHIVE. Move from processing/ to processed/.
+            let archive_ulid = ulid::Ulid::new().to_string();
+            let target = processed_dir.join(format!("{fname}.{archive_ulid}.jsonl"));
+            match rename_or_tolerate_race(&claimed, &target) {
+                Ok(true) => report.drained_files += 1,
+                Ok(false) => { /* unlikely — someone unlinked processing/ under us */ }
+                Err(e) => {
+                    report.errors.push(DrainError {
+                        file: claimed.clone(),
+                        line: 0,
+                        message: format!(
+                            "archive rename failed: {e}; file left in processing/"
+                        ),
+                    });
+                    // File stays in processing/ — operator resolves manually.
+                }
+            }
+        }
+
+        // Size-warning threshold (cumulative total of processed_dir).
+        const WARN_BYTES: u64 = 50 * 1024 * 1024;
+        if let Ok(entries) = std::fs::read_dir(processed_dir) {
+            let total: u64 = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+            report.processed_dir_total_bytes = total;
+            if total > WARN_BYTES {
+                tracing::warn!(
+                    processed_dir = %processed_dir.display(),
+                    total_mb = total / 1024 / 1024,
+                    "quorum inbox processed/ is large; consider manual cleanup"
+                );
+            }
+        }
+
+        Ok(report)
     }
 
     /// Record a verdict from an external review agent (pal, third-opinion, etc.).
@@ -620,6 +831,171 @@ mod tests {
         let once = normalize_agent("  MixedCase  ").unwrap();
         let twice = normalize_agent(&once).unwrap();
         assert_eq!(once, twice);
+    }
+
+    // --- Task 5: drain_inbox with claim-then-ingest (issue #32) ---
+
+    #[test]
+    fn drain_inbox_missing_dir_returns_zero_work() {
+        // Inbox dir doesn't exist — first-run scenario. Must NOT error.
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("nonexistent-inbox");
+        let processed = dir.path().join("processed");
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.drained_files, 0);
+        assert_eq!(report.entries, 0);
+        assert!(report.errors.is_empty());
+        assert!(!processed.exists(), "processed/ must not be created when inbox is absent");
+    }
+
+    #[test]
+    fn drain_inbox_empty_returns_zero_work() {
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.drained_files, 0);
+        assert_eq!(report.entries, 0);
+        assert!(report.errors.is_empty());
+        assert_eq!(report.processed_dir_total_bytes, 0);
+        assert!(!processed.exists(), "processed/ should not be created when inbox is empty");
+    }
+
+    #[test]
+    fn drain_inbox_valid_file_appends_and_moves() {
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let line = serde_json::to_string(&serde_json::json!({
+            "file_path": "src/a.rs",
+            "finding_title": "Bug",
+            "finding_category": "security",
+            "verdict": "tp",
+            "reason": "confirmed",
+            "agent": "pal",
+            "agent_model": "gemini-3-pro-preview",
+            "confidence": 0.9
+        })).unwrap();
+        let inbox_file = inbox.join("pal-run-1.jsonl");
+        std::fs::write(&inbox_file, format!("{line}\n")).unwrap();
+
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.drained_files, 1);
+        assert_eq!(report.entries, 1);
+        assert!(report.errors.is_empty());
+
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(matches!(all[0].provenance, Provenance::External { .. }));
+
+        assert!(!inbox_file.exists(), "inbox file should be moved after drain");
+
+        let processed_files: Vec<_> = std::fs::read_dir(&processed).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(processed_files.len(), 1);
+        let name = processed_files[0].file_name().into_string().unwrap();
+        assert!(name.starts_with("pal-run-1.jsonl."), "expected ulid-suffixed name, got {name}");
+        assert!(name.ends_with(".jsonl"));
+
+        // Claim-then-ingest invariant: processing/ must be empty on success.
+        let processing = inbox.join("processing");
+        if processing.exists() {
+            let leftover: Vec<_> = std::fs::read_dir(&processing).unwrap().collect::<Result<_,_>>().unwrap();
+            assert!(leftover.is_empty(),
+                "processing/ must be empty after successful drain, found {:?}",
+                leftover.iter().map(|e| e.path()).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn drain_inbox_malformed_line_skipped_rest_drained() {
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let good = serde_json::to_string(&serde_json::json!({
+            "file_path": "src/a.rs",
+            "finding_title": "Bug",
+            "finding_category": "security",
+            "verdict": "tp",
+            "reason": "r",
+            "agent": "pal",
+            "agent_model": null,
+            "confidence": null
+        })).unwrap();
+        let bad = "{not json";
+        std::fs::write(inbox.join("mix.jsonl"), format!("{good}\n{bad}\n{good}\n")).unwrap();
+
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.drained_files, 1);
+        assert_eq!(report.entries, 2, "2 good + 1 bad = 2 appended");
+        assert_eq!(report.errors.len(), 1);
+
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn drain_inbox_is_idempotent_on_empty_second_call() {
+        // Honest name: this tests idempotency, not multi-process ENOENT races.
+        // ENOENT tolerance is tested directly via rename_or_tolerate_race below.
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let line = r#"{"file_path":"a.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+        std::fs::write(inbox.join("a.jsonl"), format!("{line}\n")).unwrap();
+
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let r1 = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(r1.drained_files, 1);
+        let r2 = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(r2.drained_files, 0, "second drain is a no-op, not an error");
+    }
+
+    #[test]
+    fn rename_or_tolerate_race_swallows_nonexistent_source() {
+        // Directly tests ENOENT-tolerance by calling the extracted seam
+        // with a source path that doesn't exist. Proves the multi-process
+        // race arm of drain_inbox without requiring actual concurrency.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("not-there.jsonl");
+        std::fs::create_dir_all(dir.path().join("processed")).unwrap();
+        let dst = dir.path().join("processed").join("moved.jsonl");
+        let renamed = rename_or_tolerate_race(&missing, &dst).unwrap();
+        assert!(!renamed, "missing source must return Ok(false), not Err");
+        assert!(!dst.exists(), "destination must not be created");
+    }
+
+    #[test]
+    fn drain_inbox_rejects_uppercase_verdict_string() {
+        // Verdict must round-trip through #[serde(rename_all="snake_case")].
+        // "TP" is not valid; the line lands in errors, valid line still drains.
+        let dir = TempDir::new().unwrap();
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let bad = r#"{"file_path":"a.rs","finding_title":"t","finding_category":"c","verdict":"TP","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+        let good = r#"{"file_path":"b.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+        std::fs::write(inbox.join("mix.jsonl"), format!("{bad}\n{good}\n")).unwrap();
+
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.drained_files, 1);
+        assert_eq!(report.entries, 1, "only the valid line was appended");
+        assert_eq!(report.errors.len(), 1, "uppercase TP must land in errors");
+        let msg = report.errors[0].message.to_lowercase();
+        assert!(msg.contains("tp") || msg.contains("verdict") || msg.contains("unknown variant"),
+            "error must reference the bad verdict: {}", report.errors[0].message);
     }
 }
 
