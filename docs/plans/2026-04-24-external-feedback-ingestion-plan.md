@@ -16,6 +16,10 @@
 
 **Existing test style:** inline `#[cfg(test)] mod tests` at bottom of module. See `src/feedback.rs::tests` and `src/calibrator.rs::tests` for canonical patterns. Use `tempfile::TempDir` for any filesystem state.
 
+**Phase 3 review results (test-planning + antipattern agents):** 13 patches applied below covering NaN/Inf in `clamp_confidence`, Task 3 consolidation, Task 5 rename+seam-extraction, Task 7 behavior-test-not-library-test, cross-path equivalence, struct-over-string assertions, ContextMisleading rejection, `QUORUM_HOME` hermetic env, proptests for clamp + agent-normalization, schema forward-compat, stats zero-graceful, Task 1 build-exhaustiveness note.
+
+**Scope deviation from issue #32 success criteria:** Issue says "calibrator applies 0.7x weight (configurable) to external verdicts." v1 hardcodes 0.7x — configurability is a v1.1 follow-up. Call this out explicitly in the PR description so the checkbox isn't silently unchecked.
+
 **Confirmed via code inspection (2026-04-24):**
 - `ulid = { version = "1", features = ["serde"] }`, `assert_cmd = "2"`, `predicates = "3"`, `tempfile = "3"` — all already in Cargo.toml, no additions needed.
 - `cli::FeedbackOpts` lives at `src/cli/mod.rs:360` — fields: `file, finding, verdict, reason, model, blamed_chunks, json`. **There is no `--provenance` flag today.** Plan does NOT introduce one — `--from-agent` stands alone as the External trigger.
@@ -111,7 +115,40 @@ fn external_serializes_with_external_tag() {
     assert!(v.get("external").is_some(), "expected 'external' tag, got {v}");
     let inner = v.get("external").unwrap();
     assert_eq!(inner.get("agent").and_then(|x| x.as_str()), Some("pal"));
-    assert!(inner.get("confidence").map_or(false, |c| c.is_null()));
+    // `confidence: None` may serialize as `null` OR be absent (if serde adds
+    // skip_serializing_if later). Both are valid wire forms — accept either.
+    assert!(inner.get("confidence").map_or(true, |c| c.is_null()),
+        "confidence must be null or absent, got {:?}", inner.get("confidence"));
+}
+
+#[test]
+fn external_deserializes_when_confidence_key_absent() {
+    // Contract: agents may omit the confidence key entirely. Must round-trip
+    // to Provenance::External { confidence: None, .. }.
+    let json = r#"{"external":{"agent":"pal","model":"gpt-5.4"}}"#;
+    let p: Provenance = serde_json::from_str(json).unwrap();
+    match p {
+        Provenance::External { agent, model, confidence } => {
+            assert_eq!(agent, "pal");
+            assert_eq!(model.as_deref(), Some("gpt-5.4"));
+            assert_eq!(confidence, None);
+        }
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn unknown_provenance_variant_deserializes_as_unknown() {
+    // Forward-compat: a future quorum may add a `Provenance::Foo` variant.
+    // An older quorum seeing such rows must NOT hard-fail load_all — it must
+    // fall back to Unknown so the store remains readable. `#[serde(other)]`
+    // on a catch-all variant is the standard pattern for this.
+    // NOTE: this test requires `#[serde(other)]` on Provenance::Unknown. If the
+    // first run fails with "unknown variant `future_variant`", add that attribute.
+    let json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":{"future_variant":{"agent":"x"}}}"#;
+    let entry: FeedbackEntry = serde_json::from_str(json)
+        .expect("forward-compat: unknown provenance variant must deserialize");
+    assert_eq!(entry.provenance, Provenance::Unknown);
 }
 ```
 
@@ -138,11 +175,14 @@ pub enum Provenance {
         model: Option<String>,
         confidence: Option<f32>,
     },
+    #[serde(other)]
     Unknown,
 }
 ```
 
-Note: drop `Eq` from derive list if it was there — `Option<f32>` is not `Eq`. Check `src/feedback.rs:27` — the existing derive was `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. Removing `Eq` breaks downstream `assert_eq!(entry.provenance, Provenance::Human)` calls only if they rely on `Eq` trait bounds (they use `PartialEq`, so fine). Grep to confirm: `rg 'Provenance:.*Eq'` should only hit the derive itself.
+Notes:
+- Drop `Eq` from the derive list — `Option<f32>` is not `Eq`. The existing derive was `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. Downstream callers use `PartialEq` via `assert_eq!`, not `Eq` trait bounds, so this is safe. Grep to confirm: `rg 'Provenance:.*Eq'` should only hit the derive itself.
+- `#[serde(other)]` on `Unknown` is the forward-compat fallback for the `unknown_provenance_variant_deserializes_as_unknown` test. Without it, future variants added by newer quorum versions would cause `load_all` to skip rows silently.
 
 **Step 4: Run tests to verify they pass**
 
@@ -151,12 +191,13 @@ cargo test --bin quorum feedback::tests::external_ -- --nocapture
 ```
 Expected: both PASS.
 
-**Step 5: Verify no existing test broke**
+**Step 5: Verify no existing test broke AND the full crate still builds**
 
 ```bash
 cargo test --bin quorum feedback::tests
+cargo build --bin quorum 2>&1 | rg -i 'error|non-exhaustive' | head
 ```
-Expected: all PASS (the existing `provenance_serializes_correctly` still works — unit variants unchanged).
+Expected: first command all PASS (the existing `provenance_serializes_correctly` still works — unit variants unchanged). Second command should produce no matches — `verdict_weight` in calibrator.rs has an exhaustive match, so adding the `External` variant would break the build until Task 2 lands. If the build fails here, proceed directly to Task 2 in the same commit (don't commit a broken build).
 
 **Step 6: Commit**
 
@@ -201,7 +242,8 @@ fn external_provenance_weights_0_7() {
 
 #[test]
 fn external_weight_independent_of_confidence_in_v1() {
-    // confidence is stored but IGNORED by calibrator in v1
+    // confidence is stored but IGNORED by calibrator in v1.
+    // Table-driven so one failure doesn't mask the others.
     let mk = |conf: Option<f32>| FeedbackEntry {
         file_path: "a.rs".into(),
         finding_title: "t".into(),
@@ -216,11 +258,20 @@ fn external_weight_independent_of_confidence_in_v1() {
             confidence: conf,
         },
     };
-    let w_none = verdict_weight(&mk(None));
-    let w_low  = verdict_weight(&mk(Some(0.1)));
-    let w_high = verdict_weight(&mk(Some(0.99)));
-    assert!((w_none - w_low).abs() < 1e-6);
-    assert!((w_none - w_high).abs() < 1e-6);
+    let cases: &[(&str, Option<f32>)] = &[
+        ("None", None),
+        ("low", Some(0.1)),
+        ("high", Some(0.99)),
+        ("zero", Some(0.0)),
+        ("one", Some(1.0)),
+    ];
+    for (label, conf) in cases {
+        let w = verdict_weight(&mk(*conf));
+        assert!(
+            (w - 0.7).abs() < 1e-6,
+            "confidence={label}: expected 0.7, got {w}"
+        );
+    }
 }
 
 #[test]
@@ -299,131 +350,111 @@ git commit -m "feat(calibrator): weight External provenance at 0.7x (issue #32)"
 
 **Step 1: Write failing pinning tests**
 
+Before writing, grep for existing finding-construction helpers:
+
+```bash
+rg -n 'fn (sample|mk|build)_finding|fn (sample|mk|build)_fb' src/calibrator.rs | head
+```
+
+Reuse the closest existing helper (or add a local one following its shape). Don't create parallel helpers by accident.
+
 Add to `src/calibrator.rs::tests`:
 
 ```rust
-#[test]
-fn external_not_filtered_when_use_auto_feedback_false() {
-    let findings = vec![sample_finding("SQL injection", Severity::High)];
-    let feedback = vec![FeedbackEntry {
+// Helper — build an External FP FeedbackEntry with a given age.
+fn external_fp(age_days: i64) -> FeedbackEntry {
+    FeedbackEntry {
         file_path: "src/auth.rs".into(),
         finding_title: "SQL injection".into(),
         finding_category: "security".into(),
         verdict: Verdict::Fp,
-        reason: "not actually user input".into(),
+        reason: "r".into(),
         model: None,
-        timestamp: Utc::now(),
+        timestamp: Utc::now() - chrono::Duration::days(age_days),
         provenance: crate::feedback::Provenance::External {
             agent: "pal".into(),
             model: None,
             confidence: None,
         },
-    }];
+    }
+}
+
+#[test]
+fn external_not_filtered_when_use_auto_feedback_false() {
+    // External must survive the use_auto_feedback=false filter that targets AutoCalibrate.
+    let findings = vec![sample_finding("SQL injection", Severity::High)];
+    let feedback = vec![external_fp(0)];
     let config = CalibratorConfig {
-        use_auto_feedback: false,  // would filter AutoCalibrate; External must survive
+        use_auto_feedback: false,
         ..CalibratorConfig::default()
     };
     let result = calibrate(findings, &feedback, &config);
-    // External is seen (not filtered) so the finding either stays or gets soft-severity
-    // but NOT "no precedent found" (which would happen if it were filtered out)
     let trace = result.traces.last().expect("expected a calibrator trace");
     assert!(!trace.matched_precedents.is_empty(),
         "External verdict must survive use_auto_feedback=false");
 }
 
 #[test]
-fn two_external_fps_soft_suppress_not_full() {
-    // 2 × 0.7 = 1.4 → soft (>=1.0) but NOT full (<1.5) with tp_weight=0
-    let findings = vec![sample_finding("SQL injection", Severity::High)];
-    let fb = |ts_offset_days: i64| FeedbackEntry {
-        file_path: "src/auth.rs".into(),
-        finding_title: "SQL injection".into(),
-        finding_category: "security".into(),
-        verdict: Verdict::Fp,
-        reason: "r".into(),
-        model: None,
-        timestamp: Utc::now() - chrono::Duration::days(ts_offset_days),
-        provenance: crate::feedback::Provenance::External {
-            agent: "pal".into(),
-            model: None,
-            confidence: None,
-        },
-    };
-    let feedback = vec![fb(0), fb(1)];
-    let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-    // Finding should still be present but downgraded to Info
-    assert_eq!(result.suppressed, 0, "2 externals should NOT full-suppress");
-    assert_eq!(result.findings.len(), 1);
-    assert_eq!(result.findings[0].severity, Severity::Info,
-        "2 external FPs should soft-suppress to Info");
+fn external_fp_accumulation_thresholds() {
+    // Table-driven: one test covers n=1,2,3 with a clear per-row failure message.
+    // Subsumes the earlier four-way split which duplicated setup and hid accumulator bugs.
+    use Severity::*;
+    #[derive(Debug, PartialEq)]
+    enum Outcome { Kept, Soft, Full }
+
+    let cases: &[(usize, Outcome)] = &[
+        (1, Outcome::Kept),  // 1 × 0.7 = 0.7: below soft (1.0) and full (1.5) thresholds
+        (2, Outcome::Soft),  // 2 × 0.7 = 1.4: soft-suppress (>=1.0), not full (<1.5)
+        (3, Outcome::Full),  // 3 × 0.7 = 2.1: full-suppress (>=1.5)
+    ];
+
+    for (n, expected) in cases {
+        let findings = vec![sample_finding("SQL injection", High)];
+        let feedback: Vec<_> = (0..*n as i64).map(external_fp).collect();
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let outcome = match (result.suppressed, result.findings.first().map(|f| &f.severity)) {
+            (1, _) => Outcome::Full,
+            (0, Some(Severity::Info)) => Outcome::Soft,
+            (0, Some(_)) => Outcome::Kept,
+            _ => panic!("unexpected result for n={n}: {result:?}"),
+        };
+        assert_eq!(outcome, *expected, "n={n}: expected {expected:?}, got {outcome:?}");
+    }
 }
 
 #[test]
-fn three_external_fps_full_suppress_allowed() {
-    // 3 × 0.7 = 2.1 → full suppress (>=1.5) with tp_weight=0
-    let findings = vec![sample_finding("SQL injection", Severity::High)];
-    let fb = |ts_offset_days: i64| FeedbackEntry {
-        file_path: "src/auth.rs".into(),
-        finding_title: "SQL injection".into(),
-        finding_category: "security".into(),
-        verdict: Verdict::Fp,
-        reason: "r".into(),
-        model: None,
-        timestamp: Utc::now() - chrono::Duration::days(ts_offset_days),
-        provenance: crate::feedback::Provenance::External {
-            agent: "pal".into(),
-            model: None,
-            confidence: None,
-        },
-    };
-    let feedback = vec![fb(0), fb(1), fb(2)];
-    let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-    assert_eq!(result.suppressed, 1, "3 external FPs should full-suppress");
-    assert_eq!(result.findings.len(), 0);
-}
-
-#[test]
-fn external_not_capped_like_auto_calibrate() {
-    // AutoCalibrate FP weight is capped at 1.0 via auto_fp_weight.min(1.0).
-    // External falls into other_fp_weight which is UNCAPPED.
-    // Sanity: if External were capped, 3 externals would cap at 1.0 and NOT full-suppress.
-    // This is the inverse of the previous test — co-locate so future regressions surface here.
+fn external_accumulator_uncapped_verified_via_trace() {
+    // Stronger pin than outcome-based tests: inspect the calibrator trace to
+    // confirm the actual weight accumulated exceeds 1.0 (the AutoCalibrate cap).
+    // If a future edit accidentally routes External into auto_fp_weight.min(1.0),
+    // this test fails even if the end-outcome happens to still be "full-suppress"
+    // for unrelated reasons.
     let findings = vec![sample_finding("X", Severity::High)];
-    let fb_ext = FeedbackEntry {
-        file_path: "a.rs".into(),
-        finding_title: "X".into(),
-        finding_category: "security".into(),
-        verdict: Verdict::Fp,
-        reason: "r".into(),
-        model: None,
-        timestamp: Utc::now(),
-        provenance: crate::feedback::Provenance::External {
-            agent: "pal".into(),
-            model: None,
-            confidence: None,
-        },
-    };
-    let feedback = vec![fb_ext.clone(), fb_ext.clone(), fb_ext];
+    let feedback: Vec<_> = (0..3).map(external_fp).collect();
     let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-    // Confirm uncapped: 3 × 0.7 = 2.1 ≥ 1.5 → full suppress
-    assert_eq!(result.suppressed, 1,
-        "External must accumulate uncapped (sum=2.1), not cap at 1.0");
+    let trace = result.traces.last().expect("expected a trace");
+    // 3 fresh External FPs → fp_weight should be ≈ 3 × 0.7 = 2.1 (modulo small
+    // recency decay at age=0,1,2 days). If External were capped at 1.0, this
+    // would be ≤ 1.0.
+    assert!(trace.fp_weight > 1.0,
+        "expected uncapped fp_weight > 1.0 (got {}) — External must not be capped like AutoCalibrate",
+        trace.fp_weight);
 }
 ```
 
-Note: if `sample_finding` helper doesn't exist in the test module, add it by grepping existing helpers and reusing/adapting. Likely candidates: look for `fn build_finding`, `fn mk_finding`, or similar in `src/calibrator.rs::tests`. If none exist, add one.
+Note: `sample_finding` — grep as shown above. If it doesn't exist, add a minimal local helper that constructs a `Finding` with the given title + severity. Do NOT create a parallel helper if an existing one (e.g. `build_finding`, `mk_finding`) is already in scope.
 
-**Step 2: Run tests to verify they fail**
+**Step 2: Run tests — expect them to PASS immediately**
 
 ```bash
-cargo test --bin quorum calibrator::tests::two_external_fps_soft_suppress_not_full \
-           calibrator::tests::three_external_fps_full_suppress_allowed \
-           calibrator::tests::external_not_filtered_when_use_auto_feedback_false \
-           calibrator::tests::external_not_capped_like_auto_calibrate
+cargo test --bin quorum calibrator::tests::external_not_filtered_when_use_auto_feedback_false \
+           calibrator::tests::external_fp_accumulation_thresholds \
+           calibrator::tests::external_accumulator_uncapped_verified_via_trace
 ```
-Expected: one or more FAIL. Why: the filter/cap sites correctly pass External through by default, so these tests may actually PASS — which is the point of pinning. If any FAIL, it reveals a real gap.
 
-**If all 4 pass immediately:** good — commit the tests as pinning-only, no code change needed for this task. If any fails, route to `rust-expert` subagent to diagnose why External was unexpectedly filtered or capped.
+**Expected outcome: all 3 PASS on first run.** That's the point of pinning tests — the filter/cap sites correctly pass External through by default (they only branch on `AutoCalibrate`). These tests don't drive any code change; they *fence off* a future accidental change that adds External to the filter or cap arms.
+
+**If any FAIL:** STOP. It means either (a) an earlier task introduced a real gap (route to `rust-expert` to diagnose), or (b) a test assumption is wrong (e.g., `sample_finding` produces a finding that doesn't match the feedback title closely enough for the calibrator's similarity threshold — grep and verify).
 
 **Step 3: Commit pinning tests**
 
@@ -524,33 +555,108 @@ fn record_external_defaults_missing_category_to_unknown() {
     assert_eq!(all[0].finding_category, "unknown");
 }
 
+// Unit-test the pure clamp function directly — no filesystem needed.
 #[test]
-fn record_external_clamps_confidence_to_unit_interval() {
+fn clamp_confidence_maps_values() {
+    assert_eq!(clamp_confidence(None), None);
+    assert_eq!(clamp_confidence(Some(0.42)), Some(0.42));
+    assert_eq!(clamp_confidence(Some(1.5)), Some(1.0));
+    assert_eq!(clamp_confidence(Some(-0.2)), Some(0.0));
+    assert_eq!(clamp_confidence(Some(0.0)), Some(0.0));
+    assert_eq!(clamp_confidence(Some(1.0)), Some(1.0));
+}
+
+#[test]
+fn clamp_confidence_rejects_nan_inf() {
+    // f32::clamp(0.0, 1.0) is NOT NaN-safe — it returns NaN for NaN input.
+    // clamp_confidence must detect and reject non-finite values explicitly.
+    assert_eq!(clamp_confidence(Some(f32::NAN)), None, "NaN must become None");
+    assert_eq!(clamp_confidence(Some(f32::INFINITY)), None, "+inf must become None");
+    assert_eq!(clamp_confidence(Some(f32::NEG_INFINITY)), None, "-inf must become None");
+}
+
+// One integration test that the record path calls clamp_confidence.
+#[test]
+fn record_external_applies_clamp_confidence() {
     let (store, _dir) = test_store();
-    let test_cases = [(Some(1.5), Some(1.0)), (Some(-0.2), Some(0.0)), (Some(0.42), Some(0.42))];
-    for (input, expected) in test_cases {
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = FeedbackStore::new(dir.path().join("f.jsonl"));
-        store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::Tp,
-            reason: "r".into(),
-            agent: "pal".into(),
-            agent_model: None,
-            confidence: input,
-        }).unwrap();
-        let all = store.load_all().unwrap();
-        match &all[0].provenance {
-            Provenance::External { confidence, .. } => {
-                match (confidence, expected) {
-                    (Some(c), Some(e)) => assert!((c - e).abs() < 1e-6, "input={input:?} expected={expected:?} got={c}"),
-                    (None, None) => (),
-                    other => panic!("mismatch: {other:?}"),
+    store.record_external(ExternalVerdictInput {
+        file_path: "a.rs".into(),
+        finding_title: "t".into(),
+        finding_category: None,
+        verdict: Verdict::Tp,
+        reason: "r".into(),
+        agent: "pal".into(),
+        agent_model: None,
+        confidence: Some(1.5),
+    }).unwrap();
+    let all = store.load_all().unwrap();
+    match &all[0].provenance {
+        Provenance::External { confidence, .. } => {
+            assert_eq!(*confidence, Some(1.0), "1.5 must clamp to 1.0");
+        }
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn record_external_rejects_context_misleading_verdict() {
+    // ContextMisleading requires blamed_chunk_ids the reviewer identified.
+    // An external agent can't credibly produce those (it doesn't see our
+    // injected context), so the verdict has no meaningful semantics here.
+    // Reject at the ingest boundary to prevent polluting the calibrator.
+    let (store, _dir) = test_store();
+    let err = store.record_external(ExternalVerdictInput {
+        file_path: "a.rs".into(),
+        finding_title: "t".into(),
+        finding_category: None,
+        verdict: Verdict::ContextMisleading { blamed_chunk_ids: vec!["c1".into()] },
+        reason: "r".into(),
+        agent: "pal".into(),
+        agent_model: None,
+        confidence: None,
+    }).expect_err("ContextMisleading must be rejected for External provenance");
+    assert!(
+        err.to_string().to_lowercase().contains("context"),
+        "error message must mention context_misleading: {err}"
+    );
+}
+```
+
+**Proptest (add as separate test module; proptest = "1" is already in Cargo.toml):**
+
+```rust
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn clamp_always_finite_and_in_unit_interval(c in any::<f32>()) {
+            match clamp_confidence(Some(c)) {
+                Some(out) => {
+                    prop_assert!(out.is_finite(), "clamp output must be finite, got {out}");
+                    prop_assert!((0.0..=1.0).contains(&out), "out={out} not in [0,1]");
                 }
+                None => prop_assert!(!c.is_finite(), "None only allowed for non-finite input, got {c}"),
             }
-            o => panic!("{o:?}"),
+        }
+
+        #[test]
+        fn normalize_agent_is_idempotent(s in "\\PC{0,64}") {
+            let once = normalize_agent(&s);
+            let twice = once.as_ref().map(|x| normalize_agent(x)).and_then(|r| r.ok());
+            if let Ok(first) = &once {
+                prop_assert_eq!(Some(first.clone()), twice.flatten().ok(),
+                    "normalize(normalize(s)) must equal normalize(s)");
+            }
+        }
+
+        #[test]
+        fn normalize_agent_empty_iff_trim_empty(s in "\\PC{0,64}") {
+            let normalized = normalize_agent(&s);
+            prop_assert_eq!(normalized.is_err(), s.trim().is_empty(),
+                "err iff trim empty for input {s:?}");
         }
     }
 }
@@ -586,18 +692,41 @@ pub struct ExternalVerdictInput {
 }
 ```
 
+Add helper functions (pub(crate) so proptests can use them):
+
+```rust
+/// Clamp confidence to [0,1], mapping NaN/±Inf to None.
+/// f32::clamp is NOT NaN-safe — this wraps it with an is_finite gate.
+pub(crate) fn clamp_confidence(c: Option<f32>) -> Option<f32> {
+    c.filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0))
+}
+
+/// Normalize an agent name: trim + lowercase. Returns Err for empty-after-trim.
+pub(crate) fn normalize_agent(raw: &str) -> anyhow::Result<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        anyhow::bail!("agent name cannot be empty after normalization");
+    }
+    Ok(t.to_lowercase())
+}
+```
+
 Add to `impl FeedbackStore`:
 
 ```rust
 /// Record a verdict from an external review agent (pal, third-opinion, etc.).
-/// Normalizes agent name (lowercase+trim), clamps confidence to [0,1], and
-/// sets `provenance = Provenance::External{..}`. See issue #32.
+/// Normalizes agent name, NaN-safe confidence clamp, rejects ContextMisleading
+/// verdicts (external agents cannot credibly produce blamed_chunk_ids).
+/// See issue #32.
 pub fn record_external(&self, input: ExternalVerdictInput) -> anyhow::Result<()> {
-    let agent = input.agent.trim().to_lowercase();
-    if agent.is_empty() {
-        anyhow::bail!("agent name cannot be empty after normalization");
+    if matches!(input.verdict, Verdict::ContextMisleading { .. }) {
+        anyhow::bail!(
+            "context_misleading verdicts are not accepted from External agents \
+             (they cannot identify blamed chunks in our injected context)"
+        );
     }
-    let confidence = input.confidence.map(|c| c.clamp(0.0, 1.0));
+    let agent = normalize_agent(&input.agent)?;
+    let confidence = clamp_confidence(input.confidence);
     let category = input.finding_category
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unknown".to_string());
@@ -747,16 +876,9 @@ fn drain_inbox_malformed_line_skipped_rest_drained() {
 }
 
 #[test]
-fn drain_inbox_enoent_race_is_not_an_error() {
-    // Simulate a two-process race: we stat-and-enumerate a file that no longer
-    // exists when we try to rename. ENOENT on rename must be silently tolerated
-    // (another process beat us to it). Emulate by listing a phantom filename
-    // via a custom scenario: create + delete before rename.
-    // Simplest emulation: create a file, then delete it before calling drain
-    // in-process is racy. Instead, test the error-path contract by inserting
-    // a bogus file, deleting mid-drain is hard to guarantee portably, so
-    // assert a weaker property: drain is idempotent — running it twice on
-    // the same-inbox-now-empty state yields zero work without panicking.
+fn drain_inbox_is_idempotent_on_empty_second_call() {
+    // After a successful drain, the inbox is empty; a second drain must
+    // produce zero work. Honest name for what this actually tests.
     let dir = tempfile::TempDir::new().unwrap();
     let inbox = dir.path().join("inbox");
     let processed = dir.path().join("processed");
@@ -770,6 +892,42 @@ fn drain_inbox_enoent_race_is_not_an_error() {
     assert_eq!(r1.drained_files, 1);
     let r2 = store.drain_inbox(&inbox, &processed).unwrap();
     assert_eq!(r2.drained_files, 0, "second drain is a no-op, not an error");
+}
+
+#[test]
+fn rename_or_tolerate_race_swallows_nonexistent_source() {
+    // Directly tests the ENOENT-tolerance contract by calling the extracted
+    // seam with a source path that doesn't exist. Proves the multi-process
+    // race arm of drain_inbox without requiring actual concurrency.
+    let dir = tempfile::TempDir::new().unwrap();
+    let missing = dir.path().join("not-there.jsonl");
+    let dst = dir.path().join("processed").join("moved.jsonl");
+    let renamed = rename_or_tolerate_race(&missing, &dst).unwrap();
+    assert!(!renamed, "missing source must return Ok(false), not Err");
+    assert!(!dst.exists(), "destination must not be created");
+}
+
+#[test]
+fn drain_inbox_rejects_uppercase_verdict_string() {
+    // Verdict must round-trip through #[serde(rename_all="snake_case")].
+    // "TP" is not valid; the line lands in errors, other lines still drain.
+    let dir = tempfile::TempDir::new().unwrap();
+    let inbox = dir.path().join("inbox");
+    let processed = dir.path().join("processed");
+    std::fs::create_dir_all(&inbox).unwrap();
+
+    let bad = r#"{"file_path":"a.rs","finding_title":"t","finding_category":"c","verdict":"TP","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+    let good = r#"{"file_path":"b.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+    std::fs::write(inbox.join("mix.jsonl"), format!("{bad}\n{good}\n")).unwrap();
+
+    let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+    let report = store.drain_inbox(&inbox, &processed).unwrap();
+    assert_eq!(report.drained_files, 1);
+    assert_eq!(report.entries, 1, "only the valid line was appended");
+    assert_eq!(report.errors.len(), 1, "uppercase TP must land in errors");
+    assert!(report.errors[0].message.to_lowercase().contains("tp")
+         || report.errors[0].message.to_lowercase().contains("verdict"),
+        "error must mention the bad verdict: {}", report.errors[0].message);
 }
 ```
 
@@ -870,19 +1028,19 @@ impl FeedbackStore {
                     }
                 }
             }
-            // Move to processed/
+            // Move to processed/ via extracted seam (unit-testable ENOENT tolerance)
             let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown.jsonl");
             let ulid = ulid::Ulid::new().to_string();
             let target = processed_dir.join(format!("{fname}.{ulid}.jsonl"));
-            match std::fs::rename(&file, &target) {
-                Ok(_) => {
+            match rename_or_tolerate_race(&file, &target) {
+                Ok(true) => {
                     if let Ok(meta) = std::fs::metadata(&target) {
                         report.processed_bytes += meta.len();
                     }
                     report.drained_files += 1;
                 }
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    // race with another process — fine
+                Ok(false) => {
+                    // ENOENT — another process beat us to it. Not an error.
                 }
                 Err(e) => {
                     report.errors.push(DrainError {
@@ -911,6 +1069,20 @@ impl FeedbackStore {
         }
 
         Ok(report)
+    }
+}
+
+/// Rename `src` to `dst`. Returns `Ok(true)` on success, `Ok(false)` if the
+/// source disappeared between enumeration and rename (benign multi-process race).
+/// Any other IO error propagates. Extracted for direct unit testing.
+pub(crate) fn rename_or_tolerate_race(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<bool> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -1021,12 +1193,28 @@ cargo test --test cli_inbox_drain
 ```
 Expected: FAIL — no drain hook yet.
 
-**Step 4: Implement the hook**
+**Step 4: Implement the hook + add `QUORUM_HOME` env override**
 
-In `src/main.rs`, after argument parsing, before dispatching to `run_review` / `run_stats`:
+First, add the env-var escape hatch so integration tests are hermetic on every platform (macOS caches `$HOME` in some crates). Grep for the existing dirs helper:
+
+```bash
+rg -n 'fn quorum_dir|fn dirs_path|home_dir' src/
+```
+
+Whatever the existing function is (let's call it `quorum_dir()` — rename to match actual), prepend an env check:
 
 ```rust
-// Drain agent-contributed verdicts before loading feedback store.
+pub fn quorum_dir() -> Option<PathBuf> {
+    if let Ok(override_path) = std::env::var("QUORUM_HOME") {
+        return Some(PathBuf::from(override_path));
+    }
+    // ...existing logic unchanged
+}
+```
+
+Then add the drain function in `src/main.rs`:
+
+```rust
 fn drain_agent_inbox() {
     let Some(home) = crate::dirs::quorum_dir() else { return; };
     let inbox = home.join("inbox");
@@ -1051,7 +1239,15 @@ fn drain_agent_inbox() {
 
 Call `drain_agent_inbox()` at the top of the `Command::Review` and `Command::Stats` arms. (Skip for `Command::Feedback` — user is explicitly recording a verdict; don't mix filesystem races.)
 
-Grep for the exact helper name — use `crate::dirs::quorum_dir()` or whatever the existing helper is for `~/.quorum`. Confirm with `rg 'fn quorum_dir|fn dirs_path' src/`.
+**Update the test to use `QUORUM_HOME` instead of `HOME`:**
+
+```rust
+Command::cargo_bin("quorum").unwrap()
+    .env("QUORUM_HOME", quorum_home.as_os_str())
+    .args(["stats"])
+    .assert()
+    .success();
+```
 
 **Step 5: Run test to verify it passes**
 
@@ -1085,8 +1281,11 @@ use assert_cmd::Command;
 use tempfile::TempDir;
 
 fn run_feedback(home: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Assert {
+    // Use QUORUM_HOME for hermetic isolation — see Task 6 for rationale.
+    let qhome = home.join(".quorum");
+    std::fs::create_dir_all(&qhome).unwrap();
     Command::cargo_bin("quorum").unwrap()
-        .env("HOME", home)
+        .env("QUORUM_HOME", qhome.as_os_str())
         .args(["feedback"])
         .args(args)
         .assert()
@@ -1112,19 +1311,26 @@ fn from_agent_writes_external_provenance() {
 }
 
 #[test]
-fn agent_model_without_from_agent_is_rejected() {
-    // --agent-model/--confidence only make sense with --from-agent.
-    // clap's `requires = "from_agent"` enforces this.
+fn agent_model_alone_does_not_write_external_entry() {
+    // Behavior test (not library test): --agent-model without --from-agent
+    // must NOT produce an External entry in feedback.jsonl. We don't care
+    // HOW clap enforces this (requires vs conflicts_with vs custom validator)
+    // — only that the contract holds. Asserting clap's stderr string would
+    // couple us to clap's wording across versions.
     let home = TempDir::new().unwrap();
-    run_feedback(home.path(), &[
+    let fb_path = home.path().join(".quorum/feedback.jsonl");
+    let _ = run_feedback(home.path(), &[
         "--file", "a.rs",
         "--finding", "X",
         "--verdict", "tp",
         "--reason", "r",
         "--agent-model", "gpt-5.4",
-    ])
-    .failure()
-    .stderr(predicates::str::contains("the following required arguments"));
+    ]);  // pass or fail; we assert on side-effects, not exit
+    if fb_path.exists() {
+        let fb = std::fs::read_to_string(&fb_path).unwrap();
+        assert!(!fb.contains("\"external\""),
+            "agent-model alone must NOT produce External entry: {fb}");
+    }
 }
 
 #[test]
@@ -1342,6 +1548,139 @@ git commit -m "feat(mcp): accept from_agent in feedback tool (issue #32)"
 
 ---
 
+## Task 8.5: Cross-path equivalence — inbox + CLI + MCP produce identical entries
+
+**Files:**
+- Test: `tests/cross_path_equivalence.rs` (new integration test file)
+
+**Why this task exists:** Three ingestion surfaces all funnel through `record_external`. If one of them forgets to normalize (e.g. CLI trims but inbox passes raw), External entries diverge silently. Prevention: an explicit test that drives identical inputs through all three paths and asserts resulting `FeedbackEntry`s are byte-identical except for `timestamp`.
+
+**Step 1: Write the failing test**
+
+```rust
+use assert_cmd::Command;
+use tempfile::TempDir;
+use serde_json::Value;
+
+fn entry_without_timestamp(e: &Value) -> Value {
+    let mut e = e.clone();
+    if let Some(obj) = e.as_object_mut() {
+        obj.remove("timestamp");
+    }
+    e
+}
+
+#[test]
+fn three_ingestion_paths_produce_equivalent_entries() {
+    // Same logical input through each of the three surfaces.
+    // All three must land identical External entries (sans timestamp).
+    let payload_verdict = "tp";
+    let payload_agent = "pal";
+    let payload_model = "gemini-3-pro-preview";
+    let payload_conf = "0.9";
+
+    // -------- Path A: inbox drain --------
+    let home_a = TempDir::new().unwrap();
+    let qhome_a = home_a.path().join(".quorum");
+    std::fs::create_dir_all(qhome_a.join("inbox")).unwrap();
+    let line = format!(
+        r#"{{"file_path":"src/a.rs","finding_title":"Bug","finding_category":"security","verdict":"{payload_verdict}","reason":"r","agent":"{payload_agent}","agent_model":"{payload_model}","confidence":{payload_conf}}}"#
+    );
+    std::fs::write(qhome_a.join("inbox").join("drop.jsonl"), format!("{line}\n")).unwrap();
+    Command::cargo_bin("quorum").unwrap()
+        .env("QUORUM_HOME", &qhome_a)
+        .args(["stats"])
+        .assert().success();
+    let entry_a: Value = serde_json::from_str(
+        &std::fs::read_to_string(qhome_a.join("feedback.jsonl")).unwrap().lines().next().unwrap()
+    ).unwrap();
+
+    // -------- Path B: CLI --from-agent --------
+    let home_b = TempDir::new().unwrap();
+    let qhome_b = home_b.path().join(".quorum");
+    std::fs::create_dir_all(&qhome_b).unwrap();
+    Command::cargo_bin("quorum").unwrap()
+        .env("QUORUM_HOME", &qhome_b)
+        .args([
+            "feedback",
+            "--file", "src/a.rs",
+            "--finding", "Bug",
+            "--verdict", payload_verdict,
+            "--reason", "r",
+            "--from-agent", payload_agent,
+            "--agent-model", payload_model,
+            "--confidence", payload_conf,
+        ])
+        .assert().success();
+    let entry_b: Value = serde_json::from_str(
+        &std::fs::read_to_string(qhome_b.join("feedback.jsonl")).unwrap().lines().next().unwrap()
+    ).unwrap();
+
+    // -------- Path C: MCP --------
+    // Invoke via the MCP handler directly (already unit-tested via handler tests);
+    // for this integration check we can reuse the same construction.
+    // Skip if wiring an in-process MCP server is heavyweight — this test is
+    // focused on CLI vs inbox equivalence; MCP equivalence is already covered
+    // by the unit test in Task 8 that asserts Provenance::External shape.
+
+    let a = entry_without_timestamp(&entry_a);
+    let b = entry_without_timestamp(&entry_b);
+    assert_eq!(
+        a, b,
+        "inbox and CLI paths produced divergent entries:\n  inbox: {a:#}\n  CLI  : {b:#}"
+    );
+
+    // Pin the finding_category default behavior: inbox supplies it, CLI doesn't
+    // (FeedbackOpts has no --category field today). Both should end up with
+    // "security" since inbox provides it explicitly; CLI inherits from... wait,
+    // CLI has no category arg. Document this gap: CLI falls back to "unknown".
+    // If that's intended, this test should pass only with an explicit --category
+    // flag added, OR we accept the divergence as intentional.
+    //
+    // ACTION: if this test fails because of finding_category mismatch, the
+    // correct fix depends on product intent:
+    //   (a) add --category flag to FeedbackOpts (small scope increase)
+    //   (b) rewrite the test to normalize finding_category before comparison
+    //       and document CLI as "category-less; gets 'unknown'"
+    // Prefer (a) — it closes the gap permanently.
+}
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+cargo test --test cross_path_equivalence
+```
+Expected: FAIL. The mismatch will most likely be on `finding_category` (inbox has "security", CLI has "unknown") — confirming the action item in the test comment.
+
+**Step 3: Resolve the divergence**
+
+Add a `--category` flag to `FeedbackOpts`:
+
+```rust
+/// Finding category (e.g. "security", "correctness"). Defaults to "unknown".
+#[arg(long)]
+pub category: Option<String>,
+```
+
+Thread through `run_feedback` into both the Human and External paths.
+
+**Step 4: Run test to verify it passes**
+
+```bash
+cargo test --test cross_path_equivalence
+```
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/cli/mod.rs src/main.rs tests/cross_path_equivalence.rs
+git commit -m "feat(cli): add --category flag + pin cross-path equivalence (issue #32)"
+```
+
+---
+
 ## Task 9: Stats — add tier-level aggregation alongside existing per-source stats
 
 **Important scope note from code inspection:** `src/analytics.rs::compute_stats` aggregates by `entry.model.as_deref()` (the *reviewer* model, e.g. `"gpt-5.4"`), NOT by provenance tier. The existing `SourceStats` has fields `tp, fp, partial, wontfix` — it's per-source TP/FP, not per-tier.
@@ -1398,7 +1737,9 @@ fn tier_stats_group_by_provenance() {
 }
 
 #[test]
-fn tier_stats_format_includes_external_row_and_top_agents() {
+fn tier_stats_format_shows_external_and_top_agents_stable() {
+    // Struct-level assertions for the data (stable contract);
+    // one stable regex for the sub-line format (brittle if we ever localize labels).
     use crate::feedback::Provenance;
     let fb = vec![
         entry_with(Provenance::External { agent: "pal".into(), model: None, confidence: None }, Verdict::Tp),
@@ -1406,10 +1747,35 @@ fn tier_stats_format_includes_external_row_and_top_agents() {
         entry_with(Provenance::External { agent: "third-opinion".into(), model: None, confidence: None }, Verdict::Fp),
     ];
     let summary = compute_tier_stats(&fb);
+
+    // --- Data contract (stable) ---
+    assert_eq!(summary.external.total.total(), 3);
+    assert_eq!(summary.external.per_agent.len(), 2);
+    assert_eq!(summary.external.per_agent[0].0, "pal");
+    assert_eq!(summary.external.per_agent[1].0, "third-opinion");
+
+    // --- Format contract (minimal, single regex for the sub-line) ---
     let report = format_tier_report(&summary);
-    assert!(report.contains("External"), "report must mention External tier: {report}");
-    assert!(report.contains("pal"), "report must list top agents: {report}");
-    assert!(report.contains("third-opinion"), "{report}");
+    let re = regex::Regex::new(r"top agents:\s+pal\s*\(\d+\).*third-opinion\s*\(\d+\)").unwrap();
+    assert!(re.is_match(&report),
+        "sub-line format must list agents with counts: {report}");
+}
+
+#[test]
+fn format_tier_report_handles_zero_external_entries() {
+    // Zero externals → no "top agents:" sub-line (not "top agents: " empty).
+    use crate::feedback::Provenance;
+    let fb = vec![entry_with(Provenance::Human, Verdict::Tp)];
+    let summary = compute_tier_stats(&fb);
+    assert_eq!(summary.external.total.total(), 0);
+    assert!(summary.external.per_agent.is_empty());
+
+    let report = format_tier_report(&summary);
+    assert!(!report.contains("top agents:"),
+        "must not emit empty 'top agents:' when no external entries: {report}");
+    // External row itself is still present, just with zero counts.
+    assert!(report.contains("External"),
+        "External row should still appear (with 0 total): {report}");
 }
 ```
 
