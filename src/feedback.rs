@@ -32,11 +32,13 @@ pub enum Provenance {
     /// Verdict from another review agent (pal, third-opinion, gemini, reviewdog, ...).
     /// Calibrator weight: 0.7x (see calibrator.rs). `confidence` is stored but
     /// IGNORED by the calibrator in v1 — reserved for future confidence-aware weighting.
-    /// `#[serde(default)]` on every field protects forward-compat: a future
-    /// release that adds a new field can still deserialize old `{"external":{...}}`
-    /// rows without those rows hitting `Unknown` or failing.
+    /// `#[serde(default)]` on optional fields protects forward-compat: a
+    /// future release that adds a new optional field can still deserialize
+    /// old `{"external":{...}}` rows. `agent` deliberately has no default —
+    /// it's the External grouping key (see analytics::compute_tier_stats),
+    /// `normalize_agent` rejects empty strings, and silently allowing
+    /// `agent: ""` would create a phantom blank-agent bucket in stats.
     External {
-        #[serde(default)]
         agent: String,
         #[serde(default)]
         model: Option<String>,
@@ -376,10 +378,23 @@ impl FeedbackStore {
     /// an external agent can't credibly produce), and sets
     /// `provenance = Provenance::External {..}`. See issue #32.
     pub fn record_external(&self, input: ExternalVerdictInput) -> anyhow::Result<()> {
+        // Trust-boundary: External may only record tp/fp/partial.
+        // - ContextMisleading needs blamed_chunk_ids tied to our injected
+        //   context, which an external agent cannot credibly produce.
+        // - Wontfix is an accepted-debt verdict; that judgment belongs to
+        //   the project owner, not a third-party reviewer.
+        // The single guard here is the chokepoint for all three ingestion
+        // paths (CLI / MCP / inbox drain) so the policy stays uniform.
         if matches!(input.verdict, Verdict::ContextMisleading { .. }) {
             anyhow::bail!(
                 "context_misleading verdicts are not accepted from External agents \
                  (they cannot identify blamed chunks in our injected context)"
+            );
+        }
+        if matches!(input.verdict, Verdict::Wontfix) {
+            anyhow::bail!(
+                "wontfix verdicts are not accepted from External agents \
+                 (accepted-debt judgment belongs to the project owner)"
             );
         }
         let agent = normalize_agent(&input.agent)?;
@@ -828,6 +843,82 @@ mod tests {
         assert!(
             err.to_string().to_lowercase().contains("context"),
             "error message must mention context_misleading: {err}"
+        );
+    }
+
+    #[test]
+    fn provenance_external_frozen_row_round_trips() {
+        // PIN: this hardcoded row was written by the external-feedback PR
+        // (#95). Every future change to Provenance::External / FeedbackEntry
+        // MUST keep this row deserializable. If you're modifying schema and
+        // this test fails, add #[serde(alias = ...)] before deleting/renaming
+        // a field, or accept the breakage explicitly with a migration plan.
+        // Issue #98.
+        let raw = r#"{"file_path":"src/x.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"r","model":null,"timestamp":"2026-04-24T17:00:00Z","provenance":{"external":{"agent":"pal","model":"gpt-5.4","confidence":0.9}}}"#;
+        let entry: FeedbackEntry =
+            serde_json::from_str(raw).expect("frozen row must deserialize");
+        match &entry.provenance {
+            Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
+                assert_eq!(agent, "pal");
+                assert_eq!(model.as_deref(), Some("gpt-5.4"));
+                assert_eq!(*confidence, Some(0.9));
+            }
+            other => panic!("expected External provenance, got {other:?}"),
+        }
+        // Round-trip must re-serialize structurally-equivalent (key order
+        // may differ; compare via Value).
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let serialized = serde_json::to_string(&entry).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(v, v2, "frozen row must round-trip without drift");
+    }
+
+    #[test]
+    fn provenance_external_frozen_row_minimal_optionals() {
+        // Same pin as above but with optional model/confidence omitted.
+        // Tests that #[serde(default)] on those fields holds across versions.
+        let raw = r#"{"file_path":"a.rs","finding_title":"t","finding_category":"unknown","verdict":"fp","reason":"r","timestamp":"2026-04-24T17:00:00Z","provenance":{"external":{"agent":"third-opinion"}}}"#;
+        let entry: FeedbackEntry = serde_json::from_str(raw)
+            .expect("frozen minimal-optional row must deserialize");
+        match &entry.provenance {
+            Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
+                assert_eq!(agent, "third-opinion");
+                assert!(model.is_none());
+                assert!(confidence.is_none());
+            }
+            other => panic!("expected External provenance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_external_rejects_wontfix_verdict() {
+        // External agents cannot mark findings as wontfix — that's an
+        // accepted-debt verdict that requires human / project-owner judgment.
+        // Trust-boundary policy: External may record tp/fp/partial only.
+        let (store, _dir) = test_store();
+        let err = store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::Wontfix,
+                reason: "r".into(),
+                agent: "pal".into(),
+                agent_model: None,
+                confidence: None,
+            })
+            .expect_err("Wontfix must be rejected for External provenance");
+        assert!(
+            err.to_string().to_lowercase().contains("wontfix"),
+            "error must mention wontfix: {err}"
         );
     }
 

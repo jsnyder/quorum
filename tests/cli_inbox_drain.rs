@@ -78,6 +78,82 @@ fn stats_drains_inbox_before_loading_feedback() {
 }
 
 #[test]
+fn concurrent_drain_archives_exactly_once() {
+    // Issue #99: claim-then-ingest must serialize multi-process drain.
+    // Spawn two `quorum stats --json` processes against the same QUORUM_HOME
+    // with one inbox file; assert exactly one archive lands and exactly one
+    // feedback row is written. Either process winning is acceptable; both
+    // ingesting the same line is not.
+    let home = TempDir::new().unwrap();
+    let qhome = home.path().to_path_buf();
+    let inbox = qhome.join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+
+    let line = r#"{"file_path":"x.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
+    std::fs::write(inbox.join("drop.jsonl"), format!("{line}\n")).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_quorum");
+    let spawn = || {
+        std::process::Command::new(bin)
+            .env("QUORUM_HOME", &qhome)
+            .env_remove("QUORUM_API_KEY")
+            .args(["stats"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn quorum stats")
+    };
+
+    let mut a = spawn();
+    let mut b = spawn();
+    let exit_a = a.wait().expect("wait a");
+    let exit_b = b.wait().expect("wait b");
+    assert!(exit_a.success(), "process A exit: {exit_a:?}");
+    assert!(exit_b.success(), "process B exit: {exit_b:?}");
+
+    // Exactly one archive in processed/. (Two archives means both processes
+    // claimed and ingested the same file, which would duplicate the verdict
+    // in feedback.jsonl.)
+    let processed = inbox.join("processed");
+    assert!(processed.exists(), "processed/ must exist");
+    let archived: Vec<_> = std::fs::read_dir(&processed)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(
+        archived.len(),
+        1,
+        "expected exactly one archived file under contention, found {:?}",
+        archived.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+
+    // No leftover *.jsonl in inbox/ (claim succeeded).
+    let leftover: Vec<_> = std::fs::read_dir(&inbox)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|x| x == "jsonl")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "inbox must have no *.jsonl after concurrent drain, found {:?}",
+        leftover.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+
+    // Exactly one row in feedback.jsonl.
+    let fb = std::fs::read_to_string(qhome.join("feedback.jsonl")).unwrap();
+    let rows = fb.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(
+        rows, 1,
+        "expected exactly one feedback row under contention, got {rows}: {fb}"
+    );
+}
+
+#[test]
 fn empty_inbox_does_not_error_stats() {
     // Sanity: stats must work even when no inbox exists at all.
     let home = TempDir::new().unwrap();

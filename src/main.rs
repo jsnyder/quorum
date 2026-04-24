@@ -596,9 +596,12 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         vec![cfg.model.clone()]
     };
 
-    // Load feedback for calibration
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+    // Load feedback for calibration. Honor QUORUM_HOME via quorum_dir() so
+    // hermetic tests and alternate installs route through the same dir as
+    // stats/feedback. Without this, `review` could ingest from one inbox
+    // and calibrate against a different feedback log (#95 review feedback).
+    let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
     if !feedback_entries.is_empty() {
@@ -638,7 +641,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Pre-build FeedbackIndex once for sharing across parallel tasks.
     // --fast skips fastembed model load and uses Jaccard-only matching.
     let shared_feedback_index = {
-        let feedback_path_ref = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+        let feedback_path_ref = qhome.join("feedback.jsonl");
         if feedback_path_ref.exists() {
             let store = feedback::FeedbackStore::new(feedback_path_ref);
             let build_result = if opts.fast {
@@ -1026,10 +1029,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
     }
 
-    // Record telemetry (best-effort, don't fail the review)
+    // Record telemetry (best-effort, don't fail the review). Reuses the
+    // outer-scope `qhome` resolved via quorum_dir() so review/telemetry/
+    // reviews_jsonl all live in the same dir.
     {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let telem_path = std::path::PathBuf::from(&home).join(".quorum/telemetry.jsonl");
+        let telem_path = qhome.join("telemetry.jsonl");
         let telem_store = telemetry::TelemetryStore::new(telem_path);
         let mut finding_counts = std::collections::HashMap::new();
         for f in &all_findings {
@@ -1055,7 +1059,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         let _ = telem_store.record(&telem_entry);
 
         // Per-review record for dimensional stats (by-repo, by-caller, rolling).
-        let reviews_path = std::path::PathBuf::from(&home).join(".quorum/reviews.jsonl");
+        let reviews_path = qhome.join("reviews.jsonl");
         let review_log = review_log::ReviewLog::new(reviews_path);
         let first_file = opts.files.first().map(|p| p.as_path());
         let repo = first_file.and_then(review_log::detect_repo);
@@ -1432,7 +1436,43 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         let store = feedback::FeedbackStore::new(feedback_path);
         match store.record_external(input) {
             Ok(_) => {
-                println!("Recorded external verdict from agent {}.", agent);
+                // Match run_feedback_inner's output contract: compact when
+                // CLAUDE_CODE / non-tty piped detection wants it; JSON when
+                // piped without compact override; human text on a TTY.
+                let total = store.count().unwrap_or(0);
+                let use_compact = output::should_use_compact(false);
+                let use_json = !use_compact
+                    && !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let verdict_lower = opts.verdict.to_lowercase();
+                let verdict_label: &str = match verdict_lower.as_str() {
+                    "tp" => "tp",
+                    "fp" => "fp",
+                    "partial" => "partial",
+                    "wontfix" => "wontfix",
+                    "context_misleading" => "context_misleading",
+                    _ => verdict_lower.as_str(),
+                };
+                if use_json {
+                    let json_obj = serde_json::json!({
+                        "verdict": verdict_label,
+                        "file_path": opts.file,
+                        "finding_title": opts.finding,
+                        "agent": agent,
+                        "provenance": "external",
+                        "total": total,
+                    });
+                    println!("{}", serde_json::to_string(&json_obj).unwrap_or_default());
+                } else if use_compact {
+                    println!(
+                        "feedback:{}|{}|{}|external:{}",
+                        verdict_label, opts.file, opts.finding, agent
+                    );
+                } else {
+                    println!(
+                        "Recorded external verdict from agent {} ({} entries).",
+                        agent, total
+                    );
+                }
                 0
             }
             Err(e) => {
