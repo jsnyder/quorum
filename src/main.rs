@@ -1310,6 +1310,7 @@ fn run_feedback_inner(
     reason: &str,
     model: Option<&str>,
     blamed_chunks: Option<&str>,
+    category: Option<&str>,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
     let mut verdict = match cli::parse_verdict(verdict_str) {
@@ -1335,7 +1336,7 @@ fn run_feedback_inner(
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
         finding_title: finding.to_string(),
-        finding_category: "manual".to_string(),
+        finding_category: category.unwrap_or("manual").to_string(),
         verdict: verdict.clone(),
         reason: reason.to_string(),
         model: model.map(|s| s.to_string()),
@@ -1401,7 +1402,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         let input = feedback::ExternalVerdictInput {
             file_path: opts.file.clone(),
             finding_title: opts.finding.clone(),
-            finding_category: Some("manual".to_string()),
+            finding_category: opts.category.clone(),
             verdict,
             reason: opts.reason.clone(),
             agent: agent.to_string(),
@@ -1428,7 +1429,8 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         }
         let (exit_code, output) = run_feedback_inner(
             &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-            opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
+            opts.model.as_deref(), opts.blamed_chunks.as_deref(),
+            opts.category.as_deref(), &feedback_path,
         );
         if exit_code != 0 {
             eprintln!("{}", output);
@@ -1471,7 +1473,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1485,7 +1487,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, &path,
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, None, &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1496,7 +1498,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1508,7 +1510,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, None, &path,
+            "src/auth.rs", "Test finding", "fp", "Not real", None, None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1520,7 +1522,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, None, &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1532,7 +1534,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, &path,
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, None, &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1550,7 +1552,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, &path,
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, None, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1568,6 +1570,7 @@ mod feedback_tests {
             "Injected context described v1 API, code uses v2",
             None,
             Some("chunk-abc,chunk-def"),
+            None,
             &path,
         );
         assert_eq!(exit_code, 0);
@@ -1602,6 +1605,7 @@ mod feedback_tests {
             "r",
             None,
             Some("a,,b"),
+            None,
             &path,
         );
         assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
@@ -1622,6 +1626,7 @@ mod feedback_tests {
             "No specific chunks identified",
             None,
             None, // user omitted --blamed-chunks entirely
+            None,
             &path,
         );
         assert_eq!(exit_code, 0,

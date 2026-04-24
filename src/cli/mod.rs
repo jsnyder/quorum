@@ -384,6 +384,11 @@ pub struct FeedbackOpts {
     #[arg(long)]
     pub blamed_chunks: Option<String>,
 
+    /// Finding category (e.g. "security", "correctness"). If omitted, the
+    /// Human path records "manual"; the External path records "unknown".
+    #[arg(long)]
+    pub category: Option<String>,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
