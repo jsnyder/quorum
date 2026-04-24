@@ -180,29 +180,66 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         }
     };
     if let Some(value) = main_deps_value {
-        // CR7: same shape as the [project].dependencies wrong-type guard above.
-        // The user *tried* to declare Poetry deps; falling through to
-        // requirements.txt would mask that error. Treat as explicitly empty.
-        let Some(table) = value.as_table() else {
-            tracing::warn!(
+        // Wrong-type [tool.poetry.dependencies] used to early-return
+        // Some(Vec::new()), short-circuiting valid dev/group sections —
+        // strictly worse than the prior state once we started reading
+        // those sections. Warn and continue so dev/group still contribute
+        // (Quorum HIGH on PR #86 review). Pinned by
+        // pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_dev_deps.
+        match value.as_table() {
+            Some(table) => push_table(table, &mut out, &mut seen),
+            None => tracing::warn!(
                 kind = ?value.type_str(),
-                "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); treating as explicitly empty"
-            );
-            return Some(Vec::new());
-        };
-        push_table(table, &mut out, &mut seen);
+                "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); skipping main deps"
+            ),
+        }
     }
-    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies].
-    if let Some(dev_table) = legacy_dev_value.and_then(|v| v.as_table()) {
-        push_table(dev_table, &mut out, &mut seen);
+    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies]. Wrong-type
+    // is warned + treated as empty (CodeRabbit on PR #86) — same shape as
+    // the existing CR7 guard on the main [tool.poetry.dependencies] table.
+    if let Some(value) = legacy_dev_value {
+        match value.as_table() {
+            Some(dev_table) => push_table(dev_table, &mut out, &mut seen),
+            None => tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.dev-dependencies] has wrong TOML type (expected table); treating as explicitly empty"
+            ),
+        }
     }
     // Modern Poetry 1.2+ syntax: [tool.poetry.group.<name>.dependencies].
-    // Iterate every named group (dev, test, lint, docs, ...).
-    if let Some(groups) = group_value.and_then(|v| v.as_table()) {
-        for group in groups.values().filter_map(|v| v.as_table()) {
-            if let Some(deps) = group.get("dependencies").and_then(|v| v.as_table()) {
-                push_table(deps, &mut out, &mut seen);
+    // Iterate every named group (dev, test, lint, docs, ...). Wrong-type
+    // at any nesting level is warned with enough breadcrumbs (group name,
+    // observed kind) to fix the manifest. A malformed sibling group must
+    // NOT break valid sibling groups — pinned by
+    // pyproject_wrong_type_poetry_group_entry_skips_only_that_group.
+    if let Some(value) = group_value {
+        match value.as_table() {
+            Some(groups) => {
+                for (group_name, group_value) in groups {
+                    let Some(group) = group_value.as_table() else {
+                        tracing::warn!(
+                            group = %group_name,
+                            kind = ?group_value.type_str(),
+                            "pyproject.toml: [tool.poetry.group.<name>] has wrong TOML type (expected table); skipping group"
+                        );
+                        continue;
+                    };
+                    if let Some(deps_value) = group.get("dependencies") {
+                        match deps_value.as_table() {
+                            Some(deps) => push_table(deps, &mut out, &mut seen),
+                            None => tracing::warn!(
+                                group = %group_name,
+                                kind = ?deps_value.type_str(),
+                                "pyproject.toml: [tool.poetry.group.<name>.dependencies] has wrong TOML type (expected table); skipping group deps"
+                            ),
+                        }
+                    }
+                }
             }
+            None => tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.group] has wrong TOML type (expected table); treating as explicitly empty"
+            ),
         }
     }
     Some(out)
@@ -860,6 +897,129 @@ ruff = "^0.5"
         for n in ["django", "pytest", "ruff"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_dev_deps() {
+        // Quorum HIGH (3rd round on PR #86). The wrong-type guard for
+        // [tool.poetry.dependencies] used to `return Some(Vec::new())`
+        // immediately, short-circuiting parsing of valid dev/group
+        // sections later in the file. With the dev/group support added
+        // earlier in this PR, that short-circuit drops legit dev deps
+        // for any project with a malformed main table — strictly worse
+        // than the prior state. Warn but continue.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-main-good-dev"
+dependencies = "this should be a table"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"pytest".into()),
+            "valid dev-deps must still be parsed when main is malformed: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_groups() {
+        // Same shape with modern Poetry 1.2+ groups.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-main-good-groups"
+dependencies = ["should", "be", "a", "table", "not", "array"]
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["pytest", "ruff"] {
+            assert!(names.contains(&n.to_string()),
+                "valid group {n} must be parsed when main is malformed: {names:?}");
+        }
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_dev_dependencies_does_not_fall_through() {
+        // CodeRabbit (PR #86 review). Wrong-type [tool.poetry.dev-dependencies]
+        // (a string, array, etc.) used to be silently dropped while still
+        // suppressing requirements.txt fallback — hiding manifest errors AND
+        // any deps that *would* have been picked up. Now we warn + treat as
+        // explicitly empty, matching the existing wrong-type guards on
+        // [project].dependencies and [tool.poetry.dependencies] (CR7).
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-dev"
+
+[tool.poetry.dependencies]
+fastapi = "^0.100"
+
+dev-dependencies = "this should be a table"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"fastapi".into()),
+            "main deps must still parse: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_group_does_not_fall_through() {
+        // Same shape, applied to the [tool.poetry.group] table itself
+        // (e.g. someone wrote `group = "dev"` instead of nested tables).
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-group"
+group = "this should be a table of groups"
+
+[tool.poetry.dependencies]
+django = "^5"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"django".into()), "main deps must still parse: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_group_entry_skips_only_that_group() {
+        // One malformed group must NOT break sibling groups. A string at
+        // [tool.poetry.group.dev] should be skipped with a warn while
+        // [tool.poetry.group.lint.dependencies] still contributes ruff.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "mixed-groups"
+
+[tool.poetry.group]
+dev = "this should be a sub-table"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"ruff".into()),
+            "valid sibling group must still parse: {names:?}");
     }
 
     #[test]
