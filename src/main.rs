@@ -239,8 +239,6 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         }
     }
 
-    let is_doctor = matches!(opts.command, cli::ContextCommand::Doctor(_));
-
     let cmd = match opts.command {
         cli::ContextCommand::Init => ContextCmd::Init,
         cli::ContextCommand::Add(a) => {
@@ -344,11 +342,10 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             for w in &out.warnings {
                 eprintln!("{}", w);
             }
-            // `doctor` renders its own overall status into stdout. Re-parse
-            // that one signal (JSON `"ok": false`, table `overall: fail`,
-            // or compact `fail\t...` rows) to set the exit code without
-            // changing the handler's CmdOutput contract.
-            if is_doctor && doctor_reports_fail(&out.stdout) {
+            // `doctor` populates `CmdOutput.doctor_failed` with the typed
+            // result of the any-fail computation; non-doctor commands leave
+            // it as `None` so this branch is a no-op for them (issue #73).
+            if out.doctor_failed.unwrap_or(false) {
                 return 1;
             }
             0
@@ -358,20 +355,6 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             1
         }
     }
-}
-
-/// Detect whether a rendered `context doctor` payload reports any failing
-/// check. Accepts all three output formats (json/table/compact).
-fn doctor_reports_fail(stdout: &str) -> bool {
-    if stdout.contains("\"ok\": false") || stdout.contains("\"ok\":false") {
-        return true;
-    }
-    if stdout.contains("\noverall: fail") || stdout.starts_with("overall: fail") {
-        return true;
-    }
-    // Compact: one status per line, tab-separated. A leading "fail\t" marks
-    // a failing check row.
-    stdout.lines().any(|l| l.starts_with("fail\t"))
 }
 
 async fn run_mcp_server() -> anyhow::Result<()> {
