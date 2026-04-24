@@ -518,6 +518,10 @@ pub struct CmdOutput {
     pub removed_paths: Vec<PathBuf>,
     /// Non-fatal warnings (e.g. "already initialized").
     pub warnings: Vec<String>,
+    /// Doctor-only: `Some(true)` if any check failed, `Some(false)` if all
+    /// passed, `None` for non-doctor commands. Drives the CLI exit code
+    /// without re-parsing rendered stdout (issue #73).
+    pub doctor_failed: Option<bool>,
 }
 
 // --- Dispatcher -------------------------------------------------------------
@@ -571,6 +575,7 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
                 created_paths: vec![sources_path],
                 removed_paths: Vec::new(),
                 warnings: Vec::new(),
+                doctor_failed: None,
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -597,6 +602,7 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
                     "{} already exists; leaving it untouched",
                     sources_path.display()
                 )],
+                doctor_failed: None,
             })
         }
         Err(e) => Err(anyhow!("create {}: {e}", sources_path.display())),
@@ -689,6 +695,7 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
         created_paths: Vec::new(),
         removed_paths: Vec::new(),
         warnings: Vec::new(),
+        doctor_failed: None,
     })
 }
 
@@ -704,6 +711,7 @@ fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
             created_paths: Vec::new(),
             removed_paths: Vec::new(),
             warnings: vec![msg],
+            doctor_failed: None,
         });
     }
     let cfg = SourcesConfig::load(&sources_path).map_err(|e| anyhow!("{e}"))?;
@@ -718,6 +726,7 @@ fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
         created_paths: Vec::new(),
         removed_paths: Vec::new(),
         warnings: Vec::new(),
+        doctor_failed: None,
     })
 }
 
@@ -969,6 +978,7 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
         created_paths: created,
         removed_paths: Vec::new(),
         warnings,
+        doctor_failed: None,
     })
 }
 
@@ -1078,6 +1088,7 @@ fn run_refresh<D: ContextDeps>(args: &RefreshArgs, deps: &D) -> Result<CmdOutput
         created_paths: created,
         removed_paths: Vec::new(),
         warnings,
+        doctor_failed: None,
     })
 }
 
@@ -1193,6 +1204,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
         created_paths: Vec::new(),
         removed_paths: Vec::new(),
         warnings: Vec::new(),
+        doctor_failed: None,
     })
 }
 
@@ -1486,6 +1498,7 @@ fn run_prune<D: ContextDeps>(args: &PruneArgs, deps: &D) -> Result<CmdOutput> {
         created_paths: Vec::new(),
         removed_paths: removed,
         warnings,
+        doctor_failed: None,
     })
 }
 
@@ -1896,6 +1909,7 @@ fn run_doctor<D: ContextDeps>(args: &DoctorArgs, deps: &D) -> Result<CmdOutput> 
         created_paths: created,
         removed_paths: Vec::new(),
         warnings,
+        doctor_failed: Some(any_fail),
     })
 }
 

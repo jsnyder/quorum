@@ -41,9 +41,16 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // the first UNESCAPED closing quote, so we don't over-match across
         // adjacent quoted values on the same line. The `{6,}` floor is
         // dropped — the secret-keyword anchor is sufficient (cf. #61).
-        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"((?:\\.|[^\n"])+)""#).unwrap(),
+        // Issue #72: bare `auth` keyword was dropped — it produced a wide
+        // FP class (`auth_log_path`, `auth_db_url`, `auth_endpoint`,
+        // `auth_provider`, ...). True credential-shaped keys like
+        // `auth_token` / `auth_password` / `auth_secret` / `auth_key`
+        // STILL redact, because the boundary char `_` satisfies
+        // `[^A-Za-z0-9]` and the regex then matches forward on the
+        // credential-shaped keyword (`token`, `password`, `secret`, `api_key`).
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)"((?:\\.|[^\n"])+)""#).unwrap(),
          "$1$2\"[REDACTED]\""),
-        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd|auth)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'((?:\\.|[^\n'])+)'"#).unwrap(),
+        (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'((?:\\.|[^\n'])+)'"#).unwrap(),
          "$1$2'[REDACTED]'"),
         // OpenAI-style keys
         (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
@@ -282,5 +289,123 @@ mod tests {
             !output.contains("[REDACTED]"),
             "empty quoted value should not match; got: {output}"
         );
+    }
+
+    // ----- Issue #72: drop bare `auth` keyword -----
+
+    #[test]
+    fn redact_does_not_match_auth_log_path() {
+        let input = r#"auth_log_path = "/var/log/auth.log""#;
+        assert_eq!(
+            input,
+            redact_secrets(input).as_str(),
+            "auth_log_path is a path, not a credential"
+        );
+    }
+
+    #[test]
+    fn redact_does_not_match_auth_db_url() {
+        let input = r#"auth_db_url = "postgres://app@db.local:5432/auth""#;
+        assert_eq!(
+            input,
+            redact_secrets(input).as_str(),
+            "auth_db_url with no embedded password should not be redacted"
+        );
+    }
+
+    #[test]
+    fn redact_does_not_match_auth_endpoint() {
+        let input = r#"auth_endpoint = "https://login.example.com/oauth/token""#;
+        assert_eq!(input, redact_secrets(input).as_str());
+    }
+
+    #[test]
+    fn redact_does_not_match_auth_provider() {
+        let input = r#"auth_provider = "okta""#;
+        assert_eq!(input, redact_secrets(input).as_str());
+    }
+
+    #[test]
+    fn redact_does_not_match_authority_or_authorize() {
+        // Regression guard: confirm `authority`/`authorize_url` pass through
+        // unchanged. Note the current regex also doesn't match these (the
+        // char after `auth` is `o`, which is neither `_`/`-` nor `\s`/`=`/`:`),
+        // so this is a guard, not a RED test.
+        for input in [
+            r#"authority = "main""#,
+            r#"authorize_url = "/oauth/authorize""#,
+        ] {
+            assert_eq!(
+                input,
+                redact_secrets(input).as_str(),
+                "authority/authorize_* are not credentials; got: {}",
+                redact_secrets(input)
+            );
+        }
+    }
+
+    #[test]
+    fn redact_does_not_match_bare_auth_assignment() {
+        // Locked behavior change for #72: `auth = "okta"` is no longer
+        // redacted (was: bare `auth` keyword caught it). The argument is that
+        // bare `auth = "..."` is rare in real configs and the value is more
+        // likely a provider name than a secret. If you intend to revert this,
+        // you'll need to delete this test first — that's the signal we want.
+        let input = r#"auth = "okta""#;
+        assert_eq!(input, redact_secrets(input).as_str());
+    }
+
+    #[test]
+    fn redact_still_matches_auth_token_via_token_keyword() {
+        // `auth_token` still redacts: boundary `_` satisfies `[^A-Za-z0-9]`,
+        // then the `token` keyword matches forward. See plan #72 for full reasoning.
+        let input = r#"auth_token = "abc123secret""#;
+        let output = redact_secrets(input);
+        assert!(
+            output.contains("[REDACTED]"),
+            "auth_token IS a credential and must still be redacted via the `token` keyword. got: {output}"
+        );
+        assert!(
+            !output.contains("abc123secret"),
+            "secret value leaked. got: {output}"
+        );
+    }
+
+    #[test]
+    fn redact_still_matches_auth_credential_keyword_case_insensitive() {
+        // Pin the (?i) flag still works for auth_<credential> after dropping
+        // bare `auth`. Each case must redact via its credential-shaped suffix.
+        for input in [
+            r#"Auth_Token = "tok1""#,       // via `token`
+            r#"AUTH_PASSWORD = "pw1""#,     // via `password`
+            r#"auth-secret = "shh""#,       // via `secret` (hyphen variant)
+            r#"AUTH_API_KEY = "ak""#,       // via `api_key` suffix chain
+        ] {
+            let output = redact_secrets(input);
+            assert!(
+                output.contains("[REDACTED]"),
+                "case-insensitive auth_<credential> must still redact: input={input:?}, got={output}"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_still_matches_bare_token_password_secret_key() {
+        // Regression guard: the four other keywords must still match bare
+        // assignments after the regex change. Loop is fine here — failure
+        // message names the keyword.
+        for (input, kw) in [
+            (r#"PASSWORD = "hunter2""#, "password"),
+            (r#"SECRET = "shh""#, "secret"),
+            (r#"TOKEN = "tok123""#, "token"),
+            (r#"API_KEY = "ak_456""#, "api_key"),
+            (r#"PASSWD = "pw1""#, "passwd"),
+        ] {
+            let output = redact_secrets(input);
+            assert!(
+                output.contains("[REDACTED]"),
+                "{kw} keyword regressed: input={input:?}, got={output}"
+            );
+        }
     }
 }

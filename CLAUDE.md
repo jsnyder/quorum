@@ -74,11 +74,17 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
-Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
+Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).
+
+**External-agent ingestion (issue #32):** verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) flow through three paths, all funneling through `FeedbackStore::record_external`: (1) `~/.quorum/inbox/*.jsonl` drained at the top of every `review`/`stats` invocation via claim-then-ingest (atomic rename to `inbox/processing/` before parse, archive to `inbox/processed/` on success); (2) `quorum feedback --from-agent <name> [--agent-model <m>] [--confidence 0..1] [--category <c>]`; (3) MCP `feedback` tool with `fromAgent` field. Trust boundary: External may only record `tp`/`fp`/`partial` — `wontfix` and `context_misleading` are rejected at the chokepoint. Confidence is clamped to [0,1] (NaN-safe), agent name is normalized (trim+lowercase). Tier breakdown by Provenance shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
 
 ## Context7 Framework Enrichment
 
 `src/context_enrichment.rs::enrich_for_review_in_project` parses the project's dep manifests (Cargo.toml, package.json, pyproject.toml + requirements.txt fallback) via `src/dep_manifest.rs::parse_dependencies`, filters to deps whose name appears in the file's `import_targets`, caps at K=5 in import-occurrence order, and queries Context7 with either a curated query (`curated_query_for(name)`) or a language-aware generic (`generic_query_for_language(lang)`). Curated frameworks detected by directory layout (HA/ESPHome) flow through additively. Per-review counters (`context7_resolved`, `context7_resolve_failed`, `context7_query_failed`) land in `TelemetryEntry`. Resolve results are cached with a 24h TTL (negative results too — avoids re-hammering Context7 for private crates / typos); the clock is injectable via `CachedContextFetcher::new_with_clock` for tests.
+
+**pyproject.toml precedence:** `[project].dependencies` (PEP 621) wins over `[tool.poetry.dependencies]`. Either section *present but with the wrong TOML type* (e.g. a string instead of an array/table) is treated as "explicitly empty" — we do **not** fall back to `requirements.txt`, since the user clearly intended to declare deps in pyproject. A warning is logged via `tracing::warn` so the malformed manifest is visible. Falling through would silently surface stale or unrelated deps.
+
+**Bootstrap failure (CR8):** when `Context7HttpFetcher::new()` fails at `run_review` start, `PipelineConfig.context7_disabled` is set to `true` and per-file enrichment is skipped cleanly via the `context7_skip_reason` predicate in `src/pipeline.rs`. Without this, each file would re-fail `Context7HttpFetcher::new()?` and abort the whole review.
 
 ## Context Injection (v0.16.0+)
 
@@ -88,7 +94,9 @@ Feedback verdict `context_misleading` (with `blamed_chunks`) raises per-chunk in
 
 ## Review Telemetry (v0.13.0+)
 
-Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags, context7_resolved, context7_resolve_failed, context7_query_failed`. Cost is computed at display time, not stored (model pricing drifts). New `context7_*` counters use `serde(default)` for backward-compat with pre-bump rows.
+Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
+
+The `context7_resolved`, `context7_resolve_failed`, and `context7_query_failed` counters live on `TelemetryEntry` in `~/.quorum/telemetry.jsonl` (written from `src/main.rs`), not on `ReviewRecord`. They use `serde(default)` for backward-compat with pre-bump rows.
 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 

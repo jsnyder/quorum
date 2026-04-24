@@ -54,17 +54,17 @@ pub struct EnrichmentResult {
 ///    - Leading `::std::ptr` -> `["std"]` (skips empty heads)
 pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
     // Production hydration form: "{symbol}: {statement}". Detection requires
-    // both ": " and a recognized verb (`use `, `from `, `import `) — a clean
+    // both ": " and a recognized verb (`use`, `from`, `import`) — a clean
     // path like `tokio::sync::Mutex` has no ": " (no space) and falls through.
     if let Some((_symbol, rest)) = imp.split_once(": ") {
-        let rest = rest.trim();
-        if let Some(stmt) = rest.strip_prefix("use ") {
+        let rest = rest.trim_start();
+        if let Some(stmt) = strip_verb(rest, "use") {
             return parse_rust_use(stmt);
         }
-        if let Some(stmt) = rest.strip_prefix("from ") {
+        if let Some(stmt) = strip_verb(rest, "from") {
             return parse_python_from(stmt);
         }
-        if let Some(stmt) = rest.strip_prefix("import ") {
+        if let Some(stmt) = strip_verb(rest, "import") {
             // TS forms always carry a quoted source (`from '<pkg>'` or bare
             // `'<pkg>'` for side-effect imports). Python `import X.Y` does not.
             if let Some(pkg) = extract_quoted_source(stmt) {
@@ -76,11 +76,43 @@ pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
     normalize_clean(imp)
 }
 
+/// Return body after `verb` if `rest` starts with `verb` followed by EOS or whitespace.
+/// Distinguishes a degenerate empty body (`"import "` -> `Some("")`) from a similar-looking
+/// identifier (`"importable"` -> `None`), so detection doesn't fall through to
+/// `normalize_clean` on a malformed-but-recognized statement.
+fn strip_verb<'a>(rest: &'a str, verb: &str) -> Option<&'a str> {
+    let tail = rest.strip_prefix(verb)?;
+    if tail.is_empty() { return Some(""); }
+    let first = tail.chars().next()?;
+    if first.is_whitespace() {
+        Some(tail.trim_start())
+    } else {
+        None
+    }
+}
+
 fn parse_rust_use(stmt: &str) -> Vec<String> {
-    let stmt = stmt.trim().trim_end_matches(';');
-    let head = stmt.split("::").next().unwrap_or(stmt).trim();
-    if head.is_empty() { return Vec::new(); }
-    vec![head.to_string()]
+    let stmt = stmt.trim().trim_end_matches(';').trim();
+
+    // Outer-grouped form: `use {crate_a::A, crate_b::B};`. Each comma-separated
+    // member contributes its own crate. Without this, `split("::")` returns
+    // `"{crate_a"` and the whole import silently misses dep enrichment (CR6).
+    if let Some(inner) = stmt.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        return inner
+            .split(',')
+            .filter_map(|seg| first_use_segment(seg.trim()))
+            .collect();
+    }
+
+    // Standard form: `use crate::sub::Item;`, `use crate::{A, B};`, or
+    // `use ::crate::Item;`. Skip empty leading segments so absolute paths
+    // resolve to their crate (CR3).
+    first_use_segment(stmt).map(|s| vec![s]).unwrap_or_default()
+}
+
+fn first_use_segment(s: &str) -> Option<String> {
+    let head = s.split("::").find(|seg| !seg.is_empty())?.trim();
+    (!head.is_empty()).then(|| head.to_string())
 }
 
 fn parse_python_from(stmt: &str) -> Vec<String> {
@@ -92,11 +124,21 @@ fn parse_python_from(stmt: &str) -> Vec<String> {
 }
 
 fn parse_python_import(stmt: &str) -> Vec<String> {
-    // stmt = "sys" or "os.path as p"
-    let module = stmt.split_whitespace().next().unwrap_or("");
-    let head = module.split('.').next().unwrap_or("");
-    if head.is_empty() { return Vec::new(); }
-    vec![head.to_string()]
+    // stmt is the body after "import ": "sys", "os.path as p",
+    // "os, sys, json", "os.path, urllib.parse as up", possibly with a
+    // trailing inline comment ("os  # bootstrap") or trailing comma.
+    // For each comma-separated segment: drop `as <alias>`, collapse
+    // dotted submodule to root, skip empties.
+    let body = stmt.split('#').next().unwrap_or(stmt);
+    let mut out = Vec::new();
+    for seg in body.split(',') {
+        let token = seg.split_whitespace().next().unwrap_or("");
+        let head = token.split('.').next().unwrap_or("");
+        if !head.is_empty() {
+            out.push(head.to_string());
+        }
+    }
+    out
 }
 
 fn extract_quoted_source(stmt: &str) -> Option<String> {
@@ -310,8 +352,11 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     for doc in docs {
         // Wrap in fenced block to isolate fetched content from prompt instructions.
         // Sanitize triple backticks in content to prevent fence breakout.
+        // `text` fence language: heterogeneous content (HCL, YAML, prose, Rust);
+        // explicit `text` keeps Markdown renderers from highlighting as Bash by
+        // default and makes the intent ("opaque blob, do not parse") explicit (N2).
         let sanitized = doc.content.replace("```", "'''");
-        section.push_str(&format!("### {}\n```\n{}\n```\n\n", doc.library, sanitized));
+        section.push_str(&format!("### {}\n```text\n{}\n```\n\n", doc.library, sanitized));
     }
     section
 }
@@ -333,9 +378,8 @@ const DEFAULT_RESOLVE_TTL: std::time::Duration = std::time::Duration::from_secs(
 ///   for known-missing names (private crates, typos).
 pub struct CachedContextFetcher<'a> {
     inner: &'a dyn ContextFetcher,
-    query_cache: std::sync::Mutex<std::collections::HashMap<(String, String, usize), Option<String>>>,
-    resolve_cache: std::sync::Mutex<std::collections::HashMap<String, ResolveCacheEntry>>,
-    max_entries: usize,
+    query_cache: std::sync::Mutex<lru::LruCache<(String, String, usize), Option<String>>>,
+    resolve_cache: std::sync::Mutex<lru::LruCache<String, ResolveCacheEntry>>,
     resolve_ttl: std::time::Duration,
     now: Clock,
 }
@@ -351,11 +395,14 @@ impl<'a> CachedContextFetcher<'a> {
         resolve_ttl: std::time::Duration,
         now: impl Fn() -> std::time::Instant + Send + Sync + 'static,
     ) -> Self {
+        // LruCache requires a non-zero capacity. Floor at 1 so callers can't
+        // accidentally create a zero-capacity cache that silently fails to cache.
+        let cap = std::num::NonZeroUsize::new(max_entries.max(1))
+            .expect("max_entries.max(1) is non-zero");
         Self {
             inner,
-            query_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            resolve_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            max_entries,
+            query_cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
+            resolve_cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
             resolve_ttl,
             now: Box::new(now),
         }
@@ -365,7 +412,7 @@ impl<'a> CachedContextFetcher<'a> {
 impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn resolve_library(&self, name: &str) -> Option<String> {
         let now = (self.now)();
-        if let Ok(cache) = self.resolve_cache.lock() {
+        if let Ok(mut cache) = self.resolve_cache.lock() {
             if let Some(entry) = cache.get(name) {
                 if now.duration_since(entry.cached_at) < self.resolve_ttl {
                     return entry.result.clone();
@@ -374,10 +421,10 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         }
         let result = self.inner.resolve_library(name);
         if let Ok(mut cache) = self.resolve_cache.lock() {
-            if cache.len() >= self.max_entries {
-                cache.clear();  // simple eviction: clear all when full
-            }
-            cache.insert(name.to_string(), ResolveCacheEntry {
+            // LruCache::put auto-evicts the LRU entry at capacity — preserves
+            // hot entries instead of dropping the entire cache like the prior
+            // `clear()` did.
+            cache.put(name.to_string(), ResolveCacheEntry {
                 result: result.clone(),
                 cached_at: now,
             });
@@ -388,7 +435,7 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let key = (library_id.to_string(), query.to_string(), max_tokens);
 
-        if let Ok(cache) = self.query_cache.lock() {
+        if let Ok(mut cache) = self.query_cache.lock() {
             if let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
@@ -397,10 +444,7 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         let result = self.inner.query_docs(library_id, query, max_tokens);
 
         if let Ok(mut cache) = self.query_cache.lock() {
-            if cache.len() >= self.max_entries {
-                cache.clear();
-            }
-            cache.insert(key, result.clone());
+            cache.put(key, result.clone());
         }
 
         result
@@ -708,6 +752,21 @@ mod tests {
     }
 
     #[test]
+    fn normalize_rust_hydration_form_handles_absolute_paths() {
+        // CR3: `use ::tokio::sync::Mutex;` (absolute path) used to return no
+        // dep because split("::").next() yielded an empty leading segment.
+        // Skip empties so absolute paths work like relative ones.
+        assert_eq!(
+            normalize_import_to_dep_names("Mutex: use ::tokio::sync::Mutex;"),
+            vec!["tokio"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("HashMap: use ::std::collections::HashMap;"),
+            vec!["std"]
+        );
+    }
+
+    #[test]
     fn normalize_rust_hydration_form_skips_local_use_paths() {
         // `use crate::foo;` / `use self::bar;` / `use super::baz;` should not
         // resolve to a Cargo.toml dep — emit the keyword so downstream lookup
@@ -727,6 +786,42 @@ mod tests {
     }
 
     #[test]
+    fn normalize_rust_hydration_form_extracts_all_crates_from_outer_grouped_use() {
+        // CR6: outer-grouped `use {tokio::sync::Mutex, serde::Serialize};`
+        // used to return `["{tokio"]` because parse_rust_use only handled the
+        // inner-group form (`use serde::{A, B}`). Production hydration emits
+        // one entry per imported symbol, so callers see N copies of the same
+        // statement; each must extract every crate so dep-name lookup matches
+        // any of them.
+        let mut got = normalize_import_to_dep_names(
+            "Mutex: use {tokio::sync::Mutex, serde::Serialize};",
+        );
+        got.sort();
+        assert_eq!(got, vec!["serde", "tokio"]);
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_outer_grouped_use_with_absolute_paths() {
+        // Same fix applied per-segment: empty leading segments inside the
+        // group must be skipped, so `use {::tokio::A, ::serde::B};` yields
+        // both crates, not `["{"]`.
+        let mut got = normalize_import_to_dep_names(
+            "A: use {::tokio::A, ::serde::B};",
+        );
+        got.sort();
+        assert_eq!(got, vec!["serde", "tokio"]);
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_outer_grouped_use_with_single_member() {
+        // Degenerate single-member group still works.
+        assert_eq!(
+            normalize_import_to_dep_names("Mutex: use {tokio::sync::Mutex};"),
+            vec!["tokio"]
+        );
+    }
+
+    #[test]
     fn normalize_python_hydration_form_extracts_module_root() {
         // `from os.path import join` -> root `os`
         assert_eq!(
@@ -742,6 +837,89 @@ mod tests {
         assert_eq!(
             normalize_import_to_dep_names("FastAPI: from fastapi import FastAPI"),
             vec!["fastapi"]
+        );
+    }
+
+    // --- Bug 1: parse_python_import dropped trailing modules ---
+    // Tests assert through the production hydrated form (not the bare helper)
+    // because the original-sin antipattern from issue #29 was tests using a
+    // synthetic input shape that didn't match what hydration emits.
+
+    #[test]
+    fn parse_python_import_returns_all_modules_in_comma_list() {
+        assert_eq!(
+            normalize_import_to_dep_names("join: import os, sys, json"),
+            vec!["os", "sys", "json"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_strips_as_alias() {
+        // `import sys as s` — alias is a local rename, the module is `sys`.
+        assert_eq!(
+            normalize_import_to_dep_names("s: import sys as s"),
+            vec!["sys"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_dotted_returns_root_only_per_module() {
+        // Dotted submodule collapses to root; alias must not leak as a fake module.
+        assert_eq!(
+            normalize_import_to_dep_names("path: import os.path, urllib.parse as up"),
+            vec!["os", "urllib"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_skips_empty_segments_and_whitespace() {
+        // Trailing comma + irregular whitespace must not yield empty heads.
+        assert_eq!(
+            normalize_import_to_dep_names("x: import   os  ,  sys ,"),
+            vec!["os", "sys"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_strips_trailing_inline_comment() {
+        // "import os  # bootstrap" -> ["os"], not ["os  # bootstrap"].
+        assert_eq!(
+            normalize_import_to_dep_names("os: import os  # bootstrap"),
+            vec!["os"]
+        );
+    }
+
+    #[test]
+    fn parse_python_import_empty_body_returns_empty() {
+        // No panic, no spurious empty-string head.
+        assert_eq!(
+            normalize_import_to_dep_names("nothing: import "),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn parse_python_from_relative_import_returns_empty() {
+        // `from . import x` / `from .. import y` are package-relative imports;
+        // the "module" is a dot, not a real dep. Must not yield "" or ".".
+        assert_eq!(
+            normalize_import_to_dep_names("x: from . import x"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("y: from .. import y"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn parse_python_import_does_not_break_ts_quoted_source_branch() {
+        // Antipatterns reviewer MUST-FIX 1.2: a naive comma-split before the
+        // quoted-source check would mangle `import 'reflect-metadata'` (which
+        // has no `from` clause). The TS branch must stay exclusive.
+        assert_eq!(
+            normalize_import_to_dep_names("reflect-metadata: import 'reflect-metadata'"),
+            vec!["reflect-metadata"]
         );
     }
 
@@ -1084,6 +1262,24 @@ axum = "0.7"
     }
 
     #[test]
+    fn format_context_section_uses_text_fence_language() {
+        // N2: a bare ``` opening fence has no language tag, which causes
+        // some Markdown renderers to highlight as Bash by default. The
+        // fetched content is heterogeneous (HCL, YAML, prose, Rust); pick
+        // `text` as a safe non-highlighting default that keeps the fence
+        // syntactically explicit.
+        let docs = vec![ContextDoc {
+            library: "lib".into(),
+            content: "body".into(),
+        }];
+        let section = format_context_section(&docs);
+        assert!(
+            section.contains("```text\n"),
+            "expected ```text fence, got: {section}"
+        );
+    }
+
+    #[test]
     fn build_code_aware_query_appends_imports() {
         let base = "hooks rules component lifecycle common pitfalls";
         let imports = vec!["useEffect".to_string(), "useState".to_string(), "useCallback".to_string()];
@@ -1189,6 +1385,87 @@ axum = "0.7"
         // Different query hits inner again
         let _r3 = cached.query_docs("/lib/react", "different query", 5000);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cached_fetcher_evicts_lru_entry_at_capacity_not_whole_cache() {
+        // CR4 regression: previous code did `cache.clear()` when len ==
+        // max_entries, dropping every entry at once. With LRU semantics, only
+        // the *least-recently-used* entry should be evicted. Most-recently-used
+        // entries must still hit cache after the wrap.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingResolver { calls: Arc<AtomicUsize> }
+        impl ContextFetcher for CountingResolver {
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(format!("/lib/{}", name))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingResolver { calls: calls.clone() };
+        let cached = CachedContextFetcher::new(&inner, 3);
+
+        // Fill cache to capacity.
+        let _ = cached.resolve_library("a"); // 1 call
+        let _ = cached.resolve_library("b"); // 2 calls
+        let _ = cached.resolve_library("c"); // 3 calls
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // Insert a 4th entry. With proper LRU eviction, "a" is dropped but
+        // "b" and "c" remain. With the old `clear()`, "b" and "c" would also
+        // be dropped, forcing them to be re-fetched below.
+        let _ = cached.resolve_library("d"); // 4 calls (cold)
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+
+        // Re-query "b" and "c" — they MUST hit cache (not increment calls).
+        let _ = cached.resolve_library("b");
+        let _ = cached.resolve_library("c");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "LRU eviction must keep hot entries; old clear() would push this to 6"
+        );
+
+        // "a" was the LRU victim, so it does require a fresh call.
+        let _ = cached.resolve_library("a");
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn cached_fetcher_query_docs_evicts_lru_entry_at_capacity() {
+        // Same regression check for query_docs cache.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingQuery { calls: Arc<AtomicUsize> }
+        impl ContextFetcher for CountingQuery {
+            fn resolve_library(&self, name: &str) -> Option<String> { Some(name.into()) }
+            fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(format!("docs:{lib}"))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner = CountingQuery { calls: calls.clone() };
+        let cached = CachedContextFetcher::new(&inner, 2);
+
+        let _ = cached.query_docs("a", "q", 5000);
+        let _ = cached.query_docs("b", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // 3rd entry — evicts "a" (LRU), keeps "b".
+        let _ = cached.query_docs("c", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        // "b" must hit cache.
+        let _ = cached.query_docs("b", "q", 5000);
+        assert_eq!(calls.load(Ordering::SeqCst), 3,
+            "LRU eviction must keep hot entries; old clear() would push this to 4");
     }
 
     #[test]

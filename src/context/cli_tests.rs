@@ -1363,3 +1363,77 @@ fn doctor_repair_is_best_effort_continues_past_one_source_failure() {
     );
     let _ = CheckStatus::Pass; // keep CheckStatus referenced even if enum not re-exported
 }
+
+// --- doctor exit code typed signal (#73) -----------------------------------
+
+#[test]
+fn run_doctor_sets_doctor_failed_true_on_check_failure() {
+    // Issue #73: doctor exit status was previously inferred by re-parsing
+    // rendered stdout. This test pins the typed signal: when any check
+    // fails, CmdOutput.doctor_failed = Some(true).
+    //
+    // Reproducer: TestDeps::new() yields a fresh tempdir HOME with NO
+    // .quorum/sources.toml, which triggers check_sources_toml ->
+    // CheckStatus::Fail.
+    let deps = TestDeps::new();
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+    assert_eq!(
+        out.doctor_failed,
+        Some(true),
+        "expected typed Some(true) on check failure; got {:?}",
+        out.doctor_failed
+    );
+}
+
+#[test]
+fn run_doctor_doctor_failed_false_with_warn_only() {
+    // Likely silent-regression vector: orphan dirs return CheckStatus::Warn,
+    // NOT Fail. Pin that warn-only state stays Some(false). The any_fail
+    // computation matches `CheckStatus::Fail { .. }` only.
+    let deps = TestDeps::new();
+    seed_and_index(&deps, "mini", "mini-rust");
+    // Create an orphan dir to provoke Warn (not Fail).
+    let _orphan = make_source_dir(&deps, "stray");
+
+    let args = DoctorArgs {
+        format: DoctorFormat::Json,
+        ..DoctorArgs::default()
+    };
+    let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
+
+    // Sanity: confirm we are actually in warn-only territory — no fail
+    // rows AND at least one warn row. Without the warn assertion the
+    // test would silently pass if all checks became Pass (e.g. orphan
+    // detection regressed and stopped flagging the stray dir), masking
+    // a real regression in orphan-warning behavior.
+    let v = parse_doctor_json(&out.stdout);
+    let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
+    let any_fail_in_json = checks.iter().any(|c| {
+        c.get("status").and_then(|x| x.as_str()) == Some("fail")
+    });
+    let any_warn_in_json = checks.iter().any(|c| {
+        c.get("status").and_then(|x| x.as_str()) == Some("warn")
+    });
+    assert!(
+        !any_fail_in_json,
+        "fixture must produce warn-only state; got fail rows in: {}",
+        out.stdout
+    );
+    assert!(
+        any_warn_in_json,
+        "fixture must produce at least one warn row to lock the warn-only contract; got: {}",
+        out.stdout
+    );
+
+    assert_eq!(
+        out.doctor_failed,
+        Some(false),
+        "warn-only must NOT promote to Some(true); got {:?}",
+        out.doctor_failed
+    );
+}
+

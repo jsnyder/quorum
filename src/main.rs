@@ -304,8 +304,6 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         }
     }
 
-    let is_doctor = matches!(opts.command, cli::ContextCommand::Doctor(_));
-
     let cmd = match opts.command {
         cli::ContextCommand::Init => ContextCmd::Init,
         cli::ContextCommand::Add(a) => {
@@ -409,11 +407,10 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             for w in &out.warnings {
                 eprintln!("{}", w);
             }
-            // `doctor` renders its own overall status into stdout. Re-parse
-            // that one signal (JSON `"ok": false`, table `overall: fail`,
-            // or compact `fail\t...` rows) to set the exit code without
-            // changing the handler's CmdOutput contract.
-            if is_doctor && doctor_reports_fail(&out.stdout) {
+            // `doctor` populates `CmdOutput.doctor_failed` with the typed
+            // result of the any-fail computation; non-doctor commands leave
+            // it as `None` so this branch is a no-op for them (issue #73).
+            if out.doctor_failed.unwrap_or(false) {
                 return 1;
             }
             0
@@ -423,20 +420,6 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             1
         }
     }
-}
-
-/// Detect whether a rendered `context doctor` payload reports any failing
-/// check. Accepts all three output formats (json/table/compact).
-fn doctor_reports_fail(stdout: &str) -> bool {
-    if stdout.contains("\"ok\": false") || stdout.contains("\"ok\":false") {
-        return true;
-    }
-    if stdout.contains("\noverall: fail") || stdout.starts_with("overall: fail") {
-        return true;
-    }
-    // Compact: one status per line, tab-separated. A leading "fail\t" marks
-    // a failing check row.
-    stdout.lines().any(|l| l.starts_with("fail\t"))
 }
 
 async fn run_mcp_server() -> anyhow::Result<()> {
@@ -680,6 +663,49 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
     }
 
+    // Build a single Context7 cache for the whole review so positive AND
+    // negative resolves (with 24h TTL) are reused across every file in
+    // multi-file reviews. Without this, each per-file enrich call would
+    // build a fresh cache and re-hammer Context7 for the same deps.
+    //
+    // Box::leak is bounded to one allocation per process: `run_review` is
+    // only ever called from the one-shot CLI dispatcher (`main()` calls
+    // `std::process::exit` immediately after). The long-lived `daemon`
+    // and `serve` paths use their own pipelines (run_daemon /
+    // run_mcp_server) and never enter this function, so the leaked
+    // memory is reclaimed when the CLI process exits. A future caller
+    // that drives `run_review` in a long-lived loop should switch to
+    // `OnceLock<&'static dyn ContextFetcher>` to make the once-per-process
+    // guarantee explicit.
+    // CR8: distinguish "not yet built" from "init failed". A None fetcher
+    // alone would fall through to the per-file ad-hoc path in pipeline.rs,
+    // which would re-fail Context7HttpFetcher::new() once per file and
+    // abort each review. Carrying the failure forward as a sticky flag
+    // lets the pipeline skip enrichment cleanly.
+    let (context7_fetcher, context7_disabled): (
+        Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>>,
+        bool,
+    ) = if opts.skip_context7 {
+        (None, false)
+    } else {
+        match crate::context_enrichment::Context7HttpFetcher::new() {
+            Ok(http) => {
+                let leaked: &'static dyn crate::context_enrichment::ContextFetcher =
+                    Box::leak(Box::new(http));
+                let cached = crate::context_enrichment::CachedContextFetcher::new(leaked, 32);
+                (
+                    Some(std::sync::Arc::new(cached)
+                        as std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>),
+                    false,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Context7 HTTP fetcher init failed; disabling Context7 enrichment for this review");
+                (None, true)
+            }
+        }
+    };
+
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
@@ -691,6 +717,8 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         semaphore,
         feedback_index: shared_feedback_index,
         context_injector,
+        context7_fetcher,
+        context7_disabled,
         ..Default::default()
     };
 
