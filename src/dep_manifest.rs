@@ -180,7 +180,26 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
     let main_deps_value = poetry_root.and_then(|p| p.get("dependencies"));
     let legacy_dev_value = poetry_root.and_then(|p| p.get("dev-dependencies"));
     let group_value = poetry_root.and_then(|p| p.get("group"));
-    if main_deps_value.is_none() && legacy_dev_value.is_none() && group_value.is_none() {
+    // CodeRabbit round 3 on PR #86: a [tool.poetry.group.<name>] table with
+    // only metadata (e.g. `optional = true`) is NOT a dep declaration. Only
+    // count the group section as "owning deps" if at least one child group
+    // contains a `dependencies` key. Wrong-type sub-tables conservatively
+    // count as "owning" (we can't tell what the user meant — defer to the
+    // wrong-type warn handler below). Pinned by
+    // pyproject_poetry_group_metadata_only_falls_through_to_requirements_txt.
+    let has_group_dependency_section = match group_value {
+        Some(value) => match value.as_table() {
+            Some(groups) => groups.values().any(|group_value| {
+                group_value
+                    .as_table()
+                    .map(|group| group.contains_key("dependencies"))
+                    .unwrap_or(true)
+            }),
+            None => true,
+        },
+        None => false,
+    };
+    if main_deps_value.is_none() && legacy_dev_value.is_none() && !has_group_dependency_section {
         // Neither PEP 621 nor any Poetry section recognized — fall through
         // to requirements.txt.
         return None;
@@ -939,6 +958,29 @@ ruff = "^0.5"
         for n in ["django", "pytest", "ruff"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn pyproject_poetry_group_metadata_only_falls_through_to_requirements_txt() {
+        // CodeRabbit (round 3 on PR #86). [tool.poetry.group.<name>] with
+        // ONLY metadata (e.g. `optional = true`) and no `.dependencies`
+        // sub-table is NOT a dep declaration. The probe-all-three guard
+        // used to treat any group_value as "Poetry owns deps" and suppress
+        // the requirements.txt fallback. Now we only count groups that
+        // actually contain a `dependencies` key.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "metadata-only-groups"
+
+[tool.poetry.group.dev]
+optional = true
+"#);
+        write(dir.path(), "requirements.txt", "django\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["django"],
+            "metadata-only Poetry groups should not block requirements.txt: {names:?}");
     }
 
     #[test]
