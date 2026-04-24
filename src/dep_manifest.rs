@@ -83,8 +83,11 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
 
 fn strip_python_dep_spec(raw: &str) -> Option<String> {
     let no_extras = raw.split('[').next()?.trim();
+    // `@` terminates a PEP 508 direct reference (with or without surrounding
+    // whitespace): `name @ url`, `name[extra] @ url`, and the no-space
+    // `name@url` / `name[extra]@url` forms all yield the bare name.
     let name_end = no_extras
-        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';'))
+        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';' | '@'))
         .unwrap_or(no_extras.len());
     let name = no_extras[..name_end].trim();
     if name.is_empty() { None } else { Some(name.to_string()) }
@@ -155,7 +158,25 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
     // Probe ALL three Poetry section forms. Any present section means
     // Poetry owns this project — falling through to requirements.txt
     // for a dev-tooling-only or group-only project would lose those deps.
-    let poetry_root = parsed.get("tool").and_then(|t| t.get("poetry"));
+    //
+    // CodeRabbit round 2 on PR #86: type-check the [tool.poetry] root
+    // itself. Without this, a wrong-type `tool.poetry = "string"` made
+    // every sub-key lookup return None and the file fell through to
+    // requirements.txt. Pinned by
+    // pyproject_wrong_type_poetry_root_does_not_fall_through.
+    let poetry_root = match parsed.get("tool").and_then(|t| t.get("poetry")) {
+        Some(value) => match value.as_table() {
+            Some(table) => Some(table),
+            None => {
+                tracing::warn!(
+                    kind = ?value.type_str(),
+                    "pyproject.toml: [tool.poetry] has wrong TOML type (expected table); treating as explicitly empty"
+                );
+                return Some(Vec::new());
+            }
+        },
+        None => None,
+    };
     let main_deps_value = poetry_root.and_then(|p| p.get("dependencies"));
     let legacy_dev_value = poetry_root.and_then(|p| p.get("dev-dependencies"));
     let group_value = poetry_root.and_then(|p| p.get("group"));
@@ -722,6 +743,27 @@ dependencies = [
     }
 
     #[test]
+    fn pyproject_pep621_handles_pep508_named_direct_url_without_spaces() {
+        // Quorum HIGH (round 2 quorum re-review on PR #86). PEP 508 allows
+        // both `name @ url` (with spaces) AND `name@url` (no spaces around @).
+        // strip_python_dep_spec lacked `@` in its terminator list, so the
+        // no-spaces form returned the literal "name@url" as the package name.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = [
+  "fastapi",
+  "mypkg@https://example.com/pkg.whl",
+  "other@git+https://github.com/a/b.git",
+]
+"#);
+        let mut names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "mypkg", "other"]);
+    }
+
+    #[test]
     fn requirements_txt_strips_version_specifiers() {
         let dir = TempDir::new().unwrap();
         write(dir.path(), "requirements.txt", "fastapi>=0.100\nrequests==2.31.0\n");
@@ -897,6 +939,25 @@ ruff = "^0.5"
         for n in ["django", "pytest", "ruff"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_root_does_not_fall_through() {
+        // CodeRabbit (round 2 on PR #86). If `[tool.poetry]` itself is the
+        // wrong TOML type (e.g. someone wrote `poetry = "string"` instead
+        // of `[tool.poetry]`), every sub-key lookup returns None and the
+        // probe-all-three guard falls through to requirements.txt.
+        // The user *clearly* intended Poetry; warn and treat as empty.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool]
+poetry = "this should be a table"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new(),
+            "wrong-type [tool.poetry] root must NOT fall through: {names:?}");
     }
 
     #[test]
