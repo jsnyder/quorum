@@ -1383,18 +1383,60 @@ fn run_feedback_inner(
 
 /// CLI entry point for `quorum feedback`.
 fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
-    let (exit_code, output) = run_feedback_inner(
-        &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-        opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
-    );
-    if exit_code != 0 {
-        eprintln!("{}", output);
+    let feedback_path = quorum_dir()
+        .map(|d| d.join("feedback.jsonl"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".quorum/feedback.jsonl"));
+
+    // External-agent path: branch when --from-agent is provided. Uses
+    // record_external so Provenance::External is serialized, bypassing the
+    // default Human path.
+    if let Some(agent) = opts.from_agent.as_deref() {
+        let verdict = match cli::parse_verdict(&opts.verdict) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return 3;
+            }
+        };
+        let input = feedback::ExternalVerdictInput {
+            file_path: opts.file.clone(),
+            finding_title: opts.finding.clone(),
+            finding_category: Some("manual".to_string()),
+            verdict,
+            reason: opts.reason.clone(),
+            agent: agent.to_string(),
+            agent_model: opts.agent_model.clone(),
+            confidence: opts.confidence,
+        };
+        if let Some(parent) = feedback_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let store = feedback::FeedbackStore::new(feedback_path);
+        match store.record_external(input) {
+            Ok(_) => {
+                println!("Recorded external verdict from agent {}.", agent);
+                0
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to record external verdict: {}", e);
+                3
+            }
+        }
     } else {
-        println!("{}", output);
+        if let Some(parent) = feedback_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let (exit_code, output) = run_feedback_inner(
+            &opts.file, &opts.finding, &opts.verdict, &opts.reason,
+            opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
+        );
+        if exit_code != 0 {
+            eprintln!("{}", output);
+        } else {
+            println!("{}", output);
+        }
+        exit_code
     }
-    exit_code
 }
 
 #[cfg(test)]

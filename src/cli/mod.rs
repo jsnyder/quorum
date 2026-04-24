@@ -387,6 +387,19 @@ pub struct FeedbackOpts {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Record the verdict as coming from an external review agent (pal, third-opinion, etc.).
+    /// Triggers External provenance instead of the default Human path.
+    #[arg(long)]
+    pub from_agent: Option<String>,
+
+    /// Optional: the LLM model the external agent used (only meaningful with --from-agent).
+    #[arg(long, requires = "from_agent")]
+    pub agent_model: Option<String>,
+
+    /// Optional: agent-reported confidence, clamped to [0,1]. Ignored by calibrator in v1.
+    #[arg(long, requires = "from_agent")]
+    pub confidence: Option<f32>,
 }
 
 /// Parse a comma-separated list of chunk IDs, trimming whitespace per entry.
