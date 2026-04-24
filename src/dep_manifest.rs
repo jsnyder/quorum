@@ -145,15 +145,24 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         );
         return Some(Vec::new());
     }
-    let poetry_table = parsed
+    let poetry_dependencies_value = parsed
         .get("tool")
         .and_then(|t| t.get("poetry"))
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_table());
-    let Some(table) = poetry_table else {
+        .and_then(|p| p.get("dependencies"));
+    let Some(value) = poetry_dependencies_value else {
         // Neither PEP 621 nor Poetry section recognized — let requirements.txt
         // handle this project.
         return None;
+    };
+    // CR7: same shape as the [project].dependencies wrong-type guard above.
+    // The user *tried* to declare Poetry deps; falling through to
+    // requirements.txt would mask that error. Treat as explicitly empty.
+    let Some(table) = value.as_table() else {
+        tracing::warn!(
+            kind = ?value.type_str(),
+            "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); treating as explicitly empty"
+        );
+        return Some(Vec::new());
     };
     let mut out = Vec::new();
     for name in table.keys() {
@@ -701,6 +710,44 @@ dependencies = "this should be an array"
             .iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, Vec::<String>::new(),
             "wrong-type dependencies must NOT fall through to requirements.txt");
+    }
+
+    #[test]
+    fn pyproject_with_wrong_type_poetry_dependencies_does_not_fall_through() {
+        // CR7: same shape as the [project].dependencies wrong-type fix
+        // above, but on the Poetry path. A `[tool.poetry]` table whose
+        // `dependencies` is a string/array/etc. (not a sub-table) means
+        // the user *tried* to declare Poetry deps. Falling through to
+        // requirements.txt would surface stale or wrong deps.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken"
+dependencies = "this should be a table"
+"#);
+        write(dir.path(), "requirements.txt", "fastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new(),
+            "Poetry wrong-type dependencies must NOT fall through to requirements.txt");
+    }
+
+    #[test]
+    fn pyproject_with_no_poetry_dependencies_key_still_falls_through() {
+        // Regression guard mirroring the [project] equivalent: Poetry
+        // section present with metadata but NO `dependencies` key at all
+        // is "no Poetry deps section" — should still fall through to
+        // requirements.txt.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "myproj"
+version = "0.1.0"
+"#);
+        write(dir.path(), "requirements.txt", "django\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["django"]);
     }
 
     #[test]
