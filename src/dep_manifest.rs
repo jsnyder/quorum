@@ -147,6 +147,18 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
         {
             continue;
         }
+        // PEP 508 named direct ref: `mypkg[extras] @ git+https://...` or
+        // `mypkg @ https://example.com/pkg.whl`. Extract the name before `@`
+        // BEFORE the URL skip below — the URL is the value, not the name.
+        if let Some((lhs, _url)) = line.split_once('@') {
+            let lhs_trim = lhs.trim();
+            if !lhs_trim.is_empty() && !lhs_trim.starts_with("git+") {
+                if let Some(name) = strip_python_dep_spec(lhs_trim) {
+                    out.push(Dependency { name, language: "python".into() });
+                }
+                continue;
+            }
+        }
         if line.contains("://") || line.starts_with("git+") {
             continue;
         }
@@ -377,6 +389,86 @@ httpx = { version = "*" }
         write(dir.path(), "requirements.txt", "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n");
         let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["fastapi"]);
+    }
+
+    // --- Bug 3: PEP 508 named direct-URL refs (`name @ url`) were dropped ---
+    // The previous filter dropped any line containing "://" or starting with
+    // "git+", losing the usable name in `mypkg @ git+https://...`. Fix must
+    // extract the name before `@` while still skipping unnamed bare URLs.
+
+    #[test]
+    fn requirements_txt_keeps_pep508_named_git_url() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "fastapi\nmypkg @ git+https://github.com/foo/bar.git\n");
+        let mut names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "mypkg"]);
+    }
+
+    #[test]
+    fn requirements_txt_keeps_pep508_named_https_wheel() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "wheelpkg @ https://example.com/pkg.whl\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["wheelpkg"]);
+    }
+
+    #[test]
+    fn requirements_txt_keeps_pep508_named_url_with_extras() {
+        // `mypkg[extra1,extra2] @ git+https://...` -> name `mypkg`, extras dropped.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "mypkg[email,async] @ git+https://github.com/foo/bar.git\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["mypkg"]);
+    }
+
+    #[test]
+    fn requirements_txt_still_skips_unnamed_vcs_urls() {
+        // Regression guard (antipatterns reviewer MUST-FIX 3.1):
+        // bare `git+https://...` and `https://...` with no `name @` prefix
+        // must still be skipped (no valid dep name to extract).
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_at_with_empty_name() {
+        // ` @ git+https://...` (no name before @) must NOT yield an empty-string dep.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            " @ git+https://github.com/x/y.git\nfastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn pyproject_pep621_keeps_pep508_named_direct_url() {
+        // Mirror Bug 3 in pyproject [project.dependencies]: the `name @ url`
+        // form already survives via strip_python_dep_spec stopping at the space,
+        // but pin it explicitly so a future tighter URL filter doesn't regress it.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = [
+  "fastapi",
+  "name @ git+https://github.com/a/b.git",
+]
+"#);
+        let mut names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "name"]);
     }
 
     #[test]
