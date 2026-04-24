@@ -67,24 +67,30 @@ fn strip_python_dep_spec(raw: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name.to_string()) }
 }
 
-fn parse_pyproject(path: &Path) -> Vec<Dependency> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+/// Parse `pyproject.toml`.
+///
+/// Returns:
+/// * `None` — pyproject is unreadable, malformed, or has *neither* a
+///   `[project]` PEP 621 section nor a `[tool.poetry.dependencies]` section.
+///   Caller should fall through to `requirements.txt`.
+/// * `Some(deps)` — at least one recognized dep section was present (PEP 621
+///   wins over Poetry; an explicit `dependencies = []` returns `Some(vec![])`
+///   and is the project's source of truth — no fallthrough).
+fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
+    let content = std::fs::read_to_string(path).ok()?;
     let parsed: toml::Value = match toml::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "pyproject.toml parse failed");
-            return Vec::new();
+            return None;
         }
     };
-    let mut out = Vec::new();
     let pep621_array = parsed
         .get("project")
         .and_then(|p| p.get("dependencies"))
         .and_then(|d| d.as_array());
     if let Some(arr) = pep621_array {
+        let mut out = Vec::new();
         for v in arr {
             if let Some(s) = v.as_str() {
                 let trimmed = s.trim();
@@ -103,23 +109,27 @@ fn parse_pyproject(path: &Path) -> Vec<Dependency> {
                 }
             }
         }
-        // PEP 621 section is present (possibly empty) → it wins over Poetry.
-        // An explicit empty array means "this project has no deps" — do not
-        // fall through to [tool.poetry.dependencies].
-        return out;
+        // PEP 621 section is present (possibly empty) → it wins over Poetry
+        // AND over requirements.txt. An explicit empty array means "this
+        // project has no deps" — do not fall through.
+        return Some(out);
     }
-    if let Some(table) = parsed
+    let poetry_table = parsed
         .get("tool")
         .and_then(|t| t.get("poetry"))
         .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_table())
-    {
-        for name in table.keys() {
-            if name == "python" { continue; }
-            out.push(Dependency { name: name.clone(), language: "python".into() });
-        }
+        .and_then(|d| d.as_table());
+    let Some(table) = poetry_table else {
+        // Neither PEP 621 nor Poetry section recognized — let requirements.txt
+        // handle this project.
+        return None;
+    };
+    let mut out = Vec::new();
+    for name in table.keys() {
+        if name == "python" { continue; }
+        out.push(Dependency { name: name.clone(), language: "python".into() });
     }
-    out
+    Some(out)
 }
 
 fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
@@ -160,10 +170,12 @@ pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     }
     let pyp = project_dir.join("pyproject.toml");
     let req = project_dir.join("requirements.txt");
-    if pyp.exists() {
-        out.extend(parse_pyproject(&pyp));
-    } else if req.exists() {
-        out.extend(parse_requirements_txt(&req));
+    let pyproject_deps = if pyp.exists() { parse_pyproject(&pyp) } else { None };
+    match pyproject_deps {
+        Some(deps) => out.extend(deps),
+        None => if req.exists() {
+            out.extend(parse_requirements_txt(&req));
+        },
     }
     out
 }
@@ -403,6 +415,45 @@ django = "*"
         let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, Vec::<String>::new(),
             "empty PEP 621 array must win, not fall through to Poetry: {names:?}");
+    }
+
+    // --- Bug 2: pyproject without recognized section silently dropped requirements.txt ---
+    // The fix must distinguish "PEP 621 declared empty" (existing semantic above —
+    // explicit `dependencies = []` returns []) from "no recognized section at all"
+    // (should fall through to requirements.txt).
+
+    #[test]
+    fn pyproject_without_known_sections_falls_through_to_requirements() {
+        // Build-system-only pyproject: no [project] AND no [tool.poetry] →
+        // pyproject yields nothing useful → requirements.txt should win.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", "[build-system]\nrequires = [\"setuptools\"]\n");
+        write(dir.path(), "requirements.txt", "fastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn pyproject_unparseable_falls_through_to_requirements() {
+        // Syntactically broken pyproject must NOT poison the parse path —
+        // requirements.txt is still a valid source of truth.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", "this is not valid toml ===\n");
+        write(dir.path(), "requirements.txt", "django\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["django"]);
+    }
+
+    #[test]
+    fn pyproject_empty_pep621_with_requirements_present_still_wins() {
+        // Antipatterns reviewer MUST-FIX 2.2 regression guard:
+        // explicit `dependencies = []` declares zero deps and must NOT
+        // silently fall through to a stray requirements.txt.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", "[project]\ndependencies = []\n");
+        write(dir.path(), "requirements.txt", "fastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new());
     }
 
     #[test]
