@@ -180,6 +180,11 @@ pub struct PipelineConfig {
     /// files in a multi-file review. When `None`, each file builds its own
     /// ad-hoc fetcher (suitable for tests / single-file CLI invocations).
     pub context7_fetcher: Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>>,
+    /// Set by main.rs when the shared `Context7HttpFetcher::new()` returns
+    /// Err at review start. Pipeline checks this BEFORE the per-file
+    /// fallback so a single bootstrap failure cleanly disables enrichment
+    /// instead of re-failing per file (CR8).
+    pub context7_disabled: bool,
 }
 
 impl Default for PipelineConfig {
@@ -200,8 +205,22 @@ impl Default for PipelineConfig {
             fast: false,
             context_injector: None,
             context7_fetcher: None,
+            context7_disabled: false,
         }
     }
+}
+
+/// Reasons Context7 enrichment may be skipped at the pipeline level.
+/// Returns `Some(reason)` when the per-file enrichment block must NOT run.
+/// `--skip-context7` wins over `context7_disabled` for log-message clarity.
+fn context7_skip_reason(cfg: &PipelineConfig) -> Option<&'static str> {
+    if cfg.skip_context7 {
+        return Some("--skip-context7");
+    }
+    if cfg.context7_disabled {
+        return Some("init failed");
+    }
+    None
 }
 
 /// Truncate source code for LLM review if it exceeds the line limit.
@@ -403,10 +422,10 @@ pub fn review_file(
         };
 
         // Fetch Context7 framework docs (curated frameworks + dep-based enrichment).
-        let framework_docs = if pipeline_config.skip_context7 {
-            // --skip-context7: opt out entirely, no Context7 client constructed,
-            // no HTTP calls. Metrics stay at defaults.
-            tracing::debug!("Context7: enrichment skipped via --skip-context7");
+        let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+            // --skip-context7 OR upstream init failed: no Context7 client
+            // constructed, no HTTP calls. Metrics stay at defaults.
+            tracing::debug!(reason, "Context7: enrichment skipped");
             None
         } else {
             let project_root = find_project_root(file_path);
@@ -919,6 +938,37 @@ mod tests {
             ..Default::default()
         };
         review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).unwrap()
+    }
+
+    #[test]
+    fn context7_skip_reason_default_is_none() {
+        // Default config: enrichment runs. Pin so a future struct-init
+        // change can't silently flip the default to "skipped".
+        let cfg = PipelineConfig::default();
+        assert!(context7_skip_reason(&cfg).is_none());
+    }
+
+    #[test]
+    fn context7_skip_reason_honors_skip_context7_flag() {
+        // CLI --skip-context7 wins regardless of bootstrap state.
+        let cfg = PipelineConfig {
+            skip_context7: true,
+            ..Default::default()
+        };
+        assert_eq!(context7_skip_reason(&cfg), Some("--skip-context7"));
+    }
+
+    #[test]
+    fn context7_skip_reason_honors_context7_disabled_flag() {
+        // CR8: when main.rs fails to construct the shared HTTP fetcher
+        // it sets context7_disabled = true. Pipeline must skip cleanly
+        // instead of falling through to per-file Context7HttpFetcher::new()
+        // which would re-fail and abort each file's review.
+        let cfg = PipelineConfig {
+            context7_disabled: true,
+            ..Default::default()
+        };
+        assert_eq!(context7_skip_reason(&cfg), Some("init failed"));
     }
 
     #[test]

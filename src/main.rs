@@ -619,24 +619,34 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     //
     // Box::leak is fine here: one HTTP fetcher + one cache wrapper per
     // `quorum review` invocation, process-scoped and bounded.
-    let context7_fetcher: Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>> =
-        if opts.skip_context7 {
-            None
-        } else {
-            match crate::context_enrichment::Context7HttpFetcher::new() {
-                Ok(http) => {
-                    let leaked: &'static dyn crate::context_enrichment::ContextFetcher =
-                        Box::leak(Box::new(http));
-                    let cached = crate::context_enrichment::CachedContextFetcher::new(leaked, 32);
+    // CR8: distinguish "not yet built" from "init failed". A None fetcher
+    // alone would fall through to the per-file ad-hoc path in pipeline.rs,
+    // which would re-fail Context7HttpFetcher::new() once per file and
+    // abort each review. Carrying the failure forward as a sticky flag
+    // lets the pipeline skip enrichment cleanly.
+    let (context7_fetcher, context7_disabled): (
+        Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>>,
+        bool,
+    ) = if opts.skip_context7 {
+        (None, false)
+    } else {
+        match crate::context_enrichment::Context7HttpFetcher::new() {
+            Ok(http) => {
+                let leaked: &'static dyn crate::context_enrichment::ContextFetcher =
+                    Box::leak(Box::new(http));
+                let cached = crate::context_enrichment::CachedContextFetcher::new(leaked, 32);
+                (
                     Some(std::sync::Arc::new(cached)
-                        as std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Context7 HTTP fetcher init failed; per-file ad-hoc fetcher will be used");
-                    None
-                }
+                        as std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>),
+                    false,
+                )
             }
-        };
+            Err(e) => {
+                tracing::warn!(error = %e, "Context7 HTTP fetcher init failed; disabling Context7 enrichment for this review");
+                (None, true)
+            }
+        }
+    };
 
     let pipeline_cfg = PipelineConfig {
         models,
@@ -650,6 +660,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         feedback_index: shared_feedback_index,
         context_injector,
         context7_fetcher,
+        context7_disabled,
         ..Default::default()
     };
 
