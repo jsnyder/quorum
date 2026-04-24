@@ -28,7 +28,7 @@ pub enum Provenance {
     External {
         agent: String,              // normalized: lowercase, trimmed
         model: Option<String>,      // agent's LLM model (e.g. "gemini-3-pro-preview")
-        confidence: Option<f32>,    // clamped [0,1]; stored but IGNORED in v1 calibration
+        confidence: Option<f32>,    // finite values clamped to [0,1]; NaN/Inf → None; stored but IGNORED in v1 calibration
     },
     Unknown,
 }
@@ -94,7 +94,7 @@ pub struct ExternalVerdictInput {
     pub reason: String,
     pub agent: String,                     // normalized lowercase/trimmed
     pub agent_model: Option<String>,
-    pub confidence: Option<f32>,           // clamped to [0,1]; None if out-of-range
+    pub confidence: Option<f32>,           // finite values clamped to [0,1]; NaN/Inf → None
 }
 ```
 
@@ -125,23 +125,27 @@ pub struct DrainReport {
     pub drained_files: usize,
     pub entries: usize,
     pub errors: Vec<DrainError>,
-    pub processed_bytes: u64,   // total size of files moved to processed/
+    pub processed_dir_total_bytes: u64,  // cumulative bytes in processed_dir after drain (for 50MB warning); NOT per-run size
 }
 ```
 
-**Behavior:**
-1. **Fast path:** if `read_dir(inbox_dir).next().is_none()`, return zero-work report. No further IO.
-2. For each `*.jsonl` in inbox:
-   - Read and parse line-by-line. Malformed lines → `errors`, skip (mirrors existing `load_all` leniency at feedback.rs:90).
+**Behavior — claim-then-ingest (prevents duplicate feedback on crash/race):**
+
+1. **Fast path:** if `read_dir(inbox_dir)` returns `ENOENT` or yields no `*.jsonl` entries, return zero-work report.
+2. For each `*.jsonl` in inbox, in sorted order:
+   - **Claim the file FIRST** by atomically renaming it into a per-process `<inbox>/processing/<name>.<ulid>.jsonl` path on the same filesystem. If rename fails with `ENOENT`, another quorum process claimed it — skip and move on. If it fails with any other error, log and continue to the next file.
+   - **Now we exclusively own the file.** Read and parse line-by-line from the claimed path. Malformed lines → `errors`, skip (mirrors existing `load_all` leniency at feedback.rs:90).
    - For each valid line: call `record_external`.
-   - On success: atomically `rename` file to `<processed>/<original>.<ulid>.jsonl`.
-     - ULID suffix prevents collisions on duplicate filenames.
-     - Swallow `ENOENT` on rename (lock-free multi-process race: another `quorum` process got it first; move on).
+   - After all lines ingest successfully: atomic `rename` to `<processed>/<name>.<ulid>.jsonl`. Any rename failure leaves the file in `processing/` (operator inspects/replays; better than silent drop or double-ingest).
 3. After drain: sum bytes in `processed_dir`. If > 50MB, emit one-shot `tracing::warn!` suggesting manual cleanup. Never auto-delete.
+
+**Why claim-then-ingest?** The naïve pattern (ingest then rename) has two failure modes flagged by quorum self-review: (a) if the process crashes mid-drain, entries are already in `feedback.jsonl` but the inbox file remains → next run replays; (b) two concurrent quorum processes can both successfully ingest the same file before either renames. Claiming via atomic rename as the FIRST step makes ownership exclusive (rename is atomic on POSIX) — the second process hits `ENOENT` and moves on. A post-ingest crash leaves orphaned files in `processing/`, which an operator resolves manually (or we add a `--resume-processing` subcommand in v1.1) — but those orphans never double-write.
 
 **Invocation site:** `src/main.rs`, before dispatching to `pipeline::run_review` or `run_stats`. Pipeline stays IO-pure.
 
 **Why no delete-on-success?** The raw inbox files have retraining value; user policy is to preserve archives. 50MB warning threshold is generous given per-verdict payload size.
+
+**Security note — MCP trust boundary:** The MCP `from_agent` path accepts verdicts at 0.7x uncapped calibration weight. Quorum's MCP server today is stdio-transport-only, invoked by a trusted local agent (typically Claude Code) in a single-user context — the same trust level as the CLI. **If a future transport exposes the MCP server over the network or to untrusted clients, `from_agent` must be gated by an auth capability check** (do not expose this field on unauthenticated remote transports). Flagged by quorum self-review; document in v1 rather than add auth gates prematurely.
 
 ### Path 2: CLI flag extension
 

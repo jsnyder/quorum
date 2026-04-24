@@ -137,19 +137,16 @@ fn external_deserializes_when_confidence_key_absent() {
     }
 }
 
-#[test]
-fn unknown_provenance_variant_deserializes_as_unknown() {
-    // Forward-compat: a future quorum may add a `Provenance::Foo` variant.
-    // An older quorum seeing such rows must NOT hard-fail load_all — it must
-    // fall back to Unknown so the store remains readable. `#[serde(other)]`
-    // on a catch-all variant is the standard pattern for this.
-    // NOTE: this test requires `#[serde(other)]` on Provenance::Unknown. If the
-    // first run fails with "unknown variant `future_variant`", add that attribute.
-    let json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":{"future_variant":{"agent":"x"}}}"#;
-    let entry: FeedbackEntry = serde_json::from_str(json)
-        .expect("forward-compat: unknown provenance variant must deserialize");
-    assert_eq!(entry.provenance, Provenance::Unknown);
-}
+// NOTE (quorum self-review, 2026-04-24): per-variant forward-compat via
+// `#[serde(other)]` is NOT valid for an externally tagged enum with object-
+// shaped variants — serde restricts `#[serde(other)]` to internally/adjacently
+// tagged enums, so `{"future_variant": {...}}` cannot be absorbed into
+// Provenance::Unknown that way. Row-level forward-compat still works because
+// `FeedbackStore::load_all` already skips malformed lines at feedback.rs:90
+// (unknown variant → serde error → row skipped; store remains readable).
+// Row-preserving forward-compat (coercing unknown variants to Provenance::Unknown
+// instead of dropping the row) would require a custom `Deserialize` impl.
+// Deferred to v1.1.
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -175,14 +172,13 @@ pub enum Provenance {
         model: Option<String>,
         confidence: Option<f32>,
     },
-    #[serde(other)]
     Unknown,
 }
 ```
 
 Notes:
-- Drop `Eq` from the derive list — `Option<f32>` is not `Eq`. The existing derive was `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. Downstream callers use `PartialEq` via `assert_eq!`, not `Eq` trait bounds, so this is safe. Grep to confirm: `rg 'Provenance:.*Eq'` should only hit the derive itself.
-- `#[serde(other)]` on `Unknown` is the forward-compat fallback for the `unknown_provenance_variant_deserializes_as_unknown` test. Without it, future variants added by newer quorum versions would cause `load_all` to skip rows silently.
+- Drop `Eq` from the derive list — `Option<f32>` is not `Eq`. The existing derive was `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]`. Dropping `Eq` MAY cascade: any struct containing `Provenance` that also derives `Eq`, or any generic `Eq` bound on a containing type, will break at compile time. Grep is insufficient — Step 5 below runs `cargo build --all-targets` which catches transitive failures authoritatively. If failures surface: (a) drop `Eq` from the containing type (usually safe — most code uses `PartialEq`), or (b) switch `confidence` to `Option<u16>` (basis points 0..=10000) to preserve `Eq` on `Provenance` and `FeedbackEntry`. Option (b) is cleaner if `Eq` matters downstream. Decide at the point of failure.
+- Row-preserving forward-compat for unknown variants is NOT attempted in v1 (see test module note above). `load_all` skips unparseable rows; the store stays readable.
 
 **Step 4: Run tests to verify they pass**
 
@@ -191,13 +187,22 @@ cargo test --bin quorum feedback::tests::external_ -- --nocapture
 ```
 Expected: both PASS.
 
-**Step 5: Verify no existing test broke AND the full crate still builds**
+**Step 5: Verify no existing test broke AND ALL targets still build**
 
 ```bash
 cargo test --bin quorum feedback::tests
-cargo build --bin quorum 2>&1 | rg -i 'error|non-exhaustive' | head
+cargo build --all-targets 2>&1 | rg -iC1 'error|non-exhaustive|unsatisfied' | head -40
 ```
-Expected: first command all PASS (the existing `provenance_serializes_correctly` still works — unit variants unchanged). Second command should produce no matches — `verdict_weight` in calibrator.rs has an exhaustive match, so adding the `External` variant would break the build until Task 2 lands. If the build fails here, proceed directly to Task 2 in the same commit (don't commit a broken build).
+
+Expected outcomes:
+- Unit tests PASS (existing `provenance_serializes_correctly` works; unit variants unchanged).
+- Second command produces up to TWO expected failure classes:
+  1. **Non-exhaustive match in `calibrator.rs::verdict_weight`** — the `External` arm is missing. This is the keystone for Task 2, so if it's the only failure, proceed directly to Task 2 in the same commit (don't commit a broken build).
+  2. **`Eq` trait-bound errors on types containing `Provenance`** (e.g. `FeedbackEntry`, `PrecedentTrace`, etc.). If these surface, the Task 1 variant forced `Provenance` to no longer be `Eq`. Resolve by:
+     - **(a)** dropping `Eq` from the containing type's derive list (usually safe — grep callers for `HashSet<Type>` / `BTreeSet<Type>` / generic `Eq` bounds; none expected in this codebase)
+     - **(b)** if `Eq` is load-bearing somewhere we don't want to touch, switch `External` to `confidence_bps: Option<u16>` (basis points) instead of `confidence: Option<f32>` — preserves `Eq` trivially, costs a `c/10_000.0` conversion at display and a `(c*10_000.0) as u16` at ingest
+
+If the build is fully green (nothing to fix), Task 2 is strictly optional until someone queries `verdict_weight` with an External — but land Task 2 anyway to activate the 0.7x weight.
 
 **Step 6: Commit**
 
@@ -267,8 +272,15 @@ fn external_weight_independent_of_confidence_in_v1() {
     ];
     for (label, conf) in cases {
         let w = verdict_weight(&mk(*conf));
+        // Tolerance 1e-4 (not 1e-6): verdict_weight multiplies provenance_weight
+        // by recency_weight = exp(-age_days/120). For timestamps set via Utc::now()
+        // at test-setup, elapsed time between test-setup and verdict_weight's own
+        // Utc::now() call is microseconds-to-seconds in normal conditions; under
+        // heavy CI load it can stretch. 1e-4 still discriminates between 0.3 / 0.5 /
+        // 0.7 / 1.0 / 1.5 tiers while tolerating recency-decay jitter.
+        // (Flagged by quorum self-review 2026-04-24.)
         assert!(
-            (w - 0.7).abs() < 1e-6,
+            (w - 0.7).abs() < 1e-4,
             "confidence={label}: expected 0.7, got {w}"
         );
     }
@@ -798,7 +810,7 @@ fn drain_inbox_empty_returns_zero_work() {
     assert_eq!(report.drained_files, 0);
     assert_eq!(report.entries, 0);
     assert!(report.errors.is_empty());
-    assert_eq!(report.processed_bytes, 0);
+    assert_eq!(report.processed_dir_total_bytes, 0);
     // processed/ should NOT be created if there was no work
     assert!(!processed.exists(), "processed/ should not be created when inbox is empty");
 }
@@ -843,6 +855,15 @@ fn drain_inbox_valid_file_appends_and_moves() {
     let name = processed_files[0].file_name().into_string().unwrap();
     assert!(name.starts_with("pal-run-1.jsonl."), "expected ulid-suffixed name, got {name}");
     assert!(name.ends_with(".jsonl"));
+
+    // processing/ must be empty on success (claim-then-ingest invariant)
+    let processing = inbox.join("processing");
+    if processing.exists() {
+        let leftover: Vec<_> = std::fs::read_dir(&processing).unwrap().collect::<Result<_,_>>().unwrap();
+        assert!(leftover.is_empty(),
+            "processing/ must be empty after successful drain, found {:?}",
+            leftover.iter().map(|e| e.path()).collect::<Vec<_>>());
+    }
 }
 
 #[test]
@@ -948,7 +969,7 @@ pub struct DrainReport {
     pub drained_files: usize,
     pub entries: usize,
     pub errors: Vec<DrainError>,
-    pub processed_bytes: u64,
+    pub processed_dir_total_bytes: u64,  // cumulative (for 50MB warning); NOT per-run
 }
 
 #[derive(Debug, Clone)]
@@ -970,7 +991,7 @@ impl FeedbackStore {
     ) -> anyhow::Result<DrainReport> {
         use std::io::ErrorKind;
         let mut report = DrainReport {
-            drained_files: 0, entries: 0, errors: vec![], processed_bytes: 0
+            drained_files: 0, entries: 0, errors: vec![], processed_dir_total_bytes: 0
         };
 
         // Fast path: ENOENT → zero work, idiomatic pattern (no double-read_dir,
@@ -985,7 +1006,7 @@ impl FeedbackStore {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-            .filter(|p| !p.is_dir())  // skip the processed/ subdir
+            .filter(|p| !p.is_dir())  // skip processing/ and processed/ subdirs
             .collect();
         files.sort();  // deterministic order for tests
 
@@ -993,16 +1014,39 @@ impl FeedbackStore {
             return Ok(report);
         }
 
+        // Per design: claim-then-ingest. processing/ is a sibling of processed/
+        // inside inbox_dir. Both are created lazily.
+        let processing_dir = inbox_dir.join("processing");
+        std::fs::create_dir_all(&processing_dir)?;
         std::fs::create_dir_all(processed_dir)?;
 
         for file in files {
-            let content = match std::fs::read_to_string(&file) {
-                Ok(c) => c,
+            // STEP A: CLAIM via atomic rename. If we lose the race, ENOENT → skip.
+            let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown.jsonl");
+            let claim_ulid = ulid::Ulid::new().to_string();
+            let claimed = processing_dir.join(format!("{fname}.{claim_ulid}.jsonl"));
+            let claim_result = rename_or_tolerate_race(&file, &claimed);
+            match claim_result {
+                Ok(true) => { /* we own it; fall through to STEP B */ }
+                Ok(false) => continue,  // ENOENT — another process claimed first
                 Err(e) => {
                     report.errors.push(DrainError {
                         file: file.clone(), line: 0,
+                        message: format!("claim rename failed: {e}"),
+                    });
+                    continue;
+                }
+            }
+
+            // STEP B: INGEST from the claimed path. We exclusively own it now.
+            let content = match std::fs::read_to_string(&claimed) {
+                Ok(c) => c,
+                Err(e) => {
+                    report.errors.push(DrainError {
+                        file: claimed.clone(), line: 0,
                         message: format!("read failed: {e}")
                     });
+                    // Leave the file in processing/ for operator inspection.
                     continue;
                 }
             };
@@ -1013,7 +1057,7 @@ impl FeedbackStore {
                         let input: ExternalVerdictInput = wire.into();
                         if let Err(e) = self.record_external(input) {
                             report.errors.push(DrainError {
-                                file: file.clone(), line: idx + 1,
+                                file: claimed.clone(), line: idx + 1,
                                 message: format!("record failed: {e}"),
                             });
                         } else {
@@ -1022,36 +1066,30 @@ impl FeedbackStore {
                     }
                     Err(e) => {
                         report.errors.push(DrainError {
-                            file: file.clone(), line: idx + 1,
+                            file: claimed.clone(), line: idx + 1,
                             message: format!("parse failed: {e}"),
                         });
                     }
                 }
             }
-            // Move to processed/ via extracted seam (unit-testable ENOENT tolerance)
-            let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown.jsonl");
-            let ulid = ulid::Ulid::new().to_string();
-            let target = processed_dir.join(format!("{fname}.{ulid}.jsonl"));
-            match rename_or_tolerate_race(&file, &target) {
-                Ok(true) => {
-                    if let Ok(meta) = std::fs::metadata(&target) {
-                        report.processed_bytes += meta.len();
-                    }
-                    report.drained_files += 1;
-                }
-                Ok(false) => {
-                    // ENOENT — another process beat us to it. Not an error.
-                }
+
+            // STEP C: ARCHIVE. Move from processing/ to processed/.
+            let archive_ulid = ulid::Ulid::new().to_string();
+            let target = processed_dir.join(format!("{fname}.{archive_ulid}.jsonl"));
+            match rename_or_tolerate_race(&claimed, &target) {
+                Ok(true) => report.drained_files += 1,
+                Ok(false) => { /* extremely unlikely — someone unlinked processing/ */ }
                 Err(e) => {
                     report.errors.push(DrainError {
-                        file: file.clone(), line: 0,
-                        message: format!("rename to processed failed: {e}"),
+                        file: claimed.clone(), line: 0,
+                        message: format!("archive rename failed: {e}; file left in processing/"),
                     });
+                    // File stays in processing/ — operator resolves manually.
                 }
             }
         }
 
-        // Size-warning threshold
+        // Size-warning threshold (cumulative — field name makes this explicit)
         const WARN_BYTES: u64 = 50 * 1024 * 1024;
         if let Ok(entries) = std::fs::read_dir(processed_dir) {
             let total: u64 = entries
@@ -1059,6 +1097,7 @@ impl FeedbackStore {
                 .filter_map(|e| e.metadata().ok())
                 .map(|m| m.len())
                 .sum();
+            report.processed_dir_total_bytes = total;
             if total > WARN_BYTES {
                 tracing::warn!(
                     processed_dir = %processed_dir.display(),
