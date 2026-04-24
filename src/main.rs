@@ -612,6 +612,32 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
     }
 
+    // Build a single Context7 cache for the whole review so positive AND
+    // negative resolves (with 24h TTL) are reused across every file in
+    // multi-file reviews. Without this, each per-file enrich call would
+    // build a fresh cache and re-hammer Context7 for the same deps.
+    //
+    // Box::leak is fine here: one HTTP fetcher + one cache wrapper per
+    // `quorum review` invocation, process-scoped and bounded.
+    let context7_fetcher: Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>> =
+        if opts.skip_context7 {
+            None
+        } else {
+            match crate::context_enrichment::Context7HttpFetcher::new() {
+                Ok(http) => {
+                    let leaked: &'static dyn crate::context_enrichment::ContextFetcher =
+                        Box::leak(Box::new(http));
+                    let cached = crate::context_enrichment::CachedContextFetcher::new(leaked, 32);
+                    Some(std::sync::Arc::new(cached)
+                        as std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Context7 HTTP fetcher init failed; per-file ad-hoc fetcher will be used");
+                    None
+                }
+            }
+        };
+
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
@@ -623,6 +649,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         semaphore,
         feedback_index: shared_feedback_index,
         context_injector,
+        context7_fetcher,
         ..Default::default()
     };
 

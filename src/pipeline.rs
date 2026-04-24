@@ -174,6 +174,12 @@ pub struct PipelineConfig {
     /// spliced into the LLM prompt. When `None` (the default), behavior is
     /// byte-identical to the pre-context pipeline.
     pub context_injector: Option<std::sync::Arc<dyn crate::context::inject::ContextInjectionSource>>,
+    /// Shared Context7 fetcher (typically a `CachedContextFetcher` wrapping
+    /// a single `Context7HttpFetcher`). Built once at the review-level scope
+    /// in main.rs so cache hits / 24h negative-resolve TTL apply across all
+    /// files in a multi-file review. When `None`, each file builds its own
+    /// ad-hoc fetcher (suitable for tests / single-file CLI invocations).
+    pub context7_fetcher: Option<std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>>,
 }
 
 impl Default for PipelineConfig {
@@ -193,6 +199,7 @@ impl Default for PipelineConfig {
             skip_context7: false,
             fast: false,
             context_injector: None,
+            context7_fetcher: None,
         }
     }
 }
@@ -411,16 +418,29 @@ pub fn review_file(
             }
             // Always run enrichment: dep-based path may produce docs even when no
             // curated framework was detected (e.g. a Rust project with tokio).
-            let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
-            let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
+            // Prefer a shared review-level cache from PipelineConfig so cache
+            // state (positive AND negative resolves with 24h TTL) is shared
+            // across all files in this review. Fall back to a per-file ad-hoc
+            // cache when no shared one is wired (tests, single-file CLI).
             let ctx7_t0 = std::time::Instant::now();
             let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
-            let result = crate::context_enrichment::enrich_for_review_in_project(
-                &project_root,
-                &redacted_ctx.import_targets,
-                &domain.frameworks,
-                &cached_fetcher,
-            );
+            let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &redacted_ctx.import_targets,
+                    &domain.frameworks,
+                    shared.as_ref(),
+                )
+            } else {
+                let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+                let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &redacted_ctx.import_targets,
+                    &domain.frameworks,
+                    &cached,
+                )
+            };
             let docs = result.docs;
             enrichment_metrics = result.metrics;
             tracing::info!(phase = "context7", duration_ms = ctx7_t0.elapsed().as_millis() as u64, frameworks = domain.frameworks.len(), docs = docs.len(), resolved = enrichment_metrics.context7_resolved, resolve_failed = enrichment_metrics.context7_resolve_failed, query_failed = enrichment_metrics.context7_query_failed, "phase complete");
@@ -749,14 +769,23 @@ pub fn review_file_llm_only(
                         domain.frameworks.push(fw.clone());
                     }
                 }
-                let fetcher = crate::context_enrichment::Context7HttpFetcher::new()?;
-                let cached_fetcher = crate::context_enrichment::CachedContextFetcher::new(&fetcher, 32);
-                let result = crate::context_enrichment::enrich_for_review_in_project(
-                    &project_root,
-                    &[],
-                    &domain.frameworks,
-                    &cached_fetcher,
-                );
+                let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+                    crate::context_enrichment::enrich_for_review_in_project(
+                        &project_root,
+                        &[],
+                        &domain.frameworks,
+                        shared.as_ref(),
+                    )
+                } else {
+                    let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+                    let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+                    crate::context_enrichment::enrich_for_review_in_project(
+                        &project_root,
+                        &[],
+                        &domain.frameworks,
+                        &cached,
+                    )
+                };
                 let docs = result.docs;
                 enrichment_metrics = result.metrics;
                 if !docs.is_empty() {
