@@ -142,17 +142,21 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
         let line = raw_line.trim();
         if line.is_empty()
             || line.starts_with('#')
-            || line.starts_with("-r")
-            || line.starts_with("-e")
+            || line.starts_with('-')   // pip options: -r, -e, --find-links, --no-binary, -c, --pre, etc.
         {
             continue;
         }
         // PEP 508 named direct ref: `mypkg[extras] @ git+https://...` or
         // `mypkg @ https://example.com/pkg.whl`. Extract the name before `@`
-        // BEFORE the URL skip below — the URL is the value, not the name.
+        // BEFORE the URL skip below — but only when the LHS is a plausible
+        // package name, not URL-shaped text. Bare URLs like
+        // `https://user@example.com/...` and `git+ssh://git@github.com/...`
+        // also contain `@` (in the authority); those must NOT be treated as
+        // named requirements.
         if let Some((lhs, _url)) = line.split_once('@') {
             let lhs_trim = lhs.trim();
-            if !lhs_trim.is_empty() && !lhs_trim.starts_with("git+") {
+            let looks_like_url = lhs_trim.contains("://") || lhs_trim.starts_with("git+");
+            if !lhs_trim.is_empty() && !looks_like_url {
                 if let Some(name) = strip_python_dep_spec(lhs_trim) {
                     out.push(Dependency { name, language: "python".into() });
                 }
@@ -447,6 +451,43 @@ httpx = { version = "*" }
         let dir = TempDir::new().unwrap();
         write(dir.path(), "requirements.txt",
             " @ git+https://github.com/x/y.git\nfastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_unnamed_url_with_at_in_authority() {
+        // Bug 4 (regression from Bug 3 fix): a bare URL like
+        // `https://user@example.com/pkg.whl` or `git+ssh://user@host/repo.git`
+        // contains `@` in the authority, but is NOT a PEP 508 `name @ url`
+        // form. Earlier naive split_once('@') yielded bogus deps like
+        // "https://user" or "git+ssh://user".
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "fastapi\n\
+             https://user@example.com/pkg.whl\n\
+             git+ssh://git@github.com/foo/bar.git\n\
+             git+https://token:x-oauth-basic@github.com/foo/bar.git\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_pip_options() {
+        // In-branch HIGH from #29: pip directives starting with `-` (other than
+        // `-r` and `-e` which are already skipped) must not become fake deps.
+        // `--find-links`, `--no-binary`, `--index-url`, `-c constraints.txt`
+        // all currently fell through to strip_python_dep_spec and were emitted.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "--find-links ./wheels\n\
+             --no-binary :all:\n\
+             --index-url https://pypi.example.com/simple\n\
+             -c constraints.txt\n\
+             --pre\n\
+             fastapi\n");
         let names: Vec<_> = parse_dependencies(dir.path())
             .iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["fastapi"]);
