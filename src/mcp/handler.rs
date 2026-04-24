@@ -122,7 +122,7 @@ impl QuorumHandler {
             let input = crate::feedback::ExternalVerdictInput {
                 file_path: params.file_path,
                 finding_title: params.finding,
-                finding_category: Some(String::new()),
+                finding_category: params.category,
                 verdict,
                 reason: params.reason,
                 agent,
@@ -456,6 +456,7 @@ mod tests {
             from_agent: None,
             agent_model: None,
             confidence: None,
+            category: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -490,6 +491,7 @@ mod tests {
             from_agent: None,
             agent_model: None,
             confidence: None,
+            category: None,
         };
 
         assert!(handler.handle_feedback(params).is_err());
@@ -520,6 +522,7 @@ mod tests {
             from_agent: None,
             agent_model: None,
             confidence: None,
+            category: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -563,6 +566,7 @@ mod tests {
             from_agent: None,
             agent_model: None,
             confidence: None,
+            category: None,
         };
 
         let err = handler.handle_feedback(params).expect_err("must reject");
@@ -600,6 +604,7 @@ mod tests {
             from_agent: Some("pal".into()),
             agent_model: Some("gemini-3-pro-preview".into()),
             confidence: Some(0.9),
+            category: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -641,6 +646,7 @@ mod tests {
             from_agent: None,
             agent_model: None,
             confidence: None,
+            category: None,
         };
         handler.handle_feedback(params).unwrap();
 

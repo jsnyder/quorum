@@ -32,9 +32,15 @@ pub enum Provenance {
     /// Verdict from another review agent (pal, third-opinion, gemini, reviewdog, ...).
     /// Calibrator weight: 0.7x (see calibrator.rs). `confidence` is stored but
     /// IGNORED by the calibrator in v1 — reserved for future confidence-aware weighting.
+    /// `#[serde(default)]` on every field protects forward-compat: a future
+    /// release that adds a new field can still deserialize old `{"external":{...}}`
+    /// rows without those rows hitting `Unknown` or failing.
     External {
+        #[serde(default)]
         agent: String,
+        #[serde(default)]
         model: Option<String>,
+        #[serde(default)]
         confidence: Option<f32>,
     },
     Unknown,
@@ -337,21 +343,26 @@ impl FeedbackStore {
             }
         }
 
-        // Size-warning threshold (cumulative total of processed_dir).
-        const WARN_BYTES: u64 = 50 * 1024 * 1024;
-        if let Ok(entries) = std::fs::read_dir(processed_dir) {
-            let total: u64 = entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| e.metadata().ok())
-                .map(|m| m.len())
-                .sum();
-            report.processed_dir_total_bytes = total;
-            if total > WARN_BYTES {
-                tracing::warn!(
-                    processed_dir = %processed_dir.display(),
-                    total_mb = total / 1024 / 1024,
-                    "quorum inbox processed/ is large; consider manual cleanup"
-                );
+        // Size-warning threshold (cumulative total of processed_dir). Only
+        // walk the directory when this drain actually archived something —
+        // a no-op drain shouldn't pay an O(processed_files) syscall cost on
+        // every `quorum stats`/`review` invocation.
+        if report.drained_files > 0 {
+            const WARN_BYTES: u64 = 50 * 1024 * 1024;
+            if let Ok(entries) = std::fs::read_dir(processed_dir) {
+                let total: u64 = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.len())
+                    .sum();
+                report.processed_dir_total_bytes = total;
+                if total > WARN_BYTES {
+                    tracing::warn!(
+                        processed_dir = %processed_dir.display(),
+                        total_mb = total / 1024 / 1024,
+                        "quorum inbox processed/ is large; consider manual cleanup"
+                    );
+                }
             }
         }
 

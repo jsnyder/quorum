@@ -57,6 +57,12 @@ pub struct FeedbackTool {
     /// persistence. Ignored by the calibrator in v1; stored for analytics only.
     #[serde(default)]
     pub confidence: Option<f32>,
+    /// Optional: finding category (e.g. "security", "correctness"). Only
+    /// honored on the External path (when `from_agent` is set). Without it,
+    /// External entries get the canonical default "unknown"; Human entries
+    /// retain the existing empty-string default.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[mcp_tool(

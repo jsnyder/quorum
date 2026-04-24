@@ -87,9 +87,24 @@ fn drain_agent_inbox() {
                     "inbox drain error"
                 );
             }
+            // Surface error count to the user even when --trace is off, so a
+            // corrupted inbox file doesn't silently accumulate in
+            // <inbox>/processing/. The full per-line detail stays at warn-level
+            // tracing.
+            if !r.errors.is_empty() {
+                eprintln!(
+                    "warning: {} external feedback line(s) failed to ingest; \
+                     check {} for stuck files",
+                    r.errors.len(),
+                    inbox.join("processing").display(),
+                );
+            }
         }
         Ok(_) => {} // empty inbox or no-op
-        Err(e) => tracing::warn!(error = %e, "inbox drain failed"),
+        Err(e) => {
+            tracing::warn!(error = %e, "inbox drain failed");
+            eprintln!("warning: external feedback inbox drain failed: {}", e);
+        }
     }
 }
 
