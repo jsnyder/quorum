@@ -83,6 +83,99 @@ pub struct PrecisionWindow {
     pub count: usize,
 }
 
+/// Tier-level aggregation by `Provenance`. Parallel to (and does not replace)
+/// `compute_stats`, which aggregates by reviewer model.
+#[derive(Debug, Clone, Default)]
+pub struct TierSummary {
+    pub human: SourceStats,
+    pub post_fix: SourceStats,
+    pub auto_calibrate: SourceStats,
+    pub external: ExternalTierStats,
+    pub unknown: SourceStats,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExternalTierStats {
+    pub total: SourceStats,
+    /// Per-agent breakdown, sorted desc by total count.
+    pub per_agent: Vec<(String, SourceStats)>,
+}
+
+pub fn compute_tier_stats(entries: &[FeedbackEntry]) -> TierSummary {
+    use crate::feedback::Provenance;
+    let mut summary = TierSummary::default();
+    let mut per_agent: HashMap<String, SourceStats> = HashMap::new();
+
+    fn bump(s: &mut SourceStats, v: &Verdict) {
+        match v {
+            Verdict::Tp => s.tp += 1,
+            Verdict::Fp => s.fp += 1,
+            Verdict::Partial => s.partial += 1,
+            Verdict::Wontfix => s.wontfix += 1,
+            // Retrieval-quality signal; excluded from finding TP/FP tallies.
+            Verdict::ContextMisleading { .. } => {}
+        }
+    }
+
+    for entry in entries {
+        match &entry.provenance {
+            Provenance::Human => bump(&mut summary.human, &entry.verdict),
+            Provenance::PostFix => bump(&mut summary.post_fix, &entry.verdict),
+            Provenance::AutoCalibrate(_) => bump(&mut summary.auto_calibrate, &entry.verdict),
+            Provenance::External { agent, .. } => {
+                bump(&mut summary.external.total, &entry.verdict);
+                bump(per_agent.entry(agent.clone()).or_default(), &entry.verdict);
+            }
+            Provenance::Unknown => bump(&mut summary.unknown, &entry.verdict),
+        }
+    }
+
+    let mut agents: Vec<(String, SourceStats)> = per_agent.into_iter().collect();
+    agents.sort_by(|a, b| {
+        b.1.total()
+            .cmp(&a.1.total())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    summary.external.per_agent = agents;
+    summary
+}
+
+pub fn format_tier_report(summary: &TierSummary) -> String {
+    let mut lines = Vec::new();
+    lines.push("Feedback by provenance tier:".into());
+    lines.push("-".repeat(65));
+    let rows: [(&str, &SourceStats); 4] = [
+        ("Human      ", &summary.human),
+        ("PostFix    ", &summary.post_fix),
+        ("External   ", &summary.external.total),
+        ("AutoCalib  ", &summary.auto_calibrate),
+    ];
+    for (label, s) in rows {
+        lines.push(format!(
+            "{label}: {:>5} total  (tp {:>3}  fp {:>3}  partial {:>2}  wontfix {:>2})  {:>5.0}% prec",
+            s.total(), s.tp, s.fp, s.partial, s.wontfix, s.precision() * 100.0
+        ));
+    }
+    if !summary.external.per_agent.is_empty() {
+        let top: Vec<String> = summary
+            .external
+            .per_agent
+            .iter()
+            .take(3)
+            .map(|(name, s)| format!("{name} ({})", s.total()))
+            .collect();
+        lines.push(format!("    top agents: {}", top.join(", ")));
+    }
+    if summary.unknown.total() > 0 {
+        let s = &summary.unknown;
+        lines.push(format!(
+            "Unknown    : {:>5} total  (legacy rows with no provenance field)",
+            s.total()
+        ));
+    }
+    lines.join("\n")
+}
+
 /// Compute rolling precision over time windows.
 /// Requires minimum 10 entries per window to report.
 pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<PrecisionWindow> {
@@ -151,6 +244,115 @@ mod tests {
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Unknown,
         }
+    }
+
+    fn entry_with(provenance: crate::feedback::Provenance, verdict: Verdict) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict,
+            reason: "r".into(),
+            model: Some("gpt-5.4".into()),
+            timestamp: Utc::now(),
+            provenance,
+        }
+    }
+
+    #[test]
+    fn tier_stats_group_by_provenance() {
+        use crate::feedback::Provenance;
+        let fb = vec![
+            entry_with(Provenance::Human, Verdict::Tp),
+            entry_with(Provenance::Human, Verdict::Fp),
+            entry_with(Provenance::PostFix, Verdict::Tp),
+            entry_with(
+                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Verdict::Tp,
+            ),
+            entry_with(
+                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Verdict::Fp,
+            ),
+            entry_with(
+                Provenance::External {
+                    agent: "third-opinion".into(),
+                    model: None,
+                    confidence: None,
+                },
+                Verdict::Tp,
+            ),
+        ];
+        let summary = compute_tier_stats(&fb);
+        assert_eq!(summary.human.total(), 2);
+        assert_eq!(summary.human.tp, 1);
+        assert_eq!(summary.human.fp, 1);
+        assert_eq!(summary.post_fix.total(), 1);
+        assert_eq!(summary.external.total.total(), 3);
+        assert_eq!(summary.external.total.tp, 2);
+        assert_eq!(summary.external.total.fp, 1);
+        assert_eq!(summary.external.per_agent[0].0, "pal");
+        assert_eq!(summary.external.per_agent[0].1.total(), 2);
+        assert_eq!(summary.external.per_agent[1].0, "third-opinion");
+        assert_eq!(summary.external.per_agent[1].1.total(), 1);
+    }
+
+    #[test]
+    fn tier_stats_format_shows_external_and_top_agents_stable() {
+        use crate::feedback::Provenance;
+        let fb = vec![
+            entry_with(
+                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Verdict::Tp,
+            ),
+            entry_with(
+                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Verdict::Tp,
+            ),
+            entry_with(
+                Provenance::External {
+                    agent: "third-opinion".into(),
+                    model: None,
+                    confidence: None,
+                },
+                Verdict::Fp,
+            ),
+        ];
+        let summary = compute_tier_stats(&fb);
+
+        // Data contract (stable).
+        assert_eq!(summary.external.total.total(), 3);
+        assert_eq!(summary.external.per_agent.len(), 2);
+        assert_eq!(summary.external.per_agent[0].0, "pal");
+        assert_eq!(summary.external.per_agent[1].0, "third-opinion");
+
+        // Format contract: sub-line lists agents with counts.
+        let report = format_tier_report(&summary);
+        let re = regex::Regex::new(r"top agents:\s+pal\s*\(\d+\).*third-opinion\s*\(\d+\)")
+            .unwrap();
+        assert!(
+            re.is_match(&report),
+            "sub-line format must list agents with counts: {report}"
+        );
+    }
+
+    #[test]
+    fn format_tier_report_handles_zero_external_entries() {
+        use crate::feedback::Provenance;
+        let fb = vec![entry_with(Provenance::Human, Verdict::Tp)];
+        let summary = compute_tier_stats(&fb);
+        assert_eq!(summary.external.total.total(), 0);
+        assert!(summary.external.per_agent.is_empty());
+
+        let report = format_tier_report(&summary);
+        assert!(
+            !report.contains("top agents:"),
+            "must not emit empty 'top agents:' when no external entries: {report}"
+        );
+        assert!(
+            report.contains("External"),
+            "External row should still appear (with 0 total): {report}"
+        );
     }
 
     #[test]

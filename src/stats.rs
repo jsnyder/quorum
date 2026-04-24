@@ -36,6 +36,9 @@ pub struct StatsReport {
     pub top_repos: Vec<DimensionSlice>,
     pub top_callers: Vec<DimensionSlice>,
     pub rolling_windows: Vec<DimensionSlice>,
+    /// Provenance-tier breakdown (Human / PostFix / External / AutoCalib /
+    /// Unknown). Computed from the same feedback store as `precision`.
+    pub tier_summary: analytics::TierSummary,
 }
 
 /// Take top-N slices by review volume. Ties resolved by insertion order
@@ -53,6 +56,7 @@ pub fn compute_report(
 ) -> anyhow::Result<StatsReport> {
     let feedback = feedback_store.load_all().unwrap_or_default();
     let feedback_count = feedback.len();
+    let tier_summary = analytics::compute_tier_stats(&feedback);
 
     // Aggregate feedback stats
     let stats = analytics::compute_stats(&feedback);
@@ -138,6 +142,7 @@ pub fn compute_report(
         top_repos,
         top_callers,
         rolling_windows,
+        tier_summary,
     })
 }
 
@@ -218,6 +223,19 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         "  TP: {}  FP: {}  Partial: {}  Wontfix: {}\n",
         report.tp, report.fp, report.partial, report.wontfix,
     ));
+
+    // Tier breakdown is only interesting once at least one non-Human entry
+    // exists — otherwise it's redundant with the TP/FP line above.
+    let ts = &report.tier_summary;
+    let has_tier_data = ts.post_fix.total() > 0
+        || ts.external.total.total() > 0
+        || ts.auto_calibrate.total() > 0
+        || ts.unknown.total() > 0;
+    if has_tier_data {
+        out.push('\n');
+        out.push_str(&analytics::format_tier_report(ts));
+        out.push('\n');
+    }
 
     if !report.precision_trend.is_empty() {
         let trend_str: Vec<String> = report.precision_trend.iter()
@@ -773,6 +791,7 @@ mod tests {
             top_repos: Vec::new(),
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
         };
         let out = format_compact(&report);
         assert!(out.contains("feedback:100"));
@@ -803,6 +822,7 @@ mod tests {
             top_repos: Vec::new(),
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
@@ -938,6 +958,7 @@ mod tests {
             top_repos: Vec::new(),
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
         };
         let json = format_json(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
