@@ -72,26 +72,28 @@ fn drain_agent_inbox() {
     let feedback_path = home.join("feedback.jsonl");
     let store = crate::feedback::FeedbackStore::new(feedback_path);
     match store.drain_inbox(&inbox, &processed) {
-        Ok(r) if r.drained_files > 0 => {
-            tracing::info!(
-                files = r.drained_files,
-                entries = r.entries,
-                errors = r.errors.len(),
-                "drained external feedback inbox"
-            );
-            for e in &r.errors {
-                tracing::warn!(
-                    file = %e.file.display(),
-                    line = e.line,
-                    msg = %e.message,
-                    "inbox drain error"
+        Ok(r) => {
+            if r.drained_files > 0 {
+                tracing::info!(
+                    files = r.drained_files,
+                    entries = r.entries,
+                    errors = r.errors.len(),
+                    "drained external feedback inbox"
                 );
             }
-            // Surface error count to the user even when --trace is off, so a
-            // corrupted inbox file doesn't silently accumulate in
-            // <inbox>/processing/. The full per-line detail stays at warn-level
-            // tracing.
+            // Errors must surface regardless of `drained_files`: if every
+            // claim/rename fails, no file is archived but stuck files still
+            // accumulate under inbox/processing/. The previous arm-shaped
+            // gate (`Ok(r) if r.drained_files > 0`) silenced that case.
             if !r.errors.is_empty() {
+                for e in &r.errors {
+                    tracing::warn!(
+                        file = %e.file.display(),
+                        line = e.line,
+                        msg = %e.message,
+                        "inbox drain error"
+                    );
+                }
                 eprintln!(
                     "warning: {} external feedback line(s) failed to ingest; \
                      check {} for stuck files",
@@ -100,7 +102,6 @@ fn drain_agent_inbox() {
                 );
             }
         }
-        Ok(_) => {} // empty inbox or no-op
         Err(e) => {
             tracing::warn!(error = %e, "inbox drain failed");
             eprintln!("warning: external feedback inbox drain failed: {}", e);
@@ -1385,7 +1386,13 @@ fn run_feedback_inner(
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
         finding_title: finding.to_string(),
-        finding_category: category.unwrap_or("manual").to_string(),
+        // Mirror record_external/MCP normalization: trim and treat blank as
+        // missing so analytics buckets don't fragment by ingestion path.
+        finding_category: category
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("manual")
+            .to_string(),
         verdict: verdict.clone(),
         reason: reason.to_string(),
         model: model.map(|s| s.to_string()),
@@ -1469,8 +1476,11 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                 // piped without compact override; human text on a TTY.
                 let total = store.count().unwrap_or(0);
                 let use_compact = output::should_use_compact(false);
-                let use_json = !use_compact
-                    && !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                // Honor explicit --json even on a TTY, matching the CLI
+                // contract; fall back to TTY detection when the flag is off.
+                let use_json = opts.json
+                    || (!use_compact
+                        && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
                 let verdict_lower = opts.verdict.to_lowercase();
                 let verdict_label: &str = match verdict_lower.as_str() {
                     "tp" => "tp",

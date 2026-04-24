@@ -111,6 +111,74 @@ fn confidence_out_of_range_is_rejected_at_cli_boundary() {
 }
 
 #[test]
+fn from_agent_honors_explicit_json_flag_on_tty() {
+    // CodeRabbit-flagged regression: --json must work even when stdout is
+    // a TTY. Prior code only enabled JSON via TTY-detection. assert_cmd
+    // doesn't hand us a real terminal, but it does pass --json; we just
+    // verify the output parses as JSON and contains the expected fields.
+    let home = TempDir::new().unwrap();
+    let out = run_feedback(
+        home.path(),
+        &[
+            "--file",
+            "src/x.rs",
+            "--finding",
+            "Bug",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+            "--json",
+            "--from-agent",
+            "pal",
+            "--agent-model",
+            "gpt-5.4",
+            "--confidence",
+            "0.5",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("--json must emit valid JSON: {stdout:?} ({e})"));
+    assert_eq!(v["provenance"], "external");
+    assert_eq!(v["agent"], "pal");
+    assert_eq!(v["verdict"], "tp");
+}
+
+#[test]
+fn human_path_normalizes_blank_category() {
+    // CodeRabbit-flagged regression: the Human CLI path must trim
+    // whitespace and treat empty strings as missing — same rule
+    // record_external and the MCP Human path follow.
+    let home = TempDir::new().unwrap();
+    run_feedback(
+        home.path(),
+        &[
+            "--file",
+            "a.rs",
+            "--finding",
+            "X",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+            "--category",
+            "   ",
+        ],
+    )
+    .success();
+    let fb = std::fs::read_to_string(home.path().join(".quorum/feedback.jsonl")).unwrap();
+    assert!(
+        fb.contains(r#""finding_category":"manual""#),
+        "blank --category must collapse to manual default: {fb}"
+    );
+}
+
+#[test]
 fn feedback_without_from_agent_still_writes_human() {
     let home = TempDir::new().unwrap();
     run_feedback(

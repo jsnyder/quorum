@@ -301,8 +301,16 @@ impl FeedbackEntry {
 }
 
 fn dirs_path() -> std::io::Result<PathBuf> {
-    // Prefer XDG_DATA_HOME, fall back to HOME/.quorum
-    let dir = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+    // QUORUM_HOME wins (matches the CLI's `quorum_dir()` behavior so MCP and
+    // CLI persist to the same feedback.jsonl when an override is in effect).
+    // Otherwise prefer XDG_DATA_HOME, then HOME/.quorum.
+    let dir = if let Ok(qh) = std::env::var("QUORUM_HOME") {
+        if qh.is_empty() {
+            PathBuf::from(".quorum")
+        } else {
+            PathBuf::from(qh)
+        }
+    } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(xdg).join("quorum")
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".quorum")
