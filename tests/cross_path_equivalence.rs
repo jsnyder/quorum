@@ -1,5 +1,9 @@
 // Task 8.5 (issue #32): same logical input through the inbox and CLI paths
-// must land byte-identical External entries (sans timestamp).
+// must land JSON-equivalent External entries (sans timestamp). Parsed into
+// serde_json::Value for the comparison, so whitespace and key ordering
+// differences are intentionally ignored — we only pin the data contract.
+// MCP equivalence is pinned separately in
+// src/mcp/handler.rs::tests::mcp_from_agent_writes_external_provenance.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -14,7 +18,7 @@ fn entry_without_timestamp(e: &Value) -> Value {
 }
 
 #[test]
-fn three_ingestion_paths_produce_equivalent_entries() {
+fn inbox_and_cli_paths_produce_equivalent_entries() {
     let payload_verdict = "tp";
     let payload_agent = "pal";
     let payload_model = "gemini-3-pro-preview";
@@ -82,6 +86,6 @@ fn three_ingestion_paths_produce_equivalent_entries() {
     let b = entry_without_timestamp(&entry_b);
     assert_eq!(
         a, b,
-        "inbox and CLI paths produced divergent entries:\n  inbox: {a:#}\n  CLI  : {b:#}"
+        "inbox and CLI paths produced divergent entries (JSON structural compare):\n  inbox: {a:#}\n  CLI  : {b:#}"
     );
 }

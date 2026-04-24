@@ -53,13 +53,14 @@ fn from_agent_writes_external_provenance() {
 }
 
 #[test]
-fn agent_model_alone_does_not_write_external_entry() {
-    // Behavior test: --agent-model without --from-agent must NOT produce an
-    // External entry. We don't couple to clap's error wording — only the
-    // side-effect contract.
+fn agent_model_alone_is_rejected_and_writes_nothing() {
+    // Contract: --agent-model without --from-agent must fail. We assert on
+    // both the exit status AND the side-effect (no entry written) so a
+    // regression where clap silently accepts the flag and we fall through
+    // to the Human path can't sneak by.
     let home = TempDir::new().unwrap();
     let fb_path = home.path().join(".quorum/feedback.jsonl");
-    let _ = run_feedback(
+    run_feedback(
         home.path(),
         &[
             "--file",
@@ -73,14 +74,13 @@ fn agent_model_alone_does_not_write_external_entry() {
             "--agent-model",
             "gpt-5.4",
         ],
+    )
+    .failure();
+    assert!(
+        !fb_path.exists() || std::fs::read_to_string(&fb_path).unwrap().is_empty(),
+        "rejected invocation must not write any feedback entry: {}",
+        std::fs::read_to_string(&fb_path).unwrap_or_default()
     );
-    if fb_path.exists() {
-        let fb = std::fs::read_to_string(&fb_path).unwrap();
-        assert!(
-            !fb.contains("\"external\""),
-            "agent-model alone must NOT produce External entry: {fb}"
-        );
-    }
 }
 
 #[test]

@@ -1,5 +1,6 @@
-// Task 6 (issue #32): verify `quorum stats` and `quorum review` drain the
-// external-feedback inbox before loading the feedback store.
+// Task 6 (issue #32): verify `quorum stats` drains the external-feedback
+// inbox BEFORE loading the feedback store, and that the drained entry is
+// visible in the stats output (not just on disk).
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -22,7 +23,24 @@ fn stats_drains_inbox_before_loading_feedback() {
     let line = r#"{"file_path":"x.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
     std::fs::write(inbox.join("drop.jsonl"), format!("{line}\n")).unwrap();
 
-    quorum_home(&qhome).args(["stats"]).assert().success();
+    // Run stats with --json so we can inspect feedback_count. If stats loads
+    // the feedback store BEFORE draining (or from the wrong directory), the
+    // count will be 0 and this test will fail — which is the regression
+    // we're guarding against.
+    let out = quorum_home(&qhome)
+        .args(["stats", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stats --json must emit valid JSON (got {stdout:?}): {e}"));
+    assert_eq!(
+        report["feedback_count"], 1,
+        "stats must see the drained external entry in its output, not just on disk: {stdout}"
+    );
 
     // Inbox should have no *.jsonl files (only the processing/ and processed/ subdirs).
     let remaining: Vec<_> = std::fs::read_dir(&inbox)

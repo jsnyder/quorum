@@ -51,8 +51,10 @@ pub struct FeedbackTool {
     /// `from_agent`).
     #[serde(default, rename = "agentModel")]
     pub agent_model: Option<String>,
-    /// Optional: agent-reported confidence, clamped to [0,1]. Ignored by
-    /// the calibrator in v1; stored for analytics only.
+    /// Optional: agent-reported confidence. Accepted as an unconstrained
+    /// `Option<f32>` at the MCP boundary; `FeedbackStore::record_external`
+    /// drops non-finite values and clamps finite values to [0,1] before
+    /// persistence. Ignored by the calibrator in v1; stored for analytics only.
     #[serde(default)]
     pub confidence: Option<f32>,
 }

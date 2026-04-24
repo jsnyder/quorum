@@ -104,8 +104,10 @@ async fn main() -> anyhow::Result<()> {
         }
         cli::Command::Stats(opts) => {
             drain_agent_inbox();
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            let home_path = std::path::PathBuf::from(&home);
+            // Resolve the quorum state dir honoring QUORUM_HOME (used by
+            // hermetic tests and alternate installs). Falls back to
+            // `$HOME/.quorum`, then to `./.quorum` as a last resort.
+            let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
 
             // Dimensional views read reviews.jsonl and aggregate via the
             // `dimensions` module. Classic dims: --by-repo/--by-caller/--rolling.
@@ -117,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
                 && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
 
             if want_context_dim {
-                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
                 let all_records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
@@ -171,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if want_classic_dim {
-                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
                 let records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
@@ -216,9 +218,9 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(0);
             }
 
-            let feedback_store = feedback::FeedbackStore::new(home_path.join(".quorum/feedback.jsonl"));
-            let telemetry_store = telemetry::TelemetryStore::new(home_path.join(".quorum/telemetry.jsonl"));
-            let review_log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+            let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+            let telemetry_store = telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
+            let review_log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
                 Ok(report) => {
