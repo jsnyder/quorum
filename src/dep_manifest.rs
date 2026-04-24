@@ -101,10 +101,15 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
             return None;
         }
     };
-    let pep621_array = parsed
+    // Detect a [project] table that *declares* dependencies (regardless of TOML
+    // type). A wrong-type value (e.g. `dependencies = "stringy"`) means the
+    // user tried to declare deps and got it wrong — do NOT fall through to
+    // requirements.txt and surface stale deps. Treat malformed-but-present as
+    // "explicitly declared empty".
+    let project_dependencies_value = parsed
         .get("project")
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_array());
+        .and_then(|p| p.get("dependencies"));
+    let pep621_array = project_dependencies_value.and_then(|d| d.as_array());
     if let Some(arr) = pep621_array {
         let mut out = Vec::new();
         for v in arr {
@@ -129,6 +134,16 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         // AND over requirements.txt. An explicit empty array means "this
         // project has no deps" — do not fall through.
         return Some(out);
+    }
+    // Wrong-type `dependencies` (string, table, etc.) is also a present-but-
+    // malformed declaration. Same rule as the empty-array branch: stop here,
+    // do not fall through. Logs a warning so the user can fix the manifest.
+    if let Some(v) = project_dependencies_value {
+        tracing::warn!(
+            kind = ?v.type_str(),
+            "pyproject.toml: [project].dependencies has wrong TOML type (expected array of strings); treating as explicitly empty"
+        );
+        return Some(Vec::new());
     }
     let poetry_table = parsed
         .get("tool")
@@ -182,9 +197,21 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
         if line.contains("://") || line.starts_with("git+") {
             continue;
         }
-        // Skip local path references (./dist/pkg.whl, ../lib, /opt/pkg.tar.gz).
-        // pip accepts these but they're paths, not package names.
+        // Skip local path references (./dist/pkg.whl, ../lib, /opt/pkg.tar.gz)
+        // and bare local artifact filenames in cwd (mypkg-1.0.0-py3-none-any.whl,
+        // package.tar.gz, archive.zip, plugin.egg). pip accepts both shapes
+        // but neither is a package name.
         if line.starts_with('.') || line.starts_with('/') || line.contains('/') {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.ends_with(".whl")
+            || lower.ends_with(".tar.gz")
+            || lower.ends_with(".tar.bz2")
+            || lower.ends_with(".tar.xz")
+            || lower.ends_with(".zip")
+            || lower.ends_with(".egg")
+        {
             continue;
         }
         if let Some(name) = strip_python_dep_spec(line) {
@@ -653,6 +680,62 @@ django = "*"
         write(dir.path(), "requirements.txt", "django\n");
         let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["django"]);
+    }
+
+    #[test]
+    fn pyproject_with_wrong_type_dependencies_does_not_fall_through() {
+        // Quorum re-review HIGH: a `[project]` table whose `dependencies`
+        // is the wrong TOML type (string, table, etc.) means the user
+        // *tried* to declare deps. Falling through to requirements.txt
+        // would mask the bug AND surface stale/wrong deps. Treat
+        // `[project]` with a malformed dependencies key as "explicitly
+        // declared zero deps" and stop there.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+name = "broken"
+dependencies = "this should be an array"
+"#);
+        write(dir.path(), "requirements.txt", "fastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new(),
+            "wrong-type dependencies must NOT fall through to requirements.txt");
+    }
+
+    #[test]
+    fn pyproject_with_only_project_table_no_deps_key_still_falls_through() {
+        // Regression guard: `[project]` with only metadata (name, version)
+        // and NO `dependencies` key at all is "no PEP 621 deps section" —
+        // should still fall through to requirements.txt or Poetry.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+name = "myproj"
+version = "0.1.0"
+"#);
+        write(dir.path(), "requirements.txt", "fastapi\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
+    }
+
+    #[test]
+    fn requirements_txt_skips_bare_archive_filenames() {
+        // Quorum re-review HIGH: `pkg.whl` / `package.tar.gz` (no path
+        // separator) are local pip artifact filenames, not package names.
+        // The previous path heuristic only caught lines with `/` or leading
+        // `.`/`/`. Bare filenames slipped through.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "requirements.txt",
+            "fastapi\n\
+             mypkg-1.0.0-py3-none-any.whl\n\
+             package.tar.gz\n\
+             archive.zip\n\
+             plugin.egg\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["fastapi"]);
     }
 
     #[test]
