@@ -31,14 +31,100 @@ pub struct EnrichmentResult {
 }
 
 /// Normalize an import target to the dep name(s) it could match.
-/// - Rust `tokio::sync::Mutex` -> `["tokio"]`
-/// - Python `fastapi.routing` -> `["fastapi"]`
-/// - JS `react` -> `["react"]`
-/// - JS scoped `@nestjs/core` -> `["@nestjs/core"]` (verbatim, two segments)
-/// - JS scoped deep `@nestjs/common/decorators` -> `["@nestjs/common"]`
-/// - Bare `@foo` -> `["@foo"]`
-/// - Leading `::std::ptr` -> `["std"]` (skips empty heads)
+///
+/// Handles two input shapes:
+///
+/// 1. **Production hydration form** (`hydration::populate_imports`):
+///    `"{imported_symbol}: {full_statement}"`. Strip the `"{symbol}: "` prefix
+///    and parse the statement:
+///    - Rust `"Mutex: use tokio::sync::Mutex;"` -> `["tokio"]`
+///    - Python `"join: from os.path import join"` -> `["os"]`
+///    - Python `"sys: import sys"` -> `["sys"]`
+///    - TS `"useState: import { useState } from 'react'"` -> `["react"]`
+///    - TS scoped `"M: import { M } from '@nestjs/core'"` -> `["@nestjs/core"]`
+///    - TS side-effect `"reflect-metadata: import 'reflect-metadata'"` -> `["reflect-metadata"]`
+///
+/// 2. **Clean module-path form** (used by tests and other callers):
+///    - Rust `tokio::sync::Mutex` -> `["tokio"]`
+///    - Python `fastapi.routing` -> `["fastapi"]`
+///    - JS `react` -> `["react"]`
+///    - JS scoped `@nestjs/core` -> `["@nestjs/core"]`
+///    - JS scoped deep `@nestjs/common/decorators` -> `["@nestjs/common"]`
+///    - Bare `@foo` -> `["@foo"]`
+///    - Leading `::std::ptr` -> `["std"]` (skips empty heads)
 pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
+    // Production hydration form: "{symbol}: {statement}". Detection requires
+    // both ": " and a recognized verb (`use `, `from `, `import `) — a clean
+    // path like `tokio::sync::Mutex` has no ": " (no space) and falls through.
+    if let Some((_symbol, rest)) = imp.split_once(": ") {
+        let rest = rest.trim();
+        if let Some(stmt) = rest.strip_prefix("use ") {
+            return parse_rust_use(stmt);
+        }
+        if let Some(stmt) = rest.strip_prefix("from ") {
+            return parse_python_from(stmt);
+        }
+        if let Some(stmt) = rest.strip_prefix("import ") {
+            // TS forms always carry a quoted source (`from '<pkg>'` or bare
+            // `'<pkg>'` for side-effect imports). Python `import X.Y` does not.
+            if let Some(pkg) = extract_quoted_source(stmt) {
+                return normalize_ts_package(&pkg);
+            }
+            return parse_python_import(stmt);
+        }
+    }
+    normalize_clean(imp)
+}
+
+fn parse_rust_use(stmt: &str) -> Vec<String> {
+    let stmt = stmt.trim().trim_end_matches(';');
+    let head = stmt.split("::").next().unwrap_or(stmt).trim();
+    if head.is_empty() { return Vec::new(); }
+    vec![head.to_string()]
+}
+
+fn parse_python_from(stmt: &str) -> Vec<String> {
+    // stmt = "os.path import join"
+    let module = stmt.split_whitespace().next().unwrap_or("");
+    let head = module.split('.').next().unwrap_or("");
+    if head.is_empty() { return Vec::new(); }
+    vec![head.to_string()]
+}
+
+fn parse_python_import(stmt: &str) -> Vec<String> {
+    // stmt = "sys" or "os.path as p"
+    let module = stmt.split_whitespace().next().unwrap_or("");
+    let head = module.split('.').next().unwrap_or("");
+    if head.is_empty() { return Vec::new(); }
+    vec![head.to_string()]
+}
+
+fn extract_quoted_source(stmt: &str) -> Option<String> {
+    for delim in ['\'', '"'] {
+        if let Some(start) = stmt.find(delim) {
+            let after = &stmt[start + 1..];
+            if let Some(end) = after.find(delim) {
+                return Some(after[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
+fn normalize_ts_package(pkg: &str) -> Vec<String> {
+    if let Some(stripped) = pkg.strip_prefix('@') {
+        let parts: Vec<&str> = stripped.splitn(3, '/').collect();
+        if parts.len() >= 2 {
+            return vec![format!("@{}/{}", parts[0], parts[1])];
+        }
+        return vec![pkg.to_string()];
+    }
+    let head = pkg.split('/').next().unwrap_or(pkg);
+    if head.is_empty() { return Vec::new(); }
+    vec![head.to_string()]
+}
+
+fn normalize_clean(imp: &str) -> Vec<String> {
     if let Some(stripped) = imp.strip_prefix('@') {
         let parts: Vec<&str> = stripped.splitn(3, '/').collect();
         if parts.len() >= 2 {
@@ -578,6 +664,111 @@ mod tests {
     #[test]
     fn normalize_scoped_pkg_without_slash_kept_verbatim() {
         assert_eq!(normalize_import_to_dep_names("@foo"), vec!["@foo"]);
+    }
+
+    // --- normalize: production hydration format ---
+    //
+    // `hydration::populate_imports` emits `import_targets` as
+    // `"{imported_name}: {full_use_statement}"` (e.g. `"Mutex: use tokio::sync::Mutex;"`).
+    // Earlier tests above cover the *clean* form. These pin the *real* form
+    // so the dep-based enrichment path doesn't silently no-op in production.
+
+    #[test]
+    fn normalize_rust_hydration_form_extracts_crate_name() {
+        assert_eq!(
+            normalize_import_to_dep_names("Mutex: use tokio::sync::Mutex;"),
+            vec!["tokio"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("Deserialize: use serde::{Deserialize, Serialize};"),
+            vec!["serde"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("Result: use anyhow::Result;"),
+            vec!["anyhow"]
+        );
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_skips_local_use_paths() {
+        // `use crate::foo;` / `use self::bar;` / `use super::baz;` should not
+        // resolve to a Cargo.toml dep — emit the keyword so downstream lookup
+        // misses harmlessly (matches existing local-path contract).
+        assert_eq!(
+            normalize_import_to_dep_names("foo: use crate::foo;"),
+            vec!["crate"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("bar: use self::bar;"),
+            vec!["self"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("baz: use super::baz;"),
+            vec!["super"]
+        );
+    }
+
+    #[test]
+    fn normalize_python_hydration_form_extracts_module_root() {
+        // `from os.path import join` -> root `os`
+        assert_eq!(
+            normalize_import_to_dep_names("join: from os.path import join"),
+            vec!["os"]
+        );
+        // `import sys` -> `sys`
+        assert_eq!(
+            normalize_import_to_dep_names("sys: import sys"),
+            vec!["sys"]
+        );
+        // `from fastapi import FastAPI` -> `fastapi`
+        assert_eq!(
+            normalize_import_to_dep_names("FastAPI: from fastapi import FastAPI"),
+            vec!["fastapi"]
+        );
+    }
+
+    #[test]
+    fn normalize_typescript_hydration_form_extracts_package_from_quoted_source() {
+        // Named import: `import { useState } from 'react'` -> `react`
+        assert_eq!(
+            normalize_import_to_dep_names("useState: import { useState } from 'react'"),
+            vec!["react"]
+        );
+        // Double quotes
+        assert_eq!(
+            normalize_import_to_dep_names("z: import { z } from \"zod\""),
+            vec!["zod"]
+        );
+        // Scoped npm package: keep `@scope/name`
+        assert_eq!(
+            normalize_import_to_dep_names("Module: import { Module } from '@nestjs/core'"),
+            vec!["@nestjs/core"]
+        );
+        // Scoped with subpath: trim to first two segments
+        assert_eq!(
+            normalize_import_to_dep_names("x: import { x } from '@nestjs/common/decorators'"),
+            vec!["@nestjs/common"]
+        );
+        // Default import: `import express from 'express'` -> `express`
+        assert_eq!(
+            normalize_import_to_dep_names("express: import express from 'express'"),
+            vec!["express"]
+        );
+        // Side-effect: `import 'reflect-metadata'`
+        assert_eq!(
+            normalize_import_to_dep_names("reflect-metadata: import 'reflect-metadata'"),
+            vec!["reflect-metadata"]
+        );
+    }
+
+    #[test]
+    fn normalize_clean_paths_still_work_after_hydration_aware_parsing() {
+        // Regression guard: the existing clean-form contract must keep working.
+        // A future change that breaks bare `tokio` / `tokio::sync::Mutex` would
+        // also break the test fixtures used by other modules.
+        assert_eq!(normalize_import_to_dep_names("tokio"), vec!["tokio"]);
+        assert_eq!(normalize_import_to_dep_names("tokio::sync::Mutex"), vec!["tokio"]);
+        assert_eq!(normalize_import_to_dep_names("fastapi.routing"), vec!["fastapi"]);
     }
 
     // --- enrich_for_review: behavior tests ---
