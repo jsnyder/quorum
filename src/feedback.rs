@@ -59,6 +59,39 @@ pub struct FeedbackEntry {
     pub provenance: Provenance,
 }
 
+/// Input for recording a verdict from an external review agent.
+///
+/// Use `FeedbackStore::record_external` instead of constructing a `FeedbackEntry`
+/// directly — it handles agent-name normalization, confidence clamping, and
+/// timestamp assignment. See issue #32.
+#[derive(Debug, Clone)]
+pub struct ExternalVerdictInput {
+    pub file_path: String,
+    pub finding_title: String,
+    pub finding_category: Option<String>,
+    pub verdict: Verdict,
+    pub reason: String,
+    pub agent: String,
+    pub agent_model: Option<String>,
+    pub confidence: Option<f32>,
+}
+
+/// Clamp confidence to [0,1], mapping NaN/±Inf to None.
+/// `f32::clamp` is NOT NaN-safe — this wraps it with an `is_finite` gate
+/// (quorum self-review 2026-04-24).
+pub(crate) fn clamp_confidence(c: Option<f32>) -> Option<f32> {
+    c.filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0))
+}
+
+/// Normalize an agent name: trim + lowercase. Returns Err for empty-after-trim.
+pub(crate) fn normalize_agent(raw: &str) -> anyhow::Result<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        anyhow::bail!("agent name cannot be empty after normalization");
+    }
+    Ok(t.to_lowercase())
+}
+
 pub struct FeedbackStore {
     path: PathBuf,
 }
@@ -112,6 +145,42 @@ impl FeedbackStore {
 
     pub fn count(&self) -> anyhow::Result<usize> {
         Ok(self.load_all()?.len())
+    }
+
+    /// Record a verdict from an external review agent (pal, third-opinion, etc.).
+    /// Normalizes `agent` (trim + lowercase), NaN-safe clamps `confidence` to
+    /// [0,1], defaults missing `finding_category` to `"unknown"`, rejects
+    /// `Verdict::ContextMisleading` (retrieval signals need blamed_chunk_ids
+    /// an external agent can't credibly produce), and sets
+    /// `provenance = Provenance::External {..}`. See issue #32.
+    pub fn record_external(&self, input: ExternalVerdictInput) -> anyhow::Result<()> {
+        if matches!(input.verdict, Verdict::ContextMisleading { .. }) {
+            anyhow::bail!(
+                "context_misleading verdicts are not accepted from External agents \
+                 (they cannot identify blamed chunks in our injected context)"
+            );
+        }
+        let agent = normalize_agent(&input.agent)?;
+        let confidence = clamp_confidence(input.confidence);
+        let category = input
+            .finding_category
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        let entry = FeedbackEntry {
+            file_path: input.file_path,
+            finding_title: input.finding_title,
+            finding_category: category,
+            verdict: input.verdict,
+            reason: input.reason,
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::External {
+                agent,
+                model: input.agent_model,
+                confidence,
+            },
+        };
+        self.record(&entry)
     }
 
     /// Record a `ContextMisleading` verdict — reviewer determined the injected
@@ -391,6 +460,202 @@ mod tests {
                 assert_eq!(confidence, None);
             }
             o => panic!("{o:?}"),
+        }
+    }
+
+    // --- Task 4: ExternalVerdictInput + record_external (issue #32) ---
+
+    #[test]
+    fn clamp_confidence_maps_values() {
+        assert_eq!(clamp_confidence(None), None);
+        assert_eq!(clamp_confidence(Some(0.42)), Some(0.42));
+        assert_eq!(clamp_confidence(Some(1.5)), Some(1.0));
+        assert_eq!(clamp_confidence(Some(-0.2)), Some(0.0));
+        assert_eq!(clamp_confidence(Some(0.0)), Some(0.0));
+        assert_eq!(clamp_confidence(Some(1.0)), Some(1.0));
+    }
+
+    #[test]
+    fn clamp_confidence_rejects_nan_inf() {
+        // f32::clamp is NOT NaN-safe — it returns NaN for NaN input.
+        // clamp_confidence must detect non-finite values explicitly.
+        assert_eq!(clamp_confidence(Some(f32::NAN)), None, "NaN must become None");
+        assert_eq!(clamp_confidence(Some(f32::INFINITY)), None, "+inf must become None");
+        assert_eq!(clamp_confidence(Some(f32::NEG_INFINITY)), None, "-inf must become None");
+    }
+
+    #[test]
+    fn record_external_writes_external_provenance() {
+        let (store, _dir) = test_store();
+        let input = ExternalVerdictInput {
+            file_path: "src/a.rs".into(),
+            finding_title: "Bug".into(),
+            finding_category: Some("security".into()),
+            verdict: Verdict::Tp,
+            reason: "confirmed".into(),
+            agent: "pal".into(),
+            agent_model: Some("gemini-3-pro-preview".into()),
+            confidence: Some(0.85),
+        };
+        store.record_external(input).unwrap();
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].provenance {
+            Provenance::External { agent, model, confidence } => {
+                assert_eq!(agent, "pal");
+                assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
+                assert_eq!(*confidence, Some(0.85));
+            }
+            o => panic!("expected External, got {o:?}"),
+        }
+        assert!(all[0].model.is_none(), "entry.model should be None (reviewer model, not agent model)");
+    }
+
+    #[test]
+    fn record_external_normalizes_agent_name() {
+        let (store, _dir) = test_store();
+        store.record_external(ExternalVerdictInput {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: None,
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            agent: "  PaL  ".into(),
+            agent_model: None,
+            confidence: None,
+        }).unwrap();
+        let all = store.load_all().unwrap();
+        match &all[0].provenance {
+            Provenance::External { agent, .. } => assert_eq!(agent, "pal"),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
+    fn record_external_rejects_empty_agent() {
+        let (store, _dir) = test_store();
+        let err = store.record_external(ExternalVerdictInput {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: None,
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            agent: "   ".into(),
+            agent_model: None,
+            confidence: None,
+        }).expect_err("empty agent must be rejected");
+        assert!(err.to_string().to_lowercase().contains("agent"),
+            "error message should mention agent: {err}");
+    }
+
+    #[test]
+    fn record_external_defaults_missing_category_to_unknown() {
+        let (store, _dir) = test_store();
+        store.record_external(ExternalVerdictInput {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: None,
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            agent: "pal".into(),
+            agent_model: None,
+            confidence: None,
+        }).unwrap();
+        let all = store.load_all().unwrap();
+        assert_eq!(all[0].finding_category, "unknown");
+    }
+
+    #[test]
+    fn record_external_applies_clamp_confidence() {
+        let (store, _dir) = test_store();
+        store.record_external(ExternalVerdictInput {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: None,
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            agent: "pal".into(),
+            agent_model: None,
+            confidence: Some(1.5),
+        }).unwrap();
+        let all = store.load_all().unwrap();
+        match &all[0].provenance {
+            Provenance::External { confidence, .. } => {
+                assert_eq!(*confidence, Some(1.0), "1.5 must clamp to 1.0");
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
+    fn record_external_rejects_context_misleading_verdict() {
+        // ContextMisleading needs blamed_chunk_ids that the reviewer sees in our
+        // injected context — an external agent can't credibly produce them.
+        // Reject at ingest to avoid polluting the calibrator's retrieval signal.
+        let (store, _dir) = test_store();
+        let err = store.record_external(ExternalVerdictInput {
+            file_path: "a.rs".into(),
+            finding_title: "t".into(),
+            finding_category: None,
+            verdict: Verdict::ContextMisleading { blamed_chunk_ids: vec!["c1".into()] },
+            reason: "r".into(),
+            agent: "pal".into(),
+            agent_model: None,
+            confidence: None,
+        }).expect_err("ContextMisleading must be rejected for External provenance");
+        assert!(
+            err.to_string().to_lowercase().contains("context"),
+            "error message must mention context_misleading: {err}"
+        );
+    }
+
+    #[test]
+    fn normalize_agent_idempotent_on_typical_input() {
+        assert_eq!(normalize_agent("pal").unwrap(), "pal");
+        assert_eq!(normalize_agent("  Pal  ").unwrap(), "pal");
+        assert_eq!(normalize_agent("THIRD-OPINION").unwrap(), "third-opinion");
+        assert!(normalize_agent("").is_err());
+        assert!(normalize_agent("   ").is_err());
+        // Idempotence: normalize(normalize(s)) == normalize(s)
+        let once = normalize_agent("  MixedCase  ").unwrap();
+        let twice = normalize_agent(&once).unwrap();
+        assert_eq!(once, twice);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn clamp_always_finite_and_in_unit_interval(c in any::<f32>()) {
+            match clamp_confidence(Some(c)) {
+                Some(out) => {
+                    prop_assert!(out.is_finite(), "clamp output must be finite, got {out}");
+                    prop_assert!((0.0..=1.0).contains(&out), "out={out} not in [0,1]");
+                }
+                None => prop_assert!(!c.is_finite(), "None only allowed for non-finite input, got {c}"),
+            }
+        }
+
+        #[test]
+        fn normalize_agent_is_idempotent(s in "[[:print:]]{0,64}") {
+            let first = normalize_agent(&s);
+            if let Ok(first_val) = first {
+                let second = normalize_agent(&first_val)
+                    .expect("normalized output should itself be valid input");
+                prop_assert_eq!(first_val, second);
+            }
+        }
+
+        #[test]
+        fn normalize_agent_err_iff_trim_empty(s in "[[:print:]]{0,64}") {
+            let is_err = normalize_agent(&s).is_err();
+            let trimmed_empty = s.trim().is_empty();
+            prop_assert_eq!(is_err, trimmed_empty,
+                "err iff trim empty for input {:?}", s);
         }
     }
 }
