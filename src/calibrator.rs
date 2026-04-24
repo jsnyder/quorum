@@ -1913,4 +1913,121 @@ mod tests {
         let w = verdict_weight(&entry);
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
     }
+
+    // --- Task 3: External filter + uncapped bucket pinning (issue #32) ---
+
+    /// External FP FeedbackEntry with a given age (days).
+    fn external_fp(age_days: i64) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "src/auth.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now() - chrono::Duration::days(age_days),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+        }
+    }
+
+    #[test]
+    fn external_not_filtered_when_use_auto_feedback_false() {
+        // External must survive the use_auto_feedback=false filter that
+        // specifically targets AutoCalibrate precedents.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .severity(Severity::High)
+                .build(),
+        ];
+        let feedback = vec![external_fp(0)];
+        let config = CalibratorConfig {
+            use_auto_feedback: false,
+            ..Default::default()
+        };
+        let result = calibrate(findings, &feedback, &config);
+        let trace = result.traces.last().expect("expected a calibrator trace");
+        assert!(
+            !trace.matched_precedents.is_empty(),
+            "External verdict must survive use_auto_feedback=false"
+        );
+    }
+
+    #[test]
+    fn external_fp_accumulation_thresholds() {
+        // Table-driven: one test covers n=1,2,3 with per-row failure messages.
+        // Replaces a four-way split that duplicated setup and hid accumulator bugs.
+        #[derive(Debug, PartialEq)]
+        enum Outcome {
+            Kept,
+            Soft,
+            Full,
+        }
+
+        // Calibrator soft-triggers when `soft_fp_weight >= 0.5 && tp_weight < 0.1`
+        // (lightweight FP with no TP → already concerning). So 1 external FP
+        // at 0.7 weight already trips the low soft trigger. Full-suppression
+        // requires full_suppress_weight >= 1.5.
+        let cases: &[(usize, Outcome)] = &[
+            (1, Outcome::Soft), // 1 × 0.7 = 0.7: tp=0 → trips low soft (>=0.5)
+            (2, Outcome::Soft), // 2 × 0.7 = 1.4: also soft (>=1.0), not full (<1.5)
+            (3, Outcome::Full), // 3 × 0.7 = 2.1: full-suppress (>=1.5)
+        ];
+
+        for (n, expected) in cases {
+            let findings = vec![
+                FindingBuilder::new()
+                    .title("SQL injection")
+                    .category("security")
+                    .severity(Severity::High)
+                    .build(),
+            ];
+            let feedback: Vec<_> = (0..*n as i64).map(external_fp).collect();
+            let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+            let outcome = match (
+                result.suppressed,
+                result.findings.first().map(|f| &f.severity),
+            ) {
+                (1, _) => Outcome::Full,
+                (0, Some(Severity::Info)) => Outcome::Soft,
+                (0, Some(_)) => Outcome::Kept,
+                _ => panic!("unexpected result for n={n}: suppressed={} findings={:?}", result.suppressed, result.findings),
+            };
+            assert_eq!(
+                outcome, *expected,
+                "n={n}: expected {expected:?}, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_accumulator_uncapped_verified_via_trace() {
+        // Stronger pin than outcome-based tests: inspect the calibrator trace
+        // to confirm the actual fp_weight exceeds 1.0 (the AutoCalibrate cap).
+        // If a future edit accidentally routes External into auto_fp_weight.min(1.0),
+        // this test fails even if the outcome happens to still be full-suppress.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .severity(Severity::High)
+                .build(),
+        ];
+        let feedback: Vec<_> = (0..3).map(external_fp).collect();
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected a trace");
+        // 3 fresh External FPs → fp_weight ≈ 3 × 0.7 = 2.1 (modulo tiny recency
+        // decay at age=0,1,2 days). If External were capped at 1.0, fp_weight
+        // would be ≤ 1.0.
+        assert!(
+            trace.fp_weight > 1.0,
+            "expected uncapped fp_weight > 1.0 (got {}) — External must not be capped like AutoCalibrate",
+            trace.fp_weight
+        );
+    }
 }
