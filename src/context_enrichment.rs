@@ -263,17 +263,8 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
     if import_targets.is_empty() {
         return base_query.to_string();
     }
-    // Extract keywords from import paths.
-    // For scoped npm packages (@scope/pkg), use the scope (the framework hint),
-    // not the trailing pkg name. For regular paths, use the trailing segment.
     let keywords: Vec<String> = import_targets.iter()
-        .filter_map(|imp| {
-            if let Some(stripped) = imp.strip_prefix('@') {
-                stripped.split('/').next().map(|s| s.to_string())
-            } else {
-                imp.split(&['.', '/', ':'][..]).next_back().map(|s| s.to_string())
-            }
-        })
+        .filter_map(|imp| extract_query_keyword(imp))
         .filter(|s| s.len() > 2) // skip very short names like "os", "re"
         .take(10)
         .collect();
@@ -281,6 +272,33 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
         return base_query.to_string();
     }
     format!("{} {}", base_query, keywords.join(" "))
+}
+
+/// Extract one Context7-query keyword from an import target.
+///
+/// Two input shapes (matches `normalize_import_to_dep_names`):
+///   1. Production hydration `"{symbol}: {use|from|import ...}"`: the
+///      imported symbol IS the keyword (`Mutex`, `useState`, `Deserialize`).
+///      The statement body is a syntactic carrier, not a search term —
+///      treating it as one (the old behavior) leaks `"Mutex;"`, `"react'"`,
+///      and full sub-phrases into the query.
+///   2. Clean form: scoped `@scope/pkg` -> `scope` (framework hint),
+///      else trailing path segment (`os.path.join` -> `join`).
+fn extract_query_keyword(imp: &str) -> Option<String> {
+    if let Some((symbol, rest)) = imp.split_once(": ") {
+        let rest_trim = rest.trim();
+        if rest_trim.starts_with("use ")
+            || rest_trim.starts_with("from ")
+            || rest_trim.starts_with("import ")
+        {
+            let symbol = symbol.trim();
+            if !symbol.is_empty() { return Some(symbol.to_string()); }
+        }
+    }
+    if let Some(stripped) = imp.strip_prefix('@') {
+        return stripped.split('/').next().map(|s| s.to_string());
+    }
+    imp.split(&['.', '/', ':'][..]).next_back().map(|s| s.to_string())
 }
 
 /// Format context docs as a prompt section.
@@ -1107,6 +1125,33 @@ axum = "0.7"
         let query = build_code_aware_query(base, &imports);
         assert!(query.contains("useEffect"));
         assert!(!query.contains(" os ")); // "os" is too short (<=2 chars), filtered
+    }
+
+    // Production hydration form: regression guard. The function must extract
+    // useful keywords (the imported symbol) from the real
+    // `"{symbol}: {use|from|import ...}"` shape, not garbage like `"Mutex;"`
+    // or `"react'"` (which is what the old split-on-`[':','/','.']` produced).
+    #[test]
+    fn build_code_aware_query_handles_production_hydration_format() {
+        let imports = vec![
+            "Mutex: use tokio::sync::Mutex;".into(),
+            "Deserialize: use serde::{Deserialize, Serialize};".into(),
+            "useState: import { useState } from 'react'".into(),
+            "join: from os.path import join".into(),
+        ];
+        let query = build_code_aware_query("base", &imports);
+        // Imported-symbol keywords are present.
+        assert!(query.contains("Mutex"), "missing Mutex: {query}");
+        assert!(query.contains("Deserialize"), "missing Deserialize: {query}");
+        assert!(query.contains("useState"), "missing useState: {query}");
+        assert!(query.contains("join"), "missing join: {query}");
+        // Garbage tokens from naive splitting are absent.
+        assert!(!query.contains("Mutex;"), "leaked trailing semicolon: {query}");
+        assert!(!query.contains("react'"), "leaked closing quote: {query}");
+        // Trash tokens from the use-statement body must not leak in.
+        for trash in [" import ", "use ", " from "] {
+            assert!(!query.contains(trash), "leaked statement keyword {trash:?}: {query}");
+        }
     }
 
     #[test]
