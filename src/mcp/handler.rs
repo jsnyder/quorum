@@ -301,21 +301,22 @@ impl FeedbackEntry {
 }
 
 fn dirs_path() -> std::io::Result<PathBuf> {
-    // QUORUM_HOME wins (matches the CLI's `quorum_dir()` behavior so MCP and
-    // CLI persist to the same feedback.jsonl when an override is in effect).
-    // Otherwise prefer XDG_DATA_HOME, then HOME/.quorum.
+    // Precedence MUST match `src/main.rs::quorum_dir()` byte-for-byte —
+    // otherwise an MCP server and `quorum stats`/`feedback`/`review` can
+    // diverge to different `feedback.jsonl` files on the same host (e.g.
+    // when XDG_DATA_HOME is set without QUORUM_HOME). Order:
+    //   1. QUORUM_HOME (treat empty as ".quorum" cwd-relative)
+    //   2. $HOME/.quorum
+    //   3. ".quorum" cwd-relative as last-resort fallback
     let dir = if let Ok(qh) = std::env::var("QUORUM_HOME") {
         if qh.is_empty() {
             PathBuf::from(".quorum")
         } else {
             PathBuf::from(qh)
         }
-    } else if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        PathBuf::from(xdg).join("quorum")
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".quorum")
     } else {
-        // Last resort: use current directory (not ideal, but don't crash)
         PathBuf::from(".quorum")
     };
     // Surface create_dir_all failures so handler initialization fails fast

@@ -150,6 +150,38 @@ fn from_agent_honors_explicit_json_flag_on_tty() {
 }
 
 #[test]
+fn human_path_honors_explicit_json_flag() {
+    // CodeRabbit-flagged regression (round 3): the Human CLI path must
+    // honor --json even on a TTY. Prior code only switched to JSON via
+    // pipe detection.
+    let home = TempDir::new().unwrap();
+    let out = run_feedback(
+        home.path(),
+        &[
+            "--file",
+            "src/x.rs",
+            "--finding",
+            "Bug",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+            "--json",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("Human --json must emit valid JSON: {stdout:?} ({e})")
+    });
+    assert_eq!(v["verdict"], "tp");
+    assert_eq!(v["file_path"], "src/x.rs");
+}
+
+#[test]
 fn human_path_normalizes_blank_category() {
     // CodeRabbit-flagged regression: the Human CLI path must trim
     // whitespace and treat empty strings as missing — same rule
