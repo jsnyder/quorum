@@ -617,8 +617,15 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     // multi-file reviews. Without this, each per-file enrich call would
     // build a fresh cache and re-hammer Context7 for the same deps.
     //
-    // Box::leak is fine here: one HTTP fetcher + one cache wrapper per
-    // `quorum review` invocation, process-scoped and bounded.
+    // Box::leak is bounded to one allocation per process: `run_review` is
+    // only ever called from the one-shot CLI dispatcher (`main()` calls
+    // `std::process::exit` immediately after). The long-lived `daemon`
+    // and `serve` paths use their own pipelines (run_daemon /
+    // run_mcp_server) and never enter this function, so the leaked
+    // memory is reclaimed when the CLI process exits. A future caller
+    // that drives `run_review` in a long-lived loop should switch to
+    // `OnceLock<&'static dyn ContextFetcher>` to make the once-per-process
+    // guarantee explicit.
     // CR8: distinguish "not yet built" from "init failed". A None fetcher
     // alone would fall through to the per-file ad-hoc path in pipeline.rs,
     // which would re-fail Context7HttpFetcher::new() once per file and

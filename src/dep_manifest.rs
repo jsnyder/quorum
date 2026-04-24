@@ -366,14 +366,16 @@ cc = "1"
     }
 
     #[test]
-    fn cargo_dep_in_both_dependencies_and_dev_dependencies_appears() {
+    fn cargo_dep_in_both_dependencies_and_dev_dependencies_dedupes() {
+        // N1: parse_cargo dedupes via the `seen` HashSet (added with the
+        // target.* deps fix in 0aca79c). The earlier `count >= 1`
+        // assertion was a stale comment from before that change. Pin the
+        // actual contract so a future regression is caught.
         let dir = TempDir::new().unwrap();
         write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"\n");
         let deps = parse_dependencies(dir.path());
         let count = deps.iter().filter(|d| d.name == "tokio").count();
-        // Pin the choice: parse_cargo currently appends both. Downstream dedupe in
-        // enrich_for_review handles uniqueness. If parse_cargo grows dedup, change to == 1.
-        assert!(count >= 1, "tokio missing entirely: {deps:?}");
+        assert_eq!(count, 1, "tokio should appear exactly once after dedupe: {deps:?}");
     }
 
     #[test]

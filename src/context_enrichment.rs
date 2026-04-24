@@ -352,8 +352,11 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
     for doc in docs {
         // Wrap in fenced block to isolate fetched content from prompt instructions.
         // Sanitize triple backticks in content to prevent fence breakout.
+        // `text` fence language: heterogeneous content (HCL, YAML, prose, Rust);
+        // explicit `text` keeps Markdown renderers from highlighting as Bash by
+        // default and makes the intent ("opaque blob, do not parse") explicit (N2).
         let sanitized = doc.content.replace("```", "'''");
-        section.push_str(&format!("### {}\n```\n{}\n```\n\n", doc.library, sanitized));
+        section.push_str(&format!("### {}\n```text\n{}\n```\n\n", doc.library, sanitized));
     }
     section
 }
@@ -1256,6 +1259,24 @@ axum = "0.7"
     #[test]
     fn format_context_section_empty() {
         assert!(format_context_section(&[]).is_empty());
+    }
+
+    #[test]
+    fn format_context_section_uses_text_fence_language() {
+        // N2: a bare ``` opening fence has no language tag, which causes
+        // some Markdown renderers to highlight as Bash by default. The
+        // fetched content is heterogeneous (HCL, YAML, prose, Rust); pick
+        // `text` as a safe non-highlighting default that keeps the fence
+        // syntactically explicit.
+        let docs = vec![ContextDoc {
+            library: "lib".into(),
+            content: "body".into(),
+        }];
+        let section = format_context_section(&docs);
+        assert!(
+            section.contains("```text\n"),
+            "expected ```text fence, got: {section}"
+        );
     }
 
     #[test]
