@@ -171,10 +171,43 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         );
         return Some(Vec::new());
     };
+    // Mirrors parse_cargo's multi-section pattern: dedupe via HashSet so
+    // the same name in multiple Poetry sections (e.g. main + dev pin
+    // override) yields one entry.
     let mut out = Vec::new();
-    for name in table.keys() {
-        if name == "python" { continue; }
-        out.push(Dependency { name: name.clone(), language: "python".into() });
+    let mut seen = std::collections::HashSet::new();
+    let push_table = |table: &toml::value::Table,
+                      out: &mut Vec<Dependency>,
+                      seen: &mut std::collections::HashSet<String>| {
+        for name in table.keys() {
+            if name == "python" { continue; }
+            if seen.insert(name.clone()) {
+                out.push(Dependency { name: name.clone(), language: "python".into() });
+            }
+        }
+    };
+    push_table(table, &mut out, &mut seen);
+    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies]. Surfaced by
+    // quorum review of #86 — pre-existing parser gap mirroring the Cargo
+    // target.* fix from #83.
+    let poetry_root = parsed.get("tool").and_then(|t| t.get("poetry"));
+    if let Some(dev_table) = poetry_root
+        .and_then(|p| p.get("dev-dependencies"))
+        .and_then(|v| v.as_table())
+    {
+        push_table(dev_table, &mut out, &mut seen);
+    }
+    // Modern Poetry 1.2+ syntax: [tool.poetry.group.<name>.dependencies].
+    // Iterate every named group (dev, test, lint, docs, ...).
+    if let Some(groups) = poetry_root
+        .and_then(|p| p.get("group"))
+        .and_then(|v| v.as_table())
+    {
+        for group in groups.values().filter_map(|v| v.as_table()) {
+            if let Some(deps) = group.get("dependencies").and_then(|v| v.as_table()) {
+                push_table(deps, &mut out, &mut seen);
+            }
+        }
     }
     Some(out)
 }
@@ -777,6 +810,81 @@ version = "0.1.0"
         let names: Vec<_> = parse_dependencies(dir.path())
             .iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["django"]);
+    }
+
+    #[test]
+    fn pyproject_includes_legacy_poetry_dev_dependencies() {
+        // Quorum HIGH (PR #86 review). Legacy Poetry 1.0 syntax keeps
+        // dev deps in [tool.poetry.dev-dependencies], not under groups.
+        // The parser used to ignore that section entirely, missing
+        // pytest/black/etc. in any project still on the legacy layout.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "legacy"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.100"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+black = "^23"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["fastapi", "pytest", "black"] {
+            assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn pyproject_includes_modern_poetry_group_dependencies() {
+        // Quorum HIGH (PR #86 review). Poetry 1.2+ moved dev deps under
+        // [tool.poetry.group.<name>.dependencies] tables. Each named
+        // group (dev, test, lint, docs, ...) contributes deps. The
+        // parser used to ignore them entirely.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "modern"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "^5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["django", "pytest", "ruff"] {
+            assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn pyproject_poetry_dedupes_across_main_dev_and_groups() {
+        // Same dep declared in two Poetry sections (e.g. version pin in
+        // main + override in dev) yields one entry, mirroring parse_cargo
+        // and the new package.json contract.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry.dependencies]
+requests = "^2"
+
+[tool.poetry.dev-dependencies]
+requests = "^2"
+
+[tool.poetry.group.test.dependencies]
+requests = "^2"
+"#);
+        let deps = parse_dependencies(dir.path());
+        let count = deps.iter().filter(|d| d.name == "requests").count();
+        assert_eq!(count, 1, "requests should appear exactly once after dedupe: {deps:?}");
     }
 
     #[test]
