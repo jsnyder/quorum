@@ -15,15 +15,24 @@ fn home_with_no_sources_toml() -> tempfile::TempDir {
     tmp
 }
 
+/// Build a `Command` with the home dir isolated to `tmp`. Sets BOTH
+/// `HOME` (Unix-canonical) and `USERPROFILE` (Windows-canonical, preferred
+/// by `ProdDeps::from_env` per src/context/cli.rs:170-171) so the test
+/// can't accidentally leak into the developer's real profile on Windows.
+fn quorum_cmd_with_home(tmp: &tempfile::TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("quorum").unwrap();
+    cmd.env("HOME", tmp.path())
+        .env("USERPROFILE", tmp.path());
+    cmd
+}
+
 #[test]
 fn doctor_exits_1_when_checks_fail_json_format() {
     let tmp = home_with_no_sources_toml();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = quorum_cmd_with_home(&tmp)
         .arg("context")
         .arg("doctor")
         .arg("--json")
-        .env("HOME", tmp.path())
         .output()
         .unwrap();
     assert_eq!(
@@ -45,11 +54,9 @@ fn doctor_exits_1_when_checks_fail_json_format() {
 #[test]
 fn doctor_exits_1_when_checks_fail_table_format() {
     let tmp = home_with_no_sources_toml();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = quorum_cmd_with_home(&tmp)
         .arg("context")
         .arg("doctor") // table is default
-        .env("HOME", tmp.path())
         .output()
         .unwrap();
     assert_eq!(
@@ -68,12 +75,10 @@ fn doctor_exits_1_when_checks_fail_table_format() {
 #[test]
 fn doctor_exits_1_when_checks_fail_compact_format() {
     let tmp = home_with_no_sources_toml();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = quorum_cmd_with_home(&tmp)
         .arg("context")
         .arg("doctor")
         .arg("--compact")
-        .env("HOME", tmp.path())
         .output()
         .unwrap();
     assert_eq!(

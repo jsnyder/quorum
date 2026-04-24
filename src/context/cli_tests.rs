@@ -1405,15 +1405,27 @@ fn run_doctor_doctor_failed_false_with_warn_only() {
     };
     let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor runs");
 
-    // Sanity: confirm we are actually in warn-only territory (no fail rows).
+    // Sanity: confirm we are actually in warn-only territory — no fail
+    // rows AND at least one warn row. Without the warn assertion the
+    // test would silently pass if all checks became Pass (e.g. orphan
+    // detection regressed and stopped flagging the stray dir), masking
+    // a real regression in orphan-warning behavior.
     let v = parse_doctor_json(&out.stdout);
     let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
     let any_fail_in_json = checks.iter().any(|c| {
         c.get("status").and_then(|x| x.as_str()) == Some("fail")
     });
+    let any_warn_in_json = checks.iter().any(|c| {
+        c.get("status").and_then(|x| x.as_str()) == Some("warn")
+    });
     assert!(
         !any_fail_in_json,
         "fixture must produce warn-only state; got fail rows in: {}",
+        out.stdout
+    );
+    assert!(
+        any_warn_in_json,
+        "fixture must produce at least one warn row to lock the warn-only contract; got: {}",
         out.stdout
     );
 
