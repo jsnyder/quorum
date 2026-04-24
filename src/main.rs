@@ -47,15 +47,63 @@ use clap::Parser;
 use config::{Config, EnvConfigSource};
 use pipeline::{PipelineConfig, LlmReviewer};
 
+/// Resolve the quorum state directory, honoring the `QUORUM_HOME` env
+/// override so integration tests can be hermetic. Falls back to
+/// `$HOME/.quorum`. Returns None if neither can be resolved.
+fn quorum_dir() -> Option<std::path::PathBuf> {
+    if let Ok(override_path) = std::env::var("QUORUM_HOME") {
+        if !override_path.is_empty() {
+            return Some(std::path::PathBuf::from(override_path));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".quorum"))
+}
+
+/// Drain agent-contributed verdicts from `<quorum_dir>/inbox/` into the
+/// feedback store before the caller loads feedback. Called at the top of the
+/// `Review` and `Stats` command arms. Pipeline + stats modules stay IO-pure;
+/// this is the application-boundary hook. See issue #32.
+fn drain_agent_inbox() {
+    let Some(home) = quorum_dir() else { return; };
+    let inbox = home.join("inbox");
+    let processed = inbox.join("processed");
+    let feedback_path = home.join("feedback.jsonl");
+    let store = crate::feedback::FeedbackStore::new(feedback_path);
+    match store.drain_inbox(&inbox, &processed) {
+        Ok(r) if r.drained_files > 0 => {
+            tracing::info!(
+                files = r.drained_files,
+                entries = r.entries,
+                errors = r.errors.len(),
+                "drained external feedback inbox"
+            );
+            for e in &r.errors {
+                tracing::warn!(
+                    file = %e.file.display(),
+                    line = e.line,
+                    msg = %e.message,
+                    "inbox drain error"
+                );
+            }
+        }
+        Ok(_) => {} // empty inbox or no-op
+        Err(e) => tracing::warn!(error = %e, "inbox drain failed"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
     match args.command {
         cli::Command::Review(opts) => {
+            drain_agent_inbox();
             let exit_code = run_review(opts);
             std::process::exit(exit_code);
         }
         cli::Command::Stats(opts) => {
+            drain_agent_inbox();
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             let home_path = std::path::PathBuf::from(&home);
 
