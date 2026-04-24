@@ -64,10 +64,17 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
     };
     let lang = if has_tsconfig { "typescript" } else { "javascript" };
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Dedupe across sections — a package legitimately appearing in
+    // both `dependencies` and `peerDependencies` (common during
+    // migrations) used to emit duplicate entries. Mirrors parse_cargo's
+    // HashSet-based dedup for parser-symmetry.
     for key in &["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
         if let Some(obj) = parsed.get(*key).and_then(|v| v.as_object()) {
             for name in obj.keys() {
-                out.push(Dependency { name: name.clone(), language: lang.into() });
+                if seen.insert(name.clone()) {
+                    out.push(Dependency { name: name.clone(), language: lang.into() });
+                }
             }
         }
     }
@@ -76,8 +83,11 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
 
 fn strip_python_dep_spec(raw: &str) -> Option<String> {
     let no_extras = raw.split('[').next()?.trim();
+    // `@` terminates a PEP 508 direct reference (with or without surrounding
+    // whitespace): `name @ url`, `name[extra] @ url`, and the no-space
+    // `name@url` / `name[extra]@url` forms all yield the bare name.
     let name_end = no_extras
-        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';'))
+        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';' | '@'))
         .unwrap_or(no_extras.len());
     let name = no_extras[..name_end].trim();
     if name.is_empty() { None } else { Some(name.to_string()) }
@@ -145,29 +155,132 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
         );
         return Some(Vec::new());
     }
-    let poetry_dependencies_value = parsed
-        .get("tool")
-        .and_then(|t| t.get("poetry"))
-        .and_then(|p| p.get("dependencies"));
-    let Some(value) = poetry_dependencies_value else {
-        // Neither PEP 621 nor Poetry section recognized — let requirements.txt
-        // handle this project.
+    // Probe ALL three Poetry section forms. Any present section means
+    // Poetry owns this project — falling through to requirements.txt
+    // for a dev-tooling-only or group-only project would lose those deps.
+    //
+    // CodeRabbit round 2 on PR #86: type-check the [tool.poetry] root
+    // itself. Without this, a wrong-type `tool.poetry = "string"` made
+    // every sub-key lookup return None and the file fell through to
+    // requirements.txt. Pinned by
+    // pyproject_wrong_type_poetry_root_does_not_fall_through.
+    let poetry_root = match parsed.get("tool").and_then(|t| t.get("poetry")) {
+        Some(value) => match value.as_table() {
+            Some(table) => Some(table),
+            None => {
+                tracing::warn!(
+                    kind = ?value.type_str(),
+                    "pyproject.toml: [tool.poetry] has wrong TOML type (expected table); treating as explicitly empty"
+                );
+                return Some(Vec::new());
+            }
+        },
+        None => None,
+    };
+    let main_deps_value = poetry_root.and_then(|p| p.get("dependencies"));
+    let legacy_dev_value = poetry_root.and_then(|p| p.get("dev-dependencies"));
+    let group_value = poetry_root.and_then(|p| p.get("group"));
+    // CodeRabbit round 3 on PR #86: a [tool.poetry.group.<name>] table with
+    // only metadata (e.g. `optional = true`) is NOT a dep declaration. Only
+    // count the group section as "owning deps" if at least one child group
+    // contains a `dependencies` key. Wrong-type sub-tables conservatively
+    // count as "owning" (we can't tell what the user meant — defer to the
+    // wrong-type warn handler below). Pinned by
+    // pyproject_poetry_group_metadata_only_falls_through_to_requirements_txt.
+    let has_group_dependency_section = match group_value {
+        Some(value) => match value.as_table() {
+            Some(groups) => groups.values().any(|group_value| {
+                group_value
+                    .as_table()
+                    .map(|group| group.contains_key("dependencies"))
+                    .unwrap_or(true)
+            }),
+            None => true,
+        },
+        None => false,
+    };
+    if main_deps_value.is_none() && legacy_dev_value.is_none() && !has_group_dependency_section {
+        // Neither PEP 621 nor any Poetry section recognized — fall through
+        // to requirements.txt.
         return None;
-    };
-    // CR7: same shape as the [project].dependencies wrong-type guard above.
-    // The user *tried* to declare Poetry deps; falling through to
-    // requirements.txt would mask that error. Treat as explicitly empty.
-    let Some(table) = value.as_table() else {
-        tracing::warn!(
-            kind = ?value.type_str(),
-            "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); treating as explicitly empty"
-        );
-        return Some(Vec::new());
-    };
+    }
+    // Mirrors parse_cargo's multi-section pattern: dedupe via HashSet so
+    // the same name in multiple Poetry sections (e.g. main + dev pin
+    // override) yields one entry.
     let mut out = Vec::new();
-    for name in table.keys() {
-        if name == "python" { continue; }
-        out.push(Dependency { name: name.clone(), language: "python".into() });
+    let mut seen = std::collections::HashSet::new();
+    let push_table = |table: &toml::value::Table,
+                      out: &mut Vec<Dependency>,
+                      seen: &mut std::collections::HashSet<String>| {
+        for name in table.keys() {
+            if name == "python" { continue; }
+            if seen.insert(name.clone()) {
+                out.push(Dependency { name: name.clone(), language: "python".into() });
+            }
+        }
+    };
+    if let Some(value) = main_deps_value {
+        // Wrong-type [tool.poetry.dependencies] used to early-return
+        // Some(Vec::new()), short-circuiting valid dev/group sections —
+        // strictly worse than the prior state once we started reading
+        // those sections. Warn and continue so dev/group still contribute
+        // (Quorum HIGH on PR #86 review). Pinned by
+        // pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_dev_deps.
+        match value.as_table() {
+            Some(table) => push_table(table, &mut out, &mut seen),
+            None => tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.dependencies] has wrong TOML type (expected table); skipping main deps"
+            ),
+        }
+    }
+    // Legacy Poetry 1.0 syntax: [tool.poetry.dev-dependencies]. Wrong-type
+    // is warned + treated as empty (CodeRabbit on PR #86) — same shape as
+    // the existing CR7 guard on the main [tool.poetry.dependencies] table.
+    if let Some(value) = legacy_dev_value {
+        match value.as_table() {
+            Some(dev_table) => push_table(dev_table, &mut out, &mut seen),
+            None => tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.dev-dependencies] has wrong TOML type (expected table); treating as explicitly empty"
+            ),
+        }
+    }
+    // Modern Poetry 1.2+ syntax: [tool.poetry.group.<name>.dependencies].
+    // Iterate every named group (dev, test, lint, docs, ...). Wrong-type
+    // at any nesting level is warned with enough breadcrumbs (group name,
+    // observed kind) to fix the manifest. A malformed sibling group must
+    // NOT break valid sibling groups — pinned by
+    // pyproject_wrong_type_poetry_group_entry_skips_only_that_group.
+    if let Some(value) = group_value {
+        match value.as_table() {
+            Some(groups) => {
+                for (group_name, group_value) in groups {
+                    let Some(group) = group_value.as_table() else {
+                        tracing::warn!(
+                            group = %group_name,
+                            kind = ?group_value.type_str(),
+                            "pyproject.toml: [tool.poetry.group.<name>] has wrong TOML type (expected table); skipping group"
+                        );
+                        continue;
+                    };
+                    if let Some(deps_value) = group.get("dependencies") {
+                        match deps_value.as_table() {
+                            Some(deps) => push_table(deps, &mut out, &mut seen),
+                            None => tracing::warn!(
+                                group = %group_name,
+                                kind = ?deps_value.type_str(),
+                                "pyproject.toml: [tool.poetry.group.<name>.dependencies] has wrong TOML type (expected table); skipping group deps"
+                            ),
+                        }
+                    }
+                }
+            }
+            None => tracing::warn!(
+                kind = ?value.type_str(),
+                "pyproject.toml: [tool.poetry.group] has wrong TOML type (expected table); treating as explicitly empty"
+            ),
+        }
     }
     Some(out)
 }
@@ -392,6 +505,26 @@ cc = "1"
         for n in ["react", "vitest", "@types/react", "fsevents"] {
             assert!(names.contains(&n), "missing {n} in {names:?}");
         }
+    }
+
+    #[test]
+    fn package_json_dep_in_multiple_sections_dedupes() {
+        // A package legitimately appearing in `dependencies` and
+        // `peerDependencies` (common during migrations or for shared
+        // runtime+peer libs) used to emit two `Dependency` entries.
+        // parse_cargo dedupes via HashSet — make parse_package_json
+        // match for parser-symmetry. Downstream import-matching already
+        // dedupes by name, so this is a cleanliness/consistency fix
+        // rather than a behavioral one.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "package.json", r#"{
+            "dependencies": {"react": "^18"},
+            "peerDependencies": {"react": "^18"},
+            "devDependencies": {"react": "^18"}
+        }"#);
+        let deps = parse_dependencies(dir.path());
+        let count = deps.iter().filter(|d| d.name == "react").count();
+        assert_eq!(count, 1, "react should appear exactly once after dedupe: {deps:?}");
     }
 
     #[test]
@@ -629,6 +762,27 @@ dependencies = [
     }
 
     #[test]
+    fn pyproject_pep621_handles_pep508_named_direct_url_without_spaces() {
+        // Quorum HIGH (round 2 quorum re-review on PR #86). PEP 508 allows
+        // both `name @ url` (with spaces) AND `name@url` (no spaces around @).
+        // strip_python_dep_spec lacked `@` in its terminator list, so the
+        // no-spaces form returned the literal "name@url" as the package name.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[project]
+dependencies = [
+  "fastapi",
+  "mypkg@https://example.com/pkg.whl",
+  "other@git+https://github.com/a/b.git",
+]
+"#);
+        let mut names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fastapi", "mypkg", "other"]);
+    }
+
+    #[test]
     fn requirements_txt_strips_version_specifiers() {
         let dir = TempDir::new().unwrap();
         write(dir.path(), "requirements.txt", "fastapi>=0.100\nrequests==2.31.0\n");
@@ -750,6 +904,296 @@ version = "0.1.0"
         let names: Vec<_> = parse_dependencies(dir.path())
             .iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["django"]);
+    }
+
+    #[test]
+    fn pyproject_includes_legacy_poetry_dev_dependencies() {
+        // Quorum HIGH (PR #86 review). Legacy Poetry 1.0 syntax keeps
+        // dev deps in [tool.poetry.dev-dependencies], not under groups.
+        // The parser used to ignore that section entirely, missing
+        // pytest/black/etc. in any project still on the legacy layout.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "legacy"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.100"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+black = "^23"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["fastapi", "pytest", "black"] {
+            assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn pyproject_includes_modern_poetry_group_dependencies() {
+        // Quorum HIGH (PR #86 review). Poetry 1.2+ moved dev deps under
+        // [tool.poetry.group.<name>.dependencies] tables. Each named
+        // group (dev, test, lint, docs, ...) contributes deps. The
+        // parser used to ignore them entirely.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "modern"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "^5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["django", "pytest", "ruff"] {
+            assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
+        }
+    }
+
+    #[test]
+    fn pyproject_poetry_group_metadata_only_falls_through_to_requirements_txt() {
+        // CodeRabbit (round 3 on PR #86). [tool.poetry.group.<name>] with
+        // ONLY metadata (e.g. `optional = true`) and no `.dependencies`
+        // sub-table is NOT a dep declaration. The probe-all-three guard
+        // used to treat any group_value as "Poetry owns deps" and suppress
+        // the requirements.txt fallback. Now we only count groups that
+        // actually contain a `dependencies` key.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "metadata-only-groups"
+
+[tool.poetry.group.dev]
+optional = true
+"#);
+        write(dir.path(), "requirements.txt", "django\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, vec!["django"],
+            "metadata-only Poetry groups should not block requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_root_does_not_fall_through() {
+        // CodeRabbit (round 2 on PR #86). If `[tool.poetry]` itself is the
+        // wrong TOML type (e.g. someone wrote `poetry = "string"` instead
+        // of `[tool.poetry]`), every sub-key lookup returns None and the
+        // probe-all-three guard falls through to requirements.txt.
+        // The user *clearly* intended Poetry; warn and treat as empty.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool]
+poetry = "this should be a table"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert_eq!(names, Vec::<String>::new(),
+            "wrong-type [tool.poetry] root must NOT fall through: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_dev_deps() {
+        // Quorum HIGH (3rd round on PR #86). The wrong-type guard for
+        // [tool.poetry.dependencies] used to `return Some(Vec::new())`
+        // immediately, short-circuiting parsing of valid dev/group
+        // sections later in the file. With the dev/group support added
+        // earlier in this PR, that short-circuit drops legit dev deps
+        // for any project with a malformed main table — strictly worse
+        // than the prior state. Warn but continue.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-main-good-dev"
+dependencies = "this should be a table"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"pytest".into()),
+            "valid dev-deps must still be parsed when main is malformed: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_groups() {
+        // Same shape with modern Poetry 1.2+ groups.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-main-good-groups"
+dependencies = ["should", "be", "a", "table", "not", "array"]
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        for n in ["pytest", "ruff"] {
+            assert!(names.contains(&n.to_string()),
+                "valid group {n} must be parsed when main is malformed: {names:?}");
+        }
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_dev_dependencies_does_not_fall_through() {
+        // CodeRabbit (PR #86 review). Wrong-type [tool.poetry.dev-dependencies]
+        // (a string, array, etc.) used to be silently dropped while still
+        // suppressing requirements.txt fallback — hiding manifest errors AND
+        // any deps that *would* have been picked up. Now we warn + treat as
+        // explicitly empty, matching the existing wrong-type guards on
+        // [project].dependencies and [tool.poetry.dependencies] (CR7).
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-dev"
+
+[tool.poetry.dependencies]
+fastapi = "^0.100"
+
+dev-dependencies = "this should be a table"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"fastapi".into()),
+            "main deps must still parse: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_group_does_not_fall_through() {
+        // Same shape, applied to the [tool.poetry.group] table itself
+        // (e.g. someone wrote `group = "dev"` instead of nested tables).
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "broken-group"
+group = "this should be a table of groups"
+
+[tool.poetry.dependencies]
+django = "^5"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"django".into()), "main deps must still parse: {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_wrong_type_poetry_group_entry_skips_only_that_group() {
+        // One malformed group must NOT break sibling groups. A string at
+        // [tool.poetry.group.dev] should be skipped with a warn while
+        // [tool.poetry.group.lint.dependencies] still contributes ruff.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "mixed-groups"
+
+[tool.poetry.group]
+dev = "this should be a sub-table"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+"#);
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"ruff".into()),
+            "valid sibling group must still parse: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_poetry_dev_only_no_main_deps_still_returns_some() {
+        // Quorum HIGH (2nd pass on PR #86 review). Dev-tooling-only Poetry
+        // projects (no [tool.poetry.dependencies] table at all) used to
+        // hit the early-return guard and fall through to requirements.txt
+        // — losing the dev-deps entirely. The fix must treat any of
+        // {main, dev, group} as a valid signal that Poetry owns this project.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "devtools-only"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+black = "^23"
+"#);
+        // Sentinel: if we incorrectly fall through, this would leak in.
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
+        assert!(names.contains(&"black".into()), "black missing in {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_poetry_groups_only_no_main_deps_still_returns_some() {
+        // Same shape as the legacy-only case, but with modern Poetry 1.2+
+        // groups and no main [tool.poetry.dependencies] table.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry]
+name = "groups-only"
+
+[tool.poetry.group.lint.dependencies]
+ruff = "^0.5"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8"
+"#);
+        write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"ruff".into()), "ruff missing in {names:?}");
+        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
+        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}");
+    }
+
+    #[test]
+    fn pyproject_poetry_dedupes_across_main_dev_and_groups() {
+        // Same dep declared in two Poetry sections (e.g. version pin in
+        // main + override in dev) yields one entry, mirroring parse_cargo
+        // and the new package.json contract.
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "pyproject.toml", r#"
+[tool.poetry.dependencies]
+requests = "^2"
+
+[tool.poetry.dev-dependencies]
+requests = "^2"
+
+[tool.poetry.group.test.dependencies]
+requests = "^2"
+"#);
+        let deps = parse_dependencies(dir.path());
+        let count = deps.iter().filter(|d| d.name == "requests").count();
+        assert_eq!(count, 1, "requests should appear exactly once after dedupe: {deps:?}");
     }
 
     #[test]
