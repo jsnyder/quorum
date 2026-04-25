@@ -495,10 +495,9 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn run_review(opts: cli::ReviewOpts) -> i32 {
-    if opts.files.is_empty() {
-        eprintln!("Error: No files specified");
-        return 3;
-    }
+    // The empty-files case is now rejected at the clap layer via
+    // `#[arg(required = true, num_args = 1..)]` on `ReviewOpts.files`
+    // (issue #89). The redundant handler-level guard was removed.
 
     // Initialize structured tracing if --trace flag or QUORUM_TRACE=1 env var
     let trace_enabled = opts.trace || std::env::var("QUORUM_TRACE").map(|v| v == "1").unwrap_or(false);
