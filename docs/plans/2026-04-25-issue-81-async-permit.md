@@ -19,11 +19,13 @@
 **Files:**
 - Modify: `src/pipeline.rs` (test module at the bottom — append a new test fn)
 
-**Why this test:** The existing `acquire_llm_permit_does_not_panic_inside_current_thread_runtime` only proves "doesn't panic" with a 1-permit-available semaphore. It does NOT exercise contention. The bug only manifests when the permit is *held by another task on the same current-thread runtime*. We need a test that reproduces that exact shape AND fails at runtime against the buggy code (not just at compile time).
+**Why this test:** The existing `acquire_llm_permit_does_not_panic_inside_current_thread_runtime` only proves "doesn't panic" with a 1-permit-available semaphore. It does NOT exercise contention. The bug only manifests when the permit is *held by another task on the same current-thread runtime*. We need a test that reproduces that exact shape.
 
-**Two-phase RED (per testing-antipatterns review):** First demonstrate the bug at runtime against the current SYNC API via a `spawn_blocking` shim — this gives a *runtime* failure (timeout) that proves the deadlock exists. Then post-fix, the test (with the shim removed) compiles and passes against the new ASYNC API.
+**Compile-fail RED (the strongest available signal):** The test below calls `.await` on `acquire_llm_permit`, which is invalid against the current SYNC signature. This produces compile error E0277 with rustc itself suggesting "consider making `fn acquire_llm_permit` asynchronous" — the compiler points at exactly the Task 2 fix. Step 1b verifies the failure mode.
 
-**Step 1a: Write the runtime-RED test (shimmed against current sync API)**
+The original plan called for an additional runtime-RED via a `spawn_blocking` shim, but on closer analysis (see Step 1b note) the shim does NOT reproduce the deadlock — `spawn_blocking` runs on the blocking pool, not the runtime worker, so the holder still gets polled. A faithful runtime-RED would require sync `acquire_llm_permit` to block worker X *directly*, which would also hang Tokio's timeout future itself; `std::thread::spawn` + condvar harness would be needed to detect it, which is significant complexity for a one-shot demonstration. Compile-fail RED + the issue's reproduction analysis are accepted as sufficient.
+
+**Step 1a: Write the test**
 
 Append to the existing `mod tests` (after the `acquire_llm_permit_does_not_panic_inside_multi_thread_runtime` test):
 
