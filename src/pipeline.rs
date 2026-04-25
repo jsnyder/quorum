@@ -185,6 +185,13 @@ pub struct PipelineConfig {
     /// fallback so a single bootstrap failure cleanly disables enrichment
     /// instead of re-failing per file (CR8).
     pub context7_disabled: bool,
+    /// Per-request focus directive (e.g. "security", "performance"). When
+    /// `Some` and non-empty after trim, threaded into `ReviewRequest.focus`
+    /// and rendered as a `<focus_areas>` section in the LLM prompt. When
+    /// `None` or whitespace-only, behavior is byte-identical to the
+    /// pre-#104 prompt layout. Set by `mcp::handler::QuorumHandler` from the
+    /// MCP `ReviewTool.focus` field; the CLI does not currently expose it.
+    pub focus: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -206,6 +213,7 @@ impl Default for PipelineConfig {
             context_injector: None,
             context7_fetcher: None,
             context7_disabled: false,
+            focus: None,
         }
     }
 }
@@ -542,6 +550,7 @@ pub fn review_file(
             feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
             context_block,
             truncation_notice: truncation_notice.clone(),
+            focus: pipeline_config.focus.clone(),
         };
 
         let prompt = review::build_review_prompt(&req);
@@ -840,6 +849,7 @@ pub fn review_file_llm_only(
                 feedback_precedents: if precedents.is_empty() { None } else { Some(precedents) },
                 context_block: None,
                 truncation_notice: truncation_notice.clone(),
+                focus: pipeline_config.focus.clone(),
             };
 
             let prompt = review::build_review_prompt(&req);

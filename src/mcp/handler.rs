@@ -51,6 +51,39 @@ impl QuorumHandler {
         })
     }
 
+    /// Assemble the `PipelineConfig` for a review request.
+    ///
+    /// Issue #93: pipeline-level feedback writes (post-fix verdicts,
+    /// auto-calibrate recordings) must target the same store the handler
+    /// was constructed with — not the global `~/.quorum/feedback.jsonl` —
+    /// otherwise tests (or alternate prod constructors) silently split
+    /// reads from one DB and writes to another. Threading the path here is
+    /// the entire fix; the helper exists so the contract is unit-testable
+    /// independently of running a full review.
+    ///
+    /// `params` is the parsed MCP tool input; per-request config (e.g.
+    /// `focus` from issue #104) is plumbed through here so the helper
+    /// stays the single place to map handler state + tool params into a
+    /// pipeline config.
+    pub(crate) fn build_pipeline_config_for_review(
+        &self,
+        params: &ReviewTool,
+    ) -> Result<PipelineConfig, String> {
+        let feedback = self
+            .feedback_store
+            .load_all()
+            .map_err(|e| format!("failed to load feedback store: {e}"))?;
+        Ok(PipelineConfig {
+            models: vec![self.config.model.clone()],
+            feedback,
+            feedback_store: Some(self.feedback_store.path().to_path_buf()),
+            // Issue #104: thread the caller's focus directive into the
+            // pipeline. Pre-fix, this field was dropped on the floor.
+            focus: params.focus.clone(),
+            ..Default::default()
+        })
+    }
+
     fn handle_review(&self, params: ReviewTool) -> Result<CallToolResult, String> {
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
@@ -58,19 +91,7 @@ impl QuorumHandler {
         // Surface feedback-store read failures (corrupted/unreadable JSONL)
         // instead of silently reviewing without precedent. Otherwise persistent
         // state corruption would mask itself behind degraded review output.
-        let feedback = self
-            .feedback_store
-            .load_all()
-            .map_err(|e| format!("failed to load feedback store: {e}"))?;
-        let feedback_path = dirs_path()
-            .map_err(|e| format!("failed to resolve quorum data directory: {e}"))?
-            .join("feedback.jsonl");
-        let pipeline_cfg = PipelineConfig {
-            models: vec![self.config.model.clone()],
-            feedback,
-            feedback_store: Some(feedback_path),
-            ..Default::default()
-        };
+        let pipeline_cfg = self.build_pipeline_config_for_review(&params)?;
 
         let result = pipeline::review_source(
             std::path::Path::new(&params.file_path),
@@ -843,5 +864,156 @@ mod tests {
         };
         handler.handle_review(params2).unwrap();
         assert_eq!(cache.stats().hits, 1, "Second review should be a cache hit");
+    }
+
+    // --- Issue #93: pipeline writes feedback to handler's configured store ---
+    //
+    // Pre-fix, `handle_review` constructed `PipelineConfig.feedback_store`
+    // from `dirs_path()/feedback.jsonl` regardless of the path the handler
+    // was actually constructed with. So a handler instantiated with a custom
+    // store path (tests, alternate prod constructors) would READ precedents
+    // from the configured store but WRITE pipeline-level recordings (post-fix
+    // verdicts, auto-calibrate verdicts) to the global ~/.quorum file.
+    //
+    // The fix extracts `build_pipeline_config_for_review` so the handler can
+    // pass its own store's path. The tests below verify the helper actually
+    // does that — covering both a non-default path (the bug's home) and the
+    // default-path case (regression guard against the inverse mutation).
+    #[test]
+    fn build_pipeline_config_uses_handler_store_path_when_non_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("issue93-non-default.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(custom.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let cfg = handler
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "test.rs".into(),
+                focus: None,
+            })
+            .expect("helper must succeed for a fresh tempdir handler");
+        assert_eq!(
+            cfg.feedback_store,
+            Some(custom),
+            "PipelineConfig must point at the handler's configured store, not dirs_path()/feedback.jsonl",
+        );
+    }
+
+    #[test]
+    fn build_pipeline_config_threads_handler_store_path_unconditionally() {
+        // Regression guard for the inverse mutation: "always use
+        // self.feedback_store.path() but ignore the rest of the helper".
+        // Two different non-default paths must yield two different cfg paths
+        // — distinguishes "helper threads correctly" from "helper hardcodes
+        // a single path that happens to match".
+        let dir1 = tempfile::tempdir().unwrap();
+        let p1 = dir1.path().join("issue93-a.jsonl");
+        let h1 = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(p1.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let dir2 = tempfile::tempdir().unwrap();
+        let p2 = dir2.path().join("issue93-b.jsonl");
+        let h2 = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(p2.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let cfg1 = h1
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "a.rs".into(),
+                focus: None,
+            })
+            .unwrap();
+        let cfg2 = h2
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "b.rs".into(),
+                focus: None,
+            })
+            .unwrap();
+        assert_eq!(cfg1.feedback_store, Some(p1));
+        assert_eq!(cfg2.feedback_store, Some(p2));
+        assert_ne!(
+            cfg1.feedback_store, cfg2.feedback_store,
+            "different handlers must produce different cfg paths"
+        );
+    }
+
+    // --- Issue #104: focus is threaded from ReviewTool into PipelineConfig ---
+    //
+    // Pre-fix, `handle_review` dropped `params.focus` on the floor. The
+    // helper now copies it through; the prompt-side rendering is covered
+    // separately in `src/review.rs`. This test kills the "forgot to thread"
+    // mutation that any review.rs-only test would miss.
+
+    #[test]
+    fn build_pipeline_config_threads_focus_from_review_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(dir.path().join("focus.jsonl")),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let cfg = handler
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "test.rs".into(),
+                focus: Some("security".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            cfg.focus,
+            Some("security".into()),
+            "focus must be threaded verbatim from ReviewTool to PipelineConfig"
+        );
+    }
+
+    #[test]
+    fn build_pipeline_config_focus_is_none_when_caller_omits_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(dir.path().join("nofocus.jsonl")),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let cfg = handler
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "test.rs".into(),
+                focus: None,
+            })
+            .unwrap();
+        assert_eq!(cfg.focus, None);
     }
 }
