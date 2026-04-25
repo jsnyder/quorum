@@ -25,9 +25,9 @@ fn quorum_bin() -> std::path::PathBuf {
 /// the real `write_cmd_output` path. The child must exit 0 (not panic, not 1).
 #[test]
 fn context_list_with_closed_stdout_exits_zero() {
-    let home = TempDir::new().unwrap();
+    let home = TempDir::new().expect("failed to create temp dir for QUORUM_HOME");
     let qhome = home.path().join(".quorum");
-    std::fs::create_dir_all(&qhome).unwrap();
+    std::fs::create_dir_all(&qhome).expect("failed to create .quorum directory");
 
     let mut child = Command::new(quorum_bin())
         .env("QUORUM_HOME", qhome.as_os_str())
@@ -73,9 +73,9 @@ fn context_list_with_closed_stdout_exits_zero() {
 /// not over-eagerly translating success into errors.
 #[test]
 fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
-    let home = TempDir::new().unwrap();
+    let home = TempDir::new().expect("failed to create temp dir for QUORUM_HOME");
     let qhome = home.path().join(".quorum");
-    std::fs::create_dir_all(&qhome).unwrap();
+    std::fs::create_dir_all(&qhome).expect("failed to create .quorum directory");
 
     let mut child = Command::new(quorum_bin())
         .env("QUORUM_HOME", qhome.as_os_str())
