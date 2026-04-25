@@ -176,6 +176,14 @@ impl FeedbackStore {
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
         use anyhow::Context;
         use std::io::Write;
+        // Issue #100: OpenOptions::create(true) only creates the file, not
+        // its parent. Direct callers (tests, daemon, future paths) that bypass
+        // run_feedback's pre-create step would otherwise hit ENOENT.
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create feedback parent dir: {}", parent.display())
+            })?;
+        }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -540,6 +548,51 @@ mod tests {
             provenance: Provenance::Human,
         };
         assert_eq!(entry.provenance, Provenance::Human);
+    }
+
+    // Issue #100: FeedbackStore::record must create the parent directory if it
+    // doesn't exist. Direct callers (tests, daemon, future entry points) that
+    // bypass `run_feedback`'s pre-create step would otherwise hit ENOENT on a
+    // fresh install or alternate QUORUM_HOME.
+    #[test]
+    fn record_creates_missing_parent_directory() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("missing").join("nested").join("feedback.jsonl");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "precondition: parent dir must not pre-exist"
+        );
+        let store = FeedbackStore::new(path.clone());
+        store
+            .record(&sample_entry(Verdict::Tp))
+            .expect("record must succeed even if parent dir is missing");
+        assert!(path.exists(), "feedback file must be created");
+        assert_eq!(store.load_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn record_appends_without_truncating() {
+        let (store, _dir) = test_store();
+        store.record(&sample_entry(Verdict::Tp)).unwrap();
+        store.record(&sample_entry(Verdict::Fp)).unwrap();
+        assert_eq!(store.load_all().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn record_returns_err_on_unwritable_parent() {
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"i am a file not a dir").unwrap();
+        let path = blocker.join("subdir").join("feedback.jsonl");
+        let store = FeedbackStore::new(path);
+        let err = store
+            .record(&sample_entry(Verdict::Tp))
+            .expect_err("record must fail when parent cannot be created");
+        let has_io_cause = err.chain().any(|e| e.downcast_ref::<std::io::Error>().is_some());
+        assert!(
+            has_io_cause,
+            "error chain must include io::Error (got: {err:#})"
+        );
     }
 
     #[test]

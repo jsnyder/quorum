@@ -41,6 +41,38 @@ impl Default for CalibratorConfig {
     }
 }
 
+// Issue #97: cap on the global External-provenance contribution to any single
+// finding's TP or FP weight accumulator. Prevents a misbehaving or compromised
+// agent from flooding verdicts and dominating calibration.
+//
+// 1.4 ≈ 2 fresh External TPs (each at 0.7 before recency decay). This ties
+// max External influence to roughly 1 Human TP (1.0) or 1 PostFix (1.5) —
+// External is advisory precedent, not authoritative. Cap applies GLOBALLY
+// across agents (one pool summing pal + third-opinion + ...), not per-agent.
+pub(crate) const EXTERNAL_WEIGHT_CAP: f64 = 1.4;
+
+/// Bucket an iterator of `(provenance, weight)` pairs into three accumulators
+/// (auto / external / humanish), apply per-bucket caps, and return the final
+/// capped sum. Used by both `calibrate` (Jaccard path) and
+/// `calibrate_with_index` (embedding path) so that the cap scheme stays in
+/// exactly one place — a future cap-value or bucket-membership change can't
+/// accidentally diverge between the two paths.
+fn accumulate_capped<'a>(
+    weighted: impl IntoIterator<Item = (&'a crate::feedback::Provenance, f64)>,
+) -> f64 {
+    let mut auto = 0.0_f64;
+    let mut external = 0.0_f64;
+    let mut humanish = 0.0_f64;
+    for (prov, w) in weighted {
+        match prov {
+            crate::feedback::Provenance::AutoCalibrate(_) => auto += w,
+            crate::feedback::Provenance::External { .. } => external += w,
+            _ => humanish += w,
+        }
+    }
+    auto.min(1.0) + external.min(EXTERNAL_WEIGHT_CAP) + humanish
+}
+
 /// Compute the weight of a single feedback entry based on provenance and recency.
 fn verdict_weight(entry: &FeedbackEntry) -> f64 {
     let provenance_weight = match &entry.provenance {
@@ -126,29 +158,19 @@ pub fn calibrate(
             continue;
         }
 
-        // Compute weighted verdict scores with auto-calibrate cap
-        let mut auto_tp_weight: f64 = 0.0;
-        let mut other_tp_weight: f64 = 0.0;
-        for e in similar.iter().filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial) {
-            if matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
-                auto_tp_weight += verdict_weight(e);
-            } else {
-                other_tp_weight += verdict_weight(e);
-            }
-        }
-        let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
-
-        // Strict FP weight (drives full suppression)
-        let mut auto_fp_weight: f64 = 0.0;
-        let mut other_fp_weight: f64 = 0.0;
-        for e in similar.iter().filter(|e| e.verdict == Verdict::Fp) {
-            if matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
-                auto_fp_weight += verdict_weight(e);
-            } else {
-                other_fp_weight += verdict_weight(e);
-            }
-        }
-        let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
+        // Provenance-bucketed, per-bucket-capped weights. See `accumulate_capped`.
+        let tp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|e| matches!(e.verdict, Verdict::Tp | Verdict::Partial))
+                .map(|e| (&e.provenance, verdict_weight(e))),
+        );
+        let fp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|e| e.verdict == Verdict::Fp)
+                .map(|e| (&e.provenance, verdict_weight(e))),
+        );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
@@ -363,30 +385,20 @@ pub fn calibrate_with_index(
             continue;
         }
 
-        let mut auto_tp_weight: f64 = 0.0;
-        let mut other_tp_weight: f64 = 0.0;
-        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Tp || s.entry.verdict == Verdict::Partial) {
-            let w = verdict_weight(&s.entry) * s.similarity as f64;
-            if matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
-                auto_tp_weight += w;
-            } else {
-                other_tp_weight += w;
-            }
-        }
-        let tp_weight = auto_tp_weight.min(1.0) + other_tp_weight;
-
-        // Strict FP weight (drives full suppression)
-        let mut auto_fp_weight: f64 = 0.0;
-        let mut other_fp_weight: f64 = 0.0;
-        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Fp) {
-            let w = verdict_weight(&s.entry) * s.similarity as f64;
-            if matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) {
-                auto_fp_weight += w;
-            } else {
-                other_fp_weight += w;
-            }
-        }
-        let fp_weight = auto_fp_weight.min(1.0) + other_fp_weight;
+        // Provenance-bucketed, per-bucket-capped weights. Weights here are
+        // scaled by embedding similarity before bucketing.
+        let tp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Partial))
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+        );
+        let fp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|s| s.entry.verdict == Verdict::Fp)
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+        );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
@@ -1973,10 +1985,15 @@ mod tests {
         // (lightweight FP with no TP → already concerning). So 1 external FP
         // at 0.7 weight already trips the low soft trigger. Full-suppression
         // requires full_suppress_weight >= 1.5.
+        //
+        // Issue #97: External weights are now capped at EXTERNAL_WEIGHT_CAP
+        // (1.4). Full suppression (>=1.5) is UNREACHABLE via External alone —
+        // it requires humanish FP corroboration. The n=100 row locks this in.
         let cases: &[(usize, Outcome)] = &[
-            (1, Outcome::Soft), // 1 × 0.7 = 0.7: tp=0 → trips low soft (>=0.5)
-            (2, Outcome::Soft), // 2 × 0.7 = 1.4: also soft (>=1.0), not full (<1.5)
-            (3, Outcome::Full), // 3 × 0.7 = 2.1: full-suppress (>=1.5)
+            (1, Outcome::Soft),   // 1 × 0.7 = 0.7: tp=0 → trips low soft (>=0.5)
+            (2, Outcome::Soft),   // 2 × 0.7 = 1.4: soft (>=1.0), below cap
+            (3, Outcome::Soft),   // 2.1 raw → capped at 1.4 → stays Soft (was Full pre-#97)
+            (100, Outcome::Soft), // flood: cap holds; External alone can never trigger Full
         ];
 
         for (n, expected) in cases {
@@ -2005,29 +2022,203 @@ mod tests {
         }
     }
 
+    // -- Issue #97: External accumulator cap --
+    //
+    // External-provenance entries (from other review agents) share the
+    // `other_*_weight` bucket with Human and PostFix. Without a cap, a single
+    // misbehaving or compromised agent can flood TP/FP verdicts and dominate
+    // calibration. Per issue #97, we cap the global External sum at
+    // `EXTERNAL_WEIGHT_CAP` (≈ 2 fresh External entries = 1 Human entry's
+    // worth). Cap is global across agents, not per-agent.
+
+    fn external_tp(age_days: i64) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "ext".into(),
+            model: None,
+            timestamp: Utc::now() - chrono::Duration::days(age_days),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+        }
+    }
+
+    fn external_tp_from(agent_name: &str, age_days: i64) -> FeedbackEntry {
+        let mut e = external_tp(age_days);
+        if let crate::feedback::Provenance::External { ref mut agent, .. } = e.provenance {
+            *agent = agent_name.into();
+        }
+        e
+    }
+
     #[test]
-    fn external_accumulator_uncapped_verified_via_trace() {
-        // Stronger pin than outcome-based tests: inspect the calibrator trace
-        // to confirm the actual fp_weight exceeds 1.0 (the AutoCalibrate cap).
-        // If a future edit accidentally routes External into auto_fp_weight.min(1.0),
-        // this test fails even if the outcome happens to still be full-suppress.
+    fn external_tp_bucket_capped_at_constant() {
         let findings = vec![
             FindingBuilder::new()
                 .title("SQL injection")
                 .category("security")
-                .severity(Severity::High)
                 .build(),
         ];
-        let feedback: Vec<_> = (0..3).map(external_fp).collect();
+        let feedback: Vec<_> = (0..10).map(|_| external_tp(0)).collect();
         let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-        let trace = result.traces.last().expect("expected a trace");
-        // 3 fresh External FPs → fp_weight ≈ 3 × 0.7 = 2.1 (modulo tiny recency
-        // decay at age=0,1,2 days). If External were capped at 1.0, fp_weight
-        // would be ≤ 1.0.
+        let trace = result.traces.last().expect("expected trace");
         assert!(
-            trace.fp_weight > 1.0,
-            "expected uncapped fp_weight > 1.0 (got {}) — External must not be capped like AutoCalibrate",
+            (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
+            "expected tp_weight ≈ {} (got {}) — External bucket must be capped",
+            EXTERNAL_WEIGHT_CAP,
+            trace.tp_weight
+        );
+    }
+
+    #[test]
+    fn external_fp_bucket_capped_at_constant() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let feedback: Vec<_> = (0..10)
+            .map(|_| {
+                let mut e = external_tp(0);
+                e.verdict = Verdict::Fp;
+                e
+            })
+            .collect();
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (trace.fp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
+            "expected fp_weight ≈ {} (got {})",
+            EXTERNAL_WEIGHT_CAP,
             trace.fp_weight
+        );
+    }
+
+    #[test]
+    fn external_below_cap_passes_through_unchanged() {
+        // .min() must not floor: a single External at 0.7 stays at 0.7. Kills
+        // a .min → .max mutant that would force every External up to the cap.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let feedback = vec![external_tp(0)];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (trace.tp_weight - 0.7).abs() < 1e-3,
+            "expected tp_weight ≈ 0.7 (got {}) — below-cap values must pass through",
+            trace.tp_weight
+        );
+    }
+
+    #[test]
+    fn humanish_bucket_remains_uncapped() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let mut feedback = Vec::new();
+        for _ in 0..5 {
+            feedback.push(fb("SQL injection", "security", Verdict::Tp));
+        }
+        for _ in 0..5 {
+            let mut e = fb("SQL injection", "security", Verdict::Tp);
+            e.provenance = crate::feedback::Provenance::PostFix;
+            feedback.push(e);
+        }
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            trace.tp_weight > EXTERNAL_WEIGHT_CAP + 5.0,
+            "humanish bucket must NOT be capped; got tp_weight={} cap={}",
+            trace.tp_weight,
+            EXTERNAL_WEIGHT_CAP
+        );
+    }
+
+    #[test]
+    fn external_cap_is_global_across_agents() {
+        // Per issue #97 spec: cap applies to the sum across all External
+        // agents, not per-agent.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let mut feedback: Vec<_> = (0..50).map(|_| external_tp_from("pal", 0)).collect();
+        feedback.extend((0..50).map(|_| external_tp_from("third-opinion", 0)));
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
+            "cap must be global across agents; got tp_weight={} (cap={})",
+            trace.tp_weight,
+            EXTERNAL_WEIGHT_CAP
+        );
+    }
+
+    #[test]
+    fn humanish_empty_external_bucket_is_no_regression() {
+        // Zero External entries: cap logic is a pure no-op.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let feedback = vec![
+            fb("SQL injection", "security", Verdict::Fp),
+            fb("SQL injection", "security", Verdict::Fp),
+            fb("SQL injection", "security", Verdict::Fp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (2.95..=3.05).contains(&trace.fp_weight),
+            "3 fresh Human FPs should give fp_weight ≈ 3.0 (got {})",
+            trace.fp_weight
+        );
+    }
+
+    #[test]
+    fn external_cap_applies_in_calibrate_with_index_path() {
+        // CodeRabbit-flagged: all the unit cap tests hit `calibrate()` (the
+        // Jaccard path). `calibrate_with_index()` duplicates the cap math and
+        // could silently diverge. `build_jaccard_only` sidesteps the embedding-
+        // model download so this test is fast and hermetic.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..10 {
+            store.record(&external_tp(0)).unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.0,
+            ..Default::default()
+        };
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security")
+            .build();
+        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
+            "calibrate_with_index must also cap External; got tp_weight={} (cap={})",
+            trace.tp_weight,
+            EXTERNAL_WEIGHT_CAP
         );
     }
 }
