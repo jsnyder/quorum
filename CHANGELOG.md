@@ -1,6 +1,24 @@
 # Changelog
 
-## [Unreleased] — 0.16.0 (feat/context)
+## [Unreleased] — 0.17.0
+
+### Added
+- External-agent feedback ingestion (issue #32). Verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) now flow through three paths, all funneling through `FeedbackStore::record_external`:
+  - `~/.quorum/inbox/*.jsonl` drained at the top of every `review`/`stats` invocation via claim-then-ingest (atomic rename to `inbox/processing/` before parse, archive to `inbox/processed/` on success)
+  - `quorum feedback --from-agent <name> [--agent-model <m>] [--confidence 0..1] [--category <c>]`
+  - MCP `feedback` tool with `fromAgent` / `agentModel` / `confidence` fields
+- New `Provenance::External` variant with calibrator weight 0.7x. Trust boundary: External may only record `tp` / `fp` / `partial` — `wontfix` and `context_misleading` are rejected at the chokepoint. Confidence is clamped to [0,1] (NaN-safe), agent name is normalized (trim+lowercase).
+- Tier breakdown by Provenance shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
+- Context7 dependency-based enrichment beyond curated frameworks (issue #29). Parses Cargo.toml, package.json, pyproject.toml + requirements.txt; filters by import_targets; caps at K=5; queries Context7 with curated-or-language-aware queries. 24h TTL cache, negative results too.
+
+### Fixed
+- Calibrator: cap External-provenance contribution at `EXTERNAL_WEIGHT_CAP = 1.4` (issue #97). Single misbehaving agent can no longer flood TP/FP verdicts and dominate calibration. Cap is global across agents, applied symmetrically in both calibrate code paths via the new `accumulate_capped` helper.
+- `FeedbackStore::record` now creates the feedback file's parent directory before opening (issue #100). Direct callers (tests, daemon, future entry points) no longer hit ENOENT on fresh installs or alternate `QUORUM_HOME`.
+- `dep_manifest`: PEP 621 array branch now dedupes; package.json deduplication corrected; complete Poetry sections parsed (PR #86).
+- Trust-boundary cleanup across MCP feedback handler, MCP review pipeline, and CLI verdict parsing (issues #59, #61, #65, #66, #67, #68, #69, #71, #72, #73).
+- Multiple sandbox-tag and prompt-injection defenses across review surfaces.
+
+## [0.16.0] - 2026-04-22 (feat/context)
 
 ### Added
 - `quorum context` subcommand: local/offline alternative to Context7 for injecting project-specific symbols and docs into LLM review prompts

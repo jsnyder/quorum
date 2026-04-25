@@ -189,15 +189,22 @@ Verdicts (tp/fp/partial/wontfix) accumulate in `~/.quorum/feedback.jsonl`. The c
 quorum improves over time through feedback. Record verdicts on findings:
 
 ```bash
-# CLI (new in v0.9.5)
+# Direct (human triage)
 quorum feedback --file src/auth.rs --finding "SQL injection" --verdict tp --reason "Fixed with params"
 quorum feedback --file src/auth.rs --finding "complexity 5" --verdict fp --reason "Trivial match"
 
-# Or via MCP feedback tool (in Claude Code)
+# From another review agent (pal, third-opinion, gemini, reviewdog, ...)
+quorum feedback --file src/x.rs --finding "Bug" --verdict tp --reason "confirmed" \
+    --from-agent pal --agent-model gpt-5.4 --confidence 0.9
+
+# Or via MCP feedback tool (in Claude Code), with optional fromAgent / agentModel / confidence fields
 # Or programmatically via the FeedbackStore API
+# Or by dropping JSONL files into ~/.quorum/inbox/ -- drained automatically on next review/stats
 ```
 
-Provenance weights: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x, soft-suppresses to INFO).
+Provenance weights: `post_fix` (1.5x), `human` (1.0x), `external` (0.7x, capped at 1.4 globally), `auto_calibrate` (0.5x, soft-suppresses to INFO), `unknown` (0.3x).
+
+External-agent verdicts go through a stricter trust boundary: only `tp`/`fp`/`partial` are accepted (no `wontfix`/`context_misleading`), confidence is clamped to [0,1], and the global External contribution to any finding's TP/FP weight is capped to prevent a single misbehaving agent from dominating calibration.
 
 Feedback drives AST pattern development -- 20 ast-grep rules were mined from 1,666 confirmed true positives in the feedback store.
 
