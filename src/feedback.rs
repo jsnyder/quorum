@@ -91,6 +91,33 @@ pub(crate) fn clamp_confidence(c: Option<f32>) -> Option<f32> {
     c.filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0))
 }
 
+/// Drain a `read_dir`-style iterator into (paths, errors), surfacing
+/// per-entry I/O errors as file-level `DrainError`s instead of dropping
+/// them on the floor (issue #103).
+///
+/// Production caller: `read.map(|r| r.map(|e| e.path()))` so the helper
+/// stays decoupled from `std::fs::DirEntry` (which has a private
+/// constructor — un-fakeable in unit tests). Caller is responsible for
+/// downstream filtering (extension, is_dir) and sorting.
+pub(crate) fn drain_inbox_entries<I>(entries: I) -> (Vec<PathBuf>, Vec<DrainError>)
+where
+    I: IntoIterator<Item = std::io::Result<PathBuf>>,
+{
+    let mut paths = Vec::new();
+    let mut errors = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(p) => paths.push(p),
+            Err(e) => errors.push(DrainError {
+                file: PathBuf::from("<read_dir-iteration>"),
+                line: 0,
+                message: format!("read_dir entry failed: {e}"),
+            }),
+        }
+    }
+    (paths, errors)
+}
+
 /// Normalize an agent name: trim + lowercase. Returns Err for empty-after-trim.
 pub(crate) fn normalize_agent(raw: &str) -> anyhow::Result<String> {
     let t = raw.trim();
@@ -191,6 +218,14 @@ pub struct FeedbackStore {
 impl FeedbackStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    /// Read-only access to the path this store was constructed with. Used by
+    /// `mcp::handler::QuorumHandler` so the read side (precedent loading) and
+    /// the write side (pipeline-level recordings via `PipelineConfig`) stay
+    /// pinned to the same file (issue #93).
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
@@ -348,9 +383,14 @@ impl FeedbackStore {
             Err(e) => return Err(e.into()),
         };
 
-        let mut files: Vec<PathBuf> = read
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
+        // Issue #103: surface per-entry iteration errors via report.errors
+        // instead of silently filter-mapping them to nothing. A permission
+        // glitch on one entry must not invisibly strand subsequent ingestion.
+        let (entries, iter_errors) =
+            drain_inbox_entries(read.map(|r| r.map(|e| e.path())));
+        report.errors.extend(iter_errors);
+        let mut files: Vec<PathBuf> = entries
+            .into_iter()
             .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
             .filter(|p| !p.is_dir())
             .collect();
@@ -451,6 +491,13 @@ impl FeedbackStore {
         if report.drained_files > 0 {
             const WARN_BYTES: u64 = 50 * 1024 * 1024;
             if let Ok(entries) = std::fs::read_dir(processed_dir) {
+                // Issue #103 asymmetry: this site deliberately keeps
+                // `filter_map(|e| e.ok())`. The size warning is best-effort —
+                // the cost of reporting iteration / metadata errors here is
+                // operator noise on a cosmetic counter (under-reporting bytes
+                // by one entry), not data loss. The drain-listing site above
+                // has different stakes (a stranded file blocks all subsequent
+                // ingestion), which is why the helper extraction lives there.
                 let total: u64 = entries
                     .filter_map(|e| e.ok())
                     .filter_map(|e| e.metadata().ok())
@@ -553,6 +600,67 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         (FeedbackStore::new(path), dir)
+    }
+
+    // Issue #93: handler tests need to inspect the path a handler-owned
+    // store was constructed with, so PipelineConfig assembly can target the
+    // same file. Pin the accessor's contract so the indirection used by
+    // `handle_review` is stable.
+    #[test]
+    fn feedback_store_exposes_path_accessor() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("issue93-accessor.jsonl");
+        let store = FeedbackStore::new(p.clone());
+        assert_eq!(store.path(), p.as_path());
+    }
+
+    // --- Issue #103: drain_inbox surfaces read_dir iteration errors -------
+    //
+    // Pre-fix, `drain_inbox` used `read.filter_map(|e| e.ok())`, silently
+    // dropping any I/O / permission error from `read_dir`. Combined with
+    // the claim-then-ingest semantics, a single permission-denied entry
+    // could strand all subsequent ingestion of that file forever with no
+    // observable signal.
+    //
+    // The fix extracts a `drain_inbox_entries` helper that returns errors
+    // alongside successful paths, so they can be folded into
+    // `DrainReport.errors`. The helper takes `Iterator<Item = io::Result<PathBuf>>`
+    // (not `DirEntry`) so tests can inject synthetic Err values — DirEntry
+    // has a private constructor.
+
+    #[test]
+    fn drain_inbox_entries_surfaces_iterator_errors() {
+        use std::io;
+        let entries: Vec<io::Result<PathBuf>> = vec![
+            Ok(PathBuf::from("/tmp/a.jsonl")),
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "EACCES")),
+            Ok(PathBuf::from("/tmp/b.jsonl")),
+        ];
+        let (paths, errors) = drain_inbox_entries(entries);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/tmp/a.jsonl"), PathBuf::from("/tmp/b.jsonl")],
+            "ok paths must still be drained"
+        );
+        assert_eq!(errors.len(), 1, "iteration error must be surfaced; got: {:?}", errors);
+        assert_eq!(errors[0].line, 0, "iteration errors are file-level (line 0)");
+    }
+
+    #[test]
+    fn drain_inbox_entries_returns_paths_in_iterator_order() {
+        // Sanity: the helper does not reorder. (Sorting by name is the
+        // production caller's job, AFTER extension filtering.)
+        use std::io;
+        let entries: Vec<io::Result<PathBuf>> = vec![
+            Ok(PathBuf::from("/tmp/z.jsonl")),
+            Ok(PathBuf::from("/tmp/a.jsonl")),
+        ];
+        let (paths, errors) = drain_inbox_entries(entries);
+        assert!(errors.is_empty());
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/tmp/z.jsonl"), PathBuf::from("/tmp/a.jsonl")],
+        );
     }
 
     fn sample_entry(verdict: Verdict) -> FeedbackEntry {
