@@ -67,10 +67,13 @@ fn context_list_with_closed_stdout_exits_zero() {
     );
 }
 
-/// Sanity: with stdout fully consumed, `context list` exits 0 and writes
-/// nothing to stderr (no warnings on a fresh QUORUM_HOME). This is the
-/// "happy path" companion to the BrokenPipe test — proves the helper is
-/// not over-eagerly translating success into errors.
+/// Sanity: with stdout fully consumed, `context list` exits 0 and does not
+/// emit a write-error diagnostic on stderr. (stderr may legitimately contain
+/// a warning on a fresh QUORUM_HOME — e.g. "sources.toml not found" — which
+/// the helper routes there per contract; the assertion below only forbids
+/// the specific "failed to write" diagnostic.) This is the "happy path"
+/// companion to the BrokenPipe test — proves the helper is not over-eagerly
+/// translating success into errors.
 #[test]
 fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
     let home = TempDir::new().expect("failed to create temp dir for QUORUM_HOME");
