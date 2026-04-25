@@ -378,13 +378,41 @@ of 1, completes within 5s where previously it hung.
 **Files:**
 - Modify: `src/pipeline.rs` (test module — add three more tests)
 
-**Step 1: Update the existing `does_not_panic_inside_*` tests to use the async signature**
+**Step 1: Replace the panic-check tests with happy-path tests on each flavor**
 
-The two existing `acquire_llm_permit_does_not_panic_inside_*` tests at lines ~1013 and ~1029 already use `#[tokio::test]`. Their bodies call `acquire_llm_permit(&sem)` synchronously — change to `acquire_llm_permit(&sem).await`. (May already be done as part of Task 4 — `cargo test` will tell you.)
+The two existing `acquire_llm_permit_does_not_panic_inside_*_runtime` tests wrap a SYNC call in `catch_unwind` to assert "doesn't panic". Post-fix the function is async: calling it returns a future (cheap to construct), so the panic check is no longer meaningful. DELETE them and append happy-path replacements:
 
-**Step 2: Update the no-runtime test**
+```rust
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_returns_some_when_permit_available_on_current_thread() {
+        // Issue #71/#81: confirm the happy path works on a
+        // current-thread runtime — the formerly-deadlocking flavor.
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let permit = acquire_llm_permit(&sem).await;
+        assert!(permit.is_some());
+    }
 
-The test `acquire_llm_permit_does_not_panic_outside_tokio_runtime` at line ~985 is `#[test]` (no runtime). Post-fix, calling an async fn outside a runtime won't panic — it just returns a future that's never polled. Replace the test body with one that explicitly verifies "no runtime ⇒ caller must build one to drive it":
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acquire_llm_permit_returns_some_when_permit_available_on_multi_thread() {
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let permit = acquire_llm_permit(&sem).await;
+        assert!(permit.is_some());
+    }
+```
+
+The pre-fix `acquire_llm_permit_returns_none_when_no_semaphore` test must be converted from `#[test]` (sync) to `#[tokio::test(flavor = "current_thread")]` (async with `.await`):
+
+```rust
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_returns_none_when_no_semaphore() {
+        let result = acquire_llm_permit(&None).await;
+        assert!(result.is_none());
+    }
+```
+
+**Step 2: Replace the no-runtime panic test**
+
+The test `acquire_llm_permit_does_not_panic_outside_tokio_runtime` is `#[test]` (no runtime). Post-fix, calling an async fn outside a runtime won't panic — it just returns a future that's never polled. DELETE it and append:
 
 ```rust
     /// Issue #58 followup: with the async-permit shape, the helper
@@ -394,9 +422,7 @@ The test `acquire_llm_permit_does_not_panic_outside_tokio_runtime` at line ~985 
     /// non-runtime code (returns a future, no panic).
     #[test]
     fn acquire_llm_permit_returns_future_outside_tokio_runtime() {
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-        let sem = Some(Arc::new(Semaphore::new(1)));
+        let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
         // Just constructing the future must not panic. We don't
         // poll it — that's the caller's job once they have a runtime.
         let _fut = acquire_llm_permit(&sem);
