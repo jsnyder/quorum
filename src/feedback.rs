@@ -179,12 +179,10 @@ impl FeedbackStore {
         // Issue #100: OpenOptions::create(true) only creates the file, not
         // its parent. Direct callers (tests, daemon, future paths) that bypass
         // run_feedback's pre-create step would otherwise hit ENOENT.
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create feedback parent dir: {}", parent.display())
-                })?;
-            }
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create feedback parent dir: {}", parent.display())
+            })?;
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
