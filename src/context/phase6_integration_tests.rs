@@ -268,8 +268,8 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
     );
 }
 
-#[test]
-fn end_to_end_review_with_context_injection_logs_telemetry() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn end_to_end_review_with_context_injection_logs_telemetry() {
     // End-to-end wiring check: a pipeline configured with a real
     // `ContextInjector` (backed by the mini-rust fixture index) must produce
     // a `FileReviewResult` whose `context_telemetry` is non-default, and
@@ -316,6 +316,7 @@ fn end_to_end_review_with_context_injection_logs_telemetry() {
         Some(&llm),
         &config,
     )
+    .await
     .unwrap();
 
     let tele = result

@@ -84,7 +84,7 @@ impl QuorumHandler {
         })
     }
 
-    fn handle_review(&self, params: ReviewTool) -> Result<CallToolResult, String> {
+    async fn handle_review(&self, params: ReviewTool) -> Result<CallToolResult, String> {
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
@@ -101,6 +101,7 @@ impl QuorumHandler {
             &pipeline_cfg,
             Some(&self.parse_cache),
         )
+        .await
         .map_err(|e| format!("Review error: {}", e))?;
 
         let json = serde_json::to_string_pretty(&result.findings)
@@ -375,7 +376,7 @@ impl ServerHandler for QuorumHandler {
             "review" => {
                 let tool: ReviewTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_review(tool)
+                self.handle_review(tool).await
             }
             "feedback" => {
                 let tool: FeedbackTool = serde_json::from_value(args_value)
@@ -413,8 +414,8 @@ impl ServerHandler for QuorumHandler {
 mod tests {
     use super::*;
 
-    #[test]
-    fn review_handler_parses_clean_rust() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_handler_parses_clean_rust() {
         let handler = QuorumHandler {
             config: Config {
                 base_url: "https://example.com".into(),
@@ -432,13 +433,13 @@ mod tests {
             focus: None,
         };
 
-        let result = handler.handle_review(params).unwrap();
+        let result = handler.handle_review(params).await.unwrap();
         // Clean code should produce empty findings or minor ones
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn review_handler_finds_insecure_python() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_handler_finds_insecure_python() {
         let handler = QuorumHandler {
             config: Config {
                 base_url: "https://example.com".into(),
@@ -456,7 +457,7 @@ mod tests {
             focus: Some("security".into()),
         };
 
-        let result = handler.handle_review(params).unwrap();
+        let result = handler.handle_review(params).await.unwrap();
         let text = &result.content[0];
         // Should contain eval finding in the JSON output
         let text_str = serde_json::to_string(text).unwrap();
@@ -690,8 +691,8 @@ mod tests {
         assert!(text.contains("Python"));
     }
 
-    #[test]
-    fn review_handler_rejects_unsupported_extension() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_handler_rejects_unsupported_extension() {
         let handler = QuorumHandler {
             config: Config {
                 base_url: "https://example.com".into(),
@@ -709,7 +710,7 @@ mod tests {
             focus: None,
         };
 
-        assert!(handler.handle_review(params).is_err());
+        assert!(handler.handle_review(params).await.is_err());
     }
 
     // -- Chat, Debug, Testgen: require LLM --
@@ -834,8 +835,8 @@ mod tests {
 
     // -- Cache integration --
 
-    #[test]
-    fn review_populates_parse_cache() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_populates_parse_cache() {
         let cache = Arc::new(ParseCache::new(10));
         let handler = QuorumHandler {
             config: Config {
@@ -853,7 +854,7 @@ mod tests {
             file_path: "test.rs".into(),
             focus: None,
         };
-        handler.handle_review(params).unwrap();
+        handler.handle_review(params).await.unwrap();
         assert_eq!(cache.stats().misses, 1, "First review should be a cache miss");
 
         // Second review with same code should hit cache
@@ -862,7 +863,7 @@ mod tests {
             file_path: "test.rs".into(),
             focus: None,
         };
-        handler.handle_review(params2).unwrap();
+        handler.handle_review(params2).await.unwrap();
         assert_eq!(cache.stats().hits, 1, "Second review should be a cache hit");
     }
 

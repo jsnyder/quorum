@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     match args.command {
         cli::Command::Review(opts) => {
             drain_agent_inbox();
-            let exit_code = run_review(opts);
+            let exit_code = run_review(opts).await;
             std::process::exit(exit_code);
         }
         cli::Command::Stats(opts) => {
@@ -494,7 +494,7 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
     pipeline::find_project_root(file_path)
 }
 
-fn run_review(opts: cli::ReviewOpts) -> i32 {
+async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // The empty-files case is now rejected at the clap layer via
     // `#[arg(required = true, num_args = 1..)]` on `ReviewOpts.files`
     // (issue #89). The redundant handler-level guard was removed.
@@ -860,6 +860,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     &pipeline_cfg,
                     Some(&parse_cache),
                 )
+                .await
             } else {
                 eprintln!("Note: No AST support for {}, using LLM-only review", file_path.display());
                 pipeline::review_file_llm_only(
@@ -868,6 +869,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                     llm_reviewer,
                     &pipeline_cfg,
                 )
+                .await
             };
             match review_result {
                 Ok(mut result) => {
@@ -959,13 +961,23 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
                 // Standard review path
                 let llm_reviewer: Option<&dyn pipeline::LlmReviewer> = llm_client.as_deref().map(|c| c as _);
                 let parse_cache = cache::ParseCache::new(128);
-                let review_result = if let Some(l) = lang {
-                    pipeline::review_source(
-                        &file_path, &source, l, llm_reviewer, &pipeline_cfg, Some(&parse_cache))
-                } else {
-                    pipeline::review_file_llm_only(
-                        &file_path, &source, llm_reviewer, &pipeline_cfg)
-                };
+                // `spawn_blocking` runs on Tokio's blocking pool (separate from
+                // runtime workers), so `Handle::block_on` here is sound per
+                // Tokio docs. We deliberately keep the parsing/AST CPU work
+                // inside the spawn_blocking shell and just bridge into the
+                // now-async review fns; issue #81.
+                let handle = tokio::runtime::Handle::current();
+                let review_result = handle.block_on(async {
+                    if let Some(l) = lang {
+                        pipeline::review_source(
+                            &file_path, &source, l, llm_reviewer, &pipeline_cfg, Some(&parse_cache))
+                            .await
+                    } else {
+                        pipeline::review_file_llm_only(
+                            &file_path, &source, llm_reviewer, &pipeline_cfg)
+                            .await
+                    }
+                });
 
                 match review_result {
                     Ok(mut result) => {
@@ -985,7 +997,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         type ParResult = (pipeline::FileReviewResult, Vec<(crate::finding::Finding, suppress::SuppressionRule)>);
         let mut indexed_results: Vec<Option<ParResult>> = vec![None; opts.files.len()];
         for handle in handles {
-            match tokio::task::block_in_place(|| rt.block_on(handle)) {
+            match handle.await {
                 Ok((idx, Ok(result))) => { indexed_results[idx] = Some(result); }
                 Ok((idx, Err(e))) => {
                     eprintln!("Error: Review failed for {}: {}", opts.files[idx].display(), e);
