@@ -51,6 +51,28 @@ impl Default for CalibratorConfig {
 // across agents (one pool summing pal + third-opinion + ...), not per-agent.
 pub(crate) const EXTERNAL_WEIGHT_CAP: f64 = 1.4;
 
+/// Bucket an iterator of `(provenance, weight)` pairs into three accumulators
+/// (auto / external / humanish), apply per-bucket caps, and return the final
+/// capped sum. Used by both `calibrate` (Jaccard path) and
+/// `calibrate_with_index` (embedding path) so that the cap scheme stays in
+/// exactly one place — a future cap-value or bucket-membership change can't
+/// accidentally diverge between the two paths.
+fn accumulate_capped<'a>(
+    weighted: impl IntoIterator<Item = (&'a crate::feedback::Provenance, f64)>,
+) -> f64 {
+    let mut auto = 0.0_f64;
+    let mut external = 0.0_f64;
+    let mut humanish = 0.0_f64;
+    for (prov, w) in weighted {
+        match prov {
+            crate::feedback::Provenance::AutoCalibrate(_) => auto += w,
+            crate::feedback::Provenance::External { .. } => external += w,
+            _ => humanish += w,
+        }
+    }
+    auto.min(1.0) + external.min(EXTERNAL_WEIGHT_CAP) + humanish
+}
+
 /// Compute the weight of a single feedback entry based on provenance and recency.
 fn verdict_weight(entry: &FeedbackEntry) -> f64 {
     let provenance_weight = match &entry.provenance {
@@ -136,34 +158,19 @@ pub fn calibrate(
             continue;
         }
 
-        // Compute weighted verdict scores with provenance-specific caps:
-        //   auto_*  capped at 1.0   (AutoCalibrate is now disabled by default)
-        //   external_* capped at EXTERNAL_WEIGHT_CAP (issue #97 — bound flood)
-        //   humanish (Human + PostFix + Unknown) uncapped
-        let mut auto_tp_weight: f64 = 0.0;
-        let mut external_tp_weight: f64 = 0.0;
-        let mut humanish_tp_weight: f64 = 0.0;
-        for e in similar.iter().filter(|e| e.verdict == Verdict::Tp || e.verdict == Verdict::Partial) {
-            match &e.provenance {
-                crate::feedback::Provenance::AutoCalibrate(_) => auto_tp_weight += verdict_weight(e),
-                crate::feedback::Provenance::External { .. } => external_tp_weight += verdict_weight(e),
-                _ => humanish_tp_weight += verdict_weight(e),
-            }
-        }
-        let tp_weight = auto_tp_weight.min(1.0) + external_tp_weight.min(EXTERNAL_WEIGHT_CAP) + humanish_tp_weight;
-
-        // Strict FP weight (drives full suppression)
-        let mut auto_fp_weight: f64 = 0.0;
-        let mut external_fp_weight: f64 = 0.0;
-        let mut humanish_fp_weight: f64 = 0.0;
-        for e in similar.iter().filter(|e| e.verdict == Verdict::Fp) {
-            match &e.provenance {
-                crate::feedback::Provenance::AutoCalibrate(_) => auto_fp_weight += verdict_weight(e),
-                crate::feedback::Provenance::External { .. } => external_fp_weight += verdict_weight(e),
-                _ => humanish_fp_weight += verdict_weight(e),
-            }
-        }
-        let fp_weight = auto_fp_weight.min(1.0) + external_fp_weight.min(EXTERNAL_WEIGHT_CAP) + humanish_fp_weight;
+        // Provenance-bucketed, per-bucket-capped weights. See `accumulate_capped`.
+        let tp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|e| matches!(e.verdict, Verdict::Tp | Verdict::Partial))
+                .map(|e| (&e.provenance, verdict_weight(e))),
+        );
+        let fp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|e| e.verdict == Verdict::Fp)
+                .map(|e| (&e.provenance, verdict_weight(e))),
+        );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
@@ -378,34 +385,20 @@ pub fn calibrate_with_index(
             continue;
         }
 
-        // Same cap scheme as the Jaccard path (see above) — External weights
-        // (scaled by similarity here) are capped at EXTERNAL_WEIGHT_CAP.
-        let mut auto_tp_weight: f64 = 0.0;
-        let mut external_tp_weight: f64 = 0.0;
-        let mut humanish_tp_weight: f64 = 0.0;
-        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Tp || s.entry.verdict == Verdict::Partial) {
-            let w = verdict_weight(&s.entry) * s.similarity as f64;
-            match &s.entry.provenance {
-                crate::feedback::Provenance::AutoCalibrate(_) => auto_tp_weight += w,
-                crate::feedback::Provenance::External { .. } => external_tp_weight += w,
-                _ => humanish_tp_weight += w,
-            }
-        }
-        let tp_weight = auto_tp_weight.min(1.0) + external_tp_weight.min(EXTERNAL_WEIGHT_CAP) + humanish_tp_weight;
-
-        // Strict FP weight (drives full suppression)
-        let mut auto_fp_weight: f64 = 0.0;
-        let mut external_fp_weight: f64 = 0.0;
-        let mut humanish_fp_weight: f64 = 0.0;
-        for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Fp) {
-            let w = verdict_weight(&s.entry) * s.similarity as f64;
-            match &s.entry.provenance {
-                crate::feedback::Provenance::AutoCalibrate(_) => auto_fp_weight += w,
-                crate::feedback::Provenance::External { .. } => external_fp_weight += w,
-                _ => humanish_fp_weight += w,
-            }
-        }
-        let fp_weight = auto_fp_weight.min(1.0) + external_fp_weight.min(EXTERNAL_WEIGHT_CAP) + humanish_fp_weight;
+        // Provenance-bucketed, per-bucket-capped weights. Weights here are
+        // scaled by embedding similarity before bucketing.
+        let tp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Partial))
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+        );
+        let fp_weight = accumulate_capped(
+            similar
+                .iter()
+                .filter(|s| s.entry.verdict == Verdict::Fp)
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+        );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
@@ -2196,6 +2189,36 @@ mod tests {
             (2.95..=3.05).contains(&trace.fp_weight),
             "3 fresh Human FPs should give fp_weight ≈ 3.0 (got {})",
             trace.fp_weight
+        );
+    }
+
+    #[test]
+    fn external_cap_applies_in_calibrate_with_index_path() {
+        // CodeRabbit-flagged: all the unit cap tests hit `calibrate()` (the
+        // Jaccard path). `calibrate_with_index()` duplicates the cap math and
+        // could silently diverge. `build_jaccard_only` sidesteps the embedding-
+        // model download so this test is fast and hermetic.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..10 {
+            store.record(&external_tp(0)).unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.0,
+            ..Default::default()
+        };
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security")
+            .build();
+        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let trace = result.traces.last().expect("expected trace");
+        assert!(
+            (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
+            "calibrate_with_index must also cap External; got tp_weight={} (cap={})",
+            trace.tp_weight,
+            EXTERNAL_WEIGHT_CAP
         );
     }
 }

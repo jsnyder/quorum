@@ -16,13 +16,15 @@
 
 | # | Name | Setup | Assertion | Rationale |
 |---|------|-------|-----------|-----------|
-| 1 | `external_flood_does_not_overwhelm_human_fp` | 1 finding "SQL injection". Feedback: 100 External TP + 1 Human FP, all matching title/cat. | `result.findings.len() == 0` AND `result.suppressed == 1`. | Behavioral outcome — does not couple to the constant. Survives any cap value `<= human_fp_weight ≈ 1.0`. This is the headline regression. |
-| 2 | `external_tp_bucket_capped_at_constant` | 1 finding. Feedback: 10 External TP entries (timestamps = `Utc::now()`, so recency≈1.0). No other entries. Build via path that produces a single `CalibratorTraceEntry`. | `trace.tp_weight` is approximately `EXTERNAL_WEIGHT_CAP` (within `1e-6`), NOT `10 * 0.7 = 7.0`. | Direct verification the cap is applied. References the constant so cap-value changes propagate. |
-| 3 | `external_fp_bucket_capped_at_constant` | Mirror of #2 but verdict=Fp. | `trace.fp_weight ≈ EXTERNAL_WEIGHT_CAP`. | Symmetry — both TP and FP buckets must cap. |
-| 4 | `external_below_cap_passes_through_unchanged` | 1 External TP fresh. | `assert!((trace.tp_weight - 0.7).abs() < 1e-3)` (not `EXTERNAL_WEIGHT_CAP`). | `.min()` must not floor — single entries stay at their natural weight. Kills a `.min` → `.max` mutant (would force weight up to 1.4). |
-| 5 | `human_and_postfix_remain_uncapped` | 5 Human TP + 5 PostFix TP, fresh. | `trace.tp_weight > EXTERNAL_WEIGHT_CAP + 1.0` (i.e. ≈ 5\*1.0 + 5\*1.5 = 12.5). | Cap must NOT leak into the humanish bucket. |
-| 6 | `external_global_across_agents` | 50 External TP from agent="pal" + 50 External TP from agent="third-opinion". | `trace.tp_weight ≈ EXTERNAL_WEIGHT_CAP`. | Per #97 spec: cap is global across agents, not per-agent. |
-| 7 | `external_cap_applies_in_similarity_scaled_block` | Same as #2 but invoked via the embedding-similar code path (L360+). | Same assertion as #2. | Both code blocks must be patched — easy to fix one and forget the other. |
+| 1 | `external_tp_bucket_capped_at_constant` | 1 finding. Feedback: 10 External TP entries (timestamps = `Utc::now()`, so recency≈1.0). No other entries. Build via path that produces a single `CalibratorTraceEntry`. | `trace.tp_weight` is approximately `EXTERNAL_WEIGHT_CAP` (within `1e-3`), NOT `10 * 0.7 = 7.0`. | Direct verification the cap is applied. References the constant so cap-value changes propagate. |
+| 2 | `external_fp_bucket_capped_at_constant` | Mirror of #1 but verdict=Fp. | `trace.fp_weight ≈ EXTERNAL_WEIGHT_CAP`. | Symmetry — both TP and FP buckets must cap. |
+| 3 | `external_below_cap_passes_through_unchanged` | 1 External TP fresh. | `assert!((trace.tp_weight - 0.7).abs() < 1e-3)` (not `EXTERNAL_WEIGHT_CAP`). | `.min()` must not floor — single entries stay at their natural weight. Kills a `.min` → `.max` mutant (would force weight up to 1.4). |
+| 4 | `humanish_bucket_remains_uncapped` | 5 Human TP + 5 PostFix TP, fresh. | `trace.tp_weight > EXTERNAL_WEIGHT_CAP + 5.0`. | Cap must NOT leak into the humanish bucket. |
+| 5 | `external_cap_is_global_across_agents` | 50 External TP from agent="pal" + 50 External TP from agent="third-opinion". | `trace.tp_weight ≈ EXTERNAL_WEIGHT_CAP`. | Per #97 spec: cap is global across agents, not per-agent. |
+| 6 | `humanish_empty_external_bucket_is_no_regression` | 3 Human FP, 0 External. | `trace.fp_weight` in `[2.95, 3.05]`. | Zero-External case: cap logic must be a pure no-op. |
+| 7 | `external_cap_applies_in_calibrate_with_index_path` | Build `FeedbackIndex` via `build_jaccard_only` (avoids embedding-model flake), seed with 10 External TP, call `calibrate_with_index` with `embedding_similarity_threshold=0.0`. | `trace.tp_weight ≈ EXTERNAL_WEIGHT_CAP`. | Both code paths (Jaccard & embedding) must apply the cap — easy to fix one and forget the other. |
+
+Note: an earlier draft also proposed a behavioral flood test (`external_flood_does_not_overwhelm_human_fp`) expecting `result.suppressed == 1` with 100 External TPs + 1 Human FP. Dropped before implementation — the suppression path requires `fp_weight >= 1.5`, so 1 Human FP (weight 1.0) cannot trigger it regardless of the cap. The behavioral intent is covered by tests #1-7 (bucket-level assertions) and by the updated `external_fp_accumulation_thresholds` table adding an n=100 row that locks in "flood cannot reach Full".
 
 ### #100 — feedback record parent dir
 
@@ -54,6 +56,7 @@
 ## 4. Fixture strategy
 
 **External FeedbackEntry builder** (add to calibrator `tests` module):
+
 ```rust
 fn fb_external(title: &str, cat: &str, verdict: Verdict, age_days: i64) -> FeedbackEntry {
     FeedbackEntry {
@@ -76,7 +79,7 @@ fn fb_external(title: &str, cat: &str, verdict: Verdict, age_days: i64) -> Feedb
 **Determinism without stubbing `Utc::now`:** `verdict_weight` reads `Utc::now()` directly. Rather than introduce a clock trait (out of scope), use **age-based assertions with tolerances**:
 - For "fresh" entries, set `timestamp = Utc::now()` and assert weights within `±1e-3` (floor of single-call drift).
 - For decayed-entry tests, assert ratios/orderings (e.g. `w_stale < w_fresh * 0.5`), not absolute values.
-- For the headline flood test (#1), behavioral assertion (`suppressed == 1`) is clock-independent.
+- Behavioral-level assertions in `external_fp_accumulation_thresholds` (outcome-based: Soft/Full classification) are clock-independent.
 
 **Tempdir for #100:** use existing `tempfile::TempDir` pattern from `feedback.rs::tests::test_store()`. New helper `test_store_with_missing_parent()` returns `(FeedbackStore, TempDir)` where the store path is `tempdir.path().join("a/b/c/feedback.jsonl")`.
 
