@@ -1,6 +1,20 @@
 # Changelog
 
-## [Unreleased] — 0.17.0
+## [Unreleased] — 0.17.1
+
+### Fixed
+
+- **CLI `--verdict` parser mismatch (#90).** Dropped the clap `PossibleValuesParser` so case + whitespace variants like `--verdict TP` or `--verdict ' tp '` normalize through `parse_verdict` (matching its long-documented contract). Previously they were rejected before normalization.
+- **MCP `FeedbackTool.verdict` trust boundary (#94).** Replaced the `String` field with a `FeedbackVerdict` enum (`#[serde(rename_all = "snake_case")]`). The MCP JSON-Schema now enumerates the five valid wire strings (`tp`, `fp`, `partial`, `wontfix`, `context_misleading`) instead of advertising "string (any)" — schema-driven clients can now discover the constraint.
+- **`rename_or_tolerate_race` ENOENT misclassification (#101).** Only treat `NotFound` from `std::fs::rename` as a benign "another process already claimed this" signal when the source path is confirmed absent. If the source is still present, the `NotFound` came from a missing destination parent dir or similar — propagate so misconfiguration surfaces.
+- **`load_all` silent-skip observability (#92).** Added `pub(crate) load_all_with_stats() -> (entries, LoadStats { kept, skipped })` and a `tracing::warn!` event when any line fails to parse. Public `load_all` signature unchanged. Read path now also takes a shared advisory lock to pair with the writer-side exclusive lock — readers can no longer observe a partial mid-append line and silently count it as malformed.
+- **Concurrent `record()` corruption defense (#91).** Append now takes an advisory exclusive lock via `fs2::FileExt::lock_exclusive`. POSIX `O_APPEND` atomicity covers single-syscall writes today, but `write_all` can multi-syscall under partial-write conditions and a future buffering refactor could break per-line atomicity. Defense-in-depth at minimal cost.
+
+### Dependencies
+
+- Added `fs2 = "0.4"` (portable POSIX flock + Windows LockFileEx — small, well-known crate; no transitive bloat).
+
+## [0.17.0] - 2026-04-24
 
 ### Added
 - External-agent feedback ingestion (issue #32). Verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) now flow through three paths, all funneling through `FeedbackStore::record_external`:
