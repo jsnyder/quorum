@@ -35,10 +35,10 @@ pub fn write_cmd_output<W: Write, E: Write>(
         if let Err(e) = out.write_all(cmd.stdout.as_bytes()) {
             return classify(&e, err);
         }
-        if !cmd.stdout.ends_with('\n') {
-            if let Err(e) = out.write_all(b"\n") {
-                return classify(&e, err);
-            }
+        if !cmd.stdout.ends_with('\n')
+            && let Err(e) = out.write_all(b"\n")
+        {
+            return classify(&e, err);
         }
     }
     if let Err(e) = out.flush() {
