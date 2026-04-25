@@ -36,13 +36,13 @@ fn context_list_with_closed_stdout_exits_zero() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn quorum");
+        .expect("failed to spawn quorum binary");
 
     // Drop the stdout pipe immediately. The child's first write_all should
     // see EPIPE -> the helper translates to exit 0 silently.
     drop(child.stdout.take());
 
-    let status = child.wait().expect("wait");
+    let status = child.wait().expect("failed to wait for quorum child");
     assert!(
         status.success(),
         "BrokenPipe on stdout must yield exit 0; got {status:?}"
@@ -66,7 +66,7 @@ fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn quorum");
+        .expect("failed to spawn quorum binary");
 
     // Drain stdout to EOF so the child can flush successfully.
     let mut stdout_buf = Vec::new();
@@ -75,15 +75,15 @@ fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
         .take()
         .unwrap()
         .read_to_end(&mut stdout_buf)
-        .expect("read stdout");
+        .expect("failed to drain quorum stdout");
     let mut stderr_buf = Vec::new();
     child
         .stderr
         .take()
         .unwrap()
         .read_to_end(&mut stderr_buf)
-        .expect("read stderr");
-    let status = child.wait().expect("wait");
+        .expect("failed to drain quorum stderr");
+    let status = child.wait().expect("failed to wait for quorum child");
 
     assert!(status.success(), "successful list must exit 0; got {status:?}");
     let stderr = String::from_utf8_lossy(&stderr_buf);
