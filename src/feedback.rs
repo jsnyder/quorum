@@ -159,9 +159,29 @@ pub(crate) fn rename_or_tolerate_race(
 ) -> std::io::Result<bool> {
     match std::fs::rename(src, dst) {
         Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Issue #101: NotFound is only the "another process already
+            // moved it" race signal when the source has actually vanished.
+            // If src is still present, the NotFound came from somewhere
+            // else (missing dst parent, missing intermediate dir, etc.) —
+            // propagate so the misconfiguration surfaces.
+            if src.exists() {
+                Err(e)
+            } else {
+                Ok(false)
+            }
+        }
         Err(e) => Err(e),
     }
+}
+
+/// Per-call summary of `load_all_with_stats` (issue #92).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct LoadStats {
+    /// Number of valid entries returned.
+    pub kept: usize,
+    /// Number of unparseable lines skipped (corruption / schema regression).
+    pub skipped: usize,
 }
 
 pub struct FeedbackStore {
@@ -175,6 +195,7 @@ impl FeedbackStore {
 
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
         use anyhow::Context;
+        use fs2::FileExt;
         use std::io::Write;
         // Issue #100: OpenOptions::create(true) only creates the file, not
         // its parent. Direct callers (tests, daemon, future paths) that bypass
@@ -189,30 +210,100 @@ impl FeedbackStore {
             .append(true)
             .open(&self.path)
             .with_context(|| format!("Failed to open feedback file: {}", self.path.display()))?;
+        // Issue #91: take an advisory exclusive lock around the append. POSIX
+        // O_APPEND atomicity covers single-syscall writes today, but write_all
+        // can issue multiple syscalls under partial-write conditions, and a
+        // future refactor could introduce buffering that breaks per-line
+        // atomicity. The lock is portable (POSIX flock + Windows LockFileEx
+        // via fs2) and cheap. Released by closing the file when this function
+        // returns; explicit unlock makes the intent obvious and gives us a
+        // chance to surface unlock failures (rare but possible on NFS).
+        FileExt::lock_exclusive(&file)
+            .with_context(|| format!("Failed to lock feedback file: {}", self.path.display()))?;
         let mut buf = serde_json::to_string(entry)?;
         buf.push('\n');
-        file.write_all(buf.as_bytes())?;
+        let write_result = file.write_all(buf.as_bytes());
+        // Always attempt unlock, even if the write failed. Ignore unlock
+        // errors when the write itself errored — the original error is more
+        // informative.
+        let unlock_result = FileExt::unlock(&file);
+        write_result?;
+        unlock_result.with_context(|| {
+            format!("Failed to unlock feedback file: {}", self.path.display())
+        })?;
         Ok(())
     }
 
     pub fn load_all(&self) -> anyhow::Result<Vec<FeedbackEntry>> {
-        use anyhow::Context;
-        if !self.path.exists() {
-            return Ok(vec![]);
+        let (entries, stats) = self.load_all_with_stats()?;
+        // Issue #92: surface malformed-row counts so corruption stops being
+        // invisible. The dashboard calls `count()` / `load_all()` heavily;
+        // emitting one warn per call is acceptable noise — corruption is
+        // typically rare and operators want to see it.
+        if stats.skipped > 0 {
+            tracing::warn!(
+                target: "quorum::feedback",
+                kept = stats.kept,
+                skipped = stats.skipped,
+                path = %self.path.display(),
+                "feedback log contained {} unparseable line(s); skipping. Run `quorum feedback verify` to inspect.",
+                stats.skipped
+            );
         }
-        let content = std::fs::read_to_string(&self.path)
-            .with_context(|| format!("Failed to read feedback file: {}", self.path.display()))?;
+        Ok(entries)
+    }
+
+    /// Load feedback entries and return per-line parse statistics.
+    ///
+    /// Issue #92: kept `pub(crate)` because the only callers are tests and
+    /// future stats-health surfacing within this crate. The public API
+    /// remains `load_all` (entries) + the structured `tracing::warn!` event.
+    ///
+    /// Acquires a shared advisory lock to pair with the exclusive lock taken
+    /// by `record()` (issue #91). Without this, a reader can see a partial
+    /// line that is mid-append and silently skip it as malformed —
+    /// reintroducing the same observability gap #92 closed for completed
+    /// writes. Quorum self-review on the v0.17.1 hardening branch.
+    pub(crate) fn load_all_with_stats(&self) -> anyhow::Result<(Vec<FeedbackEntry>, LoadStats)> {
+        use anyhow::Context;
+        use fs2::FileExt;
+        use std::io::Read;
+        let mut file = match std::fs::OpenOptions::new().read(true).open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((vec![], LoadStats::default()));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to open feedback file: {}", self.path.display())
+                });
+            }
+        };
+        FileExt::lock_shared(&file).with_context(|| {
+            format!("Failed to lock feedback file for read: {}", self.path.display())
+        })?;
+        let mut content = String::new();
+        let read_result = file.read_to_string(&mut content);
+        let unlock_result = FileExt::unlock(&file);
+        read_result.with_context(|| {
+            format!("Failed to read feedback file: {}", self.path.display())
+        })?;
+        unlock_result.with_context(|| {
+            format!("Failed to unlock feedback file: {}", self.path.display())
+        })?;
         let mut entries = Vec::new();
+        let mut skipped = 0usize;
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str(line) {
                 Ok(entry) => entries.push(entry),
-                Err(_) => continue, // skip malformed entries (e.g. from older formats)
+                Err(_) => skipped += 1,
             }
         }
-        Ok(entries)
+        let kept = entries.len();
+        Ok((entries, LoadStats { kept, skipped }))
     }
 
     pub fn query_by_verdict(&self, verdict: &Verdict) -> anyhow::Result<Vec<FeedbackEntry>> {
@@ -1128,6 +1219,143 @@ mod tests {
         let renamed = rename_or_tolerate_race(&missing, &dst).unwrap();
         assert!(!renamed, "missing source must return Ok(false), not Err");
         assert!(!dst.exists(), "destination must not be created");
+    }
+
+    #[test]
+    fn concurrent_record_writes_do_not_interleave_or_corrupt() {
+        // Issue #91: without an advisory file lock, two threads (or two
+        // processes) calling `record()` against the same JSONL file can
+        // interleave bytes. `write_all` is not atomic above PIPE_BUF
+        // (typically 4096 bytes on Linux/macOS), so each entry's payload
+        // must be padded past that threshold to reliably surface the bug
+        // — sub-PIPE_BUF entries are atomic by O_APPEND semantics on most
+        // POSIX kernels and would let the unfixed code pass.
+        //
+        // Reproduces the bug deterministically on macOS APFS and Linux
+        // ext4/tmpfs at ~6 KB payloads.
+        use std::sync::Arc;
+        use std::thread;
+        const THREADS: usize = 2;
+        const PER_THREAD: usize = 30;
+        const PAD_BYTES: usize = 6_000; // > PIPE_BUF
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let store = Arc::new(FeedbackStore::new(path.clone()));
+        let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|tid| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for i in 0..PER_THREAD {
+                        let mut e = sample_entry(Verdict::Tp);
+                        // Padding inside `reason` keeps the JSON valid;
+                        // distinct chars per thread make truncation
+                        // detectable in failure messages.
+                        let pad: String = std::iter::repeat(if tid == 0 { 'A' } else { 'B' })
+                            .take(PAD_BYTES)
+                            .collect();
+                        e.reason = format!("t{tid}-i{i}-{pad}");
+                        store.record(&e).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            lines.len(),
+            THREADS * PER_THREAD,
+            "all writes must produce exactly one line each (no truncation, no merging)"
+        );
+        for (i, line) in lines.iter().enumerate() {
+            serde_json::from_str::<FeedbackEntry>(line).unwrap_or_else(|e| {
+                let preview: String = line.chars().take(120).collect();
+                panic!("line {i} did not round-trip — interleaved write? {e}: {preview}...")
+            });
+        }
+    }
+
+    #[test]
+    fn load_all_with_stats_counts_kept_and_skipped() {
+        // Issue #92: corruption / schema-regression / interleaved-write loss
+        // must be observable. Mix valid + malformed lines and assert the
+        // returned counts.
+        let (store, _dir) = test_store();
+        let valid = sample_entry(Verdict::Tp);
+        let valid_line = serde_json::to_string(&valid).unwrap();
+        // 3 valid lines, 2 malformed lines, 1 blank line (always ignored).
+        let content = format!(
+            "{valid_line}\n\
+             {{this is not json\n\
+             {valid_line}\n\
+             \n\
+             garbage\n\
+             {valid_line}\n"
+        );
+        std::fs::write(&store.path, content).unwrap();
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert_eq!(entries.len(), 3, "valid entries returned");
+        assert_eq!(stats.kept, 3);
+        assert_eq!(
+            stats.skipped, 2,
+            "two malformed lines must be counted (blank line is not 'skipped')"
+        );
+    }
+
+    #[test]
+    fn load_all_with_stats_returns_zero_skipped_on_empty() {
+        // Empty file: no skip, no warn. Regression guard for the no-op path.
+        let (store, _dir) = test_store();
+        std::fs::write(&store.path, "").unwrap();
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.kept, 0);
+        assert_eq!(stats.skipped, 0);
+    }
+
+    #[test]
+    fn load_all_still_returns_valid_entries_when_some_lines_malformed() {
+        // Public API contract: load_all must continue to return the valid
+        // entries even when load_all_with_stats reports skipped > 0.
+        let (store, _dir) = test_store();
+        let valid_line = serde_json::to_string(&sample_entry(Verdict::Tp)).unwrap();
+        std::fs::write(
+            &store.path,
+            format!("{valid_line}\nnot json\n{valid_line}\n"),
+        )
+        .unwrap();
+        let entries = store.load_all().unwrap();
+        assert_eq!(entries.len(), 2, "load_all must skip-and-return, not bail");
+    }
+
+    #[test]
+    fn rename_or_tolerate_race_propagates_err_when_destination_parent_missing() {
+        // Issue #101: NotFound is only benign when the SOURCE has vanished
+        // (another process already claimed it). When the source is right
+        // there but the rename fails because the destination parent dir is
+        // missing, the error must propagate — silent Ok(false) would let
+        // a mis-configured drain hook fail invisibly.
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("present.jsonl");
+        std::fs::write(&src, b"line\n").unwrap();
+        // Destination parent does NOT exist (no create_dir_all).
+        let dst = dir.path().join("missing-parent").join("moved.jsonl");
+        assert!(!dst.parent().unwrap().exists(), "precondition");
+        let result = rename_or_tolerate_race(&src, &dst);
+        assert!(
+            result.is_err(),
+            "rename must propagate Err when src still exists; got {:?}",
+            result
+        );
+        assert!(src.exists(), "src must remain in place after a failed rename");
     }
 
     #[test]

@@ -19,6 +19,23 @@ pub struct ReviewTool {
     pub focus: Option<String>,
 }
 
+/// Strict wire contract for `FeedbackTool.verdict` (issue #94).
+///
+/// The MCP JSON-Schema surfaced the field as an unconstrained `string` when
+/// this was a plain `String`, so schema-driven clients couldn't discover that
+/// only five values were accepted. Enum variants serialize via `snake_case`
+/// to exactly the five valid wire strings: `tp`, `fp`, `partial`, `wontfix`,
+/// `context_misleading`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackVerdict {
+    Tp,
+    Fp,
+    Partial,
+    Wontfix,
+    ContextMisleading,
+}
+
 #[mcp_tool(
     name = "feedback",
     description = "Record whether a review finding was a true positive (tp), false positive (fp), partial, wontfix, or context_misleading. Improves future reviews."
@@ -30,8 +47,8 @@ pub struct FeedbackTool {
     pub file_path: String,
     /// The finding title/message
     pub finding: String,
-    /// Verdict: tp, fp, partial, wontfix, or context_misleading
-    pub verdict: String,
+    /// Verdict: one of `tp`, `fp`, `partial`, `wontfix`, `context_misleading`.
+    pub verdict: FeedbackVerdict,
     /// Reason for the verdict
     pub reason: String,
     /// Which model produced the finding (optional)
@@ -162,7 +179,47 @@ mod tests {
     fn feedback_tool_deserializes_input() {
         let json = r#"{"filePath":"src/auth.rs","finding":"SQL injection","verdict":"tp","reason":"Fixed"}"#;
         let tool: FeedbackTool = serde_json::from_str(json).unwrap();
-        assert_eq!(tool.verdict, "tp");
+        assert_eq!(tool.verdict, FeedbackVerdict::Tp);
+    }
+
+    // Issue #94: verdict was a plain String; MCP JSON-Schema advertised
+    // "string (any)" even though the runtime handler rejected unknowns.
+    // Schema-driven clients couldn't discover the constraint. Now the field
+    // is a strict enum with snake_case variants.
+
+    #[test]
+    fn feedback_verdict_accepts_all_canonical_strings() {
+        for (s, expected) in [
+            (r#""tp""#, FeedbackVerdict::Tp),
+            (r#""fp""#, FeedbackVerdict::Fp),
+            (r#""partial""#, FeedbackVerdict::Partial),
+            (r#""wontfix""#, FeedbackVerdict::Wontfix),
+            (r#""context_misleading""#, FeedbackVerdict::ContextMisleading),
+        ] {
+            let v: FeedbackVerdict =
+                serde_json::from_str(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
+            assert_eq!(v, expected);
+        }
+    }
+
+    #[test]
+    fn feedback_verdict_rejects_unknown_at_parse_time() {
+        let result: Result<FeedbackVerdict, _> = serde_json::from_str(r#""maybe""#);
+        assert!(result.is_err(), "unknown variant must fail parse");
+    }
+
+    #[test]
+    fn feedback_verdict_is_strict_on_case_and_whitespace() {
+        // MCP boundary is strict: uppercase and whitespace variants must
+        // fail. The CLI is separately permissive (issue #90), but the MCP
+        // wire format is a machine contract.
+        for bad in [r#""TP""#, r#""Tp""#, r#"" tp ""#] {
+            let result: Result<FeedbackVerdict, _> = serde_json::from_str(bad);
+            assert!(
+                result.is_err(),
+                "MCP boundary must reject non-canonical {bad}"
+            );
+        }
     }
 
     #[test]

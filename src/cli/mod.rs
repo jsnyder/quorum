@@ -367,7 +367,11 @@ pub struct FeedbackOpts {
     pub finding: String,
 
     /// Verdict: tp, fp, partial, wontfix, context_misleading
-    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["tp", "fp", "partial", "wontfix", "context_misleading"]))]
+    // Issue #90: validation delegated to `parse_verdict` (called in main.rs).
+    // A previous `PossibleValuesParser` rejected case/whitespace variants
+    // before `parse_verdict` (which trims + lowercases) could normalize them —
+    // inconsistent with our own contract.
+    #[arg(long)]
     pub verdict: String,
 
     /// Reason for the verdict
@@ -580,18 +584,12 @@ mod tests {
         assert!(res.is_ok(), "parser should accept valid YYYY-MM-DD");
     }
 
-    #[test]
-    fn feedback_rejects_invalid_verdict_at_parse_time() {
-        use clap::Parser;
-        let res = Args::try_parse_from([
-            "quorum", "feedback",
-            "--file", "x.rs",
-            "--finding", "t",
-            "--verdict", "maybe",
-            "--reason", "r",
-        ]);
-        assert!(res.is_err(), "parser should reject verdict='maybe'");
-    }
+    // Issue #90: removed `feedback_rejects_invalid_verdict_at_parse_time`.
+    // Clap no longer validates the verdict (the old PossibleValuesParser
+    // rejected case/whitespace variants that `parse_verdict` would otherwise
+    // normalize). Runtime validation happens via `parse_verdict` in main.rs;
+    // end-to-end coverage lives in `tests/cli_feedback_agent.rs`
+    // (`cli_feedback_rejects_unknown_verdict`).
 
     #[test]
     fn feedback_accepts_valid_verdicts_at_parse_time() {
