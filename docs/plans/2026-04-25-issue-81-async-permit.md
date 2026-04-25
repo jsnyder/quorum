@@ -90,42 +90,17 @@ Append to the existing `mod tests` (after the `acquire_llm_permit_does_not_panic
     }
 ```
 
-**Step 1b: Demonstrate runtime RED against current sync code (temporary shim)**
+**Step 1b: Verify the test fails to compile against current sync code (RED)**
 
-The above test calls `acquire_llm_permit(&opt).await` — invalid against the current SYNC signature. To prove the test catches the runtime bug (not just the type system), temporarily replace that call inside the test body with a `spawn_blocking` shim that drives the SYNC API from a blocking-pool thread:
-
-```rust
-        // TEMPORARY SHIM (Task 2 removes): drive the current SYNC
-        // acquire_llm_permit from spawn_blocking so the test compiles.
-        let waiter = async move {
-            tokio::task::yield_now().await;
-            waiter_signal.notify_one();
-            tokio::task::spawn_blocking(move || acquire_llm_permit(&opt))
-                .await
-                .unwrap()
-        };
-```
-
-Run the test against the current sync code with this shim:
+The test calls `acquire_llm_permit(&opt).await`, which is invalid against the current SYNC signature. Run:
 
 ```bash
-cargo test --bin quorum -- acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread --nocapture
+cargo test --bin quorum -- acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread
 ```
 
-Expected: TIMEOUT FAILURE within 5s. The panic message should be:
-> deadlock regression: tokio::join! on current-thread runtime did not complete within 5s — issue #81
+Expected: compile error E0277 with rustc's diagnostic literally suggesting "consider making `fn acquire_llm_permit` asynchronous". This is the strongest possible compile-time RED: the compiler points at exactly the fix.
 
-This is the **runtime RED** — proves the deadlock exists, not just that the contract changed.
-
-**Step 1c: Revert the shim**
-
-After observing the timeout failure, REVERT the `spawn_blocking` shim — restore the direct `acquire_llm_permit(&opt).await` call. The test now does not compile against the sync code (Task 2 fixes that). Do not commit the shimmed version.
-
-**Step 2: Verify compile-fail against current code (final RED state)**
-
-Run: `cargo test --bin quorum -- acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread`
-
-Expected: compile error — `.await` on a non-future. This is the documented RED for the new contract; runtime RED already established in Step 1b.
+**Note on runtime RED:** The original plan included a `spawn_blocking` shim to demonstrate runtime failure. That doesn't work — `spawn_blocking` dispatches to the blocking pool (separate from runtime workers), so worker X stays free to poll the holder, which can release the permit cleanly. The actual production deadlock requires sync `acquire_llm_permit` to block worker X *directly* (which `review_file` did inline from `#[tokio::main]` — but only on current-thread flavors). A test that does that would hang Tokio's timeout future itself (no worker to poll it) and require `std::thread::spawn` + condvar harness to detect, which is significant complexity for a one-shot demonstration. The compile-fail RED + the issue's reproduction analysis are accepted as sufficient.
 
 **Step 3: Commit (RED checkpoint)**
 

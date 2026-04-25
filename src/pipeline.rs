@@ -1039,6 +1039,66 @@ mod tests {
         );
     }
 
+    /// Issue #81 regression: on a current-thread runtime, if the permit
+    /// holder is another task on the same runtime, the OLD synchronous
+    /// `acquire_llm_permit` deadlocks (it blocks the runtime worker at
+    /// `std::thread::scope.join()`, so the holder can never run and
+    /// release). Post-fix, async acquisition cooperatively yields and
+    /// the holder runs to completion.
+    ///
+    /// Uses `tokio::sync::Notify` (not `sleep`) for a deterministic
+    /// happens-before between holder.acquired and waiter.start —
+    /// avoids timing flakiness on slow CI.
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::{Notify, Semaphore};
+
+        let sem = Arc::new(Semaphore::new(1));
+        let opt = Some(sem.clone());
+        let waiter_started = Arc::new(Notify::new());
+
+        // Holder: takes the only permit, waits for the waiter to be
+        // observably parked on acquire (Notify), then drops the permit.
+        let holder_sem = sem.clone();
+        let holder_signal = waiter_started.clone();
+        let holder = async move {
+            let _h = holder_sem.acquire_owned().await.unwrap();
+            holder_signal.notified().await;
+            // permit dropped at scope exit — waiter unparks
+        };
+
+        // Waiter: yields once so the holder grabs the permit, signals
+        // "I'm about to acquire", then awaits permit. Pre-fix, this
+        // deadlocks: the SYNC acquire_llm_permit blocks the only worker
+        // at join() and the holder can never run to release.
+        let waiter_signal = waiter_started.clone();
+        let waiter = async move {
+            tokio::task::yield_now().await;
+            waiter_signal.notify_one();
+            acquire_llm_permit(&opt).await
+        };
+
+        // Wrap in a 5s timeout so a regression manifests as a fast
+        // test failure, not a hung CI job. Capture the waiter's
+        // result so the failure message is unambiguous.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            async { tokio::join!(holder, waiter) },
+        )
+        .await;
+
+        let (_, waiter_permit) = result.expect(
+            "deadlock regression: tokio::join! on current-thread \
+             runtime did not complete within 5s — issue #81",
+        );
+        assert!(
+            waiter_permit.is_some(),
+            "waiter must receive a permit once the holder releases"
+        );
+    }
+
     // -- Complexity threshold default --
 
     #[test]
