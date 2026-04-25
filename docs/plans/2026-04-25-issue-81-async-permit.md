@@ -583,7 +583,7 @@ Expected: a JSON `initialize` response (no panic, no hang).
 ## Risks / antipatterns avoided
 
 - **No "test the mock"**: the regression tests exercise real `tokio::sync::Semaphore` + real `tokio::join!` + real `tokio::sync::Notify` — no permit fakery, no fake runtimes.
-- **Two-phase RED (compile + runtime)**: Task 1b demonstrates the deadlock at runtime against the current SYNC code via a temporary `spawn_blocking` shim — proves the test catches the bug, not just the contract change. Step 1c reverts the shim before commit.
+- **Compile-fail RED (with documented runtime-RED limitation)**: Task 1b demonstrates the test fails to compile against the current SYNC signature — rustc itself suggests "consider making `fn acquire_llm_permit` asynchronous", which IS the fix. The original plan called for an additional runtime-RED via a `spawn_blocking` shim, but on closer analysis that shim does NOT reproduce the deadlock (`spawn_blocking` runs on the blocking pool, not a runtime worker, so the holder still gets polled). A faithful runtime-RED would require sync `acquire_llm_permit` to block worker X *directly*, which would also hang Tokio's timeout future itself — `std::thread::spawn` + condvar harness would be needed to detect it, which is significant complexity for a one-shot demonstration. Compile-fail RED + the issue's reproduction analysis accepted as sufficient.
 - **Deterministic synchronization**: `tokio::sync::Notify` provides a happens-before signal between holder and waiter, replacing brittle `sleep(10ms)` timing windows. Slow-CI proof.
 - **No mocked runtime**: tests use `#[tokio::test(flavor = "current_thread")]` to actually run on the formerly-deadlocking flavor. This is the test that proves the bug is gone.
 - **Single-failure-reason per test**: Task 1's outer timeout `.expect()` and inner `assert!(waiter_permit.is_some())` are distinct branches with distinct messages — no assertion roulette.
@@ -597,7 +597,7 @@ Expected: a JSON `initialize` response (no panic, no hang).
 
 - **Round 1 (test-planning + antipattern reviews):**
   - Replaced `sleep(10ms)` timing window with `tokio::sync::Notify` deterministic handshake (Tasks 1, 5).
-  - Added two-phase RED: runtime-fail demonstration via `spawn_blocking` shim before contract change (Task 1b).
+  - Initially added two-phase RED (runtime-fail demonstration via `spawn_blocking` shim before contract change in Task 1b); subsequently dropped after analysis showed the shim does NOT reproduce the deadlock (blocking pool ≠ runtime worker, so the holder still gets polled). Compile-fail RED + reproduction analysis accepted as sufficient.
   - Bumped cancellation post-release timeout from 500ms → 2s (slow-CI tolerance).
   - Added `acquire_llm_permit_returns_none_when_semaphore_is_closed` mutation-killer (Task 5).
   - Pinned `#[tokio::test]` bulk conversions to `multi_thread, worker_threads = 1` instead of default current-thread (Task 4).
