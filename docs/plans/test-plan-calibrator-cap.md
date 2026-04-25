@@ -7,7 +7,7 @@
 ## Design pre-conditions for testability
 
 - Promote the cap to a module constant: `pub(crate) const EXTERNAL_WEIGHT_CAP: f64 = 1.4;` and reference it in tests rather than hardcoding `1.4`. Cap value can then change without test churn.
-- Apply the cap in **both** weight-computation blocks (similar~v1 around L88-151 and similarity-scaled~v2 around L365-389). Each must add `external_*_weight` parallel to `auto_*_weight` and combine: `tp_weight = auto.min(1.0) + external.min(EXTERNAL_WEIGHT_CAP) + humanish` (Human + PostFix + Unknown go in `humanish`, uncapped).
+- Centralize the bucketing + cap math in a shared helper (`accumulate_capped`) so the Jaccard path (`calibrate`) and the embedding path (`calibrate_with_index`) both call into it. Tests then need to verify the cap once per *path*, not once per *bucket per path*. Final formula: `tp_weight = auto.min(1.0) + external.min(EXTERNAL_WEIGHT_CAP) + humanish` (Human + PostFix + Unknown go in `humanish`, uncapped).
 - Tests live next to existing `mod tests` blocks; reuse `fb()` helper and add `fb_external(title, cat, verdict, age_days)` builder.
 
 ## 1. Test cases
@@ -49,7 +49,7 @@ Note: an earlier draft also proposed a behavioral flood test (`external_flood_do
 - Do NOT re-test `verdict_weight` provenance multipliers (already covered).
 - Do NOT test recency half-life math — covered by `verdict_weight_future_dated_entry_is_not_max_weight`.
 - Do NOT test inbox-drain, agent-name normalization, or confidence clamping — owned by `record_external` tests.
-- Do NOT test `OpenOptions` flag semantics for `record` — stdlib contract.
+- Do NOT test `OpenOptions` flag mechanics in isolation (e.g. asserting `create=true`, `append=true` are wired). The append-without-truncation guard in test #10 above is the *contract* assertion — that adding `create_dir_all` doesn't silently flip the open mode — not a re-test of the underlying stdlib flags.
 - Do NOT test full `calibrate` suppression thresholds for non-External cases — existing tests cover.
 - Do NOT add CLI/MCP integration tests; these are pure unit fixes.
 
