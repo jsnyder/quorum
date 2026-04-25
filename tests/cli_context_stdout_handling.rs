@@ -42,6 +42,24 @@ fn context_list_with_closed_stdout_exits_zero() {
     // see EPIPE -> the helper translates to exit 0 silently.
     drop(child.stdout.take());
 
+    // Drain stderr so the child can flush + exit; also lets us assert that
+    // the BrokenPipe path does NOT emit the "failed to write output:"
+    // diagnostic (which would be a regression of the helper's classify rule).
+    // CodeRabbit PR #106 noted the original test didn't catch a regression
+    // where classify() mistakenly wrote on BrokenPipe.
+    let mut stderr_buf = Vec::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_end(&mut stderr_buf)
+        .expect("failed to drain quorum stderr");
+    let stderr = String::from_utf8_lossy(&stderr_buf);
+    assert!(
+        !stderr.contains("failed to write"),
+        "BrokenPipe must not emit the write-error diagnostic; got stderr: {stderr}"
+    );
+
     let status = child.wait().expect("failed to wait for quorum child");
     assert!(
         status.success(),
@@ -91,8 +109,11 @@ fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
         !stderr.contains("failed to write"),
         "happy path must not emit write-error diagnostic; got: {stderr}"
     );
-    // Don't pin exact stdout content — `context list` formatting is a moving
-    // target. Just ensure something was written, proving the helper is wired
-    // and not silently dropping output.
-    let _ = stdout_buf;
+    // Pin that the helper actually wrote something (CodeRabbit PR #106). A
+    // mutation that drops the `out.write_all(cmd.stdout.as_bytes())` call
+    // would still pass an exit-code-only assertion.
+    assert!(
+        !stdout_buf.is_empty(),
+        "context list must produce stdout output; got empty buffer"
+    );
 }

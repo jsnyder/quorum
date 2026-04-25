@@ -31,29 +31,41 @@ pub fn write_cmd_output<W: Write, E: Write>(
     err: &mut E,
     cmd: &CmdOutput,
 ) -> i32 {
+    // Capture the exit code from the first stdout error (if any) but do NOT
+    // return early — warnings still need to reach stderr regardless of the
+    // stdout state. The pre-extraction inline code in `run_context` had this
+    // property (warnings were emitted via `eprintln!` after `let _ = …` on
+    // stdout); preserving it keeps the CLI contract stable. CodeRabbit
+    // PR #106 caught the regression where an early return hid warnings on
+    // BrokenPipe / EIO.
+    let mut early_exit: Option<i32> = None;
+
     if !cmd.stdout.is_empty() {
         if let Err(e) = out.write_all(cmd.stdout.as_bytes()) {
-            return classify(&e, err);
-        }
-        if !cmd.stdout.ends_with('\n')
+            early_exit = Some(classify(&e, err));
+        } else if !cmd.stdout.ends_with('\n')
             && let Err(e) = out.write_all(b"\n")
         {
-            return classify(&e, err);
+            early_exit = Some(classify(&e, err));
         }
     }
-    if let Err(e) = out.flush() {
-        return classify(&e, err);
+    if early_exit.is_none()
+        && let Err(e) = out.flush()
+    {
+        early_exit = Some(classify(&e, err));
     }
     for w in &cmd.warnings {
         // err is the diagnostic channel; if it itself fails there's nothing
         // useful to do.
         let _ = writeln!(err, "{}", w);
     }
-    if cmd.doctor_failed.unwrap_or(false) {
-        1
-    } else {
-        0
-    }
+    early_exit.unwrap_or_else(|| {
+        if cmd.doctor_failed.unwrap_or(false) {
+            1
+        } else {
+            0
+        }
+    })
 }
 
 /// Map an I/O error from the stdout channel into an exit code, emitting a
@@ -245,6 +257,60 @@ mod tests {
         assert_eq!(
             s, "first\nsecond\n",
             "warnings must be one-per-line on stderr; got: {s:?}"
+        );
+    }
+
+    #[test]
+    fn warnings_are_emitted_even_when_stdout_write_fails() {
+        // CodeRabbit PR #106: returning early from classify() hid warnings on
+        // the error path. Pin the contract: warnings always reach stderr,
+        // independent of stdout state.
+        let mut out = WriteFailingWriter {
+            kind: io::ErrorKind::Other,
+        };
+        let mut err: Vec<u8> = Vec::new();
+        let cmd = CmdOutput {
+            stdout: "hello".into(),
+            warnings: vec!["important warning".into()],
+            ..Default::default()
+        };
+        let code = write_cmd_output(&mut out, &mut err, &cmd);
+        assert_eq!(code, 1, "non-BrokenPipe stdout error must still yield 1");
+        let s = String::from_utf8_lossy(&err);
+        assert!(
+            s.contains("failed to write"),
+            "stderr must contain the write-error diagnostic; got: {s}"
+        );
+        assert!(
+            s.contains("important warning"),
+            "stderr must still contain the warning even when stdout failed; got: {s}"
+        );
+    }
+
+    #[test]
+    fn warnings_are_emitted_even_on_broken_pipe() {
+        // BrokenPipe is the silent-success path, but warnings must still reach
+        // stderr — they are diagnostic info, not part of the rendered output
+        // that the broken-pipe consumer rejected.
+        let mut out = WriteFailingWriter {
+            kind: io::ErrorKind::BrokenPipe,
+        };
+        let mut err: Vec<u8> = Vec::new();
+        let cmd = CmdOutput {
+            stdout: "hello".into(),
+            warnings: vec!["still important".into()],
+            ..Default::default()
+        };
+        let code = write_cmd_output(&mut out, &mut err, &cmd);
+        assert_eq!(code, 0);
+        let s = String::from_utf8_lossy(&err);
+        assert!(
+            !s.contains("failed to write"),
+            "BrokenPipe must not emit the write-error diagnostic; got: {s}"
+        );
+        assert!(
+            s.contains("still important"),
+            "warnings must reach stderr on BrokenPipe; got: {s}"
         );
     }
 

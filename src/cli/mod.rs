@@ -841,4 +841,29 @@ mod tests {
             res.err().map(|e| e.kind())
         );
     }
+
+    #[test]
+    fn regression_guard_79_refresh_with_only_source_parses() {
+        // ContextRefreshOpts is a separate clap surface from ContextIndexOpts;
+        // mirror the index positive-controls so a future over-tightening of
+        // refresh's flags is caught (CodeRabbit PR #106).
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "refresh", "--source", "foo"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
+    }
+
+    #[test]
+    fn regression_guard_79_refresh_with_only_all_parses() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "refresh", "--all"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
+    }
 }
