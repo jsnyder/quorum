@@ -284,6 +284,12 @@ pub struct DaemonOpts {
 #[derive(Parser)]
 pub struct ReviewOpts {
     /// Files to review
+    // Issue #89: at least one file is required. Without this, clap accepted
+    // an empty list and the handler later short-circuited with exit 3 — but
+    // that's a usage error (exit 2) and the contract belongs at the parsing
+    // layer so the user gets clap's standard "required arguments" message
+    // and `--help` hint.
+    #[arg(required = true, num_args = 1..)]
     pub files: Vec<PathBuf>,
 
     /// Output as JSON (auto-detected when piped)
@@ -736,5 +742,128 @@ mod tests {
             }
             _ => panic!("Expected Stats command"),
         }
+    }
+
+    // --- Issue #89: review subcommand requires at least one file -----------
+    //
+    // Pre-fix, `Vec<PathBuf>` parsed an empty list silently and the handler
+    // short-circuited with exit 3 — but the contract belongs at the clap
+    // layer (standard usage error, exit 2, clap-formatted message). Asserting
+    // on the typed `ErrorKind` is robust to clap's wording changes.
+
+    #[test]
+    fn review_with_no_files_yields_missing_required_argument() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "review"]);
+        let err = res.err().expect("review with zero files must fail to parse");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "expected MissingRequiredArgument; got {:?}",
+            err.kind()
+        );
+    }
+
+    #[test]
+    fn review_with_json_flag_and_no_files_still_requires_files() {
+        // --json must NOT bypass the required-files rule. This guards against
+        // an over-aggressive `required_unless_present_any = ["json"]` style
+        // fix that would re-introduce the silent-no-op surface.
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "review", "--json"]);
+        let err = res.err().expect("--json without files must still fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn review_with_one_file_parses_successfully() {
+        // Positive control: pins that the constraint only fires on the truly
+        // empty case, not on every invocation.
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "review", "/tmp/x.rs"]);
+        match args.command {
+            Command::Review(opts) => assert_eq!(opts.files.len(), 1),
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    // --- Issue #79 regression guards ---------------------------------------
+    //
+    // ContextIndexOpts and ContextRefreshOpts already declare
+    // `conflicts_with` for --source/--all (src/cli/mod.rs:135-156). These
+    // tests exist to prevent silent regression of that fix; they pass on
+    // current main and would fail if the annotation is dropped.
+
+    #[test]
+    fn regression_guard_79_index_rejects_source_and_all() {
+        use clap::Parser;
+        let res = Args::try_parse_from([
+            "quorum", "context", "index", "--source", "foo", "--all",
+        ]);
+        let err = res.err().expect("index with both --source and --all must fail");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "expected ArgumentConflict; got {:?}",
+            err.kind()
+        );
+    }
+
+    #[test]
+    fn regression_guard_79_refresh_rejects_source_and_all() {
+        use clap::Parser;
+        let res = Args::try_parse_from([
+            "quorum", "context", "refresh", "--source", "foo", "--all",
+        ]);
+        let err = res.err().expect("refresh with both --source and --all must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn regression_guard_79_index_with_only_source_parses() {
+        // Positive control: --source alone must NOT trip the conflict rule.
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "index", "--source", "foo"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
+    }
+
+    #[test]
+    fn regression_guard_79_index_with_only_all_parses() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "index", "--all"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
+    }
+
+    #[test]
+    fn regression_guard_79_refresh_with_only_source_parses() {
+        // ContextRefreshOpts is a separate clap surface from ContextIndexOpts;
+        // mirror the index positive-controls so a future over-tightening of
+        // refresh's flags is caught (CodeRabbit PR #106).
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "refresh", "--source", "foo"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
+    }
+
+    #[test]
+    fn regression_guard_79_refresh_with_only_all_parses() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "context", "refresh", "--all"]);
+        assert!(
+            res.is_ok(),
+            "single-flag invocation must parse; got {:?}",
+            res.err().map(|e| e.kind())
+        );
     }
 }

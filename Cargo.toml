@@ -2,6 +2,10 @@
 name = "quorum"
 version = "0.17.1"
 edition = "2024"
+# `if let` chains used in src/cli_io.rs and src/context/cli.rs stabilized
+# in Rust 1.88. Edition 2024 already requires 1.85+, but document the
+# actual minimum explicitly.
+rust-version = "1.88"
 description = "Multi-source code review: LLM ensemble + local AST analysis + linter orchestration"
 license = "MIT"
 repository = "https://github.com/jsnyder/quorum"

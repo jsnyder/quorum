@@ -8,6 +8,7 @@ mod cache;
 mod calibrator;
 mod calibrator_trace;
 mod cli;
+mod cli_io;
 mod config;
 mod context;
 mod context_enrichment;
@@ -290,7 +291,6 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         IndexArgs, ListArgs, ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat,
         RefreshArgs, SourceSelector,
     };
-    use std::io::Write;
 
     // Map `--source X` / `--all` / neither into a SourceSelector. The default
     // when both are absent is `All` to match the handler's natural semantics
@@ -394,27 +394,15 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
 
     match run_context_cmd(&cmd, &deps) {
         Ok(out) => {
-            // Match the signal-safe stdout pattern used elsewhere: write via
-            // a locked handle and flush. We deliberately ignore write errors
-            // (e.g. BrokenPipe from `| head`) so exit code reflects the
-            // handler result rather than the downstream consumer.
+            // Centralized stdout handling lives in `cli_io::write_cmd_output`:
+            // BrokenPipe stays silent (downstream consumer closed early) but
+            // EIO/ENOSPC etc. are surfaced to stderr with exit 1 (issue #84).
+            // doctor_failed propagation preserved (issue #73).
             let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            let _ = handle.write_all(out.stdout.as_bytes());
-            if !out.stdout.is_empty() && !out.stdout.ends_with('\n') {
-                let _ = handle.write_all(b"\n");
-            }
-            let _ = handle.flush();
-            for w in &out.warnings {
-                eprintln!("{}", w);
-            }
-            // `doctor` populates `CmdOutput.doctor_failed` with the typed
-            // result of the any-fail computation; non-doctor commands leave
-            // it as `None` so this branch is a no-op for them (issue #73).
-            if out.doctor_failed.unwrap_or(false) {
-                return 1;
-            }
-            0
+            let stderr = std::io::stderr();
+            let mut out_handle = stdout.lock();
+            let mut err_handle = stderr.lock();
+            cli_io::write_cmd_output(&mut out_handle, &mut err_handle, &out)
         }
         Err(e) => {
             eprintln!("error: {}", e);
@@ -507,10 +495,9 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn run_review(opts: cli::ReviewOpts) -> i32 {
-    if opts.files.is_empty() {
-        eprintln!("Error: No files specified");
-        return 3;
-    }
+    // The empty-files case is now rejected at the clap layer via
+    // `#[arg(required = true, num_args = 1..)]` on `ReviewOpts.files`
+    // (issue #89). The redundant handler-level guard was removed.
 
     // Initialize structured tracing if --trace flag or QUORUM_TRACE=1 env var
     let trace_enabled = opts.trace || std::env::var("QUORUM_TRACE").map(|v| v == "1").unwrap_or(false);
