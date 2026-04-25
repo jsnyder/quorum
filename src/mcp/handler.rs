@@ -89,30 +89,26 @@ impl QuorumHandler {
     }
 
     fn handle_feedback(&self, params: FeedbackTool) -> Result<CallToolResult, String> {
-        let verdict_lower = params.verdict.to_lowercase();
+        use crate::mcp::tools::FeedbackVerdict;
         // `blamed_chunks` is only meaningful for `context_misleading`. Reject
         // callers that pass it with any other verdict — silent acceptance
         // would discard real data without telling the caller.
-        if verdict_lower.as_str() != "context_misleading"
+        if !matches!(params.verdict, FeedbackVerdict::ContextMisleading)
             && params.blamed_chunks.as_ref().is_some_and(|v| !v.is_empty())
         {
             return Err(format!(
-                "blamed_chunks is only valid with verdict='context_misleading' (got '{}')",
+                "blamed_chunks is only valid with verdict='context_misleading' (got '{:?}')",
                 params.verdict
             ));
         }
-        let verdict = match verdict_lower.as_str() {
-            "tp" => Verdict::Tp,
-            "fp" => Verdict::Fp,
-            "partial" => Verdict::Partial,
-            "wontfix" => Verdict::Wontfix,
-            "context_misleading" => Verdict::ContextMisleading {
+        let verdict = match params.verdict {
+            FeedbackVerdict::Tp => Verdict::Tp,
+            FeedbackVerdict::Fp => Verdict::Fp,
+            FeedbackVerdict::Partial => Verdict::Partial,
+            FeedbackVerdict::Wontfix => Verdict::Wontfix,
+            FeedbackVerdict::ContextMisleading => Verdict::ContextMisleading {
                 blamed_chunk_ids: params.blamed_chunks.clone().unwrap_or_default(),
             },
-            other => return Err(format!(
-                "Invalid verdict: {}. Use tp, fp, partial, wontfix, or context_misleading.",
-                other
-            )),
         };
 
         // External-agent path: when from_agent is provided, route through
@@ -464,7 +460,7 @@ mod tests {
         let params = FeedbackTool {
             file_path: "src/auth.rs".into(),
             finding: "SQL injection".into(),
-            verdict: "tp".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
             reason: "Fixed".into(),
             model: Some("gpt-5.4".into()),
             blamed_chunks: None,
@@ -482,35 +478,10 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
     }
 
-    #[test]
-    fn feedback_handler_rejects_invalid_verdict() {
-        let dir = tempfile::tempdir().unwrap();
-        let handler = QuorumHandler {
-            config: Config {
-                base_url: "https://example.com".into(),
-                api_key: None,
-                model: "test".into(),
-            },
-            feedback_store: FeedbackStore::new(dir.path().join("fb.jsonl")),
-            llm_reviewer: None,
-            parse_cache: Arc::new(ParseCache::new(10)),
-        };
-
-        let params = FeedbackTool {
-            file_path: "test.rs".into(),
-            finding: "Bug".into(),
-            verdict: "invalid".into(),
-            reason: "test".into(),
-            model: None,
-            blamed_chunks: None,
-            from_agent: None,
-            agent_model: None,
-            confidence: None,
-            category: None,
-        };
-
-        assert!(handler.handle_feedback(params).is_err());
-    }
+    // Issue #94: removed `feedback_handler_rejects_invalid_verdict` — the
+    // FeedbackVerdict enum now makes invalid verdicts statically
+    // unconstructable. The wire-level rejection is covered by
+    // `feedback_verdict_rejects_unknown_at_parse_time` in tools.rs.
 
     #[test]
     fn feedback_handler_records_context_misleading() {
@@ -530,7 +501,7 @@ mod tests {
         let params = FeedbackTool {
             file_path: "src/retriever.rs".into(),
             finding: "Stale API reference".into(),
-            verdict: "context_misleading".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::ContextMisleading,
             reason: "docs described v1, code uses v2".into(),
             model: None,
             blamed_chunks: Some(vec!["chunk-abc".into(), "chunk-def".into()]),
@@ -574,7 +545,7 @@ mod tests {
         let params = FeedbackTool {
             file_path: "src/foo.rs".into(),
             finding: "whatever".into(),
-            verdict: "tp".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
             reason: "r".into(),
             model: None,
             blamed_chunks: Some(vec!["chunk-x".into()]),
@@ -612,7 +583,7 @@ mod tests {
         let params = FeedbackTool {
             file_path: "src/a.rs".into(),
             finding: "SQL injection".into(),
-            verdict: "tp".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
             reason: "confirmed".into(),
             model: None,
             blamed_chunks: None,
@@ -654,7 +625,7 @@ mod tests {
         let params = FeedbackTool {
             file_path: "src/a.rs".into(),
             finding: "Bug".into(),
-            verdict: "tp".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
             reason: "r".into(),
             model: None,
             blamed_chunks: None,

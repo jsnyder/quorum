@@ -210,6 +210,64 @@ fn human_path_normalizes_blank_category() {
     );
 }
 
+// Issue #90: CLI --verdict parser must accept the same inputs `parse_verdict`
+// accepts — uppercase, trimmed whitespace, mixed case. Previously a clap
+// PossibleValuesParser rejected these before parse_verdict could normalize.
+#[test]
+fn cli_feedback_accepts_uppercase_verdict() {
+    let home = TempDir::new().unwrap();
+    run_feedback(
+        home.path(),
+        &[
+            "--file", "a.rs",
+            "--finding", "X",
+            "--verdict", "TP",
+            "--reason", "r",
+        ],
+    )
+    .success();
+    let fb = std::fs::read_to_string(home.path().join(".quorum/feedback.jsonl")).unwrap();
+    assert!(
+        fb.contains("\"verdict\":\"tp\""),
+        "uppercase TP should normalize to tp: {fb}"
+    );
+}
+
+#[test]
+fn cli_feedback_accepts_whitespace_padded_verdict() {
+    let home = TempDir::new().unwrap();
+    run_feedback(
+        home.path(),
+        &[
+            "--file", "a.rs",
+            "--finding", "X",
+            "--verdict", "  tp  ",
+            "--reason", "r",
+        ],
+    )
+    .success();
+    let fb = std::fs::read_to_string(home.path().join(".quorum/feedback.jsonl")).unwrap();
+    assert!(
+        fb.contains("\"verdict\":\"tp\""),
+        "padded verdict should normalize: {fb}"
+    );
+}
+
+#[test]
+fn cli_feedback_rejects_unknown_verdict() {
+    let home = TempDir::new().unwrap();
+    run_feedback(
+        home.path(),
+        &[
+            "--file", "a.rs",
+            "--finding", "X",
+            "--verdict", "maybe",
+            "--reason", "r",
+        ],
+    )
+    .failure();
+}
+
 #[test]
 fn feedback_without_from_agent_still_writes_human() {
     let home = TempDir::new().unwrap();
