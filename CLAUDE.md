@@ -74,7 +74,9 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
-Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), auto_calibrate (0.5x).
+Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).
+
+**External-agent ingestion (issue #32):** verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) flow through three paths, all funneling through `FeedbackStore::record_external`: (1) `~/.quorum/inbox/*.jsonl` drained at the top of every `review`/`stats` invocation via claim-then-ingest (atomic rename to `inbox/processing/` before parse, archive to `inbox/processed/` on success); (2) `quorum feedback --from-agent <name> [--agent-model <m>] [--confidence 0..1] [--category <c>]`; (3) MCP `feedback` tool with `fromAgent` field. Trust boundary: External may only record `tp`/`fp`/`partial` — `wontfix` and `context_misleading` are rejected at the chokepoint. Confidence is clamped to [0,1] (NaN-safe), agent name is normalized (trim+lowercase). Tier breakdown by Provenance shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
 
 ## Context7 Framework Enrichment
 

@@ -115,10 +115,38 @@ impl QuorumHandler {
             )),
         };
 
+        // External-agent path: when from_agent is provided, route through
+        // record_external so Provenance::External is serialized and the
+        // calibrator applies the 0.7 weight. Human path is unchanged below.
+        if let Some(agent) = params.from_agent {
+            let input = crate::feedback::ExternalVerdictInput {
+                file_path: params.file_path,
+                finding_title: params.finding,
+                finding_category: params.category,
+                verdict,
+                reason: params.reason,
+                agent,
+                agent_model: params.agent_model,
+                confidence: params.confidence,
+            };
+            self.feedback_store
+                .record_external(input)
+                .map_err(|e| format!("Failed to record external feedback: {}", e))?;
+            let count = self.feedback_store.count().unwrap_or(0);
+            let msg = format!("Recorded external feedback. Total entries: {}", count);
+            return Ok(CallToolResult::text_content(vec![msg.into()]));
+        }
+
         let entry = FeedbackEntry {
             file_path: params.file_path,
             finding_title: params.finding,
-            finding_category: String::new(),
+            // Honor caller-supplied category on the Human path too — keeps
+            // analytics aligned across the three ingestion surfaces. Falls
+            // back to "manual" to match the CLI Human default.
+            finding_category: params
+                .category
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "manual".to_string()),
             verdict: verdict.clone(),
             reason: params.reason,
             model: params.model,
@@ -273,13 +301,22 @@ impl FeedbackEntry {
 }
 
 fn dirs_path() -> std::io::Result<PathBuf> {
-    // Prefer XDG_DATA_HOME, fall back to HOME/.quorum
-    let dir = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        PathBuf::from(xdg).join("quorum")
+    // Precedence MUST match `src/main.rs::quorum_dir()` byte-for-byte —
+    // otherwise an MCP server and `quorum stats`/`feedback`/`review` can
+    // diverge to different `feedback.jsonl` files on the same host (e.g.
+    // when XDG_DATA_HOME is set without QUORUM_HOME). Order:
+    //   1. QUORUM_HOME (treat empty as ".quorum" cwd-relative)
+    //   2. $HOME/.quorum
+    //   3. ".quorum" cwd-relative as last-resort fallback
+    let dir = if let Ok(qh) = std::env::var("QUORUM_HOME") {
+        if qh.is_empty() {
+            PathBuf::from(".quorum")
+        } else {
+            PathBuf::from(qh)
+        }
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".quorum")
     } else {
-        // Last resort: use current directory (not ideal, but don't crash)
         PathBuf::from(".quorum")
     };
     // Surface create_dir_all failures so handler initialization fails fast
@@ -431,6 +468,10 @@ mod tests {
             reason: "Fixed".into(),
             model: Some("gpt-5.4".into()),
             blamed_chunks: None,
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -462,6 +503,10 @@ mod tests {
             reason: "test".into(),
             model: None,
             blamed_chunks: None,
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
         };
 
         assert!(handler.handle_feedback(params).is_err());
@@ -489,6 +534,10 @@ mod tests {
             reason: "docs described v1, code uses v2".into(),
             model: None,
             blamed_chunks: Some(vec!["chunk-abc".into(), "chunk-def".into()]),
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -529,6 +578,10 @@ mod tests {
             reason: "r".into(),
             model: None,
             blamed_chunks: Some(vec!["chunk-x".into()]),
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
         };
 
         let err = handler.handle_feedback(params).expect_err("must reject");
@@ -539,6 +592,87 @@ mod tests {
         // Nothing must have been persisted.
         let store = FeedbackStore::new(path);
         assert_eq!(store.load_all().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn mcp_from_agent_writes_external_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fb.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/a.rs".into(),
+            finding: "SQL injection".into(),
+            verdict: "tp".into(),
+            reason: "confirmed".into(),
+            model: None,
+            blamed_chunks: None,
+            from_agent: Some("pal".into()),
+            agent_model: Some("gemini-3-pro-preview".into()),
+            confidence: Some(0.9),
+            category: None,
+        };
+        handler.handle_feedback(params).unwrap();
+
+        let store = FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].provenance {
+            crate::feedback::Provenance::External { agent, model, confidence } => {
+                assert_eq!(agent, "pal");
+                assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
+                assert_eq!(*confidence, Some(0.9));
+            }
+            other => panic!("expected External provenance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mcp_feedback_without_from_agent_still_writes_human() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fb.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/a.rs".into(),
+            finding: "Bug".into(),
+            verdict: "tp".into(),
+            reason: "r".into(),
+            model: None,
+            blamed_chunks: None,
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
+        };
+        handler.handle_feedback(params).unwrap();
+
+        let store = FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(
+            matches!(all[0].provenance, crate::feedback::Provenance::Human),
+            "default path must be Human, got {:?}",
+            all[0].provenance
+        );
     }
 
     #[test]

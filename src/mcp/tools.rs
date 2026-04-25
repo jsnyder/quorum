@@ -41,6 +41,28 @@ pub struct FeedbackTool {
     /// `verdict = "context_misleading"`. May be empty or omitted.
     #[serde(default, rename = "blamedChunks")]
     pub blamed_chunks: Option<Vec<String>>,
+    /// Optional: record as an external review agent's verdict (pal, third-opinion,
+    /// reviewdog, etc.) instead of a human verdict. When set, the entry is
+    /// persisted with External provenance and counts toward the external-agent
+    /// calibration weight.
+    #[serde(default, rename = "fromAgent")]
+    pub from_agent: Option<String>,
+    /// Optional: the LLM model the external agent used (only meaningful with
+    /// `from_agent`).
+    #[serde(default, rename = "agentModel")]
+    pub agent_model: Option<String>,
+    /// Optional: agent-reported confidence. Accepted as an unconstrained
+    /// `Option<f32>` at the MCP boundary; `FeedbackStore::record_external`
+    /// drops non-finite values and clamps finite values to [0,1] before
+    /// persistence. Ignored by the calibrator in v1; stored for analytics only.
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    /// Optional: finding category (e.g. "security", "correctness"). Only
+    /// honored on the External path (when `from_agent` is set). Without it,
+    /// External entries get the canonical default "unknown"; Human entries
+    /// retain the existing empty-string default.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[mcp_tool(

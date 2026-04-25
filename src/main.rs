@@ -47,17 +47,83 @@ use clap::Parser;
 use config::{Config, EnvConfigSource};
 use pipeline::{PipelineConfig, LlmReviewer};
 
+/// Resolve the quorum state directory, honoring the `QUORUM_HOME` env
+/// override so integration tests can be hermetic. Falls back to
+/// `$HOME/.quorum`. Returns None if neither can be resolved.
+fn quorum_dir() -> Option<std::path::PathBuf> {
+    if let Ok(override_path) = std::env::var("QUORUM_HOME") {
+        if !override_path.is_empty() {
+            return Some(std::path::PathBuf::from(override_path));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".quorum"))
+}
+
+/// Drain agent-contributed verdicts from `<quorum_dir>/inbox/` into the
+/// feedback store before the caller loads feedback. Called at the top of the
+/// `Review` and `Stats` command arms. Pipeline + stats modules stay IO-pure;
+/// this is the application-boundary hook. See issue #32.
+fn drain_agent_inbox() {
+    let Some(home) = quorum_dir() else { return; };
+    let inbox = home.join("inbox");
+    let processed = inbox.join("processed");
+    let feedback_path = home.join("feedback.jsonl");
+    let store = crate::feedback::FeedbackStore::new(feedback_path);
+    match store.drain_inbox(&inbox, &processed) {
+        Ok(r) => {
+            if r.drained_files > 0 {
+                tracing::info!(
+                    files = r.drained_files,
+                    entries = r.entries,
+                    errors = r.errors.len(),
+                    "drained external feedback inbox"
+                );
+            }
+            // Errors must surface regardless of `drained_files`: if every
+            // claim/rename fails, no file is archived but stuck files still
+            // accumulate under inbox/processing/. The previous arm-shaped
+            // gate (`Ok(r) if r.drained_files > 0`) silenced that case.
+            if !r.errors.is_empty() {
+                for e in &r.errors {
+                    tracing::warn!(
+                        file = %e.file.display(),
+                        line = e.line,
+                        msg = %e.message,
+                        "inbox drain error"
+                    );
+                }
+                eprintln!(
+                    "warning: {} external feedback line(s) failed to ingest; \
+                     check {} for stuck files",
+                    r.errors.len(),
+                    inbox.join("processing").display(),
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "inbox drain failed");
+            eprintln!("warning: external feedback inbox drain failed: {}", e);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
     match args.command {
         cli::Command::Review(opts) => {
+            drain_agent_inbox();
             let exit_code = run_review(opts);
             std::process::exit(exit_code);
         }
         cli::Command::Stats(opts) => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            let home_path = std::path::PathBuf::from(&home);
+            drain_agent_inbox();
+            // Resolve the quorum state dir honoring QUORUM_HOME (used by
+            // hermetic tests and alternate installs). Falls back to
+            // `$HOME/.quorum`, then to `./.quorum` as a last resort.
+            let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
 
             // Dimensional views read reviews.jsonl and aggregate via the
             // `dimensions` module. Classic dims: --by-repo/--by-caller/--rolling.
@@ -69,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
 
             if want_context_dim {
-                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
                 let all_records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
@@ -123,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if want_classic_dim {
-                let log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
                 let records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
@@ -168,9 +234,9 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(0);
             }
 
-            let feedback_store = feedback::FeedbackStore::new(home_path.join(".quorum/feedback.jsonl"));
-            let telemetry_store = telemetry::TelemetryStore::new(home_path.join(".quorum/telemetry.jsonl"));
-            let review_log = review_log::ReviewLog::new(home_path.join(".quorum/reviews.jsonl"));
+            let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+            let telemetry_store = telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
+            let review_log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
                 Ok(report) => {
@@ -514,9 +580,12 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         vec![cfg.model.clone()]
     };
 
-    // Load feedback for calibration
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+    // Load feedback for calibration. Honor QUORUM_HOME via quorum_dir() so
+    // hermetic tests and alternate installs route through the same dir as
+    // stats/feedback. Without this, `review` could ingest from one inbox
+    // and calibrate against a different feedback log (#95 review feedback).
+    let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
     if !feedback_entries.is_empty() {
@@ -556,7 +625,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Pre-build FeedbackIndex once for sharing across parallel tasks.
     // --fast skips fastembed model load and uses Jaccard-only matching.
     let shared_feedback_index = {
-        let feedback_path_ref = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
+        let feedback_path_ref = qhome.join("feedback.jsonl");
         if feedback_path_ref.exists() {
             let store = feedback::FeedbackStore::new(feedback_path_ref);
             let build_result = if opts.fast {
@@ -579,16 +648,14 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
-    // Build the production context injector from `~/.quorum/sources.toml`
+    // Build the production context injector from `<qhome>/sources.toml`
     // (if present and `auto_inject = true`). Returns `None` when context
     // isn't configured, so reviews without a sources file behave exactly
-    // as before.
-    let context_injector = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|h| std::path::PathBuf::from(h).join(".quorum"))
-        .and_then(|quorum_home| {
-            context::bootstrap::build_production_injector(&quorum_home, &feedback_entries)
-        });
+    // as before. Honors QUORUM_HOME via the same `qhome` used for
+    // feedback/telemetry/reviews — without this, hermetic runs would
+    // calibrate against one dir and source `sources.toml` from another.
+    let context_injector =
+        context::bootstrap::build_production_injector(&qhome, &feedback_entries);
     if context_injector.is_some() {
         tracing::info!(
             "context injector wired from ~/.quorum/sources.toml — auto-inject is active"
@@ -989,10 +1056,11 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
     }
 
-    // Record telemetry (best-effort, don't fail the review)
+    // Record telemetry (best-effort, don't fail the review). Reuses the
+    // outer-scope `qhome` resolved via quorum_dir() so review/telemetry/
+    // reviews_jsonl all live in the same dir.
     {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let telem_path = std::path::PathBuf::from(&home).join(".quorum/telemetry.jsonl");
+        let telem_path = qhome.join("telemetry.jsonl");
         let telem_store = telemetry::TelemetryStore::new(telem_path);
         let mut finding_counts = std::collections::HashMap::new();
         for f in &all_findings {
@@ -1018,7 +1086,7 @@ fn run_review(opts: cli::ReviewOpts) -> i32 {
         let _ = telem_store.record(&telem_entry);
 
         // Per-review record for dimensional stats (by-repo, by-caller, rolling).
-        let reviews_path = std::path::PathBuf::from(&home).join(".quorum/reviews.jsonl");
+        let reviews_path = qhome.join("reviews.jsonl");
         let review_log = review_log::ReviewLog::new(reviews_path);
         let first_file = opts.files.first().map(|p| p.as_path());
         let repo = first_file.and_then(review_log::detect_repo);
@@ -1283,6 +1351,7 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
 }
 
 /// Core feedback logic -- testable with custom feedback path.
+/// `json`: explicit `--json` flag (when true, force JSON output even on a TTY).
 fn run_feedback_inner(
     file: &str,
     finding: &str,
@@ -1290,6 +1359,8 @@ fn run_feedback_inner(
     reason: &str,
     model: Option<&str>,
     blamed_chunks: Option<&str>,
+    category: Option<&str>,
+    json: bool,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
     let mut verdict = match cli::parse_verdict(verdict_str) {
@@ -1315,7 +1386,13 @@ fn run_feedback_inner(
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
         finding_title: finding.to_string(),
-        finding_category: "manual".to_string(),
+        // Mirror record_external/MCP normalization: trim and treat blank as
+        // missing so analytics buckets don't fragment by ingestion path.
+        finding_category: category
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("manual")
+            .to_string(),
         verdict: verdict.clone(),
         reason: reason.to_string(),
         model: model.map(|s| s.to_string()),
@@ -1337,9 +1414,12 @@ fn run_feedback_inner(
         feedback::Verdict::ContextMisleading { .. } => "context_misleading".to_string(),
     };
 
-    // Format output based on mode
+    // Format output based on mode. Explicit `--json` wins over TTY
+    // detection; otherwise we only fall into JSON when stdout is a pipe
+    // and compact mode hasn't been requested.
     let use_compact = output::should_use_compact(false);
-    let use_json = !use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let use_json = json
+        || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
     let output = if use_json {
         let json_obj = serde_json::json!({
@@ -1363,18 +1443,100 @@ fn run_feedback_inner(
 
 /// CLI entry point for `quorum feedback`.
 fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let feedback_path = std::path::PathBuf::from(&home).join(".quorum/feedback.jsonl");
-    let (exit_code, output) = run_feedback_inner(
-        &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-        opts.model.as_deref(), opts.blamed_chunks.as_deref(), &feedback_path,
-    );
-    if exit_code != 0 {
-        eprintln!("{}", output);
+    let feedback_path = quorum_dir()
+        .map(|d| d.join("feedback.jsonl"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".quorum/feedback.jsonl"));
+
+    // External-agent path: branch when --from-agent is provided. Uses
+    // record_external so Provenance::External is serialized, bypassing the
+    // default Human path.
+    if let Some(agent) = opts.from_agent.as_deref() {
+        let verdict = match cli::parse_verdict(&opts.verdict) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return 3;
+            }
+        };
+        let input = feedback::ExternalVerdictInput {
+            file_path: opts.file.clone(),
+            finding_title: opts.finding.clone(),
+            finding_category: opts.category.clone(),
+            verdict,
+            reason: opts.reason.clone(),
+            agent: agent.to_string(),
+            agent_model: opts.agent_model.clone(),
+            confidence: opts.confidence,
+        };
+        if let Some(parent) = feedback_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let store = feedback::FeedbackStore::new(feedback_path);
+        match store.record_external(input) {
+            Ok(_) => {
+                // Match run_feedback_inner's output contract: compact when
+                // CLAUDE_CODE / non-tty piped detection wants it; JSON when
+                // piped without compact override; human text on a TTY.
+                let total = store.count().unwrap_or(0);
+                let use_compact = output::should_use_compact(false);
+                // Honor explicit --json even on a TTY, matching the CLI
+                // contract; fall back to TTY detection when the flag is off.
+                let use_json = opts.json
+                    || (!use_compact
+                        && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+                let verdict_lower = opts.verdict.to_lowercase();
+                let verdict_label: &str = match verdict_lower.as_str() {
+                    "tp" => "tp",
+                    "fp" => "fp",
+                    "partial" => "partial",
+                    "wontfix" => "wontfix",
+                    "context_misleading" => "context_misleading",
+                    _ => verdict_lower.as_str(),
+                };
+                if use_json {
+                    let json_obj = serde_json::json!({
+                        "verdict": verdict_label,
+                        "file_path": opts.file,
+                        "finding_title": opts.finding,
+                        "agent": agent,
+                        "provenance": "external",
+                        "total": total,
+                    });
+                    println!("{}", serde_json::to_string(&json_obj).unwrap_or_default());
+                } else if use_compact {
+                    println!(
+                        "feedback:{}|{}|{}|external:{}",
+                        verdict_label, opts.file, opts.finding, agent
+                    );
+                } else {
+                    println!(
+                        "Recorded external verdict from agent {} ({} entries).",
+                        agent, total
+                    );
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to record external verdict: {}", e);
+                3
+            }
+        }
     } else {
-        println!("{}", output);
+        if let Some(parent) = feedback_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let (exit_code, output) = run_feedback_inner(
+            &opts.file, &opts.finding, &opts.verdict, &opts.reason,
+            opts.model.as_deref(), opts.blamed_chunks.as_deref(),
+            opts.category.as_deref(), opts.json, &feedback_path,
+        );
+        if exit_code != 0 {
+            eprintln!("{}", output);
+        } else {
+            println!("{}", output);
+        }
+        exit_code
     }
-    exit_code
 }
 
 #[cfg(test)]
@@ -1409,7 +1571,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1423,7 +1585,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, &path,
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, None, false, &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1434,7 +1596,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1446,7 +1608,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, None, &path,
+            "src/auth.rs", "Test finding", "fp", "Not real", None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1458,7 +1620,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, None, false, &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1470,7 +1632,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, &path,
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1488,7 +1650,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, &path,
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1506,6 +1668,8 @@ mod feedback_tests {
             "Injected context described v1 API, code uses v2",
             None,
             Some("chunk-abc,chunk-def"),
+            None,
+            false,
             &path,
         );
         assert_eq!(exit_code, 0);
@@ -1540,6 +1704,8 @@ mod feedback_tests {
             "r",
             None,
             Some("a,,b"),
+            None,
+            false,
             &path,
         );
         assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
@@ -1560,6 +1726,8 @@ mod feedback_tests {
             "No specific chunks identified",
             None,
             None, // user omitted --blamed-chunks entirely
+            None,
+            false,
             &path,
         );
         assert_eq!(exit_code, 0,

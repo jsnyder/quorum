@@ -384,9 +384,47 @@ pub struct FeedbackOpts {
     #[arg(long)]
     pub blamed_chunks: Option<String>,
 
+    /// Finding category (e.g. "security", "correctness"). If omitted, the
+    /// Human path records "manual"; the External path records "unknown".
+    #[arg(long)]
+    pub category: Option<String>,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Record the verdict as coming from an external review agent (pal, third-opinion, etc.).
+    /// Triggers External provenance instead of the default Human path.
+    #[arg(long)]
+    pub from_agent: Option<String>,
+
+    /// Optional: the LLM model the external agent used (only meaningful with --from-agent).
+    #[arg(long, requires = "from_agent")]
+    pub agent_model: Option<String>,
+
+    /// Optional: agent-reported confidence in [0,1]. Rejected at the CLI
+    /// boundary if outside that range (clap `value_parser`); record_external
+    /// re-clamps for safety. Ignored by calibrator in v1.
+    #[arg(long, requires = "from_agent", value_parser = parse_confidence)]
+    pub confidence: Option<f32>,
+}
+
+/// Validate `--confidence` at the CLI boundary. Accepts finite values in
+/// [0,1] only. NaN/Inf and out-of-range values are rejected with a clear
+/// error rather than silently clamped.
+pub fn parse_confidence(s: &str) -> Result<f32, String> {
+    let v: f32 = s
+        .parse()
+        .map_err(|e| format!("--confidence must be a number: {e}"))?;
+    if !v.is_finite() {
+        return Err(format!("--confidence must be finite, got {v}"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!(
+            "--confidence must be in [0.0, 1.0], got {v}"
+        ));
+    }
+    Ok(v)
 }
 
 /// Parse a comma-separated list of chunk IDs, trimming whitespace per entry.
