@@ -1,6 +1,18 @@
 # Changelog
 
-## [Unreleased] — 0.17.1
+## [0.17.2] - 2026-04-25
+
+### Fixed
+
+- **`quorum review` accepted zero files (#89).** `ReviewOpts.files` had no `required` constraint, so `quorum review` (no args) parsed successfully and the handler short-circuited with `eprintln!("Error: ..."); return 3` — a usage error masquerading as a tool error. Lifted the rule into clap via `#[arg(required = true, num_args = 1..)]` so users get the standard "required arguments were not provided" message + `--help` hint with the conventional exit-2 status. Removed the now-dead handler-level guard.
+- **`run_context` swallowed non-`BrokenPipe` stdout write errors (#84).** Previous `let _ = handle.write_all(...)` / `let _ = handle.flush()` silenced `BrokenPipe` (correct, the user closed `| head`) but also `EIO` / `ENOSPC`, so `quorum context list > /full-disk` exited 0 with no output delivered. Extracted `cli_io::write_cmd_output(out, err, cmd) -> i32`: BrokenPipe → silent exit 0; any other error → `error: failed to write output: {e}` on stderr + exit 1. Warnings reach stderr unconditionally (CodeRabbit caught a regression where the helper hid them on the error path). Doctor exit-code propagation (#73) preserved.
+- **`--source` + `--all` regression guards (#79).** The conflict was already enforced by `#[arg(conflicts_with = ...)]` on `ContextIndexOpts` / `ContextRefreshOpts`; added 6 regression tests via `Args::try_parse_from` + `ErrorKind::ArgumentConflict` (2 conflict + 4 positive controls covering both `index` and `refresh`) so a future drop of the annotation is caught immediately.
+
+### Dependencies / Crate Metadata
+
+- Declared `rust-version = "1.88"` in `[package]`. The codebase already uses `if let` chains (stabilized in Rust 1.88) in `src/context/cli.rs`, `src/context/extract/markdown.rs`, and now `src/cli_io.rs`. Edition 2024 only requires 1.85, so the actual minimum was undeclared.
+
+## [0.17.1] - 2026-04-25
 
 ### Fixed
 

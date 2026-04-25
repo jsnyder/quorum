@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.17.1"
+version = "0.17.2"
 edition = "2024"
 # `if let` chains used in src/cli_io.rs and src/context/cli.rs stabilized
 # in Rust 1.88. Edition 2024 already requires 1.85+, but document the
