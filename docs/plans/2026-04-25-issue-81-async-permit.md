@@ -510,19 +510,15 @@ Append to the test module:
     }
 ```
 
-**Step 5: Run all four targeted tests**
+**Step 5: Run all targeted tests**
+
+The two pre-fix `..._does_not_panic_inside_*_runtime` tests used `catch_unwind` on the SYNC call; post-fix the function returns a future (cheap to construct), so the panic check is no longer meaningful. Step 2 above replaced them with `..._returns_some_when_permit_available_on_*` (happy-path on each flavor) and `..._returns_future_outside_tokio_runtime` (no-runtime construction). The full post-fix test list — exactly what the binary has — runs via the prefix filter:
 
 ```bash
-cargo test --bin quorum -- acquire_llm_permit_does_not_panic_outside_tokio_runtime \
-                          acquire_llm_permit_does_not_panic_inside_current_thread_runtime \
-                          acquire_llm_permit_does_not_panic_inside_multi_thread_runtime \
-                          acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread \
-                          acquire_llm_permit_does_not_deadlock_under_contention_on_multi_thread \
-                          acquire_llm_permit_cancellation_does_not_leak \
-                          acquire_llm_permit_returns_future_outside_tokio_runtime
+cargo test --bin quorum -- acquire_llm_permit
 ```
 
-Expected: all pass. (If `acquire_llm_permit_does_not_panic_outside_tokio_runtime` still exists from before — it should be deleted in Step 2 since we replaced it with `acquire_llm_permit_returns_future_outside_tokio_runtime`.)
+Expected names (8 total): `acquire_llm_permit_returns_future_outside_tokio_runtime`, `acquire_llm_permit_returns_none_when_no_semaphore`, `acquire_llm_permit_returns_some_when_permit_available_on_current_thread`, `acquire_llm_permit_returns_some_when_permit_available_on_multi_thread`, `acquire_llm_permit_returns_none_when_semaphore_is_closed`, `acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread`, `acquire_llm_permit_does_not_deadlock_under_contention_on_multi_thread`, `acquire_llm_permit_cancellation_does_not_leak`. All must pass.
 
 **Step 6: Commit**
 
