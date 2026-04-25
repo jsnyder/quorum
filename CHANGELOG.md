@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.3] - 2026-04-25
+
+### Fixed
+
+- **MCP `handle_review` wrote feedback to a different file than it read (#93).** Pre-fix, the handler loaded precedents from `self.feedback_store` (the path injected at construction) but built `PipelineConfig.feedback_store` from `dirs_path()/feedback.jsonl` regardless. Tests (and any alternate prod constructor) silently split reads from one DB and pipeline-side writes (post-fix verdicts, auto-calibrate recordings) to a different file. Added `pub fn path(&self) -> &Path` to `FeedbackStore` and extracted `pub(crate) build_pipeline_config_for_review(&self, params: &ReviewTool)` from `handle_review`'s inline assembly, so the helper is unit-testable independently of running a full review.
+- **`drain_inbox` silently swallowed `read_dir` iteration errors (#103).** The listing site used `filter_map(|e| e.ok())`, dropping every per-entry I/O / permission error. Combined with claim-then-ingest, a single permission-denied file could strand all subsequent ingestion of that file forever with no observability hook. Extracted `pub(crate) drain_inbox_entries<I>(impl Iterator<Item = io::Result<PathBuf>>) -> (Vec<PathBuf>, Vec<DrainError>)` so production callers fold per-entry Errs into `report.errors`. Helper takes `Iterator<io::Result<PathBuf>>` (not `DirEntry`, which has a private constructor) so tests can inject synthetic `Err`. Size-warning site at the bottom of `drain_inbox` deliberately keeps `filter_map(.ok())` — best-effort cosmetic counter, documented in a code comment justifying the asymmetry.
+- **MCP `ReviewTool.focus` field was a documented no-op (#104).** Schema declared `focus: Option<String>` but `handle_review` dropped it on the floor. Threaded through: added `focus` to `ReviewRequest` and `PipelineConfig`; `build_pipeline_config_for_review` copies `params.focus.clone()`; both `ReviewRequest` construction sites in `pipeline.rs` propagate `pipeline_config.focus.clone()`; `build_review_prompt` renders a `<focus_areas>` sandbox-tag block AFTER `</untrusted_code>` (cache-prefix stable) via `defang_sandbox_tags`. Empty / whitespace-only focus is byte-identical to None (mirrors the `context_block` pattern).
+
 ## [0.17.2] - 2026-04-25
 
 ### Fixed
