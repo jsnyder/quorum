@@ -123,6 +123,7 @@ async fn review(
         &pipeline_cfg,
         Some(&state.parse_cache),
     )
+    .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Review error: {}", e)))?;
 
     let cache_hit = state.parse_cache.stats().hits > cache_before;

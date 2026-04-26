@@ -74,57 +74,27 @@ fn write_calibrator_traces(
     }
 }
 
-/// Acquire a semaphore permit if configured. Returns an owned permit
-/// that is released on drop (RAII).
+/// Acquire a semaphore permit if configured, awaiting cooperatively.
 ///
-/// This is a *synchronous* function that may be called from any of:
-/// `spawn_blocking` threads, plain sync callers with no runtime, or
-/// from inside an async context (via deeply-nested sync wrappers).
-/// To handle all three without panicking we mirror the runtime-flavor
-/// pattern from `llm_client::block_on_async` (issue #71):
+/// Returns an owned permit that is released on drop (RAII). When the
+/// semaphore is `None`, returns `None` immediately (no throttling).
+/// A closed semaphore (`acquire_owned` returns `Err`) also degrades
+/// to `None`, mirroring the prior contract for "throttling can't
+/// work, don't crash the caller".
 ///
-/// - `MultiThread` runtime: use `block_in_place` + `Handle::block_on`
-///   so the worker can pick up other tasks while we wait.
-/// - `CurrentThread` (or any future flavor where `block_in_place` is
-///   disallowed): drive the future on a dedicated OS thread with its
-///   own current-thread runtime. We can't reuse the calling runtime
-///   (`block_on` panics inside an async context) and `block_in_place`
-///   is not allowed there either, so we hand the work off to a fresh
-///   executor. Throttling still works because the new runtime awaits
-///   the same `Arc<Semaphore>`.
-/// - No runtime at all (issue #58): degrade to `None`. Throttling
-///   can't work without a runtime, but the caller (lazy sync wiring,
-///   embedders, tests) shouldn't crash — same observable behavior as
-///   the no-semaphore path.
-///
-/// Degrades to `None` (rather than panicking) on: no semaphore
-/// configured, semaphore closed, no runtime, or a transient failure
-/// to build the fallback runtime.
-fn acquire_llm_permit(sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    let sem = sem.as_ref()?.clone();
-    let handle = Handle::try_current().ok()?;
-    match handle.runtime_flavor() {
-        RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| handle.block_on(sem.acquire_owned()).ok())
-        }
-        // CurrentThread or any future flavor where block_in_place is
-        // disallowed: drive on a separate thread with its own runtime.
-        // Throttling still works (the new runtime awaits the same
-        // semaphore arc) and we don't re-enter the calling runtime.
-        _ => std::thread::scope(|s| {
-            s.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .ok()?;
-                rt.block_on(sem.acquire_owned()).ok()
-            })
-            .join()
-            .ok()
-            .flatten()
-        }),
-    }
+/// Issue #81: pre-fix this was a sync helper that branched on the
+/// current Tokio runtime flavor — `block_in_place` on multi-thread,
+/// `std::thread::scope` + a fresh current-thread runtime + `join()`
+/// on current-thread. The current-thread branch deadlocked when the
+/// permit holder was another task on the *same* runtime: `join()`
+/// blocked the only worker, the holder never ran to release, and
+/// the spawned helper runtime awaited forever. The async shape
+/// eliminates that class of bug by construction — we just `.await`
+/// and let the runtime that owns the holder make progress.
+async fn acquire_llm_permit(
+    sem: &Option<std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    sem.as_ref()?.clone().acquire_owned().await.ok()
 }
 
 /// Trait for LLM review — allows testing with fake implementations.
@@ -320,7 +290,7 @@ fn query_feedback_precedents(
 }
 
 /// Run the full review pipeline on a single file.
-pub fn review_file(
+pub async fn review_file(
     file_path: &Path,
     source: &str,
     lang: Language,
@@ -556,9 +526,12 @@ pub fn review_file(
         let prompt = review::build_review_prompt(&req);
 
         for model in &pipeline_config.models {
-            let _span = tracing::info_span!("phase.llm_call", model = %model, file = %file_str).entered();
             let t0 = std::time::Instant::now();
-            let _permit = acquire_llm_permit(&pipeline_config.semaphore);
+            // EnteredSpan is !Send, so it must not cross an `.await`.
+            // The span only scopes the tracing events inside the match
+            // arms below — `acquire_llm_permit` emits no events itself.
+            let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
+            let _span = tracing::info_span!("phase.llm_call", model = %model, file = %file_str).entered();
             match reviewer.review(&prompt, model) {
                 Ok(resp) => {
                     let (prompt_tok, completion_tok, cached_tok) = resp.usage.as_ref()
@@ -706,7 +679,7 @@ pub fn find_project_root(file_path: &Path) -> std::path::PathBuf {
 }
 
 /// Higher-level entry point: parses source (with optional cache) then runs review_file.
-pub fn review_source(
+pub async fn review_source(
     file_path: &Path,
     source: &str,
     lang: Language,
@@ -719,7 +692,7 @@ pub fn review_source(
     } else {
         parser::parse(source, lang)?
     };
-    review_file(file_path, source, lang, &tree, llm, pipeline_config)
+    review_file(file_path, source, lang, &tree, llm, pipeline_config).await
 }
 
 fn lang_name(lang: Language) -> &'static str {
@@ -745,7 +718,7 @@ fn lang_name_from_path(path: &Path) -> String {
 
 /// LLM-only review for files without tree-sitter support.
 /// Skips local AST analysis but still does LLM review, calibration, and auto-calibration.
-pub fn review_file_llm_only(
+pub async fn review_file_llm_only(
     file_path: &Path,
     source: &str,
     llm: Option<&dyn LlmReviewer>,
@@ -854,7 +827,7 @@ pub fn review_file_llm_only(
 
             let prompt = review::build_review_prompt(&req);
             for model in &pipeline_config.models {
-                let _permit = acquire_llm_permit(&pipeline_config.semaphore);
+                let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
                 match reviewer.review(&prompt, model) {
                     Ok(resp) => {
                         if let Some(u) = &resp.usage {
@@ -941,13 +914,13 @@ mod tests {
 
     use crate::test_support::fakes::FakeReviewer;
 
-    fn parse_and_review(source: &str, lang: Language, llm: Option<&dyn LlmReviewer>, models: Vec<String>) -> FileReviewResult {
+    async fn parse_and_review(source: &str, lang: Language, llm: Option<&dyn LlmReviewer>, models: Vec<String>) -> FileReviewResult {
         let tree = parser::parse(source, lang).unwrap();
         let config = PipelineConfig {
             models,
             ..Default::default()
         };
-        review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).unwrap()
+        review_file(Path::new("test.rs"), source, lang, &tree, llm, &config).await.unwrap()
     }
 
     #[test]
@@ -981,61 +954,192 @@ mod tests {
         assert_eq!(context7_skip_reason(&cfg), Some("init failed"));
     }
 
+    /// Issue #58 followup: with the async-permit shape, the helper
+    /// no longer cares about runtime presence — building a fresh
+    /// current-thread runtime to drive the future is the caller's
+    /// responsibility. The function is still safe to *call* from
+    /// non-runtime code (returns a future, no panic on construction).
     #[test]
-    fn acquire_llm_permit_does_not_panic_outside_tokio_runtime() {
-        // Issue #58: acquire_llm_permit calls Handle::current() which
-        // panics if no Tokio runtime exists. Callers that lazily wire a
-        // Pipeline from a sync context (e.g., embedders, tests) would
-        // crash on the first throttled review. Degrade to "no permit"
-        // instead — same observable behavior as the no-semaphore path.
+    fn acquire_llm_permit_returns_future_outside_tokio_runtime() {
         let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            acquire_llm_permit(&sem)
-        }));
-        assert!(
-            result.is_ok(),
-            "acquire_llm_permit panicked outside Tokio runtime: {:?}",
-            result.err()
-        );
-        // None is acceptable here: throttling can't work without a runtime,
-        // so we degrade rather than crash.
-        let permit = result.unwrap();
-        let _ = permit;
+        // Constructing the future must not panic. We don't poll it —
+        // that's the caller's job once they have a runtime.
+        let _fut = acquire_llm_permit(&sem);
     }
 
-    #[test]
-    fn acquire_llm_permit_returns_none_when_no_semaphore() {
-        let result = acquire_llm_permit(&None);
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_returns_none_when_no_semaphore() {
+        let result = acquire_llm_permit(&None).await;
         assert!(result.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn acquire_llm_permit_does_not_panic_inside_current_thread_runtime() {
-        // Issue #71: handle.block_on(...) panics inside an async
-        // execution context ("Cannot start a runtime from within a
-        // runtime"). Mirror block_on_async's RuntimeFlavor pattern.
+    async fn acquire_llm_permit_returns_some_when_permit_available_on_current_thread() {
+        // Issue #71/#81: confirm the happy path works on a
+        // current-thread runtime — the formerly-deadlocking flavor.
         let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            acquire_llm_permit(&sem)
-        }));
-        assert!(
-            result.is_ok(),
-            "acquire_llm_permit panicked inside current_thread runtime: {:?}",
-            result.err()
-        );
+        let permit = acquire_llm_permit(&sem).await;
+        assert!(permit.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn acquire_llm_permit_does_not_panic_inside_multi_thread_runtime() {
+    async fn acquire_llm_permit_returns_some_when_permit_available_on_multi_thread() {
         // Multi-thread coverage so the fix isn't current_thread-specific.
         let sem = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            acquire_llm_permit(&sem)
-        }));
+        let permit = acquire_llm_permit(&sem).await;
+        assert!(permit.is_some());
+    }
+
+    /// Closed-semaphore degrades to None (mirrors no-throttle
+    /// contract). Cheap mutation-killer: any change that turns the
+    /// `.ok()` into an unwrap or removes the `?` would fail this.
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_returns_none_when_semaphore_is_closed() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        sem.close();
+        let opt = Some(sem);
+        assert!(acquire_llm_permit(&opt).await.is_none());
+    }
+
+    /// When a waiter on `acquire_llm_permit` is dropped (cancelled)
+    /// before the permit becomes available, no permit is leaked and
+    /// later acquisitions still work. Standard async cancellation
+    /// guarantee — verifies we haven't accidentally broken it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_cancellation_does_not_leak() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::Semaphore;
+
+        let sem = Arc::new(Semaphore::new(1));
+        let opt = Some(sem.clone());
+
+        // Hold the only permit until we explicitly drop below.
+        let holder = sem.clone().acquire_owned().await.unwrap();
+
+        // Spawn a waiter and immediately abort it.
+        let opt_clone = opt.clone();
+        let waiter = tokio::spawn(async move {
+            acquire_llm_permit(&opt_clone).await
+        });
+        // Give the waiter a chance to start awaiting.
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await; // join the cancelled task
+
+        // Available permits unchanged — still 0 because the holder
+        // is alive. Drop the holder to release.
+        assert_eq!(sem.available_permits(), 0);
+        drop(holder);
+
+        // Next acquirer must succeed; 2s bound is generous for
+        // slow CI but tight enough to flag a regression.
+        let permit = tokio::time::timeout(
+            Duration::from_secs(2),
+            acquire_llm_permit(&opt),
+        )
+        .await
+        .expect("should not time out after holder release");
+        assert!(permit.is_some());
+    }
+
+    /// Same contention pattern as the current-thread regression but
+    /// on a multi-thread runtime. Documents that the fix preserves
+    /// production behavior (the path that already worked).
+    /// Uses Notify for deterministic happens-before, mirroring the
+    /// current-thread test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acquire_llm_permit_does_not_deadlock_under_contention_on_multi_thread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::{Notify, Semaphore};
+
+        let sem = Arc::new(Semaphore::new(1));
+        let opt = Some(sem.clone());
+        let waiter_started = Arc::new(Notify::new());
+
+        let holder_sem = sem.clone();
+        let holder_signal = waiter_started.clone();
+        let holder = async move {
+            let _h = holder_sem.acquire_owned().await.unwrap();
+            holder_signal.notified().await;
+        };
+        let waiter_signal = waiter_started.clone();
+        let waiter = async move {
+            tokio::task::yield_now().await;
+            waiter_signal.notify_one();
+            acquire_llm_permit(&opt).await
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            async {
+                let (_, w) = tokio::join!(holder, waiter);
+                w
+            },
+        )
+        .await
+        .expect("multi-thread contention timed out");
+        assert!(result.is_some(), "waiter should receive a permit");
+    }
+
+    /// Issue #81 regression: on a current-thread runtime, if the permit
+    /// holder is another task on the same runtime, the OLD synchronous
+    /// `acquire_llm_permit` deadlocks (it blocks the runtime worker at
+    /// `std::thread::scope.join()`, so the holder can never run and
+    /// release). Post-fix, async acquisition cooperatively yields and
+    /// the holder runs to completion.
+    ///
+    /// Uses `tokio::sync::Notify` (not `sleep`) for a deterministic
+    /// happens-before between holder.acquired and waiter.start —
+    /// avoids timing flakiness on slow CI.
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::{Notify, Semaphore};
+
+        let sem = Arc::new(Semaphore::new(1));
+        let opt = Some(sem.clone());
+        let waiter_started = Arc::new(Notify::new());
+
+        // Holder: takes the only permit, waits for the waiter to be
+        // observably parked on acquire (Notify), then drops the permit.
+        let holder_sem = sem.clone();
+        let holder_signal = waiter_started.clone();
+        let holder = async move {
+            let _h = holder_sem.acquire_owned().await.unwrap();
+            holder_signal.notified().await;
+            // permit dropped at scope exit — waiter unparks
+        };
+
+        // Waiter: yields once so the holder grabs the permit, signals
+        // "I'm about to acquire", then awaits permit. Pre-fix, this
+        // deadlocks: the SYNC acquire_llm_permit blocks the only worker
+        // at join() and the holder can never run to release.
+        let waiter_signal = waiter_started.clone();
+        let waiter = async move {
+            tokio::task::yield_now().await;
+            waiter_signal.notify_one();
+            acquire_llm_permit(&opt).await
+        };
+
+        // Wrap in a 5s timeout so a regression manifests as a fast
+        // test failure, not a hung CI job. Capture the waiter's
+        // result so the failure message is unambiguous.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            async { tokio::join!(holder, waiter) },
+        )
+        .await;
+
+        let (_, waiter_permit) = result.expect(
+            "deadlock regression: tokio::join! on current-thread \
+             runtime did not complete within 5s — issue #81",
+        );
         assert!(
-            result.is_ok(),
-            "acquire_llm_permit panicked inside multi_thread runtime: {:?}",
-            result.err()
+            waiter_permit.is_some(),
+            "waiter must receive a permit once the holder releases"
         );
     }
 
@@ -1046,10 +1150,10 @@ mod tests {
         assert_eq!(PipelineConfig::default().complexity_threshold, 10);
     }
 
-    #[test]
-    fn pipeline_default_does_not_flag_cc_six_function() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_default_does_not_flag_cc_six_function() {
         let source = "fn moderate(a: bool, b: bool, c: bool) {\n    if a {\n        if b {\n            if c {\n                for i in 0..10 {\n                    if i > 5 { break; }\n                }\n            }\n        }\n    }\n}\n";
-        let result = parse_and_review(source, Language::Rust, None, vec![]);
+        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         assert!(
             !result.findings.iter().any(|f| f.category == "complexity"),
             "CC=6 should not flag at default threshold=10"
@@ -1058,34 +1162,34 @@ mod tests {
 
     // -- Local-only mode --
 
-    #[test]
-    fn pipeline_local_only_no_llm() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_local_only_no_llm() {
         let source = "fn simple() -> i32 { 42 }";
-        let result = parse_and_review(source, Language::Rust, None, vec![]);
+        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         // Simple function: no findings expected
         assert!(result.findings.is_empty());
     }
 
-    #[test]
-    fn pipeline_local_finds_complexity() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_local_finds_complexity() {
         // CC=11: 10 decision points + 1 baseline. Must exceed default threshold (10).
         let source = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
-        let result = parse_and_review(source, Language::Rust, None, vec![]);
+        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         assert!(!result.findings.is_empty());
         assert!(result.findings.iter().any(|f| f.category == "complexity"));
     }
 
-    #[test]
-    fn pipeline_local_finds_insecure() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_local_finds_insecure() {
         let source = "def run(code):\n    eval(code)\n";
-        let result = parse_and_review(source, Language::Python, None, vec![]);
+        let result = parse_and_review(source, Language::Python, None, vec![]).await;
         assert!(result.findings.iter().any(|f| f.category == "security"));
     }
 
     // -- With LLM --
 
-    #[test]
-    fn pipeline_llm_findings_merged_with_local() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_llm_findings_merged_with_local() {
         let source = "def run(code):\n    eval(code)\n";
         let llm_response = r#"[{"title":"Dangerous eval","description":"eval is dangerous","severity":"critical","category":"security","line_start":2,"line_end":2}]"#;
         let llm = FakeReviewer::always(llm_response);
@@ -1093,53 +1197,53 @@ mod tests {
             source, Language::Python,
             Some(&llm),
             vec!["gpt-5.4".into()],
-        );
+        ).await;
         // Should have findings from both local and LLM, merged
         assert!(!result.findings.is_empty());
         assert!(result.findings.iter().any(|f| matches!(&f.source, Source::LocalAst)));
     }
 
-    #[test]
-    fn pipeline_llm_empty_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_llm_empty_response() {
         let source = "fn safe() -> i32 { 42 }";
         let llm = FakeReviewer::always("[]");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
             vec!["gpt-5.4".into()],
-        );
+        ).await;
         assert!(result.findings.is_empty());
     }
 
-    #[test]
-    fn pipeline_llm_failure_degrades_gracefully() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_llm_failure_degrades_gracefully() {
         let source = "fn safe() -> i32 { 42 }";
         let llm = FakeReviewer::failing("network error");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
             vec!["gpt-5.4".into()],
-        );
+        ).await;
         // LLM failure should not crash; local results still work
         assert!(result.findings.is_empty());
     }
 
-    #[test]
-    fn pipeline_llm_malformed_response_degrades_gracefully() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_llm_malformed_response_degrades_gracefully() {
         let source = "fn safe() -> i32 { 42 }";
         let llm = FakeReviewer::always("not valid json");
         let result = parse_and_review(
             source, Language::Rust,
             Some(&llm),
             vec!["gpt-5.4".into()],
-        );
+        ).await;
         assert!(result.findings.is_empty());
     }
 
     // -- Multi-model ensemble --
 
-    #[test]
-    fn pipeline_ensemble_multiple_models() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_ensemble_multiple_models() {
         let source = "fn x() -> i32 { 42 }";
         let llm_response = r#"[{"title":"Style issue","description":"Consider naming","severity":"info","category":"style","line_start":1,"line_end":1}]"#;
         let llm = FakeReviewer::always(llm_response);
@@ -1147,7 +1251,7 @@ mod tests {
             source, Language::Rust,
             Some(&llm),
             vec!["gpt-5.4".into(), "claude".into()],
-        );
+        ).await;
         // Same response from both models should be deduped
         assert!(!result.findings.is_empty());
         // Should be merged (not duplicated)
@@ -1159,8 +1263,8 @@ mod tests {
 
     // -- Secret redaction --
 
-    #[test]
-    fn pipeline_redacts_secrets_before_llm() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_redacts_secrets_before_llm() {
         let source = "API_KEY = \"sk-proj-secret123456\"\nfn main() {}";
         let llm = FakeReviewer::always("[]");
         // We can't directly verify the prompt content through the FakeLlmReviewer,
@@ -1173,33 +1277,33 @@ mod tests {
             source, Language::Rust,
             Some(&llm),
             vec!["gpt-5.4".into()],
-        );
+        ).await;
         // Pipeline completes without panic — redaction doesn't affect local analysis
         assert!(result.file_path == "test.rs");
     }
 
-    #[test]
-    fn pipeline_file_path_in_result() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn pipeline_file_path_in_result() {
         let source = "fn x() {}";
-        let result = parse_and_review(source, Language::Rust, None, vec![]);
+        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         assert_eq!(result.file_path, "test.rs");
     }
 
     // -- Cache integration --
 
-    #[test]
-    fn review_source_without_cache() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_source_without_cache() {
         let source = "fn simple() -> i32 { 42 }";
         let config = PipelineConfig::default();
         let result = review_source(
             Path::new("test.rs"), source, Language::Rust,
             None, &config, None,
-        ).unwrap();
+        ).await.unwrap();
         assert!(result.findings.is_empty());
     }
 
-    #[test]
-    fn review_source_with_cache_populates_cache() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_source_with_cache_populates_cache() {
         let cache = crate::cache::ParseCache::new(10);
         let source = "fn simple() -> i32 { 42 }";
         let config = PipelineConfig::default();
@@ -1207,7 +1311,7 @@ mod tests {
         let _result = review_source(
             Path::new("test.rs"), source, Language::Rust,
             None, &config, Some(&cache),
-        ).unwrap();
+        ).await.unwrap();
 
         assert_eq!(cache.stats().misses, 1);
         assert_eq!(cache.stats().hits, 0);
@@ -1216,24 +1320,24 @@ mod tests {
         let _result2 = review_source(
             Path::new("test.rs"), source, Language::Rust,
             None, &config, Some(&cache),
-        ).unwrap();
+        ).await.unwrap();
 
         assert_eq!(cache.stats().hits, 1);
     }
 
-    #[test]
-    fn review_source_cache_different_files() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_source_cache_different_files() {
         let cache = crate::cache::ParseCache::new(10);
         let config = PipelineConfig::default();
 
         review_source(
             Path::new("a.rs"), "fn a() {}", Language::Rust,
             None, &config, Some(&cache),
-        ).unwrap();
+        ).await.unwrap();
         review_source(
             Path::new("b.rs"), "fn b() {}", Language::Rust,
             None, &config, Some(&cache),
-        ).unwrap();
+        ).await.unwrap();
 
         assert_eq!(cache.stats().misses, 2);
         assert_eq!(cache.stats().size, 2);
@@ -1292,11 +1396,12 @@ mod tests {
         assert_eq!(cfg.semaphore.as_ref().unwrap().available_permits(), 4);
     }
 
-    #[test]
-    fn review_file_works_with_semaphore() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let _guard = rt.enter();
-
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_file_works_with_semaphore() {
+        // Pre-#81: this test built its own Runtime + entered it because
+        // review_file was sync and acquire_llm_permit needed a runtime
+        // context. Post-#81: review_file is async, the #[tokio::test]
+        // runtime drives it directly.
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
         let cfg = PipelineConfig {
             models: vec!["test-model".into()],
@@ -1318,7 +1423,7 @@ mod tests {
         let result = review_file(
             std::path::Path::new("test.rs"), source, Language::Rust, &tree,
             Some(&EmptyReviewer), &cfg,
-        );
+        ).await;
         assert!(result.is_ok());
     }
 }
