@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.17.4] - 2026-04-25
+
+### Fixed
+
+- **`pipeline::acquire_llm_permit` cross-runtime deadlock (#81).** Pre-fix the helper synchronously branched on the calling Tokio runtime flavor: `block_in_place` on multi-thread, `std::thread::scope` + a fresh current-thread runtime + `join()` on current-thread. The current-thread branch deadlocked when the permit holder was another task on the *same* runtime — `join()` blocked the only worker, the holder never ran to release, and the spawned helper runtime awaited forever. Production hit only the multi-thread path (`#[tokio::main]` defaults), so the bug surfaced primarily in `#[tokio::test]` and embedders. Post-fix `acquire_llm_permit` is `async fn`: `sem.as_ref()?.clone().acquire_owned().await.ok()`. No runtime detection, no thread spawning, no blocking. Awaiting cooperatively yields to the runtime that owns the holder; deadlock vanishes by construction.
+
+### Changed (public API)
+
+- `pipeline::review_file`, `review_source`, `review_file_llm_only` are now `pub async fn`. Sync embedders must drive the future via a runtime (e.g., `Runtime::new()?.block_on(review_source(...))`). All in-tree call sites updated: CLI serial path `.await`s directly; CLI parallel path keeps the `spawn_blocking` shell so CPU-heavy parsing stays off runtime workers, with `Handle::current().block_on(async { ... })` inside the closure to bridge sync-context blocking-pool threads into the async pipeline; MCP `handle_review` is now `async fn`; HTTP daemon `.await`s.
+
+### Tests
+
+- New: `acquire_llm_permit_does_not_deadlock_under_contention_on_current_thread` (regression for #81 — actively exercises the formerly-deadlocking flavor with `tokio::sync::Notify` deterministic handshake), `..._on_multi_thread` (defensive matrix coverage), `..._cancellation_does_not_leak`, `..._returns_none_when_semaphore_is_closed` (mutation-killer for `?` and `.ok()`), `..._returns_some_when_permit_available_on_current_thread`, `..._on_multi_thread`, `..._returns_future_outside_tokio_runtime`. Bulk-converted ~15 `#[test]` sites to `#[tokio::test(flavor = "multi_thread", worker_threads = 1)]` to preserve sequential semantics.
+
 ## [0.17.3] - 2026-04-25
 
 ### Fixed
