@@ -949,6 +949,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_llm_response_unknown_severity_defaults_to_medium_end_to_end() {
+        // End-to-end regression for Bug 1 from the 3-way comparison
+        // 2026-04-26: unknown severity defaults to Medium (not Info)
+        // when going through the public parse_llm_response entry point.
+        // Guards against a future refactor that bypasses into_finding.
+        let payload = "```json\n[{\
+            \"title\":\"finding\",\
+            \"description\":\"d\",\
+            \"severity\":\"blocker\",\
+            \"category\":\"correctness\",\
+            \"line_start\":1,\
+            \"line_end\":1\
+        }]\n```";
+
+        let findings = parse_llm_response(payload, "gpt-test")
+            .expect("payload should parse end-to-end");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
+    #[test]
     fn parse_truncated_json_returns_error() {
         // Truncated response from max_tokens limit
         let json = r#"[{"title":"Bug","description":"This is a very long desc"#;
