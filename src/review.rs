@@ -49,7 +49,15 @@ impl LlmFinding {
             "medium" | "warning" | "warn" => Severity::Medium,
             "low" | "note" => Severity::Low,
             "info" | "suggestion" | "hint" => Severity::Info,
-            _ => Severity::Info,
+            other => {
+                tracing::warn!(
+                    target: "review.severity_drift",
+                    model = %model_name,
+                    raw_severity = %other,
+                    "unknown severity in LLM response; defaulting to Medium"
+                );
+                Severity::Medium
+            }
         };
         Finding {
             title: self.title,
