@@ -446,7 +446,14 @@ mod tests {
     }
 
     #[test]
-    fn llm_finding_unknown_severity_defaults_to_info() {
+    fn llm_finding_unknown_severity_falls_through_to_default() {
+        // Behavior change 2026-04-27: unknown severity strings used to default
+        // to Severity::Info, which silently hid schema drift. We now default
+        // to Severity::Medium with a tracing::warn — see Task 2 of
+        // docs/plans/2026-04-27-review-severity-and-fence-strip.md and the
+        // corroborated TP in the 3-way comparison artifact. This test is the
+        // historical "tests the fallback mechanism" coverage, updated to
+        // reflect the new fallback target.
         let lf = LlmFinding {
             title: "T".into(),
             description: "D".into(),
@@ -456,7 +463,7 @@ mod tests {
             line_end: 1,
             suggested_fix: None,
         };
-        assert_eq!(lf.into_finding("m").severity, Severity::Info);
+        assert_eq!(lf.into_finding("m").severity, Severity::Medium);
     }
 
     #[test]
