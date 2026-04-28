@@ -465,6 +465,38 @@ mod tests {
         assert_eq!(lf.into_finding("m").severity, Severity::High);
     }
 
+    #[test]
+    fn llm_finding_unknown_severity_defaults_to_medium() {
+        // Cross-tool corroborated TP from third-opinion + pal in 3-way comparison
+        // 2026-04-26 (docs/comparisons/2026-04-26-review-rs-three-way.md).
+        // Unknown severity strings (schema drift, prompt-injected output) must
+        // default to Medium rather than silently degrade to Info.
+        let lf = LlmFinding {
+            title: "T".into(),
+            description: "D".into(),
+            severity: "blocker".into(),
+            category: "c".into(),
+            line_start: 1,
+            line_end: 1,
+            suggested_fix: None,
+        };
+        assert_eq!(lf.into_finding("m").severity, Severity::Medium);
+    }
+
+    #[test]
+    fn llm_finding_empty_severity_defaults_to_medium() {
+        let lf = LlmFinding {
+            title: "T".into(),
+            description: "D".into(),
+            severity: "".into(),
+            category: "c".into(),
+            line_start: 1,
+            line_end: 1,
+            suggested_fix: None,
+        };
+        assert_eq!(lf.into_finding("m").severity, Severity::Medium);
+    }
+
     // -- Prompt building --
 
     #[test]
