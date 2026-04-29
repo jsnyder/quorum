@@ -970,6 +970,62 @@ mod tests {
     }
 
     #[test]
+    fn high_boundary_finding_survives_calibrator_at_high() {
+        // Issue #118 Layer B regression guard: once the prompt edit unblocks
+        // the LLM from generating HIGH boundary-security findings (SSRF,
+        // unbounded allocation, symlink follow, no-retry, etc.), those
+        // findings must survive parse_llm_response + calibrator pass-through
+        // at HIGH severity. This test prevents a future calibrator change
+        // from inadvertently re-suppressing the class.
+        //
+        // Scope note: this is the POSITIVE direction only. The negative
+        // direction ('HIGH stylistic still gets demoted to enforce carve-out
+        // scoping') cannot be tested at the pipeline level — the prompt is
+        // the only place that scoping lives, and prompt-fidelity-to-LLM is
+        // covered by Layer C (issue #121, deferred).
+        use crate::calibrator::{calibrate, CalibratorConfig};
+        use crate::feedback::FeedbackEntry;
+
+        // Synthetic LLM response: one HIGH boundary-security finding (SSRF
+        // on a network call). Mirrors what the prompt edit unblocks.
+        let json = r#"[
+            {
+                "title": "User-controlled base_url enables SSRF + credential leak",
+                "description": "OpenAiClient::new accepts any http(s) base_url without host allowlist. Authorization: Bearer <api_key> is sent to whatever host the URL points at - a misconfigured or attacker-influenced QUORUM_BASE_URL exfiltrates the API key on every request.",
+                "severity": "high",
+                "category": "security",
+                "line_start": 155,
+                "line_end": 172,
+                "suggested_fix": "Reject URLs with embedded credentials in OpenAiClient::new; consider host allowlist with explicit override."
+            }
+        ]"#;
+
+        let findings = parse_llm_response(json, "test-model")
+            .expect("synthetic JSON should parse");
+        assert_eq!(findings.len(), 1, "synthetic input has exactly one finding");
+        assert_eq!(findings[0].severity, Severity::High, "input severity must be HIGH");
+
+        // Empty feedback => calibrator early-returns with findings unchanged.
+        // This is the regression guard: any future calibrator change that
+        // suppresses HIGH security findings absent feedback would fail here.
+        let feedback: Vec<FeedbackEntry> = vec![];
+        let config = CalibratorConfig::default();
+        let result = calibrate(findings, &feedback, &config);
+
+        assert_eq!(
+            result.findings.len(),
+            1,
+            "boundary HIGH finding must survive calibrator with empty feedback store"
+        );
+        assert_eq!(
+            result.findings[0].severity,
+            Severity::High,
+            "boundary HIGH finding must retain HIGH severity through calibrator"
+        );
+        assert_eq!(result.suppressed, 0, "no suppression expected with empty feedback");
+    }
+
+    #[test]
     fn parse_truncated_json_returns_error() {
         // Truncated response from max_tokens limit
         let json = r#"[{"title":"Bug","description":"This is a very long desc"#;
