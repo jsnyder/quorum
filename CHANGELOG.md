@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Review prompt structurally suppressed boundary-security findings (#118).** Pre-fix the system prompt's down-classification rules 3 ("theoretically possible but no realistic trigger") and 4 ("Maintainability, naming, complexity, and defensive-programming concerns belong in low or info") silently demoted real missing-safety-check-at-trust-boundary findings (no retry on transient failures, unbounded allocation from external input, symlink follow, SSRF + credential exfil) to LOW where the default review threshold dropped them. Confirmed structurally: same-model PAL/gpt-5.4 vs Quorum/gpt-5.4 on `src/llm_client.rs` and `src/ast_grep.rs` produced ZERO overlap; PAL surfaced 8+ TPs that Quorum's prompt rules suppressed. Fix: injected a "Precedence rule" before the down-classification list that exempts findings about missing validation, missing safety checks, or missing resource bounds at trust/external-input boundaries (network input, filesystem, response/payload, auth/credential) from rules 3 and 4 — those findings now classify on actual impact and reachable input surface per the priority list. Postpositive `EXCEPTION:` clauses were rejected per gpt-5.4 + claude-opus-4.5 critique (frontier models compress them away under the surrounding "never high" anchor) and per OpenAI Cookbook GPT-4.1 prompting guidance ("instruction closest to the end" wins). Also narrowed rule 4 to "Purely-stylistic concerns (naming, formatting, complexity-for-its-own-sake)" since the previous "Maintainability ... defensive-programming" framing conflated style with missing invariants. Priority item 4 extended with resource-bounds language at external-input boundaries (allocation, request count, file size).
+
+### Tests
+
+- New: `system_prompt_carves_out_trust_boundary_findings_via_precedence_rule` (Layer A — single static-content assertion that both `Precedence rule` and `trust or external-input boundary` anchor phrases co-occur in `system_prompt()`; per-keyword tests rejected as change-detector tautology). `high_boundary_finding_survives_calibrator_at_high` (Layer B regression guard — synthetic HIGH SSRF finding round-trips through `parse_llm_response` + `calibrator::calibrate` at HIGH severity with empty feedback; guards against future calibrator changes that would inadvertently re-suppress the class). Layer C (live LLM fixture review) deferred to issue #121 as a separate placeholder.
+
 ## [0.17.4] - 2026-04-25
 
 ### Fixed
