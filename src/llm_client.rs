@@ -140,27 +140,348 @@ pub struct OpenAiClient {
     bypass_proxy_cache: bool,
 }
 
+/// Built-in allowlist of public OAI-compatible hosts (#119). Users on other
+/// providers (LiteLLM, Ollama, Azure OpenAI, on-prem gateways) extend via
+/// `QUORUM_ALLOWED_BASE_URL_HOSTS` (additive) or bypass entirely via
+/// `QUORUM_UNSAFE_BASE_URL=1`. Lowercase ASCII; matched exact.
+pub(crate) const DEFAULT_ALLOWED_BASE_URL_HOSTS: &[&str] = &[
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+];
+
+/// Policy controlling `OpenAiClient::new` URL validation (#119).
+///
+/// The defaults model "secure-by-design + actionable fail-fast": an
+/// unconfigured policy enforces the built-in allowlist and rejects
+/// loopback/RFC1918/link-local IP literals. Users opt out per-vector via
+/// env vars; production-mode `BaseUrlPolicy::from_env()` reads them.
+#[derive(Debug, Default, Clone)]
+pub struct BaseUrlPolicy {
+    /// Hosts allowed IN ADDITION to `DEFAULT_ALLOWED_BASE_URL_HOSTS`.
+    /// Exact-match (no wildcards or subdomain matching — would broaden
+    /// the attack surface for typo / DNS-takeover).
+    pub additional_allowed_hosts: Vec<String>,
+    /// If true, allow private/loopback/link-local/unspecified IPs and
+    /// the `localhost` DNS name. For Ollama / on-prem LLMs.
+    pub allow_private_ips: bool,
+    /// If true, skip allowlist + IP checks. Embedded-credential rejection
+    /// still applies — that one has no opt-out.
+    pub unsafe_bypass: bool,
+}
+
+impl BaseUrlPolicy {
+    /// Build from env vars. Empty/missing = secure defaults.
+    pub fn from_env() -> Self {
+        let additional_allowed_hosts = std::env::var("QUORUM_ALLOWED_BASE_URL_HOSTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let allow_private_ips = matches_truthy(
+            &std::env::var("QUORUM_ALLOW_PRIVATE_BASE_URL").unwrap_or_default(),
+        );
+        let unsafe_bypass =
+            matches_truthy(&std::env::var("QUORUM_UNSAFE_BASE_URL").unwrap_or_default());
+        Self {
+            additional_allowed_hosts,
+            allow_private_ips,
+            unsafe_bypass,
+        }
+    }
+}
+
+fn matches_truthy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Validate a base URL against the policy (#119). Returns a fail-fast error
+/// with an actionable message that names the env var to set on rejection.
+///
+/// **Known limitation:** validation is path-bound (string-level inspection of
+/// the URL). It does NOT resolve DNS names to verify that allowlisted hosts
+/// don't point at private/loopback/link-local addresses. An attacker who can
+/// cause `attacker-controlled.example.com` to be added to
+/// `QUORUM_ALLOWED_BASE_URL_HOSTS` AND resolves it to 169.254.169.254 still
+/// receives the API key. Defending against that requires hooking the reqwest
+/// resolver to reject private IPs at request time — significantly more
+/// invasive (filed as a follow-up). This validator addresses the dominant
+/// threats (typo, env-injection, embedded creds, IP-literal SSRF) without
+/// the resolver hook.
+pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(base_url)
+        .map_err(|e| anyhow::anyhow!("base_url {base_url:?} is not a valid URL: {e}"))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "base_url {base_url:?} must use http or https scheme, got {:?}",
+            parsed.scheme()
+        );
+    }
+
+    // Always-on: embedded credentials. No opt-out — no legitimate use case.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!(
+            "base_url must not contain embedded credentials (user:password@host). \
+             Pass the API key via QUORUM_API_KEY instead."
+        );
+    }
+
+    // Configurable layers — bypass skips both.
+    if policy.unsafe_bypass {
+        return Ok(());
+    }
+
+    let host = parsed
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("base_url {base_url:?} has no host"))?;
+
+    // Per-branch logic: private/loopback hosts gate on `allow_private_ips`
+    // and bypass the allowlist when permitted (user shouldn't have to ALSO
+    // add `localhost` / `127.0.0.1` to QUORUM_ALLOWED_BASE_URL_HOSTS just to
+    // run Ollama — Quorum self-review of #119 caught the prior version
+    // requiring both env vars). Public hosts still go through the allowlist.
+    match host {
+        url::Host::Ipv4(ip) => {
+            if ipv4_is_local_or_special(ip) {
+                if !policy.allow_private_ips {
+                    anyhow::bail!(actionable_error_for_private_ip(base_url, &ip.to_string()));
+                }
+                // allow_private_ips opted in: skip allowlist for private IPs.
+            } else if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
+                anyhow::bail!(actionable_error_for_unknown_host(
+                    base_url,
+                    &ip.to_string(),
+                    policy
+                ));
+            }
+        }
+        url::Host::Ipv6(ip) => {
+            // IPv4-mapped IPv6 (::ffff:127.0.0.1) → apply IPv4 rules so
+            // loopback isn't bypassed by IPv6 form.
+            let is_local = if let Some(v4) = ipv6_to_ipv4_mapped(ip) {
+                ipv4_is_local_or_special(v4)
+            } else {
+                ipv6_is_local_or_special(ip)
+            };
+            if is_local {
+                if !policy.allow_private_ips {
+                    anyhow::bail!(actionable_error_for_private_ip(base_url, &ip.to_string()));
+                }
+            } else if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
+                anyhow::bail!(actionable_error_for_unknown_host(
+                    base_url,
+                    &ip.to_string(),
+                    policy
+                ));
+            }
+        }
+        url::Host::Domain(d) => {
+            let dn = d.to_ascii_lowercase();
+            // "localhost"-family DNS names treated as loopback. Doesn't catch
+            // attacker-controlled DNS that resolves to 127.0.0.1 — see #126.
+            if is_localhost_name(&dn) {
+                if !policy.allow_private_ips {
+                    anyhow::bail!(actionable_error_for_private_ip(base_url, &dn));
+                }
+                // allow_private_ips opted in: skip allowlist for localhost-family.
+            } else if !host_in_allowlist(&dn, &policy.additional_allowed_hosts) {
+                anyhow::bail!(actionable_error_for_unknown_host(base_url, &dn, policy));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn host_in_allowlist(host: &str, additional: &[String]) -> bool {
+    let h = host.to_ascii_lowercase();
+    DEFAULT_ALLOWED_BASE_URL_HOSTS.iter().any(|a| *a == h)
+        || additional.iter().any(|a| a == &h)
+}
+
+fn is_localhost_name(host: &str) -> bool {
+    host == "localhost" || host.ends_with(".localhost") || host == "ip6-localhost"
+}
+
+fn ipv4_is_local_or_special(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_loopback()         // 127.0.0.0/8
+        || ip.is_private()   // 10/8, 172.16/12, 192.168/16
+        || ip.is_link_local()// 169.254/16
+        || ip.is_unspecified()// 0.0.0.0
+        || ip.is_broadcast() // 255.255.255.255
+}
+
+fn ipv6_is_local_or_special(ip: std::net::Ipv6Addr) -> bool {
+    ip.is_loopback()                    // ::1
+        || ip.is_unspecified()          // ::
+        || is_ipv6_unique_local(&ip)    // fc00::/7
+        || is_ipv6_link_local(&ip)      // fe80::/10
+}
+
+/// IPv6 unique-local (RFC 4193): `fc00::/7`. First 7 bits = `1111 110`.
+fn is_ipv6_unique_local(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00
+}
+
+/// IPv6 link-local (RFC 4291): `fe80::/10`. First 10 bits = `1111 1110 10`.
+fn is_ipv6_link_local(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
+}
+
+/// IPv4-mapped IPv6: `::ffff:0:0/96`. Returns embedded IPv4 if matching.
+fn ipv6_to_ipv4_mapped(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let s = ip.segments();
+    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0xffff {
+        let octets = [
+            (s[6] >> 8) as u8,
+            (s[6] & 0xff) as u8,
+            (s[7] >> 8) as u8,
+            (s[7] & 0xff) as u8,
+        ];
+        Some(std::net::Ipv4Addr::from(octets))
+    } else {
+        None
+    }
+}
+
+fn actionable_error_for_private_ip(url: &str, ip_or_name: &str) -> String {
+    format!(
+        "base_url {url:?} resolves to a private/loopback/link-local address ({ip_or_name}). \
+         To allow this for Ollama / on-prem LLMs, set:\n  \
+         export QUORUM_ALLOW_PRIVATE_BASE_URL=1"
+    )
+}
+
+fn actionable_error_for_unknown_host(url: &str, host: &str, policy: &BaseUrlPolicy) -> String {
+    let mut all: Vec<String> = DEFAULT_ALLOWED_BASE_URL_HOSTS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    all.extend(policy.additional_allowed_hosts.iter().cloned());
+    let allowed = if all.is_empty() {
+        "(none)".to_string()
+    } else {
+        all.join(", ")
+    };
+    format!(
+        "base_url {url:?} host {host:?} is not on the allowlist.\n\n\
+         Allowed hosts: {allowed}\n\n\
+         To allow this host, set:\n  \
+         export QUORUM_ALLOWED_BASE_URL_HOSTS={host}\n\
+         (Comma-separate multiple hosts; additive to the built-in defaults.)\n\n\
+         To bypass validation entirely (development/testing only):\n  \
+         export QUORUM_UNSAFE_BASE_URL=1"
+    )
+}
+
+/// Maximum bytes read from an upstream error response before sanitization
+/// (#119). A malicious or misconfigured gateway returning a multi-megabyte
+/// error page would OOM the process if `Response::text()` were unbounded.
+/// 64 KiB leaves ample room for a useful error message and bounds blast.
+pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Read an HTTP error body with a hard byte cap (#119). Defends against an
+/// upstream gateway returning a large error page (intentional or
+/// misconfigured) before `sanitize_error_body` truncates to 200 codepoints.
+/// Decodes as UTF-8 lossy — error bodies are display-only, never parsed.
+pub(crate) async fn read_capped_error_body(mut resp: reqwest::Response) -> String {
+    let mut buf: Vec<u8> = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(8192));
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(buf.len());
+                if remaining == 0 {
+                    break;
+                }
+                let take = chunk.len().min(remaining);
+                buf.extend_from_slice(&chunk[..take]);
+                if buf.len() >= MAX_ERROR_BODY_BYTES {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                // Transport error mid-body. Surface to operators via the
+                // tracing layer so partial-truncation is visible — Quorum
+                // self-review of #119 flagged the prior `while let Ok` form
+                // as a silent discard.
+                tracing::warn!(
+                    error = %e,
+                    "transport error reading error body; partial body returned"
+                );
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Scrub bearer tokens / API-key shapes from an error body before it flows
+/// into terminal output, daemon logs, or telemetry (#119). Some
+/// OAI-compatible gateways echo back request headers (Authorization: Bearer
+/// ...) and request bodies (prompt + source code) on validation errors.
+/// Truncates to 200 codepoints (not bytes).
+///
+/// Does NOT scrub general source-code content that may contain hardcoded
+/// secrets — that surface is bounded by the 200-codepoint cap and tracked
+/// separately as a follow-up.
+pub(crate) fn sanitize_error_body(raw: &str) -> String {
+    use std::sync::LazyLock;
+    static SECRET_PAT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // Three patterns, all case-insensitive:
+        //   - bearer\s+TOKEN  (Authorization header echo)
+        //   - sk-...          (catch-all suffix covers sk-proj-, sk-svcacct-,
+        //                       sk-org-, sk-ant-api03-, sk-live-, sk-test-)
+        //   - api[_-]?key=... (JSON / form-encoded key fields)
+        regex::Regex::new(
+            // Bearer tokens include JWTs (`header.payload.signature`,
+            // base64url with `=` padding) — Quorum self-review of #119
+            // flagged that the prior `[A-Za-z0-9_-]+` charset truncated
+            // JWTs at the first dot, leaving most of the credential visible.
+            // Field separator for api_key allows space/underscore/hyphen
+            // (catches `api key:`, `api_key:`, `api-key:`, `apikey:`).
+            r#"(?i)(bearer\s+[A-Za-z0-9_\-\.=]+|sk-[A-Za-z0-9_\-]+|api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+)"#,
+        )
+        .expect("static regex")
+    });
+    let scrubbed = SECRET_PAT.replace_all(raw, "[REDACTED]");
+    scrubbed.chars().take(200).collect()
+}
+
 impl OpenAiClient {
-    /// Build a client.
+    /// Build a client. Reads `BaseUrlPolicy::from_env()` for URL validation
+    /// (#119). For tests or callers building policy from non-env sources,
+    /// use [`Self::new_with_policy`].
     ///
-    /// `base_url` must parse as an `http`/`https` URL — anything else
-    /// (missing scheme, `file://`, an accidentally-passed API key) is
-    /// rejected up front so misconfiguration surfaces at startup with a
-    /// clear error rather than at request time with an opaque reqwest
-    /// error.
+    /// `base_url` must parse as an `http`/`https` URL, must not contain
+    /// embedded credentials, and (modulo the env-controlled bypass) must
+    /// pass the allowlist + IP-block checks.
     ///
     /// The internal reqwest client is built with a 10 s connect timeout
     /// and a 300 s overall timeout. Builder failure is propagated as an
     /// error rather than silently dropping that config (issue #66).
     pub fn new(base_url: &str, api_key: &str) -> anyhow::Result<Self> {
-        let parsed = url::Url::parse(base_url)
-            .map_err(|e| anyhow::anyhow!("base_url {base_url:?} is not a valid URL: {e}"))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            anyhow::bail!(
-                "base_url {base_url:?} must use http or https scheme, got {:?}",
-                parsed.scheme()
-            );
-        }
+        Self::new_with_policy(base_url, api_key, &BaseUrlPolicy::from_env())
+    }
+
+    /// Build a client with an explicit URL-validation policy (#119).
+    ///
+    /// **Crate-internal only.** Production callers must use [`Self::new`]
+    /// which sources policy from env vars. Exposing this publicly would let
+    /// downstream library users construct an `unsafe_bypass: true` policy
+    /// and silently disable SSRF protections; PAL/gpt-5.4 review of #119
+    /// flagged this as a footgun. Tests inside this crate use it freely.
+    pub(crate) fn new_with_policy(
+        base_url: &str,
+        api_key: &str,
+        policy: &BaseUrlPolicy,
+    ) -> anyhow::Result<Self> {
+        validate_base_url(base_url, policy)?;
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
@@ -231,8 +552,8 @@ impl OpenAiClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let error_text = resp.text().await.unwrap_or_default();
-            let truncated: String = error_text.chars().take(200).collect();
+            let error_text = read_capped_error_body(resp).await;
+            let truncated = sanitize_error_body(&error_text);
             anyhow::bail!("API Error ({}): {}", status.as_u16(), truncated);
         }
 
@@ -285,8 +606,8 @@ impl OpenAiClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let error_text = resp.text().await.unwrap_or_default();
-            let truncated: String = error_text.chars().take(200).collect();
+            let error_text = read_capped_error_body(resp).await;
+            let truncated = sanitize_error_body(&error_text);
             anyhow::bail!("Responses API Error ({}): {}", status.as_u16(), truncated);
         }
 
@@ -356,8 +677,8 @@ impl OpenAiClient {
 
         let status = resp.status();
         if !status.is_success() {
-            let error_text = resp.text().await.unwrap_or_default();
-            let truncated: String = error_text.chars().take(200).collect();
+            let error_text = read_capped_error_body(resp).await;
+            let truncated = sanitize_error_body(&error_text);
             anyhow::bail!("API Error ({}): {}", status.as_u16(), truncated);
         }
 
@@ -587,9 +908,9 @@ mod tests {
 
     #[test]
     fn client_creation() {
-        let client = OpenAiClient::new("https://api.example.com/v1", "sk-test")
+        let client = OpenAiClient::new("https://api.openai.com/v1", "sk-test")
             .expect("valid url");
-        assert_eq!(client.base_url, "https://api.example.com/v1");
+        assert_eq!(client.base_url, "https://api.openai.com/v1");
         assert_eq!(client.api_key, "sk-test");
     }
 
@@ -622,8 +943,533 @@ mod tests {
 
     #[test]
     fn new_accepts_http_and_https_urls() {
-        assert!(OpenAiClient::new("https://api.example.com/v1", "sk-test").is_ok());
-        assert!(OpenAiClient::new("http://localhost:8000", "sk-test").is_ok());
+        // Issue #119: post-hardening, the production allowlist applies.
+        // api.openai.com is on the default allowlist; localhost requires the
+        // private-IP opt-in alone (no second env-var dance, per the UX fix
+        // Quorum self-review caught).
+        assert!(OpenAiClient::new("https://api.openai.com/v1", "sk-test").is_ok());
+        let permissive = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        assert!(
+            OpenAiClient::new_with_policy("http://localhost:8000", "sk-test", &permissive).is_ok()
+        );
+    }
+
+    // --- #119: validate_base_url ---
+
+    fn permissive_policy() -> BaseUrlPolicy {
+        BaseUrlPolicy {
+            unsafe_bypass: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_embedded_credentials() {
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("https://user:pass@api.openai.com/v1", &policy)
+            .expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("embedded credentials"),
+            "actionable msg expected, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_rejects_embedded_credentials_even_with_unsafe_bypass() {
+        // Always-on guard, no opt-out. Unsafe bypass disables allowlist + IP
+        // checks but must NOT disable embedded-cred rejection.
+        let policy = BaseUrlPolicy {
+            unsafe_bypass: true,
+            ..Default::default()
+        };
+        let err = validate_base_url("https://user:pass@api.openai.com/v1", &policy)
+            .expect_err("must reject even with bypass");
+        assert!(err.to_string().contains("embedded credentials"));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_embedded_credentials_even_with_allow_private_ips() {
+        // Same always-on guard, different escape hatch.
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        let err = validate_base_url("http://user:pass@127.0.0.1:8000/v1", &policy)
+            .expect_err("must reject");
+        assert!(err.to_string().contains("embedded credentials"));
+    }
+
+    #[test]
+    fn validate_base_url_accepts_default_allowed_hosts() {
+        let policy = BaseUrlPolicy::default();
+        for host in DEFAULT_ALLOWED_BASE_URL_HOSTS {
+            let url = format!("https://{host}/v1");
+            assert!(
+                validate_base_url(&url, &policy).is_ok(),
+                "default allowed host {host} must pass"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_unknown_host() {
+        let policy = BaseUrlPolicy::default();
+        assert!(validate_base_url("https://attacker.example.com/v1", &policy).is_err());
+    }
+
+    #[test]
+    fn validate_base_url_unknown_host_error_message_is_actionable() {
+        // Operator contract — error must point at the exact env var to set
+        // AND the bypass var, so misconfigured deployments are self-healing.
+        // Antipattern review (2026-04-29) split this from the rejection test
+        // so the contract is explicit and survives refactors.
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("https://corp.internal.example.com/v1", &policy)
+            .expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("QUORUM_ALLOWED_BASE_URL_HOSTS"),
+            "msg must name the extension env var: {msg}"
+        );
+        assert!(
+            msg.contains("corp.internal.example.com"),
+            "msg must echo the rejected host: {msg}"
+        );
+        assert!(
+            msg.contains("QUORUM_UNSAFE_BASE_URL"),
+            "msg must name the bypass var: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_accepts_host_added_via_policy() {
+        let policy = BaseUrlPolicy {
+            additional_allowed_hosts: vec!["llm.corp.example.com".into()],
+            ..Default::default()
+        };
+        assert!(validate_base_url("https://llm.corp.example.com/v1", &policy).is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_loopback_ipv4() {
+        let policy = BaseUrlPolicy::default();
+        assert!(validate_base_url("http://127.0.0.1:11434/v1", &policy).is_err());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_rfc1918_ipv4_with_boundaries() {
+        let policy = BaseUrlPolicy::default();
+        // Inside the private ranges — must reject as private.
+        for ip in ["10.0.0.1", "10.255.255.255", "172.16.0.1", "172.31.255.255",
+                   "192.168.0.1", "192.168.255.255"] {
+            let url = format!("http://{ip}/v1");
+            let err = validate_base_url(&url, &policy).expect_err("must reject");
+            assert!(
+                err.to_string().contains("private/loopback/link-local"),
+                "{ip} must trigger private-IP path, got: {err}"
+            );
+        }
+        // Just outside the ranges — must NOT trigger private-IP path
+        // (allowlist will still reject, but for a different reason).
+        for ip in ["9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0",
+                   "192.167.255.255", "192.169.0.0"] {
+            let url = format!("http://{ip}/v1");
+            let err = validate_base_url(&url, &policy).expect_err("must reject for allowlist");
+            assert!(
+                !err.to_string().contains("private/loopback/link-local"),
+                "{ip} must NOT trigger private-IP path; got: {err}"
+            );
+            assert!(
+                err.to_string().contains("not on the allowlist"),
+                "{ip} should fall through to allowlist rejection; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_link_local_ipv4_imds() {
+        // 169.254.169.254 — AWS / GCP / Azure instance-metadata service.
+        // SSRF here exfiltrates instance credentials.
+        let policy = BaseUrlPolicy::default();
+        assert!(validate_base_url("http://169.254.169.254/v1", &policy).is_err());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_loopback_ipv6_forms() {
+        let policy = BaseUrlPolicy::default();
+        // ::1, full form, and IPv4-mapped 127.0.0.1.
+        for url in [
+            "http://[::1]:8080/v1",
+            "http://[0:0:0:0:0:0:0:1]:8080/v1",
+            "http://[::ffff:127.0.0.1]:8080/v1",
+        ] {
+            assert!(
+                validate_base_url(url, &policy).is_err(),
+                "must reject {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_unique_local_ipv6_with_boundary() {
+        let policy = BaseUrlPolicy::default();
+        // fc00::/7 — inside (must reject as private).
+        let err = validate_base_url("http://[fc00::1]/v1", &policy).expect_err("must reject");
+        assert!(err.to_string().contains("private/loopback/link-local"));
+        // Just below fc00 (fbff::) — must NOT trigger private-IP path.
+        let err = validate_base_url("http://[fbff::1]/v1", &policy)
+            .expect_err("must reject for allowlist");
+        assert!(!err.to_string().contains("private/loopback/link-local"));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_link_local_ipv6_with_boundaries() {
+        let policy = BaseUrlPolicy::default();
+        // fe80::/10 — inside.
+        let err = validate_base_url("http://[fe80::1]/v1", &policy).expect_err("must reject");
+        assert!(err.to_string().contains("private/loopback/link-local"));
+        // Boundary-checks for the manual bitmask `0xffc0 == 0xfe80`.
+        // fe7f:: is just below the /10; fec0:: is just above.
+        for url in ["http://[fe7f::1]/v1", "http://[fec0::1]/v1"] {
+            let err = validate_base_url(url, &policy).expect_err("must reject for allowlist");
+            assert!(
+                !err.to_string().contains("private/loopback/link-local"),
+                "{url} must NOT trigger private-IP path; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_localhost_name_as_loopback() {
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("http://localhost:8000/v1", &policy)
+            .expect_err("localhost must reject");
+        assert!(err.to_string().contains("private/loopback/link-local"));
+    }
+
+    #[test]
+    fn validate_base_url_unsafe_bypass_skips_allowlist_and_ip_check() {
+        let policy = BaseUrlPolicy {
+            unsafe_bypass: true,
+            ..Default::default()
+        };
+        // Public IP literal, internal hostname, loopback — all pass.
+        for url in [
+            "https://1.2.3.4/v1",
+            "https://corp.internal.example.com/v1",
+            "http://127.0.0.1:8000/v1",
+        ] {
+            assert!(
+                validate_base_url(url, &policy).is_ok(),
+                "unsafe_bypass must accept {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_allow_private_ips_alone_lets_localhost_through() {
+        // Quorum self-review of #119 caught a UX bug: setting only
+        // QUORUM_ALLOW_PRIVATE_BASE_URL=1 (without also QUORUM_ALLOWED_BASE_URL_HOSTS=localhost)
+        // would still fail the allowlist check. Most users reaching for the
+        // private-IP opt-in are running Ollama and should not need to set
+        // two env vars to make it work. Pin the new behavior: allow_private_ips
+        // alone is sufficient for private/loopback hosts.
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://10.0.5.42:8080/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            assert!(
+                validate_base_url(url, &policy).is_ok(),
+                "allow_private_ips alone must permit {url}"
+            );
+        }
+        // Public IPs / hostnames still require the allowlist.
+        assert!(validate_base_url("https://attacker.example.com/v1", &policy).is_err());
+        assert!(validate_base_url("https://1.2.3.4/v1", &policy).is_err());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_non_http_scheme() {
+        let policy = BaseUrlPolicy {
+            unsafe_bypass: true, // even bypass shouldn't help — scheme is upstream of the bypass branch
+            ..Default::default()
+        };
+        assert!(validate_base_url("file:///etc/passwd", &policy).is_err());
+        assert!(validate_base_url("ftp://api.openai.com/", &policy).is_err());
+    }
+
+    // --- #119: BaseUrlPolicy::from_env ---
+    //
+    // Process env is global; serialize these tests via a Mutex so parallel
+    // runs don't trample each other. A poisoned mutex is recoverable for
+    // our purpose (tests can't observe corrupt state).
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
+        // Panic-safe restoration via Drop (PAL review of #119 flagged that
+        // a panicking assertion inside `f()` would leak env state into
+        // subsequent tests if the restore code ran imperatively after `f()`).
+        struct Restore(Vec<(String, Option<String>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (k, v) in self.0.drain(..) {
+                    match v {
+                        Some(val) => unsafe { std::env::set_var(&k, val) },
+                        None => unsafe { std::env::remove_var(&k) },
+                    }
+                }
+            }
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let saved: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+            .collect();
+        let _restore = Restore(saved);
+        for (k, v) in vars {
+            match v {
+                Some(val) => unsafe { std::env::set_var(k, val) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+        f();
+    }
+
+    #[test]
+    fn from_env_parses_csv_allowlist_with_trim_and_lowercase() {
+        with_env(
+            &[
+                ("QUORUM_ALLOWED_BASE_URL_HOSTS", Some("Foo.Example.com, BAR.example.com ,, baz")),
+                ("QUORUM_ALLOW_PRIVATE_BASE_URL", None),
+                ("QUORUM_UNSAFE_BASE_URL", None),
+            ],
+            || {
+                let p = BaseUrlPolicy::from_env();
+                assert_eq!(
+                    p.additional_allowed_hosts,
+                    vec!["foo.example.com", "bar.example.com", "baz"]
+                );
+                assert!(!p.allow_private_ips);
+                assert!(!p.unsafe_bypass);
+            },
+        );
+    }
+
+    #[test]
+    fn from_env_strict_truthy() {
+        for truthy in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            with_env(
+                &[
+                    ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some(truthy)),
+                    ("QUORUM_UNSAFE_BASE_URL", Some(truthy)),
+                    ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
+                ],
+                || {
+                    let p = BaseUrlPolicy::from_env();
+                    assert!(p.allow_private_ips, "{truthy} must be truthy");
+                    assert!(p.unsafe_bypass, "{truthy} must be truthy");
+                },
+            );
+        }
+        for falsy in ["0", "false", "", "no", "off", "  "] {
+            with_env(
+                &[
+                    ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some(falsy)),
+                    ("QUORUM_UNSAFE_BASE_URL", Some(falsy)),
+                    ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
+                ],
+                || {
+                    let p = BaseUrlPolicy::from_env();
+                    assert!(!p.allow_private_ips, "{falsy:?} must be falsy");
+                    assert!(!p.unsafe_bypass, "{falsy:?} must be falsy");
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn from_env_empty_yields_secure_default() {
+        with_env(
+            &[
+                ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
+                ("QUORUM_ALLOW_PRIVATE_BASE_URL", None),
+                ("QUORUM_UNSAFE_BASE_URL", None),
+            ],
+            || {
+                let p = BaseUrlPolicy::from_env();
+                assert!(p.additional_allowed_hosts.is_empty());
+                assert!(!p.allow_private_ips);
+                assert!(!p.unsafe_bypass);
+            },
+        );
+    }
+
+    // --- #119: sanitize_error_body ---
+
+    #[test]
+    fn sanitize_error_body_scrubs_bearer_token() {
+        let raw = "401: invalid bearer abcXYZ123_456";
+        let s = sanitize_error_body(raw);
+        assert!(!s.contains("abcXYZ123_456"), "got: {s}");
+        assert!(s.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_jwt_bearer_token_with_dots() {
+        // Quorum self-review of #119 caught this: the prior charset
+        // `[A-Za-z0-9_-]+` truncated JWT bearer tokens at the first dot,
+        // leaving the bulk of `header.payload.signature` visible. Real JWTs
+        // are base64url with `=` padding plus `.` separators between segments.
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let raw = format!("401 unauthorized: bearer {jwt}");
+        let s = sanitize_error_body(&raw);
+        assert!(
+            !s.contains(jwt),
+            "JWT must be fully scrubbed; got: {s}"
+        );
+        // Each segment of the JWT must be gone (regression-proofs the dot
+        // handling — was the bug that segments after the first dot leaked).
+        for seg in jwt.split('.') {
+            assert!(
+                !s.contains(seg),
+                "JWT segment {seg:?} leaked through scrub: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_openai_key_shapes() {
+        // Threat-model coverage: regex is general, but tests pin the
+        // realistic shapes we expect to see in echoed error bodies.
+        for k in [
+            "sk-abc123",
+            "sk-proj-xyz789ABC",
+            "sk-svcacct-foo123",
+            "sk-org-bar456",
+            "sk-live-baz789",
+            "sk-test-qux000",
+        ] {
+            let raw = format!("error: invalid key {k}");
+            let s = sanitize_error_body(&raw);
+            assert!(!s.contains(k), "{k} not scrubbed: {s}");
+        }
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_anthropic_key_shape() {
+        let raw = "auth: invalid sk-ant-api03-abc-123_def-XYZ";
+        let s = sanitize_error_body(raw);
+        assert!(!s.contains("sk-ant-api03-abc-123_def-XYZ"), "got: {s}");
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_api_key_with_space_separator() {
+        // PAL review of #119: real gateway echoes use `api key: secret`,
+        // `api-key: secret`, `apikey: secret`, etc. The field-separator
+        // regex must allow space/underscore/hyphen between "api" and "key".
+        for raw in [
+            "auth failed: api key: my-secret-token",
+            "auth: api-key=secret_value_here",
+            "auth: api_key: some-token",
+            "auth: apikey=another-token",
+        ] {
+            let s = sanitize_error_body(raw);
+            assert!(
+                !s.contains("secret") && !s.contains("token") || s.contains("[REDACTED]"),
+                "must scrub the value in {raw:?}; got {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_api_key_json_field() {
+        let raw = r#"{"error":"bad request","api_key":"my-secret-value"}"#;
+        let s = sanitize_error_body(raw);
+        assert!(!s.contains("my-secret-value"), "got: {s}");
+    }
+
+    #[test]
+    fn sanitize_error_body_truncates_to_exactly_200_codepoints_when_input_longer() {
+        let raw = "x".repeat(500);
+        let s = sanitize_error_body(&raw);
+        assert_eq!(
+            s.chars().count(),
+            200,
+            "must be exactly 200 codepoints (no-op fail)"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_body_multi_byte_utf8_uses_codepoints_not_bytes() {
+        // 300 emoji codepoints: 1200 bytes. The cap is 200 codepoints, so
+        // chars().count() == 200 and bytes >> 200. Pin the spec: codepoints,
+        // not bytes (per antipattern review 2026-04-29).
+        let raw = "\u{1f600}".repeat(300);
+        let s = sanitize_error_body(&raw);
+        assert_eq!(s.chars().count(), 200);
+        assert!(s.len() > 200, "byte length should exceed 200 for emoji");
+    }
+
+    #[test]
+    fn sanitize_error_body_preserves_safe_content_unchanged() {
+        let raw = "rate limit exceeded, retry in 30s";
+        assert_eq!(sanitize_error_body(raw), raw);
+    }
+
+    #[test]
+    fn sanitize_error_body_does_not_address_prompt_echo_filed_as_followup() {
+        // Documented gap: a gateway echoing back the prompt body (which for
+        // a code-review tool contains source code, possibly with hardcoded
+        // secrets the user just asked Quorum to find) is bounded by the
+        // 200-codepoint cap but otherwise NOT scrubbed. This test locks the
+        // gap into the suite as documentation; future work tightens scope.
+        let raw = "function add_user(password: 'hunter2', api_token: 'static-text-here') { ... }";
+        let s = sanitize_error_body(raw);
+        // 'hunter2' is NOT scrubbed — it's not a bearer/sk-/api_key shape.
+        assert!(s.contains("hunter2"), "scope: not scrubbing arbitrary literals");
+    }
+
+    // --- #119: OpenAiClient::new wiring ---
+
+    #[test]
+    fn new_rejects_embedded_credentials() {
+        // Always-on, no env opt-out.
+        let result = OpenAiClient::new("https://user:pass@api.openai.com/v1", "sk-test");
+        match result {
+            Ok(_) => panic!("must reject"),
+            Err(e) => assert!(e.to_string().contains("embedded credentials")),
+        }
+    }
+
+    #[test]
+    fn new_default_allowlist_accepts_openai_host() {
+        // Smoke test that the default policy permits the canonical OAI host.
+        assert!(OpenAiClient::new("https://api.openai.com/v1", "sk-test").is_ok());
+    }
+
+    #[test]
+    fn new_with_policy_permissive_allows_arbitrary_host() {
+        // Tests should be able to construct a client without env mutation.
+        assert!(
+            OpenAiClient::new_with_policy(
+                "https://test.fake.local/v1",
+                "sk-test",
+                &permissive_policy()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -632,7 +1478,7 @@ mod tests {
         // drop the configured 10s connect / 300s overall timeout if the
         // builder ever failed. Verify the resulting client at least exposes
         // the configured timeout via reqwest's getter.
-        let client = OpenAiClient::new("https://example.com", "sk-test")
+        let client = OpenAiClient::new("https://api.openai.com", "sk-test")
             .expect("valid url");
         // reqwest::Client doesn't expose a getter for the configured
         // timeouts directly, so instead we assert that construction
