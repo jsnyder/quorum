@@ -129,11 +129,22 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
             }
         }
         url::Host::Ipv6(ip) => {
-            if !policy.allow_private_ips && ipv6_is_local_or_special(ip) {
-                anyhow::bail!(actionable_error_for_private_ip(&base_url, &ip.to_string()));
-            }
-            if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
-                anyhow::bail!(actionable_error_for_unknown_host(&base_url, &ip.to_string(), policy));
+            // IPv4-mapped IPv6 (::ffff:127.0.0.1) is a known SSRF bypass shape —
+            // unwrap to the embedded v4 address and apply the v4 rules.
+            if let Some(v4) = ipv6_to_ipv4_mapped(ip) {
+                if !policy.allow_private_ips && ipv4_is_local_or_special(v4) {
+                    anyhow::bail!(actionable_error_for_private_ip(&base_url, &v4.to_string()));
+                }
+                if !host_in_allowlist(&v4.to_string(), &policy.additional_allowed_hosts) {
+                    anyhow::bail!(actionable_error_for_unknown_host(&base_url, &v4.to_string(), policy));
+                }
+            } else {
+                if !policy.allow_private_ips && ipv6_is_local_or_special(ip) {
+                    anyhow::bail!(actionable_error_for_private_ip(&base_url, &ip.to_string()));
+                }
+                if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
+                    anyhow::bail!(actionable_error_for_unknown_host(&base_url, &ip.to_string(), policy));
+                }
             }
         }
         url::Host::Domain(d) => {
@@ -294,10 +305,15 @@ Replace existing scheme check + URL parse with a `validate_base_url(base_url, &B
 /// gateways echo back request headers (Authorization: Bearer ...) and
 /// request body (prompt + source code) on validation errors.
 fn sanitize_error_body(raw: &str) -> String {
-    use once_cell::sync::Lazy;
-    static SECRET_PAT: Lazy<regex::Regex> = Lazy::new(|| {
+    // std::sync::LazyLock is the modern (Rust 1.80+) replacement for
+    // once_cell::sync::Lazy — no extra dep needed.
+    use std::sync::LazyLock;
+    static SECRET_PAT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        // bearer charset includes `.` and `=` for JWT (header.payload.signature)
+        // and base64 padding; api-key field separator allows space, underscore,
+        // and hyphen so `api key:`, `api_key=`, `api-key:` all match.
         regex::Regex::new(
-            r#"(?i)(bearer\s+|sk-(?:proj-|live-|test-)?|api[_-]?key["']?\s*[:=]\s*["']?)[A-Za-z0-9_\-]+"#
+            r#"(?i)(bearer\s+[A-Za-z0-9_\-\.=]+|sk-[A-Za-z0-9_\-]+|api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+)"#
         ).expect("static regex")
     });
     let scrubbed = SECRET_PAT.replace_all(raw, "[REDACTED]");
