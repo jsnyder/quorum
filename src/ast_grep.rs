@@ -929,6 +929,142 @@ rule:
     // ── Issue #120 hardening: user rules trust boundary ──
 
     #[test]
+    fn load_rules_still_loads_bundled_rules_after_120_hardening() {
+        // Regression guard: the symlink + size guards added for #120 must
+        // NOT break the bundled-rules path. Invoke load_rules against the
+        // actual repo's rules/ directory and assert at least one bundled
+        // rule loads.
+        let project_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let empty_home = tempfile::tempdir().expect("empty home for test");
+        let rules = load_rules(project_dir, empty_home.path());
+        assert!(
+            !rules.is_empty(),
+            "bundled rules must still load after #120 hardening"
+        );
+        let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
+        let has_known = ids.iter().any(|id| {
+            id.starts_with("md5") || id.starts_with("eval-") || id.starts_with("subprocess")
+        });
+        assert!(has_known, "expected a known bundled rule id; got {ids:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_rules_skips_symlinked_lang_directory() {
+        // Adversarial: ~/.quorum/rules is a regular directory, but
+        // ~/.quorum/rules/<lang> is a symlink to an arbitrary tree.
+        // Per-lang-dir symlink_metadata gate must reject.
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let project = tempdir().expect("project tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        // Bundled-side control.
+        let bundled_lang = project.path().join("rules").join("python");
+        std::fs::create_dir_all(&bundled_lang).unwrap();
+        std::fs::write(
+            bundled_lang.join("safe.yml"),
+            "id: safe-rule\nmessage: safe\nseverity: warning\nlanguage: python\nrule:\n  pattern: print($X)\n",
+        ).unwrap();
+
+        // Adversarial: lang dir is a symlink.
+        let user_rules = home.path().join(".quorum").join("rules");
+        std::fs::create_dir_all(&user_rules).unwrap();
+        let evil_target = home.path().join("evil_target");
+        std::fs::create_dir_all(&evil_target).unwrap();
+        std::fs::write(
+            evil_target.join("evil.yml"),
+            "id: evil-langlink\nmessage: evil\nseverity: warning\nlanguage: python\nrule:\n  pattern: open($X)\n",
+        ).unwrap();
+        symlink(&evil_target, user_rules.join("python")).expect("symlink");
+
+        let rules = load_rules(project.path(), home.path());
+        let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&"safe-rule".to_string()), "bundled rule should still load");
+        assert!(
+            !ids.contains(&"evil-langlink".to_string()),
+            "rule loaded from symlinked lang directory must be rejected; ids={ids:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_rules_skips_symlinked_rule_file() {
+        // Adversarial: rules tree + lang dir are real, but a single rule
+        // file inside is a symlink to content outside the rules tree.
+        // O_NOFOLLOW open must reject (raw_os_error == ELOOP).
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let project = tempdir().expect("project tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        let user_python = home.path().join(".quorum").join("rules").join("python");
+        std::fs::create_dir_all(&user_python).unwrap();
+
+        // Real rule directly in user dir — must load.
+        std::fs::write(
+            user_python.join("real.yml"),
+            "id: real-rule\nmessage: real\nseverity: warning\nlanguage: python\nrule:\n  pattern: print($X)\n",
+        ).unwrap();
+
+        // Symlinked rule file pointing at content outside the rules tree.
+        let outside = home.path().join("outside.yml");
+        std::fs::write(
+            &outside,
+            "id: smuggled-rule\nmessage: smuggled\nseverity: warning\nlanguage: python\nrule:\n  pattern: eval($X)\n",
+        ).unwrap();
+        symlink(&outside, user_python.join("smuggled.yml")).expect("symlink");
+
+        let rules = load_rules(project.path(), home.path());
+        let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&"real-rule".to_string()), "real rule should load; ids={ids:?}");
+        assert!(
+            !ids.contains(&"smuggled-rule".to_string()),
+            "symlinked rule file must be rejected (O_NOFOLLOW); ids={ids:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_rules_skips_oversized_rule_file() {
+        // Adversarial: a 2 MiB YAML file that PARSES (block scalar with
+        // x...x padding). If the size cap is removed, this loads as a real
+        // rule. With the cap, read_rule_file rejects it before parse and
+        // the rule never enters the corpus.
+        use tempfile::tempdir;
+
+        let project = tempdir().expect("project tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        let user_python = home.path().join(".quorum").join("rules").join("python");
+        std::fs::create_dir_all(&user_python).unwrap();
+
+        // Small, well-formed rule that must load.
+        std::fs::write(
+            user_python.join("small.yml"),
+            "id: small-rule\nmessage: small\nseverity: warning\nlanguage: python\nrule:\n  pattern: print($X)\n",
+        ).unwrap();
+
+        // 2 MiB padded YAML (block scalar in description so it still parses
+        // if the size gate were removed — distinguishes size-skip from
+        // parse-skip).
+        let prefix = "id: oversized-rule\nmessage: huge\nseverity: warning\nlanguage: python\nrule:\n  pattern: open($X)\nnote: |\n";
+        let padding = "x".repeat(2 * 1024 * 1024);
+        let oversized = format!("{prefix}  {padding}\n");
+        std::fs::write(user_python.join("oversized.yml"), oversized).unwrap();
+
+        let rules = load_rules(project.path(), home.path());
+        let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&"small-rule".to_string()), "small rule should load; ids={ids:?}");
+        assert!(
+            !ids.contains(&"oversized-rule".to_string()),
+            "rule file >1 MiB must be skipped; ids={ids:?}"
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn load_rules_skips_symlinked_top_level_rules_dir() {
         // Adversarial: ~/.quorum/rules itself is a symlink to /etc/. The
