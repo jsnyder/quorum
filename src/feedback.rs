@@ -202,6 +202,85 @@ pub(crate) fn rename_or_tolerate_race(
     }
 }
 
+/// Maximum bytes read from a single inbox file. External agents have no
+/// reason to drop multi-MB feedback; cap protects against symlink-to-/dev/zero
+/// and runaway file growth. Mirrors `MAX_RULE_FILE_BYTES` in `src/ast_grep.rs`
+/// (#120).
+const MAX_INBOX_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Classify an inbox entry via `symlink_metadata` (portable; does not follow
+/// symlinks on Unix or Windows). Returns `Ok(())` for small regular files,
+/// `Err(reason)` otherwise. The caller surfaces the reason to operators via
+/// `DrainError`. Symlinks, FIFOs, sockets, directories, and oversized files
+/// are all rejected. Mirrors the inline-cfg pattern of `read_rule_file` in
+/// `src/ast_grep.rs` (#120).
+fn classify_inbox_entry(path: &std::path::Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("stat failed: {e}"))?;
+    let ft = meta.file_type();
+    if ft.is_symlink() {
+        return Err("symlink".into());
+    }
+    if !ft.is_file() {
+        return Err("not a regular file".into());
+    }
+    if meta.len() > MAX_INBOX_FILE_BYTES {
+        return Err(format!(
+            "size {} exceeds cap {MAX_INBOX_FILE_BYTES}",
+            meta.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Open an inbox file safely. On Unix, applies `O_NOFOLLOW` (refuse symlinks
+/// at the syscall boundary — defends against TOCTOU between iteration-time
+/// classify and the post-rename read) plus `O_NONBLOCK` (so a FIFO at this
+/// path errors `EWOULDBLOCK` instead of hanging the drain loop). Always
+/// validates regular-file via fstat after open, caps size, and reads via
+/// `.take(MAX+1)` to defend against inodes that lie about size
+/// (proc/sysfs/network FS). On non-Unix, the OS-level symlink/FIFO guards
+/// are unavailable, so the post-classify TOCTOU window is wider; the
+/// portable `is_file()` + size-cap checks still bound the damage.
+fn read_inbox_file(path: &std::path::Path) -> std::io::Result<String> {
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = opts.open(path)?;
+
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        // FIFO, socket, char/block device, or (on non-Unix) a symlink target.
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if meta.len() > MAX_INBOX_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("exceeds size cap of {MAX_INBOX_FILE_BYTES} bytes"),
+        ));
+    }
+    let mut buf = String::new();
+    file.take(MAX_INBOX_FILE_BYTES + 1).read_to_string(&mut buf)?;
+    if buf.len() as u64 > MAX_INBOX_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "exceeds size cap during read",
+        ));
+    }
+    Ok(buf)
+}
+
 /// Per-call summary of `load_all_with_stats` (issue #92).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct LoadStats {
@@ -368,6 +447,15 @@ impl FeedbackStore {
     ///
     /// `processed_dir_total_bytes` in the returned report is cumulative
     /// (drives the 50MB warning threshold).
+    ///
+    /// **Trust boundary (2026-04-29, mirrors #120):** the inbox dir is
+    /// writable by any local process (compromised dependency, IDE plugin,
+    /// supply-chain actor). Files are classified at iteration time via
+    /// `symlink_metadata` — symlinks, FIFOs, sockets, directories, and
+    /// oversized files (>1 MiB) are rejected with a `report.errors`
+    /// entry prefixed `rejected:` and **left in `inbox/`** (fail-closed;
+    /// never silently flow into `processing/` or `processed/`). Reads use
+    /// `O_NOFOLLOW | O_NONBLOCK` as defense-in-depth against TOCTOU.
     pub fn drain_inbox(
         &self,
         inbox_dir: &std::path::Path,
@@ -389,11 +477,29 @@ impl FeedbackStore {
         let (entries, iter_errors) =
             drain_inbox_entries(read.map(|r| r.map(|e| e.path())));
         report.errors.extend(iter_errors);
-        let mut files: Vec<PathBuf> = entries
+        let candidates: Vec<PathBuf> = entries
             .into_iter()
             .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-            .filter(|p| !p.is_dir())
             .collect();
+
+        // Classify each candidate via symlink_metadata. Reject (with a
+        // report.errors entry) anything that isn't a small regular file.
+        // Rejection happens BEFORE the claim-rename, so rejected files
+        // stay in inbox/ for operator inspection — they never reach
+        // processing/. Mirrors the #120 architecture for ast_grep rules.
+        let mut files: Vec<PathBuf> = Vec::new();
+        for p in candidates {
+            match classify_inbox_entry(&p) {
+                Ok(()) => files.push(p),
+                Err(reason) => {
+                    report.errors.push(DrainError {
+                        file: p,
+                        line: 0,
+                        message: format!("rejected: {reason}"),
+                    });
+                }
+            }
+        }
         files.sort();
 
         if files.is_empty() {
@@ -425,8 +531,10 @@ impl FeedbackStore {
                 }
             }
 
-            // STEP B: INGEST from the claimed path.
-            let content = match std::fs::read_to_string(&claimed) {
+            // STEP B: INGEST from the claimed path. read_inbox_file uses
+            // O_NOFOLLOW|O_NONBLOCK + size cap as defense-in-depth against
+            // TOCTOU between iteration-time classify and now.
+            let content = match read_inbox_file(&claimed) {
                 Ok(c) => c,
                 Err(e) => {
                     report.errors.push(DrainError {
@@ -600,6 +708,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         (FeedbackStore::new(path), dir)
+    }
+
+    /// One well-formed `ExternalVerdictInputWire` line for inbox-hardening tests.
+    /// Surrounding tests assert on rejection semantics, not content, so any
+    /// valid wire shape works.
+    fn valid_external_jsonl_line() -> String {
+        serde_json::to_string(&serde_json::json!({
+            "file_path": "src/a.rs",
+            "finding_title": "Bug",
+            "finding_category": "security",
+            "verdict": "tp",
+            "reason": "r",
+            "agent": "pal",
+            "agent_model": null,
+            "confidence": null
+        })).unwrap()
     }
 
     // Issue #93: handler tests need to inspect the path a handler-owned
@@ -1313,6 +1437,189 @@ mod tests {
         assert_eq!(r1.drained_files, 1);
         let r2 = store.drain_inbox(&inbox, &processed).unwrap();
         assert_eq!(r2.drained_files, 0, "second drain is a no-op, not an error");
+    }
+
+    // --- #120-class hardening for drain_inbox (2026-04-29) ---
+    //
+    // Mirrors the symlink + size-cap + non-regular-file guards shipped on
+    // src/ast_grep.rs in #120. drain_inbox ingests JSONL from
+    // ~/.quorum/inbox/, which is process-readable but writable by any local
+    // process. A compromised dependency / IDE plugin / supply-chain actor
+    // can drop a symlink, FIFO, or oversized file at this path. Pre-fix:
+    //   * `!p.is_dir()` follows symlinks → symlink to /etc/passwd reads it
+    //   * `read_to_string` on a FIFO blocks indefinitely → daemon hang
+    //   * `read_to_string` on a 10 GiB file → OOM
+    // Post-fix: layered guards (symlink_metadata iteration filter + O_NOFOLLOW|
+    // O_NONBLOCK on open + size cap + .take(MAX+1) defensive bound). Rejected
+    // files remain in inbox/ (fail-closed; never silently flow to processing/).
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_skips_symlinked_inbox_file() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let outside = dir.path().join("outside.jsonl");
+        std::fs::write(&outside, format!("{}\n", valid_external_jsonl_line())).unwrap();
+
+        let evil = inbox.join("evil.jsonl");
+        symlink(&outside, &evil).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+
+        assert_eq!(report.entries, 0, "symlinked inbox file must not be ingested");
+        assert!(
+            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            "expected 'rejected: ...' error, got: {:?}",
+            report.errors
+        );
+        assert!(evil.exists(), "symlink must remain in inbox/ (fail-closed)");
+        assert!(!inbox.join("processing").join("evil.jsonl").exists());
+        assert!(
+            !processed.exists() || std::fs::read_dir(&processed).unwrap().next().is_none(),
+            "rejected symlink must not flow into processed/"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_rejects_oversized_file() {
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let huge = "x".repeat(2 * 1024 * 1024);
+        std::fs::write(inbox.join("huge.jsonl"), huge).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+
+        assert_eq!(report.entries, 0);
+        assert!(
+            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            "expected 'rejected: ...' error, got: {:?}",
+            report.errors
+        );
+        assert!(inbox.join("huge.jsonl").exists(), "oversized file must remain in inbox/ (fail-closed)");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_rejects_non_regular_file() {
+        use std::os::unix::net::UnixListener;
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let sock_path = inbox.join("evil.jsonl");
+        let _listener = UnixListener::bind(&sock_path).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+
+        assert_eq!(report.entries, 0);
+        assert!(
+            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            "expected 'rejected: ...' error for non-regular file, got: {:?}",
+            report.errors
+        );
+        assert!(sock_path.exists(), "non-regular file must remain in inbox/ (fail-closed)");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_rejects_fifo_file() {
+        use std::ffi::CString;
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let fifo_path = inbox.join("evil.jsonl");
+        let cstr = CString::new(fifo_path.to_str().unwrap()).unwrap();
+        let rc = unsafe { libc::mkfifo(cstr.as_ptr(), 0o644) };
+        assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+
+        assert_eq!(report.entries, 0);
+        assert!(
+            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            "expected 'rejected: ...' error for FIFO, got: {:?}",
+            report.errors
+        );
+        assert!(fifo_path.exists(), "FIFO must remain in inbox/ (fail-closed)");
+        assert!(!inbox.join("processing").join("evil.jsonl").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_accepts_file_at_size_cap() {
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let line = valid_external_jsonl_line();
+        let mut content = String::with_capacity(MAX_INBOX_FILE_BYTES as usize);
+        content.push_str(&line);
+        content.push('\n');
+        while content.len() < MAX_INBOX_FILE_BYTES as usize {
+            content.push('\n');
+        }
+        content.truncate(MAX_INBOX_FILE_BYTES as usize);
+        assert_eq!(content.len() as u64, MAX_INBOX_FILE_BYTES);
+        std::fs::write(inbox.join("at_cap.jsonl"), &content).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.entries, 1, "exactly-at-cap file must be accepted");
+        assert!(report.errors.is_empty(), "no errors expected, got: {:?}", report.errors);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_inbox_rejects_file_one_byte_over_cap() {
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let huge = "x".repeat(MAX_INBOX_FILE_BYTES as usize + 1);
+        std::fs::write(inbox.join("over.jsonl"), huge).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.entries, 0);
+        assert!(
+            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            "expected 'rejected: ...' error, got: {:?}",
+            report.errors
+        );
+        assert!(inbox.join("over.jsonl").exists(), "off-by-one file must remain in inbox/ (fail-closed)");
+    }
+
+    #[test]
+    fn drain_inbox_happy_path_unaffected_by_nofollow_helper() {
+        // Distinct from drain_inbox_valid_file_appends_and_moves so a future
+        // regression breaking normal ingestion lights up two tests, not one.
+        let dir = TempDir::new().unwrap();
+        let store = FeedbackStore::new(dir.path().join("feedback.jsonl"));
+        let inbox = dir.path().join("inbox");
+        let processed = dir.path().join("processed");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("ok.jsonl"), format!("{}\n", valid_external_jsonl_line())).unwrap();
+
+        let report = store.drain_inbox(&inbox, &processed).unwrap();
+        assert_eq!(report.entries, 1);
+        assert!(report.errors.is_empty(), "no errors expected, got: {:?}", report.errors);
     }
 
     #[test]
