@@ -2,6 +2,7 @@
 .worktrees/
 *.swp
 .DS_Store
+.fastembed_cache
 .fastembed_cache/
 .notion-sync.json
 mutants.out/
