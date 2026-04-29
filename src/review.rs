@@ -1259,6 +1259,13 @@ mod tests {
             sys.contains("trust or external-input boundary"),
             "system prompt missing the trust/external-input boundary anchor phrase"
         );
+        // Per gpt-5.4 review feedback: also pin the carve-out's *semantics*,
+        // not just the boundary phrase. A regression could preserve the
+        // boundary noun while silently deleting the rules-3-and-4 exemption.
+        assert!(
+            sys.contains("Rules 3 and 4 below do not apply"),
+            "system prompt missing the explicit rule 3 + 4 exemption that defines the carve-out"
+        );
     }
 
     #[test]
