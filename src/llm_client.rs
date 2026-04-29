@@ -1387,8 +1387,8 @@ mod tests {
         ] {
             let s = sanitize_error_body(raw);
             assert!(
-                !s.contains("secret") && !s.contains("token") || s.contains("[REDACTED]"),
-                "must scrub the value in {raw:?}; got {s:?}"
+                s.contains("[REDACTED]") && !s.contains("secret") && !s.contains("token"),
+                "must replace value with [REDACTED] and remove sensitive substring in {raw:?}; got {s:?}"
             );
         }
     }

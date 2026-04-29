@@ -80,7 +80,7 @@ Existing module: tests live under `#[cfg(test)] mod tests` at the bottom of `src
 | 34 | `validate_unsafe_bypass_allows_arbitrary_public_host` | bypass works | `unsafe=true`, `"https://evil.example.com"` OK |
 | 35 | `validate_unsafe_bypass_allows_loopback` | bypass works for private too | `unsafe=true`, `"http://127.0.0.1"` OK |
 | 36 | `validate_unsafe_bypass_does_not_skip_scheme_check` | `file://` still fails | `unsafe=true`, `"file:///etc/passwd"` errors |
-| 37 | `validate_unsafe_bypass_does_not_skip_userinfo_check` | covered by #9 — ensure ordering |
+| 37 | `validate_unsafe_bypass_does_not_skip_userinfo_check` | embedded creds always rejected | `unsafe=true`, `"https://u:p@example.com"` errors (covered by #9 — ensure ordering) |
 
 ### 2f. `BaseUrlPolicy::from_env` (env-var parser)
 
