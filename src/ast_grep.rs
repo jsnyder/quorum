@@ -821,4 +821,50 @@ rule:
             failures.len(),
             failures.join("\n  "));
     }
+
+    // ── Issue #120 hardening: user rules trust boundary ──
+
+    #[test]
+    #[cfg(unix)]
+    fn load_rules_skips_symlinked_top_level_rules_dir() {
+        // Adversarial: ~/.quorum/rules itself is a symlink to /etc/. The
+        // top-level rules-root check must reject the whole tree before
+        // descending — without it, every subsequent guard is moot.
+        // (Codex review of #120 plan flagged this gap.)
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let project = tempdir().expect("project tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        // Bundled-side control: a real rule the loader must still find.
+        let bundled_lang = project.path().join("rules").join("python");
+        std::fs::create_dir_all(&bundled_lang).unwrap();
+        std::fs::write(
+            bundled_lang.join("safe.yml"),
+            "id: safe-rule\nmessage: safe\nseverity: warning\nlanguage: python\nrule:\n  pattern: print($X)\n",
+        ).unwrap();
+
+        // Adversarial: ~/.quorum/rules is itself a symlink pointing at a
+        // fully populated rules tree elsewhere. The loader must NOT descend.
+        let evil_root = home.path().join("evil_rules_root");
+        let evil_lang = evil_root.join("python");
+        std::fs::create_dir_all(&evil_lang).unwrap();
+        std::fs::write(
+            evil_lang.join("evil.yml"),
+            "id: evil-toplevel\nmessage: evil\nseverity: warning\nlanguage: python\nrule:\n  pattern: open($X)\n",
+        ).unwrap();
+        let user_quorum = home.path().join(".quorum");
+        std::fs::create_dir_all(&user_quorum).unwrap();
+        symlink(&evil_root, user_quorum.join("rules")).expect("symlink");
+
+        let rules = load_rules(project.path(), home.path());
+        let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&"safe-rule".to_string()),
+            "bundled rule should still load; ids={ids:?}");
+        assert!(
+            !ids.contains(&"evil-toplevel".to_string()),
+            "rule loaded via symlinked top-level ~/.quorum/rules must be rejected; ids={ids:?}"
+        );
+    }
 }
