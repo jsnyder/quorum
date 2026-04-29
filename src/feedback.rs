@@ -214,6 +214,13 @@ const MAX_INBOX_FILE_BYTES: u64 = 1024 * 1024;
 /// `DrainError`. Symlinks, FIFOs, sockets, directories, and oversized files
 /// are all rejected. Mirrors the inline-cfg pattern of `read_rule_file` in
 /// `src/ast_grep.rs` (#120).
+///
+/// **Layered-defense summary:** this is layer 1 of 2. It runs pre-rename
+/// to keep malicious entries out of `processing/`, but is path-bound and
+/// thus subject to a TOCTOU swap between this stat and the subsequent
+/// `read_inbox_file` open. `read_inbox_file` (layer 2) closes that window
+/// on Unix via `O_NOFOLLOW | O_NONBLOCK` and is the authoritative
+/// handle-bound check.
 fn classify_inbox_entry(path: &std::path::Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(path)
         .map_err(|e| format!("stat failed: {e}"))?;
@@ -461,6 +468,19 @@ impl FeedbackStore {
     /// classify and read) emits a `read failed:` row and leaves the
     /// claimed file in `processing/` for operator inspection — same
     /// behavior as the pre-existing `claim rename failed:` path.
+    ///
+    /// **Platform note:** the TOCTOU defense at (2) is Unix-only —
+    /// `O_NOFOLLOW`/`O_NONBLOCK` have no portable Rust-std equivalent on
+    /// Windows, so on non-Unix the post-classify race window is wider and
+    /// only the iteration-time `symlink_metadata` check + portable
+    /// `is_file()` + size cap bound the damage.
+    ///
+    /// **Rejection churn:** rejected files persist in `inbox/` for
+    /// operator inspection and will be re-reported on every subsequent
+    /// `drain_inbox` invocation (each call re-classifies all `*.jsonl`
+    /// entries). This is intentional — the report makes the malicious
+    /// drop visible without the daemon silently ingesting it. Operators
+    /// remove or quarantine the file to clear the recurring entry.
     pub fn drain_inbox(
         &self,
         inbox_dir: &std::path::Path,
@@ -1609,6 +1629,55 @@ mod tests {
             report.errors
         );
         assert!(inbox.join("over.jsonl").exists(), "off-by-one file must remain in inbox/ (fail-closed)");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_inbox_file_rejects_fifo_via_o_nonblock_in_isolation() {
+        // PAL/code-reviewer flagged that drain_inbox_rejects_fifo_file only
+        // exercises the iteration-time symlink_metadata classify, not the
+        // post-rename read_inbox_file open. Swapping a regular file for a
+        // FIFO between classify and read is the realistic TOCTOU. This test
+        // calls read_inbox_file directly to validate the second layer
+        // (O_NONBLOCK on Unix) returns promptly with error rather than
+        // hanging on FIFO open.
+        use std::ffi::CString;
+        let dir = TempDir::new().unwrap();
+        let fifo_path = dir.path().join("evil.jsonl");
+        let cstr = CString::new(fifo_path.to_str().unwrap()).unwrap();
+        let rc = unsafe { libc::mkfifo(cstr.as_ptr(), 0o644) };
+        assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+
+        // O_NONBLOCK opens succeed for FIFOs without blocking; the
+        // post-handle is_file() check then rejects. Pre-fix this would
+        // hang indefinitely (no reader on the other end of the FIFO).
+        let result = read_inbox_file(&fifo_path);
+        assert!(result.is_err(), "FIFO read must error, got: {result:?}");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not a regular file"),
+            "expected 'not a regular file' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_inbox_file_rejects_symlink_via_o_nofollow_in_isolation() {
+        // Independent validation that O_NOFOLLOW on the open() syscall
+        // refuses to follow symlinks even if classify_inbox_entry was
+        // bypassed (e.g., TOCTOU swap injecting a symlink between classify
+        // and post-rename read).
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let outside = dir.path().join("target.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        let link = dir.path().join("evil.jsonl");
+        symlink(&outside, &link).unwrap();
+
+        let result = read_inbox_file(&link);
+        assert!(result.is_err(), "symlink read must error via O_NOFOLLOW");
+        // ELOOP on Linux, ELOOP/ENOTDIR on macOS depending on kernel —
+        // assert on the error existence, not the specific OS error.
     }
 
     #[test]
