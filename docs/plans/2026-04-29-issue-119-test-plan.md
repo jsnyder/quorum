@@ -91,9 +91,9 @@ Existing module: tests live under `#[cfg(test)] mod tests` at the bottom of `src
 | 40 | `from_env_extra_hosts_empty_string_yields_no_extras` | empty != one empty entry | `QUORUM_ALLOWED_BASE_URL_HOSTS=""` |
 | 41 | `from_env_extra_hosts_whitespace_only` | all-whitespace tokens dropped | `" , ,  "` |
 | 42 | `from_env_extra_hosts_lowercased` | normalization done at parse time | `"API.Example.COM"` -> stored as `"api.example.com"` |
-| 43 | `from_env_allow_private_only_accepts_one` | strict truthy | `"1"` -> true; `"0"`, `"true"`, `"yes"`, `""` -> false. Document choice. |
-| 44 | `from_env_unsafe_only_accepts_one` | strict truthy parity | same matrix |
-| 45 | `from_env_is_case_sensitive_for_truthy_value` | `"1"` != `"TRUE"` | document strictness |
+| 43 | `from_env_allow_private_accepts_common_truthy` | liberal truthy (case-insensitive after `.trim()`) | `"1"`, `"true"`, `"yes"`, `"on"` -> true; `"0"`, `"false"`, `""`, `"no"` -> false |
+| 44 | `from_env_unsafe_accepts_common_truthy` | parity with allow_private_ips | same matrix |
+| 45 | `from_env_truthy_is_case_insensitive` | `"TRUE"` and `"true"` both -> true | document `to_ascii_lowercase()` after trim |
 
 Use a serialized env-mutex helper (the codebase already has patterns for this; if not, add a `static ENV_LOCK: Mutex<()>` local to the test module) since env mutation is process-global.
 

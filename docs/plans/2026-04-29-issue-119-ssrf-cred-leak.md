@@ -118,42 +118,45 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
 
     let host = parsed.host().ok_or_else(|| anyhow::anyhow!("base_url has no host"))?;
 
+    // Per-branch logic: private/loopback hosts gate on `allow_private_ips`
+    // and bypass the allowlist when permitted (running Ollama on localhost
+    // shouldn't ALSO require adding "localhost" to QUORUM_ALLOWED_BASE_URL_HOSTS).
+    // Public hosts still go through the allowlist.
     match host {
         url::Host::Ipv4(ip) => {
-            if !policy.allow_private_ips && ipv4_is_local_or_special(ip) {
-                anyhow::bail!(actionable_error_for_private_ip(&base_url, &ip.to_string()));
-            }
-            // Public IP literals are not allowlisted by default — require explicit opt-in.
-            if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
+            if ipv4_is_local_or_special(ip) {
+                if !policy.allow_private_ips {
+                    anyhow::bail!(actionable_error_for_private_ip(&base_url, &ip.to_string()));
+                }
+                // allow_private_ips opted in: skip allowlist for private IPs.
+            } else if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
                 anyhow::bail!(actionable_error_for_unknown_host(&base_url, &ip.to_string(), policy));
             }
         }
         url::Host::Ipv6(ip) => {
-            // IPv4-mapped IPv6 (::ffff:127.0.0.1) is a known SSRF bypass shape —
-            // unwrap to the embedded v4 address and apply the v4 rules.
-            if let Some(v4) = ipv6_to_ipv4_mapped(ip) {
-                if !policy.allow_private_ips && ipv4_is_local_or_special(v4) {
-                    anyhow::bail!(actionable_error_for_private_ip(&base_url, &v4.to_string()));
-                }
-                if !host_in_allowlist(&v4.to_string(), &policy.additional_allowed_hosts) {
-                    anyhow::bail!(actionable_error_for_unknown_host(&base_url, &v4.to_string(), policy));
-                }
+            // IPv4-mapped IPv6 (::ffff:127.0.0.1) → apply IPv4 rules so
+            // loopback isn't bypassed by IPv6 form.
+            let is_local = if let Some(v4) = ipv6_to_ipv4_mapped(ip) {
+                ipv4_is_local_or_special(v4)
             } else {
-                if !policy.allow_private_ips && ipv6_is_local_or_special(ip) {
+                ipv6_is_local_or_special(ip)
+            };
+            if is_local {
+                if !policy.allow_private_ips {
                     anyhow::bail!(actionable_error_for_private_ip(&base_url, &ip.to_string()));
                 }
-                if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
-                    anyhow::bail!(actionable_error_for_unknown_host(&base_url, &ip.to_string(), policy));
-                }
+            } else if !host_in_allowlist(&ip.to_string(), &policy.additional_allowed_hosts) {
+                anyhow::bail!(actionable_error_for_unknown_host(&base_url, &ip.to_string(), policy));
             }
         }
         url::Host::Domain(d) => {
             let dn = d.to_ascii_lowercase();
-            // Treat "localhost" as loopback for the IP-block check.
-            if !policy.allow_private_ips && is_localhost_name(&dn) {
-                anyhow::bail!(actionable_error_for_private_ip(&base_url, &dn));
-            }
-            if !host_in_allowlist(&dn, &policy.additional_allowed_hosts) {
+            if is_localhost_name(&dn) {
+                if !policy.allow_private_ips {
+                    anyhow::bail!(actionable_error_for_private_ip(&base_url, &dn));
+                }
+                // allow_private_ips opted in: skip allowlist for localhost-family.
+            } else if !host_in_allowlist(&dn, &policy.additional_allowed_hosts) {
                 anyhow::bail!(actionable_error_for_unknown_host(&base_url, &dn, policy));
             }
         }
