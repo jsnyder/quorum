@@ -1,9 +1,73 @@
+use std::io::Read;
 use std::path::Path;
 
 use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig, Severity as AstSeverity};
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use crate::finding::{Finding, Severity, Source};
+
+/// Maximum size for a single ast-grep YAML rule file. Files exceeding this
+/// are skipped with a warning instead of being read into memory. Intended
+/// to prevent DoS from oversized files in the user-rules tree
+/// (~/.quorum/rules/<lang>/), where the trust boundary is weaker than the
+/// bundled rules tree. Largest bundled rule today is ~1.6 KiB; 1 MiB gives
+/// 600x headroom for legitimate growth. See issue #120.
+const MAX_RULE_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
+/// Read a rule file safely: O_NOFOLLOW open (rejects symlinks at the syscall
+/// boundary, eliminating TOCTOU between stat-and-read), validate via the
+/// opened handle, then bounded read.
+///
+/// Codex review of #120 flagged the original stat-then-read design as having
+/// a TOCTOU window: an attacker with write access to the rule path could
+/// swap a validated regular file for a symlink (or oversized file) between
+/// `symlink_metadata` and `read_to_string`. By opening with O_NOFOLLOW first
+/// and validating from the resulting handle, we bind the metadata check to
+/// the same inode we read.
+fn read_rule_file(path: &Path) -> std::io::Result<String> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        // libc::O_NOFOLLOW: open() returns ELOOP if the final path component
+        // is a symlink. Available on all Unix platforms we support.
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let file = opts.open(path)?;
+
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        // FIFO, socket, char/block device, etc. (Symlinks already rejected
+        // at open time on Unix; this is the residual non-regular-file case.)
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "rule path is not a regular file",
+        ));
+    }
+    if meta.len() > MAX_RULE_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "rule file size {} exceeds cap {}",
+                meta.len(),
+                MAX_RULE_FILE_BYTES
+            ),
+        ));
+    }
+
+    // Defense in depth: bound the read to MAX_RULE_FILE_BYTES + 1 even
+    // though we just stat-validated. Inode size can lie on some filesystems
+    // (proc, sysfs, network FS); this guarantees we never allocate more
+    // than the cap regardless.
+    let mut yaml = String::new();
+    file.take(MAX_RULE_FILE_BYTES + 1).read_to_string(&mut yaml)?;
+    Ok(yaml)
+}
 
 /// Map file extension to ast-grep SupportLang.
 /// JS/JSX/MJS/CJS map to TypeScript (ast-grep uses TS grammar for JS).
@@ -34,7 +98,22 @@ pub fn load_rules(
     let user_dir = home_dir.join(".quorum").join("rules");
 
     for rules_dir in [&bundled_dir, &user_dir] {
-        if !rules_dir.is_dir() {
+        // #120: top-level rules-root check. symlink_metadata does NOT follow
+        // symlinks, unlike is_dir(). Without this, a symlink at the rules
+        // root itself (e.g. ~/.quorum/rules -> /etc/) bypasses every other
+        // guard. Codex review of the #120 plan flagged this gap.
+        let rules_meta = match std::fs::symlink_metadata(rules_dir) {
+            Ok(m) => m,
+            Err(_) => continue, // not present is fine
+        };
+        if rules_meta.file_type().is_symlink() {
+            tracing::warn!(
+                path = %rules_dir.display(),
+                "ast-grep: skipping symlinked rules root"
+            );
+            continue;
+        }
+        if !rules_meta.file_type().is_dir() {
             continue;
         }
         let Ok(lang_entries) = std::fs::read_dir(rules_dir) else {
@@ -42,7 +121,28 @@ pub fn load_rules(
         };
         for lang_entry in lang_entries.flatten() {
             let lang_dir = lang_entry.path();
-            if !lang_dir.is_dir() {
+            // #120: per-lang-dir symlink check. Same threat model: a symlink
+            // at ~/.quorum/rules/python -> /etc/ssh/ would let read_to_string
+            // exfiltrate target content if we naively descended.
+            let lang_meta = match std::fs::symlink_metadata(&lang_dir) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %lang_dir.display(),
+                        error = %e,
+                        "ast-grep: failed to stat lang dir; skipping"
+                    );
+                    continue;
+                }
+            };
+            if lang_meta.file_type().is_symlink() {
+                tracing::warn!(
+                    path = %lang_dir.display(),
+                    "ast-grep: skipping symlinked lang directory"
+                );
+                continue;
+            }
+            if !lang_meta.file_type().is_dir() {
                 continue;
             }
             let Ok(rule_entries) = std::fs::read_dir(&lang_dir) else {
@@ -61,10 +161,14 @@ pub fn load_rules(
             rule_files.sort();
 
             for rule_path in rule_files {
-                let yaml = match std::fs::read_to_string(&rule_path) {
+                let yaml = match read_rule_file(&rule_path) {
                     Ok(y) => y,
                     Err(e) => {
-                        eprintln!("ast-grep: failed to read rule {}: {}", rule_path.display(), e);
+                        tracing::warn!(
+                            path = %rule_path.display(),
+                            error = %e,
+                            "ast-grep: skipping rule file"
+                        );
                         continue;
                     }
                 };
