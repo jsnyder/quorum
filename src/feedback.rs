@@ -450,12 +450,17 @@ impl FeedbackStore {
     ///
     /// **Trust boundary (2026-04-29, mirrors #120):** the inbox dir is
     /// writable by any local process (compromised dependency, IDE plugin,
-    /// supply-chain actor). Files are classified at iteration time via
-    /// `symlink_metadata` — symlinks, FIFOs, sockets, directories, and
-    /// oversized files (>1 MiB) are rejected with a `report.errors`
-    /// entry prefixed `rejected:` and **left in `inbox/`** (fail-closed;
-    /// never silently flow into `processing/` or `processed/`). Reads use
-    /// `O_NOFOLLOW | O_NONBLOCK` as defense-in-depth against TOCTOU.
+    /// supply-chain actor). Two distinct rejection paths:
+    /// (1) Iteration-time classify (`classify_inbox_entry`, via
+    /// `symlink_metadata`) rejects symlinks, FIFOs, sockets, directories,
+    /// and oversized files (>1 MiB) BEFORE the claim-rename. Those
+    /// entries get a `report.errors` row prefixed `rejected:` and stay
+    /// in `inbox/` (never flow into `processing/` or `processed/`).
+    /// (2) Post-rename read (`read_inbox_file`, with `O_NOFOLLOW |
+    /// O_NONBLOCK` as defense-in-depth against TOCTOU swap between
+    /// classify and read) emits a `read failed:` row and leaves the
+    /// claimed file in `processing/` for operator inspection — same
+    /// behavior as the pre-existing `claim rename failed:` path.
     pub fn drain_inbox(
         &self,
         inbox_dir: &std::path::Path,
