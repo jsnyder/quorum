@@ -23,7 +23,7 @@ use crate::pipeline::{self, LlmReviewer, PipelineConfig};
 pub struct QuorumHandler {
     config: Config,
     feedback_store: FeedbackStore,
-    llm_reviewer: Option<Box<dyn LlmReviewer>>,
+    llm_reviewer: Option<Arc<dyn LlmReviewer>>,
     parse_cache: Arc<ParseCache>,
 }
 
@@ -37,8 +37,8 @@ impl QuorumHandler {
         let feedback_path = dirs_path()?.join("feedback.jsonl");
         let feedback_store = FeedbackStore::new(feedback_path);
 
-        let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-            Some(Box::new(OpenAiClient::new(&config.base_url, api_key)?))
+        let llm_reviewer: Option<Arc<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
+            Some(Arc::new(OpenAiClient::new(&config.base_url, api_key)?))
         } else {
             None
         };
@@ -228,9 +228,12 @@ impl QuorumHandler {
         Ok(CallToolResult::text_content(vec![result.into()]))
     }
 
-    fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Chat requires QUORUM_API_KEY to be set.")?;
+    async fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Chat requires QUORUM_API_KEY to be set.")?,
+        );
 
         let mut prompt = format!("Question: {}\n\n", redact::redact_secrets(&params.question));
         if let Some(code) = &params.code {
@@ -251,15 +254,24 @@ impl QuorumHandler {
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
         }
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "chat", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
-    fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Debug requires QUORUM_API_KEY to be set.")?;
+    async fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Debug requires QUORUM_API_KEY to be set.")?,
+        );
 
         let redacted_code = redact::redact_secrets(&params.code);
         let redacted_error = redact::redact_secrets(&params.error);
@@ -268,15 +280,24 @@ impl QuorumHandler {
             params.file_path, redacted_error, redacted_code
         );
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "debug", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
-    fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Testgen requires QUORUM_API_KEY to be set.")?;
+    async fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Testgen requires QUORUM_API_KEY to be set.")?,
+        );
 
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
@@ -299,7 +320,13 @@ impl QuorumHandler {
             framework_hint, lang_name, params.file_path, lang_name, redacted_code
         );
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "testgen", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -391,17 +418,17 @@ impl ServerHandler for QuorumHandler {
             "chat" => {
                 let tool: ChatTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_chat(tool)
+                self.handle_chat(tool).await
             }
             "debug" => {
                 let tool: DebugTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_debug(tool)
+                self.handle_debug(tool).await
             }
             "testgen" => {
                 let tool: TestgenTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_testgen(tool)
+                self.handle_testgen(tool).await
             }
             _ => return Err(CallToolError::unknown_tool(params.name)),
         };
@@ -748,89 +775,333 @@ mod tests {
                 model: "test-model".into(),
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler2.jsonl")),
-            llm_reviewer: Some(Box::new(FakeLlm)),
+            llm_reviewer: Some(Arc::new(FakeLlm)),
             parse_cache: Arc::new(ParseCache::new(10)),
         }
     }
 
+    /// Fake LlmReviewer that synchronizes on a std::sync::Barrier inside
+    /// review(). Used by the #129 concurrency regression test to prove
+    /// that concurrent MCP handler invocations actually run in parallel
+    /// on the blocking pool — if the executor is parked on a sync
+    /// .review() call, only one caller will ever reach barrier.wait()
+    /// and the test will deadlock until the outer tokio::time::timeout.
+    ///
+    /// std::sync::Barrier is intentional — tokio::sync::Barrier would
+    /// yield to the executor and defeat the test.
+    struct BarrierLlm {
+        barrier: std::sync::Arc<std::sync::Barrier>,
+    }
+
+    impl crate::pipeline::LlmReviewer for BarrierLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            self.barrier.wait();
+            Ok(crate::llm_client::LlmResponse {
+                content: "ok".into(),
+                usage: None,
+            })
+        }
+    }
+
+    fn handler_with_barrier_llm(barrier: std::sync::Arc<std::sync::Barrier>) -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-barrier.jsonl")),
+            llm_reviewer: Some(Arc::new(BarrierLlm { barrier })),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    /// Fake LlmReviewer that returns a fixed sentinel string. Used by
+    /// behavioral smoke tests to prove the prompt flowed through the
+    /// handler and the response surfaced in the CallToolResult — avoids
+    /// the `assert!(result.is_ok())` Liar-test antipattern.
+    struct EchoLlm {
+        sentinel: &'static str,
+    }
+
+    impl crate::pipeline::LlmReviewer for EchoLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            Ok(crate::llm_client::LlmResponse {
+                content: self.sentinel.into(),
+                usage: None,
+            })
+        }
+    }
+
+    fn handler_with_echo_llm(sentinel: &'static str) -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-echo.jsonl")),
+            llm_reviewer: Some(Arc::new(EchoLlm { sentinel })),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    /// Fake reviewer that always panics. Used to pin the JoinError
+    /// surfacing contract (AC8 / design gap G1) — pre-fix, a panic
+    /// inside the sync handler would unwind the tokio worker. Post-fix,
+    /// the panic is caught by spawn_blocking and surfaced as a string
+    /// error containing "review task failed".
+    struct PanicLlm;
+
+    impl crate::pipeline::LlmReviewer for PanicLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            panic!("PanicLlm: synthetic panic for JoinError test");
+        }
+    }
+
+    fn handler_with_panic_llm() -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-panic.jsonl")),
+            llm_reviewer: Some(Arc::new(PanicLlm)),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_chat_surfaces_join_error_on_panic() {
+        // Pin AC8: a panic inside the blocking review task is caught by
+        // spawn_blocking and surfaced as Err("review task failed: ...")
+        // — does NOT unwind the worker. tracing::warn! also fires at
+        // the failure site for ops visibility (not asserted here).
+        let handler = handler_with_panic_llm();
+        let result = handler
+            .handle_chat(ChatTool {
+                question: "y".into(),
+                code: Some("x".into()),
+                file_path: None,
+            })
+            .await;
+        let err = result.expect_err("panic must surface as Err, not unwind worker");
+        assert!(
+            err.contains("review task failed"),
+            "JoinError must surface with 'review task failed' prefix; got: {}",
+            err
+        );
+    }
+
     #[test]
-    fn chat_requires_api_key() {
+    fn handle_chat_runs_concurrent_llm_calls_in_parallel() {
+        // INVARIANT: handle_chat must not block the tokio worker.
+        //
+        // Bug case (handle_chat is sync, called inside an async block):
+        //   Task 1 polls, calls handle_chat, calls reviewer.review,
+        //   which calls barrier.wait(). The worker is now parked.
+        //   Tasks 2..N never get polled. Barrier never releases.
+        //
+        // Fix case (handle_chat is async + spawn_blocking):
+        //   All N invocations land on the blocking pool, each thread
+        //   reaches the barrier, barrier releases, all complete in
+        //   microseconds.
+        //
+        // The wall-clock killswitch uses std::sync::mpsc::recv_timeout,
+        // NOT tokio::time::timeout. With worker_threads=1, a parked
+        // worker also starves tokio's timer driver — so a tokio-side
+        // timeout would never fire on the bug branch and the test
+        // would hang forever. The body runs inside its own
+        // std::thread::spawn so the test thread can wait via OS-level
+        // mpsc::recv_timeout regardless of runtime liveness. If the
+        // body deadlocks, the body thread leaks (acceptable in a
+        // test — the process exits on failure).
+        use std::sync::mpsc;
+
+        const N: usize = 4;
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let _body = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("build runtime");
+            rt.block_on(async move {
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+                let handler = std::sync::Arc::new(handler_with_barrier_llm(
+                    std::sync::Arc::clone(&barrier),
+                ));
+
+                let mut joins = Vec::new();
+                for _ in 0..N {
+                    let h = std::sync::Arc::clone(&handler);
+                    joins.push(tokio::spawn(async move {
+                        h.handle_chat(ChatTool {
+                            question: "y".into(),
+                            code: Some("x".into()),
+                            file_path: None,
+                        })
+                        .await
+                    }));
+                }
+                for j in joins {
+                    j.await
+                        .expect("task panicked")
+                        .expect("chat handler returned err");
+                }
+            });
+            let _ = tx.send(());
+        });
+
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("handle_chat serializes LLM calls — barrier deadlocked");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_requires_api_key() {
         let handler = handler_no_llm();
         let params = ChatTool {
             question: "What does this do?".into(),
             code: None,
             file_path: None,
         };
-        assert!(handler.handle_chat(params).is_err());
+        assert!(handler.handle_chat(params).await.is_err());
     }
 
-    #[test]
-    fn chat_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = ChatTool {
             question: "What does this function do?".into(),
             code: Some("fn add(a: i32, b: i32) -> i32 { a + b }".into()),
             file_path: Some("math.rs".into()),
         };
-        let result = handler.handle_chat(params).unwrap();
+        let result = handler.handle_chat(params).await.unwrap();
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn debug_requires_api_key() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn debug_requires_api_key() {
         let handler = handler_no_llm();
         let params = DebugTool {
             error: "panic!".into(),
             code: "fn main() {}".into(),
             file_path: "main.rs".into(),
         };
-        assert!(handler.handle_debug(params).is_err());
+        assert!(handler.handle_debug(params).await.is_err());
     }
 
-    #[test]
-    fn debug_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn debug_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = DebugTool {
             error: "index out of bounds".into(),
             code: "fn get(v: &[i32]) -> i32 { v[10] }".into(),
             file_path: "main.rs".into(),
         };
-        let result = handler.handle_debug(params).unwrap();
+        let result = handler.handle_debug(params).await.unwrap();
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn testgen_requires_api_key() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_debug_returns_llm_content() {
+        // Behavioral smoke test — proves the prompt flowed through the
+        // async + spawn_blocking path AND the response surfaced in the
+        // CallToolResult. Sentinel-on-serialized-output avoids the
+        // `assert!(result.is_ok())` Liar-test antipattern.
+        const SENTINEL: &str = "debug-fake-output-2026-04-29";
+        let handler = handler_with_echo_llm(SENTINEL);
+        let result = handler
+            .handle_debug(DebugTool {
+                file_path: "f.rs".into(),
+                code: "x".into(),
+                error: "e".into(),
+            })
+            .await
+            .expect("handle_debug ok");
+        // Tighten scope: assert sentinel is in result.content (the user-facing
+        // tool output), not anywhere in the serialized wrapper. Keeps the
+        // assertion shape-agnostic about CallToolResult internals while
+        // still failing if the prompt/response wiring breaks.
+        let body = serde_json::to_string(&result.content).expect("serialize content");
+        assert!(
+            body.contains(SENTINEL),
+            "response.content must contain sentinel from EchoLlm; got: {}",
+            body
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_requires_api_key() {
         let handler = handler_no_llm();
         let params = TestgenTool {
             code: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
             file_path: "math.rs".into(),
             framework: None,
         };
-        assert!(handler.handle_testgen(params).is_err());
+        assert!(handler.handle_testgen(params).await.is_err());
     }
 
-    #[test]
-    fn testgen_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = TestgenTool {
             code: "def add(a, b):\n    return a + b\n".into(),
             file_path: "math.py".into(),
             framework: Some("pytest".into()),
         };
-        let result = handler.handle_testgen(params).unwrap();
+        let result = handler.handle_testgen(params).await.unwrap();
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn testgen_rejects_unsupported_extension() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_rejects_unsupported_extension() {
         let handler = handler_with_fake_llm();
         let params = TestgenTool {
             code: "code".into(),
             file_path: "file.xyz".into(),
             framework: None,
         };
-        assert!(handler.handle_testgen(params).is_err());
+        assert!(handler.handle_testgen(params).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_testgen_returns_llm_content() {
+        // Behavioral smoke test mirror of handle_debug_returns_llm_content.
+        const SENTINEL: &str = "testgen-fake-output-2026-04-29";
+        let handler = handler_with_echo_llm(SENTINEL);
+        let result = handler
+            .handle_testgen(TestgenTool {
+                file_path: "f.rs".into(),
+                code: "fn x() {}".into(),
+                framework: None,
+            })
+            .await
+            .expect("handle_testgen ok");
+        // Tighten scope: assert sentinel is in result.content (the user-facing
+        // tool output), not anywhere in the serialized wrapper. Keeps the
+        // assertion shape-agnostic about CallToolResult internals while
+        // still failing if the prompt/response wiring breaks.
+        let body = serde_json::to_string(&result.content).expect("serialize content");
+        assert!(
+            body.contains(SENTINEL),
+            "response.content must contain sentinel from EchoLlm; got: {}",
+            body
+        );
     }
 
     // -- Cache integration --
