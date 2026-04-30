@@ -854,6 +854,58 @@ mod tests {
         }
     }
 
+    /// Fake reviewer that always panics. Used to pin the JoinError
+    /// surfacing contract (AC8 / design gap G1) — pre-fix, a panic
+    /// inside the sync handler would unwind the tokio worker. Post-fix,
+    /// the panic is caught by spawn_blocking and surfaced as a string
+    /// error containing "review task failed".
+    struct PanicLlm;
+
+    impl crate::pipeline::LlmReviewer for PanicLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            panic!("PanicLlm: synthetic panic for JoinError test");
+        }
+    }
+
+    fn handler_with_panic_llm() -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-panic.jsonl")),
+            llm_reviewer: Some(Arc::new(PanicLlm)),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_chat_surfaces_join_error_on_panic() {
+        // Pin AC8: a panic inside the blocking review task is caught by
+        // spawn_blocking and surfaced as Err("review task failed: ...")
+        // — does NOT unwind the worker. tracing::warn! also fires at
+        // the failure site for ops visibility (not asserted here).
+        let handler = handler_with_panic_llm();
+        let result = handler
+            .handle_chat(ChatTool {
+                question: "y".into(),
+                code: Some("x".into()),
+                file_path: None,
+            })
+            .await;
+        let err = result.expect_err("panic must surface as Err, not unwind worker");
+        assert!(
+            err.contains("review task failed"),
+            "JoinError must surface with 'review task failed' prefix; got: {}",
+            err
+        );
+    }
+
     #[test]
     fn handle_chat_runs_concurrent_llm_calls_in_parallel() {
         // INVARIANT: handle_chat must not block the tokio worker.
