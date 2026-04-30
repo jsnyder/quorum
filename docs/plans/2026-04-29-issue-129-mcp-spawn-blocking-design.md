@@ -150,3 +150,26 @@ No public API change. No CLI flag change. No MCP tool schema change.
 
 - **#131** — Migrate `LlmReviewer` trait to `async fn review`. Eliminates `spawn_blocking` workaround entirely; closes #81 as a side effect. Wide blast radius across `pipeline.rs`, `mcp/handler.rs`, `llm_client.rs`. Tracked separately.
 - **#132** — DRY MCP LLM-handler bodies (chat/debug/testgen) into a shared `spawn_blocking` helper. Deferred per PAL recommendation ("extract only after the first handler proves clean"). Likely subsumed by #131.
+
+## Acceptance criteria (Phase 3)
+
+| # | Criterion | Pinned by test |
+|---|---|---|
+| AC1 | A blocking `LlmReviewer::review()` invocation in `handle_chat`/`handle_debug`/`handle_testgen` no longer parks the tokio worker; concurrent MCP requests progress in parallel via the blocking pool. | T1 |
+| AC2 | `handle_chat` returns the LLM response content unchanged through the new `async`/`spawn_blocking` path. | T1 (implicit Ok) + existing FakeLlm tests |
+| AC3 | `handle_debug` returns the LLM response content unchanged. | T2 |
+| AC4 | `handle_testgen` returns the LLM response content unchanged. | T3 |
+| AC5 | No public API change, no CLI flag change, no MCP tool schema change. | Compile + existing handler suite |
+| AC6 | All pre-existing handler tests pass after `Box<dyn>` → `Arc<dyn>` swap. | Existing ~15 constructor-touching tests |
+| AC7 | `cargo test --bin quorum`, `cargo clippy --all-targets`, `cargo build --release` clean. | DoD checklist |
+| AC8 | `JoinError` from a panicking blocking task is surfaced as `"review task failed: {e}"`. | Not asserted (gap G1) |
+
+| Test | Asserts | AC |
+|---|---|---|
+| T1 `handle_chat_runs_concurrent_llm_calls_in_parallel` | N=4 concurrent `handle_chat().await` calls all reach `Barrier::wait()` and complete within 5s under `worker_threads=1`. | AC1, AC2 |
+| T2 `handle_debug_returns_llm_content` | Serialized `CallToolResult` contains EchoLlm sentinel `debug-fake-output-2026-04-29`. | AC3, AC5 |
+| T3 `handle_testgen_returns_llm_content` | Serialized `CallToolResult` contains EchoLlm sentinel `testgen-fake-output-2026-04-29`. | AC4, AC5 |
+
+**Accepted coverage gaps:** G1 JoinError-on-panic path (low value vs. cost; behavior documented). G2 blocking-pool starvation (clustered with #130). G3 MCP-side request cancellation reclaiming in-flight `reqwest::blocking` work (unchanged behavior; documented). G4 async-trait migration (#131). G5 pipeline-side blocking (#81). G6 wiremock real-network coverage of the new path (`OpenAiClient` already covered by #117 wiremock suite).
+
+**Phase 3 reviewers:** test-planning-implementation produced the AC table; testing-antipatterns-expert returned **GO** with two non-blocking nits (use `tempfile::TempDir` over `/tmp/unused-*.jsonl` — deferred for consistency with existing test convention; promote Task 7 Step 4 from optional to required — Task 1 Step 2 already covers this RED check).
