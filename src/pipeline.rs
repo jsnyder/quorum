@@ -272,21 +272,55 @@ fn query_feedback_precedents(
 
     selected
         .iter()
-        .map(|s| {
-            let verdict_label = match s.entry.verdict {
-                Verdict::Tp => "TRUE POSITIVE",
-                Verdict::Fp => "FALSE POSITIVE",
-                _ => "NOTED",
-            };
-            let truncated_reason: String = s.entry.reason.chars().take(100).collect();
-            format!(
-                "[{}] {}: {}",
-                verdict_label,
-                s.entry.finding_title,
-                truncated_reason,
-            )
-        })
+        .map(|s| render_precedent_for_few_shot(&s.entry))
         .collect()
+}
+
+/// Render a single feedback precedent for inclusion in the LLM few-shot
+/// prompt. Pinned marker phrases — change only by updating both code and
+/// the contract tests in `mod tests` (#123 Layer 1, Task 6).
+///
+/// `PatternOvergeneralization { discriminator_hint: Some(_) }` precedents
+/// surface their hint with a "When the pattern IS a real bug:" marker so
+/// the LLM learns the boundary instead of blanket-suppressing the pattern.
+/// Hint is capped at 200 chars (Unicode-codepoint counted) with `…` ellipsis.
+pub(crate) fn render_precedent_for_few_shot(entry: &crate::feedback::FeedbackEntry) -> String {
+    use crate::feedback::Verdict;
+
+    let verdict_label = match entry.verdict {
+        Verdict::Tp => "TRUE POSITIVE",
+        Verdict::Fp => "FALSE POSITIVE",
+        _ => "NOTED",
+    };
+    let truncated_reason: String = entry.reason.chars().take(100).collect();
+
+    let mut rendered = format!(
+        "[{}] {}: {}",
+        verdict_label,
+        entry.finding_title,
+        truncated_reason,
+    );
+
+    // PatternOvergeneralization hint — append marker phrase + truncated hint
+    // so the LLM can re-flag the pattern when context differs from this FP.
+    if let Some(crate::feedback::FpKind::PatternOvergeneralization {
+        discriminator_hint: Some(hint),
+    }) = &entry.fp_kind
+    {
+        const HINT_CAP: usize = 200;
+        let hint_chars = hint.chars().count();
+        if hint_chars <= HINT_CAP {
+            rendered.push_str("\nWhen the pattern IS a real bug: ");
+            rendered.push_str(hint);
+        } else {
+            let truncated: String = hint.chars().take(HINT_CAP).collect();
+            rendered.push_str("\nWhen the pattern IS a real bug: ");
+            rendered.push_str(&truncated);
+            rendered.push('…');
+        }
+    }
+
+    rendered
 }
 
 /// Run the full review pipeline on a single file.
@@ -911,8 +945,90 @@ pub async fn review_file_llm_only(
 mod tests {
     use super::*;
     use crate::finding::Source;
+    use crate::feedback::{FeedbackEntry, FpKind, Provenance, Verdict};
 
     use crate::test_support::fakes::FakeReviewer;
+
+    // ---------------------------------------------------------------------
+    // #123 Layer 1 (Task 6) — PatternOvergeneralization discriminator hint
+    // surfaces in the few-shot prompt rendering.
+    // ---------------------------------------------------------------------
+
+    fn entry_for_few_shot(fp_kind: Option<FpKind>, reason: &str) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "src/foo.rs".into(),
+            finding_title: "Unused variable".into(),
+            finding_category: "style".into(),
+            verdict: Verdict::Fp,
+            reason: reason.into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind,
+        }
+    }
+
+    #[test]
+    fn pattern_overgeneralization_renders_discriminator_when_hint_present() {
+        let entry = entry_for_few_shot(
+            Some(FpKind::PatternOvergeneralization {
+                discriminator_hint: Some(
+                    "Real bug when var has no _ prefix AND not in #[derive]".into(),
+                ),
+            }),
+            "_var prefix is convention",
+        );
+        let rendered = render_precedent_for_few_shot(&entry);
+        assert!(
+            rendered.contains("_var prefix is convention"),
+            "reason must appear; got: {}", rendered,
+        );
+        assert!(
+            rendered.contains("Real bug when var has no _ prefix"),
+            "discriminator hint must appear; got: {}", rendered,
+        );
+        // Marker phrase pinned so a refactor doesn't silently break the
+        // LLM-facing contract. Update both code + test together if changed.
+        assert!(
+            rendered.contains("When the pattern IS a real bug"),
+            "marker phrase must wrap the hint; got: {}", rendered,
+        );
+    }
+
+    #[test]
+    fn pattern_overgeneralization_omits_marker_when_hint_none() {
+        let entry = entry_for_few_shot(
+            Some(FpKind::PatternOvergeneralization { discriminator_hint: None }),
+            "_var prefix is convention",
+        );
+        let rendered = render_precedent_for_few_shot(&entry);
+        assert!(rendered.contains("_var prefix is convention"), "reason still present");
+        assert!(
+            !rendered.contains("When the pattern IS a real bug"),
+            "marker phrase must be ABSENT when hint=None; got: {}", rendered,
+        );
+    }
+
+    #[test]
+    fn pattern_overgeneralization_truncates_long_hint_at_200_chars() {
+        let long_hint = "X".repeat(300);
+        let entry = entry_for_few_shot(
+            Some(FpKind::PatternOvergeneralization {
+                discriminator_hint: Some(long_hint),
+            }),
+            "r",
+        );
+        let rendered = render_precedent_for_few_shot(&entry);
+        assert!(rendered.contains(&"X".repeat(200)), "200 chars must remain in hint");
+        assert!(
+            !rendered.contains(&"X".repeat(201)),
+            "must truncate above 200 chars; got: {}", rendered,
+        );
+        assert!(
+            rendered.contains("…"),
+            "ellipsis (…) must mark truncation; got: {}", rendered,
+        );
+    }
 
     async fn parse_and_review(source: &str, lang: Language, llm: Option<&dyn LlmReviewer>, models: Vec<String>) -> FileReviewResult {
         let tree = parser::parse(source, lang).unwrap();
