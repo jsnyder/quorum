@@ -74,7 +74,15 @@ fn accumulate_capped<'a>(
 }
 
 /// Compute the weight of a single feedback entry based on provenance and recency.
-fn verdict_weight(entry: &FeedbackEntry) -> f64 {
+///
+/// `now` is injected (not pulled from `Utc::now()` inline) so calibrator tests
+/// can pin time deterministically and mutation testing can lock the half-life
+/// constants — antipatterns review #123 Phase 3 flagged the inline `Utc::now()`
+/// as wall-clock-coupled. Production call sites in `calibrate` /
+/// `calibrate_with_index` capture `Utc::now()` once at function entry and pass
+/// the same `now` to every `verdict_weight` call so all entries within a single
+/// calibration share the same reference time.
+fn verdict_weight(entry: &FeedbackEntry, now: chrono::DateTime<chrono::Utc>) -> f64 {
     let provenance_weight = match &entry.provenance {
         crate::feedback::Provenance::PostFix => 1.5,
         crate::feedback::Provenance::Human => 1.0,
@@ -88,12 +96,27 @@ fn verdict_weight(entry: &FeedbackEntry) -> f64 {
         crate::feedback::Provenance::Unknown => 0.3,
     };
 
+    // Per-kind recency time-constant (#123 Layer 1):
+    // - TrustModelAssumption FPs: 40d (3x faster decay) — these rot quickly
+    //   when the trust model evolves.
+    // - All other FpKind variants and non-FP verdicts: 120d default
+    //   (existing behavior, half-life ~83d).
+    // - `Option<FpKind> = None` for pre-bump entries falls through to 120d
+    //   (Hallucination semantics, zero-touch migration).
+    let recency_tau_days = match (&entry.verdict, &entry.fp_kind) {
+        (
+            crate::feedback::Verdict::Fp,
+            Some(crate::feedback::FpKind::TrustModelAssumption),
+        ) => 40.0,
+        _ => 120.0,
+    };
+
     // Future-dated entries (clock skew, mis-set system clocks, manual edits)
     // would otherwise clamp to age=0 and receive maximum recency weight.
     // Use absolute age so a future-dated entry decays the same as one written
     // the same delta in the past, instead of being the most-trusted precedent.
-    let age_days = (chrono::Utc::now() - entry.timestamp).num_days().unsigned_abs() as f64;
-    let recency_weight = (-age_days / 120.0).exp(); // half-life ~83 days
+    let age_days = (now - entry.timestamp).num_days().unsigned_abs() as f64;
+    let recency_weight = (-age_days / recency_tau_days).exp();
 
     provenance_weight * recency_weight
 }
@@ -104,6 +127,10 @@ pub fn calibrate(
     feedback: &[FeedbackEntry],
     config: &CalibratorConfig,
 ) -> CalibrationResult {
+    // Capture `now` once so every verdict_weight invocation in this calibration
+    // uses the same reference time (#123 Layer 1 — clock injection refactor).
+    let now = chrono::Utc::now();
+
     // Filter out auto-calibrate feedback if configured
     let filtered: Vec<&FeedbackEntry> = if config.use_auto_feedback {
         feedback.iter().collect()
@@ -163,20 +190,20 @@ pub fn calibrate(
             similar
                 .iter()
                 .filter(|e| matches!(e.verdict, Verdict::Tp | Verdict::Partial))
-                .map(|e| (&e.provenance, verdict_weight(e))),
+                .map(|e| (&e.provenance, verdict_weight(e, now))),
         );
         let fp_weight = accumulate_capped(
             similar
                 .iter()
                 .filter(|e| e.verdict == Verdict::Fp)
-                .map(|e| (&e.provenance, verdict_weight(e))),
+                .map(|e| (&e.provenance, verdict_weight(e, now))),
         );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
         let mut wontfix_weight: f64 = 0.0;
         for e in similar.iter().filter(|e| e.verdict == Verdict::Wontfix) {
-            wontfix_weight += verdict_weight(e);
+            wontfix_weight += verdict_weight(e, now);
         }
         // Wontfix is inert: pre-existing issues the user chose not to fix carry no
         // signal about finding validity. Excluded from both soft and full suppression.
@@ -193,7 +220,7 @@ pub fn calibrate(
                     finding_title: e.finding_title.clone(),
                     verdict: e.verdict.clone(),
                     similarity: sim,
-                    weight: verdict_weight(e),
+                    weight: verdict_weight(e, now),
                     provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
                     file_path: e.file_path.clone(),
                 }
@@ -328,6 +355,10 @@ pub fn calibrate_with_index(
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
+    // Capture `now` once so every verdict_weight invocation in this calibration
+    // uses the same reference time (#123 Layer 1 — clock injection refactor).
+    let now = chrono::Utc::now();
+
     let mut output = Vec::new();
     let mut suppressed = 0;
     let mut boosted = 0;
@@ -391,20 +422,20 @@ pub fn calibrate_with_index(
             similar
                 .iter()
                 .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Partial))
-                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry, now) * s.similarity as f64)),
         );
         let fp_weight = accumulate_capped(
             similar
                 .iter()
                 .filter(|s| s.entry.verdict == Verdict::Fp)
-                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry) * s.similarity as f64)),
+                .map(|s| (&s.entry.provenance, verdict_weight(&s.entry, now) * s.similarity as f64)),
         );
 
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
         let mut wontfix_weight: f64 = 0.0;
         for s in similar.iter().filter(|s| s.entry.verdict == Verdict::Wontfix) {
-            let w = verdict_weight(&s.entry) * s.similarity as f64;
+            let w = verdict_weight(&s.entry, now) * s.similarity as f64;
             wontfix_weight += w;
         }
         // Wontfix is inert: pre-existing issues the user chose not to fix carry no
@@ -421,7 +452,7 @@ pub fn calibrate_with_index(
                 // Must match decision math: verdict_weight * similarity (see TP/FP/wontfix
                 // accumulation above). Storing verdict_weight alone silently under-reports
                 // near-miss precedents during debugging.
-                weight: verdict_weight(&s.entry) * s.similarity as f64,
+                weight: verdict_weight(&s.entry, now) * s.similarity as f64,
                 provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
                 file_path: s.entry.file_path.clone(),
             })
@@ -657,17 +688,153 @@ mod tests {
         // ages to 0 for future-dated entries (clock skew, manual JSONL edits),
         // giving them maximum recency weight. Use absolute age so a year-future
         // entry decays the same as a year-old one.
+        let now = Utc::now();
         let mut future = fb("anything", "x", Verdict::Tp);
-        future.timestamp = Utc::now() + chrono::Duration::days(365);
-        let w_future = verdict_weight(&future);
+        future.timestamp = now + chrono::Duration::days(365);
+        let w_future = verdict_weight(&future, now);
 
-        let mut now = fb("anything", "x", Verdict::Tp);
-        now.timestamp = Utc::now();
-        let w_now = verdict_weight(&now);
+        let mut fresh = fb("anything", "x", Verdict::Tp);
+        fresh.timestamp = now;
+        let w_now = verdict_weight(&fresh, now);
 
         assert!(
             w_future < w_now * 0.1,
             "future-dated entry weight {w_future} should decay below 10% of fresh weight {w_now}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // #123 Layer 1 — per-kind recency in verdict_weight (Task 3 RED)
+    // -------------------------------------------------------------------
+
+    /// Pinned timestamp for deterministic per-kind weight tests. Wall-clock
+    /// independence is mandatory — recency is sensitive to small drift.
+    fn pinned_now() -> chrono::DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-05-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn fp_kind_trust_model_decays_3x_faster() {
+        // 40-day-old TrustModelAssumption weight ≈ 120-day-old Hallucination
+        // weight (both at e^-1 ≈ 0.368). Plus second assertion proving the
+        // 40d branch fired (kills "both arms collapsed" mutant).
+        let now = pinned_now();
+        let trust = FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict: Verdict::Fp,
+            reason: "r".into(),
+            model: None,
+            timestamp: now - chrono::Duration::days(40),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
+        };
+        let halluc_120d = FeedbackEntry {
+            timestamp: now - chrono::Duration::days(120),
+            fp_kind: Some(crate::feedback::FpKind::Hallucination),
+            ..trust.clone()
+        };
+        let halluc_40d = FeedbackEntry {
+            timestamp: now - chrono::Duration::days(40),
+            fp_kind: Some(crate::feedback::FpKind::Hallucination),
+            ..trust.clone()
+        };
+        let trust_w = verdict_weight(&trust, now);
+        let halluc_120d_w = verdict_weight(&halluc_120d, now);
+        let halluc_40d_w = verdict_weight(&halluc_40d, now);
+
+        let ratio = trust_w / halluc_120d_w;
+        assert!(
+            (0.95..=1.05).contains(&ratio),
+            "TrustModelAssumption@40d should ≈ Hallucination@120d; ratio={}, trust={}, halluc_120d={}",
+            ratio, trust_w, halluc_120d_w,
+        );
+        // Anchor: prove the 40d branch fired — same age, different decay.
+        assert!(
+            trust_w < halluc_40d_w,
+            "TrustModel@40d ({}) must decay faster than Hallucination@40d ({})",
+            trust_w, halluc_40d_w,
+        );
+    }
+
+    /// #123 Layer 1 (Task 4): regression locks. Hallucination, CompensatingControl,
+    /// and None all route through the default 120d branch with tight tolerances
+    /// so a `120.0 → 119.0` mutant gets killed.
+    #[test]
+    fn fp_kind_hallucination_default_recency_120d() {
+        let now = pinned_now();
+        let entry = FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict: Verdict::Fp,
+            reason: "r".into(),
+            model: None,
+            timestamp: now - chrono::Duration::days(120),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::Hallucination),
+        };
+        let w = verdict_weight(&entry, now);
+        // 1.0 (Human) * e^-1 ≈ 0.36788 — tight tolerance kills 120→119 mutant.
+        assert!((0.366..=0.370).contains(&w), "expected ≈0.368, got {}", w);
+    }
+
+    #[test]
+    fn fp_kind_compensating_control_keeps_120d_recency() {
+        let now = pinned_now();
+        let entry = FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict: Verdict::Fp,
+            reason: "r".into(),
+            model: None,
+            timestamp: now - chrono::Duration::days(120),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::CompensatingControl {
+                reference: "PR #99".into(),
+            }),
+        };
+        let w = verdict_weight(&entry, now);
+        assert!((0.366..=0.370).contains(&w), "expected ≈0.368 (120d), got {}", w);
+    }
+
+    #[test]
+    fn fp_kind_none_routes_to_default_branch() {
+        // Negative anchor: a 100d-old None-kind FP must weigh STRICTLY MORE
+        // than a 100d-old TrustModelAssumption FP. Proves None routes to the
+        // 120d default arm, not coincidentally to the 40d trust-model arm.
+        let now = pinned_now();
+        let none_entry = FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict: Verdict::Fp,
+            reason: "r".into(),
+            model: None,
+            timestamp: now - chrono::Duration::days(100),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+        };
+        let trust_entry = FeedbackEntry {
+            fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
+            ..none_entry.clone()
+        };
+        let none_w = verdict_weight(&none_entry, now);
+        let trust_w = verdict_weight(&trust_entry, now);
+        assert!(
+            none_w > trust_w,
+            "None must route to 120d default; none={} should exceed trust@40d={}",
+            none_w, trust_w,
+        );
+        // Spot check absolute value: 1.0 * e^(-100/120) ≈ 0.4346.
+        assert!(
+            (0.433..=0.436).contains(&none_w),
+            "None@100d expected ≈0.4346, got {}",
+            none_w,
         );
     }
 
@@ -1058,7 +1225,7 @@ mod tests {
             provenance: crate::feedback::Provenance::Human,
             fp_kind: None,
         };
-        let weight = verdict_weight(&old_entry);
+        let weight = verdict_weight(&old_entry, Utc::now());
         assert!(weight >= 0.3,
             "90-day-old human feedback should retain >= 30% weight, got {:.3}", weight);
     }
@@ -1730,7 +1897,7 @@ mod tests {
             .expect("precedent should be present when index has a matching entry");
         assert!(prec.similarity < 1.0,
             "test fixture should yield a sub-1.0 similarity, got {}", prec.similarity);
-        let expected = prec.similarity * verdict_weight(&store.load_all().unwrap()[0]);
+        let expected = prec.similarity * verdict_weight(&store.load_all().unwrap()[0], Utc::now());
         assert!((prec.weight - expected).abs() < 1e-6,
             "trace weight {} must equal verdict_weight * similarity ({}); \
              decisions use the product, trace must match",
@@ -1883,7 +2050,7 @@ mod tests {
             },
             fp_kind: None,
         };
-        let w = verdict_weight(&entry);
+        let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
     }
 
@@ -1915,7 +2082,7 @@ mod tests {
             ("one", Some(1.0)),
         ];
         for (label, conf) in cases {
-            let w = verdict_weight(&mk(*conf));
+            let w = verdict_weight(&mk(*conf), Utc::now());
             // Tolerance 1e-4: accommodates Utc::now() jitter between test-setup
             // and verdict_weight's internal clock read (flagged by quorum self-review).
             assert!(
@@ -1939,7 +2106,7 @@ mod tests {
             provenance: crate::feedback::Provenance::Unknown,
             fp_kind: None,
         };
-        let w = verdict_weight(&entry);
+        let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
     }
 
