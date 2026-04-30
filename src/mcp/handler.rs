@@ -23,7 +23,7 @@ use crate::pipeline::{self, LlmReviewer, PipelineConfig};
 pub struct QuorumHandler {
     config: Config,
     feedback_store: FeedbackStore,
-    llm_reviewer: Option<Box<dyn LlmReviewer>>,
+    llm_reviewer: Option<Arc<dyn LlmReviewer>>,
     parse_cache: Arc<ParseCache>,
 }
 
@@ -37,8 +37,8 @@ impl QuorumHandler {
         let feedback_path = dirs_path()?.join("feedback.jsonl");
         let feedback_store = FeedbackStore::new(feedback_path);
 
-        let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-            Some(Box::new(OpenAiClient::new(&config.base_url, api_key)?))
+        let llm_reviewer: Option<Arc<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
+            Some(Arc::new(OpenAiClient::new(&config.base_url, api_key)?))
         } else {
             None
         };
@@ -748,7 +748,7 @@ mod tests {
                 model: "test-model".into(),
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-handler2.jsonl")),
-            llm_reviewer: Some(Box::new(FakeLlm)),
+            llm_reviewer: Some(Arc::new(FakeLlm)),
             parse_cache: Arc::new(ParseCache::new(10)),
         }
     }
@@ -788,7 +788,7 @@ mod tests {
                 model: "test-model".into(),
             },
             feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-barrier.jsonl")),
-            llm_reviewer: Some(Box::new(BarrierLlm { barrier })),
+            llm_reviewer: Some(Arc::new(BarrierLlm { barrier })),
             parse_cache: Arc::new(ParseCache::new(10)),
         }
     }
