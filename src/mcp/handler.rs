@@ -263,9 +263,12 @@ impl QuorumHandler {
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
-    fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Debug requires QUORUM_API_KEY to be set.")?;
+    async fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Debug requires QUORUM_API_KEY to be set.")?,
+        );
 
         let redacted_code = redact::redact_secrets(&params.code);
         let redacted_error = redact::redact_secrets(&params.error);
@@ -274,7 +277,10 @@ impl QuorumHandler {
             params.file_path, redacted_error, redacted_code
         );
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| format!("review task failed: {}", e))?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -402,7 +408,7 @@ impl ServerHandler for QuorumHandler {
             "debug" => {
                 let tool: DebugTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_debug(tool)
+                self.handle_debug(tool).await
             }
             "testgen" => {
                 let tool: TestgenTool = serde_json::from_value(args_value)
@@ -799,6 +805,40 @@ mod tests {
         }
     }
 
+    /// Fake LlmReviewer that returns a fixed sentinel string. Used by
+    /// behavioral smoke tests to prove the prompt flowed through the
+    /// handler and the response surfaced in the CallToolResult — avoids
+    /// the `assert!(result.is_ok())` Liar-test antipattern.
+    struct EchoLlm {
+        sentinel: &'static str,
+    }
+
+    impl crate::pipeline::LlmReviewer for EchoLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            Ok(crate::llm_client::LlmResponse {
+                content: self.sentinel.into(),
+                usage: None,
+            })
+        }
+    }
+
+    fn handler_with_echo_llm(sentinel: &'static str) -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-echo.jsonl")),
+            llm_reviewer: Some(Arc::new(EchoLlm { sentinel })),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
     #[test]
     fn handle_chat_runs_concurrent_llm_calls_in_parallel() {
         // INVARIANT: handle_chat must not block the tokio worker.
@@ -887,27 +927,51 @@ mod tests {
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn debug_requires_api_key() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn debug_requires_api_key() {
         let handler = handler_no_llm();
         let params = DebugTool {
             error: "panic!".into(),
             code: "fn main() {}".into(),
             file_path: "main.rs".into(),
         };
-        assert!(handler.handle_debug(params).is_err());
+        assert!(handler.handle_debug(params).await.is_err());
     }
 
-    #[test]
-    fn debug_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn debug_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = DebugTool {
             error: "index out of bounds".into(),
             code: "fn get(v: &[i32]) -> i32 { v[10] }".into(),
             file_path: "main.rs".into(),
         };
-        let result = handler.handle_debug(params).unwrap();
+        let result = handler.handle_debug(params).await.unwrap();
         assert!(!result.content.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_debug_returns_llm_content() {
+        // Behavioral smoke test — proves the prompt flowed through the
+        // async + spawn_blocking path AND the response surfaced in the
+        // CallToolResult. Sentinel-on-serialized-output avoids the
+        // `assert!(result.is_ok())` Liar-test antipattern.
+        const SENTINEL: &str = "debug-fake-output-2026-04-29";
+        let handler = handler_with_echo_llm(SENTINEL);
+        let result = handler
+            .handle_debug(DebugTool {
+                file_path: "f.rs".into(),
+                code: "x".into(),
+                error: "e".into(),
+            })
+            .await
+            .expect("handle_debug ok");
+        let json = serde_json::to_string(&result).expect("serialize result");
+        assert!(
+            json.contains(SENTINEL),
+            "response must contain sentinel from EchoLlm; got: {}",
+            json
+        );
     }
 
     #[test]
