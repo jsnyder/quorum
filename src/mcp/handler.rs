@@ -753,6 +753,112 @@ mod tests {
         }
     }
 
+    /// Fake LlmReviewer that synchronizes on a std::sync::Barrier inside
+    /// review(). Used by the #129 concurrency regression test to prove
+    /// that concurrent MCP handler invocations actually run in parallel
+    /// on the blocking pool — if the executor is parked on a sync
+    /// .review() call, only one caller will ever reach barrier.wait()
+    /// and the test will deadlock until the outer tokio::time::timeout.
+    ///
+    /// std::sync::Barrier is intentional — tokio::sync::Barrier would
+    /// yield to the executor and defeat the test.
+    struct BarrierLlm {
+        barrier: std::sync::Arc<std::sync::Barrier>,
+    }
+
+    impl crate::pipeline::LlmReviewer for BarrierLlm {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            self.barrier.wait();
+            Ok(crate::llm_client::LlmResponse {
+                content: "ok".into(),
+                usage: None,
+            })
+        }
+    }
+
+    fn handler_with_barrier_llm(barrier: std::sync::Arc<std::sync::Barrier>) -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: Some("sk-test".into()),
+                model: "test-model".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/unused-barrier.jsonl")),
+            llm_reviewer: Some(Box::new(BarrierLlm { barrier })),
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    #[test]
+    fn handle_chat_runs_concurrent_llm_calls_in_parallel() {
+        // INVARIANT: handle_chat must not block the tokio worker.
+        //
+        // Bug case (handle_chat is sync, called inside an async block):
+        //   Task 1 polls, calls handle_chat, calls reviewer.review,
+        //   which calls barrier.wait(). The worker is now parked.
+        //   Tasks 2..N never get polled. Barrier never releases.
+        //
+        // Fix case (handle_chat is async + spawn_blocking):
+        //   All N invocations land on the blocking pool, each thread
+        //   reaches the barrier, barrier releases, all complete in
+        //   microseconds.
+        //
+        // The wall-clock killswitch uses std::sync::mpsc::recv_timeout,
+        // NOT tokio::time::timeout. With worker_threads=1, a parked
+        // worker also starves tokio's timer driver — so a tokio-side
+        // timeout would never fire on the bug branch and the test
+        // would hang forever. The body runs inside its own
+        // std::thread::spawn so the test thread can wait via OS-level
+        // mpsc::recv_timeout regardless of runtime liveness. If the
+        // body deadlocks, the body thread leaks (acceptable in a
+        // test — the process exits on failure).
+        use std::sync::mpsc;
+
+        const N: usize = 4;
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let _body = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("build runtime");
+            rt.block_on(async move {
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+                let handler = std::sync::Arc::new(handler_with_barrier_llm(
+                    std::sync::Arc::clone(&barrier),
+                ));
+
+                let mut joins = Vec::new();
+                for _ in 0..N {
+                    let h = std::sync::Arc::clone(&handler);
+                    joins.push(tokio::spawn(async move {
+                        // NOTE: handle_chat is currently sync — no .await.
+                        // Once Task 3 lands the fix, this gains .await.
+                        h.handle_chat(ChatTool {
+                            question: "y".into(),
+                            code: Some("x".into()),
+                            file_path: None,
+                        })
+                    }));
+                }
+                for j in joins {
+                    j.await
+                        .expect("task panicked")
+                        .expect("chat handler returned err");
+                }
+            });
+            let _ = tx.send(());
+        });
+
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("handle_chat serializes LLM calls — barrier deadlocked");
+    }
+
     #[test]
     fn chat_requires_api_key() {
         let handler = handler_no_llm();
