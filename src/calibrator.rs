@@ -96,19 +96,28 @@ fn verdict_weight(entry: &FeedbackEntry, now: chrono::DateTime<chrono::Utc>) -> 
         crate::feedback::Provenance::Unknown => 0.3,
     };
 
-    // Per-kind recency time-constant (#123 Layer 1):
-    // - TrustModelAssumption FPs: 40d (3x faster decay) — these rot quickly
-    //   when the trust model evolves.
-    // - All other FpKind variants and non-FP verdicts: 120d default
-    //   (existing behavior, half-life ~83d).
-    // - `Option<FpKind> = None` for pre-bump entries falls through to 120d
-    //   (Hallucination semantics, zero-touch migration).
+    // Per-kind recency time-constant (#123 Layer 1).
+    //
+    // Match is intentionally exhaustive on `FpKind` (no `_ => 120.0` catch-all
+    // for FP variants) so a new variant added later forces a compile-time
+    // review point — it can't silently inherit the default decay if it should
+    // rot faster (e.g. a future `BugFixedUpstream` would want a faster τ).
+    //
+    // - TrustModelAssumption: 40d (3x faster decay) — these rot quickly when
+    //   the trust model evolves.
+    // - Hallucination, CompensatingControl, PatternOvergeneralization,
+    //   OutOfScope, and `None` (pre-bump rows) all use 120d (~83d half-life).
+    // - Non-FP verdicts (Tp/Partial/Wontfix/ContextMisleading): 120d. fp_kind
+    //   is meaningless here regardless of value.
+    use crate::feedback::{FpKind, Verdict};
     let recency_tau_days = match (&entry.verdict, &entry.fp_kind) {
-        (
-            crate::feedback::Verdict::Fp,
-            Some(crate::feedback::FpKind::TrustModelAssumption),
-        ) => 40.0,
-        _ => 120.0,
+        (Verdict::Fp, Some(FpKind::TrustModelAssumption)) => 40.0,
+        (Verdict::Fp, Some(FpKind::Hallucination)) => 120.0,
+        (Verdict::Fp, Some(FpKind::CompensatingControl { .. })) => 120.0,
+        (Verdict::Fp, Some(FpKind::PatternOvergeneralization { .. })) => 120.0,
+        (Verdict::Fp, Some(FpKind::OutOfScope { .. })) => 120.0,
+        (Verdict::Fp, None) => 120.0,
+        (Verdict::Tp | Verdict::Partial | Verdict::Wontfix | Verdict::ContextMisleading { .. }, _) => 120.0,
     };
 
     // Future-dated entries (clock skew, mis-set system clocks, manual edits)
@@ -779,6 +788,13 @@ mod tests {
             "TrustModel@40d ({}) must decay faster than Hallucination@40d ({})",
             trust_w, halluc_40d_w,
         );
+        // Absolute-value lock for the 40d τ constant (kills 40.0→39.0 mutant).
+        // 1.0 (Human) * e^(-40/40) = e^-1 ≈ 0.36788.
+        assert!(
+            (0.366..=0.370).contains(&trust_w),
+            "TrustModel@40d must equal 1.0 * e^-1 ≈ 0.368; got {} (40d τ may have drifted)",
+            trust_w,
+        );
     }
 
     /// #123 Layer 1 (Task 4): regression locks. Hallucination, CompensatingControl,
@@ -928,6 +944,65 @@ mod tests {
             "control: 3 Hallucination FPs MUST suppress; if this fails, suppression itself is broken"
         );
         assert_eq!(result.suppressed, 1);
+    }
+
+    /// #123 Layer 1 (PAL parity recommendation): both calibrator paths must
+    /// reach the same suppression decision on identical corpora. `calibrate()`
+    /// excludes OutOfScope at filter-build time, while `calibrate_with_index()`
+    /// excludes per-finding after `find_similar_enriched` has already pulled
+    /// candidates from the embedding/jaccard index. Functionally equivalent
+    /// today; this test pins it so a future index-level truncation can't
+    /// silently diverge them.
+    #[test]
+    fn calibrate_paths_agree_on_out_of_scope_exclusion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let make_oos = |idx: i64| FeedbackEntry {
+            file_path: "src/foo.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: format!("OutOfScope #{}", idx),
+            model: None,
+            timestamp: chrono::Utc::now() - chrono::Duration::days(idx),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::OutOfScope {
+                tracked_in: Some(format!("#{}", idx)),
+            }),
+        };
+        let entries = vec![make_oos(1), make_oos(2), make_oos(3)];
+        for e in &entries {
+            store.record(e).unwrap();
+        }
+
+        let make_finding = || FindingBuilder::new()
+            .title("SQL injection")
+            .category("security")
+            .build();
+        let config = CalibratorConfig::default();
+
+        // Path A: calibrate() — in-memory feedback slice.
+        let result_a = calibrate(vec![make_finding()], &entries, &config);
+
+        // Path B: calibrate_with_index() — same corpus via Jaccard index
+        // (deterministic; doesn't depend on embedding model availability).
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let result_b = calibrate_with_index(vec![make_finding()], &mut index, &config);
+
+        assert_eq!(
+            result_a.findings.len(), result_b.findings.len(),
+            "calibrate() and calibrate_with_index() must agree on OutOfScope exclusion; \
+             A.findings={}, B.findings={}",
+            result_a.findings.len(), result_b.findings.len(),
+        );
+        assert_eq!(
+            result_a.suppressed, result_b.suppressed,
+            "suppress count must match across paths; A.suppressed={}, B.suppressed={}",
+            result_a.suppressed, result_b.suppressed,
+        );
+        // Both paths must let the finding survive (OutOfScope is non-suppressive).
+        assert_eq!(result_a.findings.len(), 1, "path A: OutOfScope must not suppress");
+        assert_eq!(result_b.findings.len(), 1, "path B: OutOfScope must not suppress");
     }
 
     // -- No feedback: passthrough --
