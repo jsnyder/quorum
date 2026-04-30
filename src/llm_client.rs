@@ -220,9 +220,18 @@ fn apply_jitter(base: std::time::Duration, rand_unit: f64) -> std::time::Duratio
 
 /// Cheap per-call jitter source — avoids pulling `rand` for one use site.
 /// Returns a value in [0.0, 1.0). Quality matters less than independence
-/// across concurrent callers; nanosecond Instant works at parallel=4.
+/// across concurrent callers.
+///
+/// Uses `SystemTime::now().duration_since(UNIX_EPOCH)` for the subsec
+/// nanos. `Instant::now().elapsed()` was the obvious-but-wrong choice —
+/// it returns ~0 because the Instant was just constructed (CodeRabbit
+/// pre-merge review caught: the original always returned ~0.0,
+/// defeating jitter entirely).
 fn jitter_unit() -> f64 {
-    let nanos = std::time::Instant::now().elapsed().subsec_nanos() as u64;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
     (nanos % 1_000_000) as f64 / 1_000_000.0
 }
 
@@ -2023,6 +2032,33 @@ mod tests {
     fn jitter_unit_returns_value_in_zero_one() {
         let u = jitter_unit();
         assert!(u >= 0.0 && u < 1.0, "got {u}");
+    }
+
+    #[test]
+    fn jitter_unit_actually_varies_across_calls() {
+        // Regression for CodeRabbit catch: the previous Instant::now().elapsed()
+        // implementation always returned ~0.0 (Liar antipattern — the
+        // bounds-only test passed even though jitter was effectively
+        // disabled). 100 samples spaced by std::hint::black_box must
+        // produce at least 5 distinct buckets at 0.001 resolution to
+        // prove genuine variance, not a constant near zero.
+        use std::collections::HashSet;
+        let mut buckets: HashSet<u32> = HashSet::new();
+        for _ in 0..100 {
+            let u = jitter_unit();
+            // 1000 buckets over [0, 1) — spread should be much wider than 5.
+            buckets.insert((u * 1000.0) as u32);
+            std::hint::black_box(&u);
+            // Burn a few nanoseconds so SystemTime advances.
+            for _ in 0..1000 {
+                std::hint::black_box(0u64);
+            }
+        }
+        assert!(
+            buckets.len() >= 5,
+            "jitter must vary; got only {} distinct buckets across 100 samples",
+            buckets.len()
+        );
     }
 
     #[test]
