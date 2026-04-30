@@ -228,9 +228,12 @@ impl QuorumHandler {
         Ok(CallToolResult::text_content(vec![result.into()]))
     }
 
-    fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Chat requires QUORUM_API_KEY to be set.")?;
+    async fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Chat requires QUORUM_API_KEY to be set.")?,
+        );
 
         let mut prompt = format!("Question: {}\n\n", redact::redact_secrets(&params.question));
         if let Some(code) = &params.code {
@@ -251,7 +254,10 @@ impl QuorumHandler {
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
         }
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| format!("review task failed: {}", e))?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -391,7 +397,7 @@ impl ServerHandler for QuorumHandler {
             "chat" => {
                 let tool: ChatTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_chat(tool)
+                self.handle_chat(tool).await
             }
             "debug" => {
                 let tool: DebugTool = serde_json::from_value(args_value)
@@ -837,13 +843,12 @@ mod tests {
                 for _ in 0..N {
                     let h = std::sync::Arc::clone(&handler);
                     joins.push(tokio::spawn(async move {
-                        // NOTE: handle_chat is currently sync — no .await.
-                        // Once Task 3 lands the fix, this gains .await.
                         h.handle_chat(ChatTool {
                             question: "y".into(),
                             code: Some("x".into()),
                             file_path: None,
                         })
+                        .await
                     }));
                 }
                 for j in joins {
@@ -859,26 +864,26 @@ mod tests {
             .expect("handle_chat serializes LLM calls — barrier deadlocked");
     }
 
-    #[test]
-    fn chat_requires_api_key() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_requires_api_key() {
         let handler = handler_no_llm();
         let params = ChatTool {
             question: "What does this do?".into(),
             code: None,
             file_path: None,
         };
-        assert!(handler.handle_chat(params).is_err());
+        assert!(handler.handle_chat(params).await.is_err());
     }
 
-    #[test]
-    fn chat_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = ChatTool {
             question: "What does this function do?".into(),
             code: Some("fn add(a: i32, b: i32) -> i32 { a + b }".into()),
             file_path: Some("math.rs".into()),
         };
-        let result = handler.handle_chat(params).unwrap();
+        let result = handler.handle_chat(params).await.unwrap();
         assert!(!result.content.is_empty());
     }
 
