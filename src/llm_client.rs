@@ -135,6 +135,45 @@ const BACKOFF_BASE_MS: u64 = 500;
 const BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30);
 const BACKOFF_JITTER_FRAC: f64 = 0.2;
 
+/// HTTP-client timeouts for `OpenAiClient` (#117). The `total` budget is
+/// the production-proven 300s default — must not preempt valid reasoning
+/// calls. `per_read` is layered on top to catch trickle-after-first-byte.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HttpTimeouts {
+    pub total: std::time::Duration,
+    pub per_read: std::time::Duration,
+}
+
+impl Default for HttpTimeouts {
+    fn default() -> Self {
+        Self {
+            total: std::time::Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS),
+            per_read: std::time::Duration::from_secs(DEFAULT_HTTP_READ_TIMEOUT_SECS),
+        }
+    }
+}
+
+impl HttpTimeouts {
+    /// Build from env vars. Empty / missing / non-numeric / zero → default.
+    /// Zero is rejected because it would mean "instant deadline" — almost
+    /// certainly a misconfiguration; falling back to the production default
+    /// is the safer surprise.
+    pub(crate) fn from_env() -> Self {
+        let parse = |var: &str, default_secs: u64| -> std::time::Duration {
+            std::env::var(var)
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .filter(|&n| n > 0)
+                .map(std::time::Duration::from_secs)
+                .unwrap_or_else(|| std::time::Duration::from_secs(default_secs))
+        };
+        Self {
+            total: parse("QUORUM_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT_SECS),
+            per_read: parse("QUORUM_HTTP_READ_TIMEOUT", DEFAULT_HTTP_READ_TIMEOUT_SECS),
+        }
+    }
+}
+
 fn is_retriable(s: reqwest::StatusCode) -> bool {
     matches!(s.as_u16(), 429 | 500 | 502 | 503 | 504)
 }
@@ -218,6 +257,10 @@ pub struct OpenAiClient {
     /// telemetry. Off by default so production reviews keep the proxy's
     /// fast replay behavior.
     bypass_proxy_cache: bool,
+    /// #117: Bounds the retry-loop wall-clock — separate from the per-call
+    /// total timeout. Production default = OVERALL_RETRY_DEADLINE_SECS (600s).
+    /// Test code can shrink via `set_overall_retry_deadline_for_test`.
+    overall_retry_deadline: std::time::Duration,
 }
 
 /// Built-in allowlist of public OAI-compatible hosts (#119). Users on other
@@ -562,9 +605,11 @@ impl OpenAiClient {
         policy: &BaseUrlPolicy,
     ) -> anyhow::Result<Self> {
         validate_base_url(base_url, policy)?;
+        let timeouts = HttpTimeouts::from_env();
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(300))
+            .read_timeout(timeouts.per_read)
+            .timeout(timeouts.total)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build reqwest client: {e}"))?;
         Ok(Self {
@@ -573,7 +618,16 @@ impl OpenAiClient {
             api_key: api_key.to_string(),
             reasoning_effort: None,
             bypass_proxy_cache: false,
+            overall_retry_deadline: std::time::Duration::from_secs(OVERALL_RETRY_DEADLINE_SECS),
         })
+    }
+
+    /// Test-only knob for shrinking the retry budget so deadline-exhaustion
+    /// tests don't have to wait 600s. Production callers have no reason to
+    /// touch this — the default is OVERALL_RETRY_DEADLINE_SECS.
+    #[cfg(test)]
+    pub(crate) fn set_overall_retry_deadline_for_test(&mut self, d: std::time::Duration) {
+        self.overall_retry_deadline = d;
     }
 
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
@@ -1858,6 +1912,66 @@ mod tests {
     fn jitter_unit_returns_value_in_zero_one() {
         let u = jitter_unit();
         assert!(u >= 0.0 && u < 1.0, "got {u}");
+    }
+
+    #[test]
+    fn http_timeout_defaults_to_300_120() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", None),
+                ("QUORUM_HTTP_READ_TIMEOUT", None),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_env_override_total_and_read() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("600")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("180")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(600));
+                assert_eq!(cfg.per_read, Duration::from_secs(180));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_env_invalid_falls_back_to_default() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("not-a-number")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_zero_rejected_falls_back_to_default() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("0")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("0")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
     }
 
     #[test]
