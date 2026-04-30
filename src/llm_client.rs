@@ -119,6 +119,134 @@ pub fn parse_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     })
 }
 
+/// #117: retry + timeout layering on transient upstream failures.
+///
+/// Per-call timeout (`HttpTimeouts::total`, default 300s) is unchanged from
+/// production baseline — must not preempt valid reasoning-model calls that
+/// take 4-8min. The `OVERALL_RETRY_DEADLINE_SECS` budget bounds *only the
+/// retry tail*, not single happy-path calls. `read_timeout` (default 120s)
+/// catches trickle-after-first-byte without affecting healthy think-then-burst
+/// LLM responses.
+const MAX_RETRIES: u32 = 3;
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_HTTP_READ_TIMEOUT_SECS: u64 = 120;
+const OVERALL_RETRY_DEADLINE_SECS: u64 = 600;
+const BACKOFF_BASE_MS: u64 = 500;
+const BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+const BACKOFF_JITTER_FRAC: f64 = 0.2;
+
+/// HTTP-client timeouts for `OpenAiClient` (#117). The `total` budget is
+/// the production-proven 300s default — must not preempt valid reasoning
+/// calls. `per_read` is layered on top to catch trickle-after-first-byte.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HttpTimeouts {
+    pub total: std::time::Duration,
+    pub per_read: std::time::Duration,
+}
+
+impl Default for HttpTimeouts {
+    fn default() -> Self {
+        Self {
+            total: std::time::Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS),
+            per_read: std::time::Duration::from_secs(DEFAULT_HTTP_READ_TIMEOUT_SECS),
+        }
+    }
+}
+
+impl HttpTimeouts {
+    /// Build from env vars. Empty / missing / non-numeric / zero → default.
+    /// Zero is rejected because it would mean "instant deadline" — almost
+    /// certainly a misconfiguration; falling back to the production default
+    /// is the safer surprise.
+    pub(crate) fn from_env() -> Self {
+        let parse = |var: &str, default_secs: u64| -> std::time::Duration {
+            std::env::var(var)
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .filter(|&n| n > 0)
+                .map(std::time::Duration::from_secs)
+                .unwrap_or_else(|| std::time::Duration::from_secs(default_secs))
+        };
+        Self {
+            total: parse("QUORUM_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT_SECS),
+            per_read: parse("QUORUM_HTTP_READ_TIMEOUT", DEFAULT_HTTP_READ_TIMEOUT_SECS),
+        }
+    }
+}
+
+fn is_retriable(s: reqwest::StatusCode) -> bool {
+    matches!(s.as_u16(), 429 | 500 | 502 | 503 | 504)
+}
+
+/// Parse a `Retry-After` header value. Accepts:
+/// - decimal seconds (e.g. `"60"`, `" 30 "`)
+/// - HTTP-date (RFC 7231) — converts to remaining seconds; past dates → ZERO
+///
+/// Returns `None` for negative numbers, garbage, unit suffixes (`"60s"`),
+/// and malformed bytes. Callers should fall back to `compute_backoff`.
+fn parse_retry_after_value(raw: &str) -> Option<std::time::Duration> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = s.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    if let Ok(when) = httpdate::parse_http_date(s) {
+        return Some(
+            when.duration_since(std::time::SystemTime::now())
+                .unwrap_or(std::time::Duration::ZERO),
+        );
+    }
+    None
+}
+
+fn compute_backoff(attempt: u32) -> std::time::Duration {
+    // 2^attempt with overflow → cap. Doubling for shifts >= 64 bits is
+    // already past the cap so saturating to MAX is fine.
+    let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    let ms = BACKOFF_BASE_MS.saturating_mul(multiplier);
+    std::cmp::min(std::time::Duration::from_millis(ms), BACKOFF_CAP)
+}
+
+/// Apply ±BACKOFF_JITTER_FRAC jitter around `base`. `rand_unit` in [0.0, 1.0)
+/// is mapped to [-frac, +frac]. Used only when `Retry-After` is absent —
+/// server-supplied wait wins for thundering-herd avoidance.
+fn apply_jitter(base: std::time::Duration, rand_unit: f64) -> std::time::Duration {
+    let scale = 1.0 + (rand_unit * 2.0 - 1.0) * BACKOFF_JITTER_FRAC;
+    let scaled_ms = (base.as_millis() as f64 * scale.max(0.0)) as u64;
+    std::time::Duration::from_millis(scaled_ms)
+}
+
+/// Cheap per-call jitter source — avoids pulling `rand` for one use site.
+/// Returns a value in [0.0, 1.0). Quality matters less than independence
+/// across concurrent callers.
+///
+/// Uses `SystemTime::now().duration_since(UNIX_EPOCH)` for the subsec
+/// nanos. `Instant::now().elapsed()` was the obvious-but-wrong choice —
+/// it returns ~0 because the Instant was just constructed (CodeRabbit
+/// pre-merge review caught: the original always returned ~0.0,
+/// defeating jitter entirely).
+fn jitter_unit() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    (nanos % 1_000_000) as f64 / 1_000_000.0
+}
+
+fn retry_after_fits_budget(
+    started_at: std::time::Instant,
+    overall_deadline: std::time::Duration,
+    retry_after: std::time::Duration,
+    now: std::time::Instant,
+) -> bool {
+    let elapsed = now.saturating_duration_since(started_at);
+    let remaining = overall_deadline.saturating_sub(elapsed);
+    // `<=` so a knife-edge wakeup doesn't drop a valid retry.
+    retry_after <= remaining
+}
+
 /// Models that require the Responses API instead of Chat Completions.
 const RESPONSES_API_MODELS: &[&str] = &[
     "gpt-5.3-codex",
@@ -138,6 +266,10 @@ pub struct OpenAiClient {
     /// telemetry. Off by default so production reviews keep the proxy's
     /// fast replay behavior.
     bypass_proxy_cache: bool,
+    /// #117: Bounds the retry-loop wall-clock — separate from the per-call
+    /// total timeout. Production default = OVERALL_RETRY_DEADLINE_SECS (600s).
+    /// Test code can shrink via `set_overall_retry_deadline_for_test`.
+    overall_retry_deadline: std::time::Duration,
 }
 
 /// Built-in allowlist of public OAI-compatible hosts (#119). Users on other
@@ -482,9 +614,11 @@ impl OpenAiClient {
         policy: &BaseUrlPolicy,
     ) -> anyhow::Result<Self> {
         validate_base_url(base_url, policy)?;
+        let timeouts = HttpTimeouts::from_env();
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(300))
+            .read_timeout(timeouts.per_read)
+            .timeout(timeouts.total)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build reqwest client: {e}"))?;
         Ok(Self {
@@ -493,7 +627,16 @@ impl OpenAiClient {
             api_key: api_key.to_string(),
             reasoning_effort: None,
             bypass_proxy_cache: false,
+            overall_retry_deadline: std::time::Duration::from_secs(OVERALL_RETRY_DEADLINE_SECS),
         })
+    }
+
+    /// Test-only knob for shrinking the retry budget so deadline-exhaustion
+    /// tests don't have to wait 600s. Production callers have no reason to
+    /// touch this — the default is OVERALL_RETRY_DEADLINE_SECS.
+    #[cfg(test)]
+    pub(crate) fn set_overall_retry_deadline_for_test(&mut self, d: std::time::Duration) {
+        self.overall_retry_deadline = d;
     }
 
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
@@ -517,6 +660,94 @@ impl OpenAiClient {
             self.chat_completion(model, prompt).await
         }
     }
+
+    /// #117: send a request with retry on transient 429/5xx + bounded by
+    /// `overall_retry_deadline`. Honors `Retry-After` when supplied by
+    /// upstream and the wait fits the remaining budget; otherwise uses
+    /// jittered exponential backoff. Only retries truly transient transport
+    /// errors (timeout/connect/request); decode/builder errors bail.
+    async fn send_with_retry(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> anyhow::Result<reqwest::Response> {
+        let started_at = std::time::Instant::now();
+        let overall_deadline = self.overall_retry_deadline;
+
+        for attempt in 0..=MAX_RETRIES {
+            let cloned = req
+                .try_clone()
+                .ok_or_else(|| anyhow::anyhow!("request body must be clonable for retry"))?;
+            let resp = match cloned.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    let transient = e.is_timeout() || e.is_connect() || e.is_request();
+                    if !transient || attempt == MAX_RETRIES {
+                        return Err(anyhow::anyhow!(
+                            "transport error after {} attempt(s): {}",
+                            attempt + 1,
+                            e
+                        ));
+                    }
+                    let backoff = apply_jitter(compute_backoff(attempt), jitter_unit());
+                    if !retry_after_fits_budget(
+                        started_at,
+                        overall_deadline,
+                        backoff,
+                        std::time::Instant::now(),
+                    ) {
+                        anyhow::bail!("transport error and retry budget exhausted: {e}");
+                    }
+                    tracing::warn!(
+                        error = %e,
+                        attempt,
+                        backoff_ms = %backoff.as_millis(),
+                        "transport error; will retry"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            if status.is_success() || !is_retriable(status) || attempt == MAX_RETRIES {
+                return Ok(resp);
+            }
+            // Retry-After (server-supplied) wins; otherwise jittered backoff.
+            let retry_after_hdr = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_retry_after_value);
+            let backoff = match retry_after_hdr {
+                Some(d) => d,
+                None => apply_jitter(compute_backoff(attempt), jitter_unit()),
+            };
+
+            if !retry_after_fits_budget(
+                started_at,
+                overall_deadline,
+                backoff,
+                std::time::Instant::now(),
+            ) {
+                // Return the last response so the caller's error path fires.
+                return Ok(resp);
+            }
+            tracing::warn!(
+                status = %status,
+                attempt,
+                backoff_ms = %backoff.as_millis(),
+                "retriable upstream; retrying"
+            );
+            tokio::time::sleep(backoff).await;
+        }
+        // Loop bodies always return: every iteration either returns Ok
+        // (success / non-retriable / final-attempt-with-retriable-status),
+        // or returns Err (transport error on final attempt or non-transient
+        // transport error), or hits a continue. The for `0..=MAX_RETRIES`
+        // bound terminates, so falling through is unreachable by construction.
+        unreachable!("send_with_retry loop invariant violated")
+    }
+
 
     async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<LlmResponse> {
         let system_msg = Self::system_prompt();
@@ -542,13 +773,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -596,13 +826,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/responses", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -667,13 +896,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -882,6 +1110,7 @@ pub struct ToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test(flavor = "current_thread")]
     async fn block_on_async_works_from_within_current_thread_runtime() {
@@ -1246,6 +1475,31 @@ mod tests {
         }
         f();
     }
+
+    /// Builds an `OpenAiClient` configured to talk to a wiremock test
+    /// server on 127.0.0.1. Sets the policy env vars (allow_private + 127
+    /// allowlist) inside `with_env` so they're restored after construction —
+    /// the resulting client doesn't depend on env state for subsequent calls.
+    #[cfg(test)]
+    fn build_test_client(server_uri: &str) -> OpenAiClient {
+        use std::cell::RefCell;
+        let cell: RefCell<Option<OpenAiClient>> = RefCell::new(None);
+        with_env(
+            &[
+                ("QUORUM_ALLOWED_BASE_URL_HOSTS", Some("127.0.0.1")),
+                ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some("1")),
+                ("QUORUM_UNSAFE_BASE_URL", None),
+                ("QUORUM_HTTP_TIMEOUT", None),
+                ("QUORUM_HTTP_READ_TIMEOUT", None),
+            ],
+            || {
+                *cell.borrow_mut() =
+                    Some(OpenAiClient::new(server_uri, "sk-test").expect("must construct"));
+            },
+        );
+        cell.into_inner().expect("client built")
+    }
+
 
     #[test]
     fn from_env_parses_csv_allowlist_with_trim_and_lowercase() {
@@ -1678,4 +1932,448 @@ mod tests {
 
     // Integration tests requiring a real API endpoint are in tests/llm_integration.rs
     // and gated behind the QUORUM_API_KEY env var check.
+
+    // ===================================================================
+    // #117 — retry + timeout layering
+    // ===================================================================
+
+    #[test]
+    fn is_retriable_returns_true_for_transient_status() {
+        for s in [429u16, 500, 502, 503, 504] {
+            assert!(
+                is_retriable(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} should be retriable"
+            );
+        }
+    }
+
+    #[test]
+    fn is_retriable_returns_false_for_success_and_permanent_4xx() {
+        for s in [200u16, 201, 204, 400, 401, 403, 404, 422] {
+            assert!(
+                !is_retriable(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} should NOT be retriable"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_form() {
+        assert_eq!(parse_retry_after_value("60"), Some(std::time::Duration::from_secs(60)));
+        assert_eq!(parse_retry_after_value("0"), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after_value(" 30 "), Some(std::time::Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_form() {
+        // Wider envelope to absorb VM clock jitter on CI runners. The +120s
+        // future gives a [60,120] valid window, with the 60s floor rejecting
+        // the "past-date returns ZERO" silent-pass case.
+        let future = std::time::SystemTime::now() + Duration::from_secs(120);
+        let httpdate_s = httpdate::fmt_http_date(future);
+        let dur = parse_retry_after_value(&httpdate_s).expect("http-date must parse");
+        assert!(
+            dur.as_secs() >= 60 && dur.as_secs() <= 120,
+            "expected 60-120s remaining, got {dur:?}"
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_past_http_date_returns_zero() {
+        let past = std::time::SystemTime::now() - Duration::from_secs(60);
+        let httpdate_s = httpdate::fmt_http_date(past);
+        assert_eq!(parse_retry_after_value(&httpdate_s), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_retry_after_huge_seconds_value() {
+        assert_eq!(
+            parse_retry_after_value("86400"),
+            Some(std::time::Duration::from_secs(86400))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_handles_whitespace_and_unicode_garbage() {
+        assert_eq!(parse_retry_after_value(""), None);
+        assert_eq!(parse_retry_after_value("not-a-number"), None);
+        assert_eq!(parse_retry_after_value("-5"), None);
+        assert_eq!(parse_retry_after_value("\t\n"), None);
+        assert_eq!(parse_retry_after_value("60s"), None);
+    }
+
+    #[test]
+    fn compute_backoff_grows_exponentially_capped() {
+        assert_eq!(compute_backoff(0), Duration::from_millis(500));
+        assert_eq!(compute_backoff(1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(2), Duration::from_secs(2));
+        // Cap at 30s — even attempt 10 should not exceed cap.
+        assert!(compute_backoff(10) <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn apply_jitter_with_deterministic_seeds_is_within_bounds() {
+        // Using fixed `rand_unit` values instead of stochastic sampling.
+        let base = Duration::from_millis(1000);
+        // unit=0.0 → scale = 1 + (0 - 1) * 0.2 = 0.8 → 800ms
+        assert_eq!(apply_jitter(base, 0.0), Duration::from_millis(800));
+        // unit=0.5 → scale = 1 + 0 * 0.2 = 1.0 → 1000ms
+        assert_eq!(apply_jitter(base, 0.5), Duration::from_millis(1000));
+        // unit≈1.0 → scale ≈ 1 + 0.999 * 0.2 ≈ 1.1998 → ~1199ms
+        let max = apply_jitter(base, 0.999);
+        assert!(
+            max >= Duration::from_millis(1190) && max <= Duration::from_millis(1200),
+            "got {max:?}"
+        );
+    }
+
+    #[test]
+    fn jitter_unit_returns_value_in_zero_one() {
+        let u = jitter_unit();
+        assert!(u >= 0.0 && u < 1.0, "got {u}");
+    }
+
+    #[test]
+    fn jitter_unit_actually_varies_across_calls() {
+        // Regression for CodeRabbit catch: the previous Instant::now().elapsed()
+        // implementation always returned ~0.0 (Liar antipattern — the
+        // bounds-only test passed even though jitter was effectively
+        // disabled). 100 samples spaced by std::hint::black_box must
+        // produce at least 5 distinct buckets at 0.001 resolution to
+        // prove genuine variance, not a constant near zero.
+        use std::collections::HashSet;
+        let mut buckets: HashSet<u32> = HashSet::new();
+        for _ in 0..100 {
+            let u = jitter_unit();
+            // 1000 buckets over [0, 1) — spread should be much wider than 5.
+            buckets.insert((u * 1000.0) as u32);
+            std::hint::black_box(&u);
+            // Burn a few nanoseconds so SystemTime advances.
+            for _ in 0..1000 {
+                std::hint::black_box(0u64);
+            }
+        }
+        assert!(
+            buckets.len() >= 5,
+            "jitter must vary; got only {} distinct buckets across 100 samples",
+            buckets.len()
+        );
+    }
+
+    #[test]
+    fn http_timeout_defaults_to_300_120() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", None),
+                ("QUORUM_HTTP_READ_TIMEOUT", None),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_env_override_total_and_read() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("600")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("180")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(600));
+                assert_eq!(cfg.per_read, Duration::from_secs(180));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_env_invalid_falls_back_to_default() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("not-a-number")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
+    }
+
+    #[test]
+    fn http_timeout_zero_rejected_falls_back_to_default() {
+        with_env(
+            &[
+                ("QUORUM_HTTP_TIMEOUT", Some("0")),
+                ("QUORUM_HTTP_READ_TIMEOUT", Some("0")),
+            ],
+            || {
+                let cfg = HttpTimeouts::from_env();
+                assert_eq!(cfg.total, Duration::from_secs(300));
+                assert_eq!(cfg.per_read, Duration::from_secs(120));
+            },
+        );
+    }
+
+    #[test]
+    fn retry_after_fits_budget_respects_remaining_time() {
+        let now = std::time::Instant::now();
+        let started = now - Duration::from_secs(100);
+        let total = Duration::from_secs(120);
+        // 20s budget left. 10s retry-after fits; 60s does not.
+        assert!(retry_after_fits_budget(started, total, Duration::from_secs(10), now));
+        assert!(!retry_after_fits_budget(started, total, Duration::from_secs(60), now));
+        // Knife-edge: retry_after exactly equals remaining → fits (uses <=).
+        assert!(retry_after_fits_budget(started, total, Duration::from_secs(20), now));
+    }
+
+    // ===================================================================
+    // #117 wiremock integration — send_with_retry wired into POST sites
+    // ===================================================================
+    //
+    // Mock registration order matters in wiremock 0.6: when multiple Mocks
+    // match the same request, the most-recently-registered one wins for
+    // priority in case of ties. We use `up_to_n_times(N)` to constrain
+    // the failure mock to exactly N hits, then a fallthrough mock provides
+    // the success response.
+
+    fn mock_response_200() -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_after_429() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_after_503() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after 503 retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_400() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "400 should bail; got {res:?}");
+        let received = server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests");
+        assert_eq!(received.len(), 1, "expected exactly 1 attempt");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_after_5xx_then_4xx() {
+        // Proves is_retriable is checked on EACH attempt, not cached on first.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "400 should bail; got {res:?}");
+        let received = server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests");
+        assert_eq!(received.len(), 2, "expected exactly 2 attempts (500 + 400)");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_falls_back_to_backoff_when_no_retry_after_header() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429)) // no Retry-After header
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after backoff retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_treats_garbage_retry_after_as_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "not-a-number"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(
+            res.is_ok(),
+            "garbage Retry-After must not panic; expected success, got {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_is_reentrant_safe_under_concurrent_callers() {
+        // Smoke test that 4 concurrent callers each surviving a 429 retry
+        // don't deadlock or share state. Doesn't assert statistical jitter
+        // independence — just reentrancy.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(4)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = std::sync::Arc::new(build_test_client(&server.uri()));
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                c.chat_completion("gpt-5.4", "test").await
+            }));
+        }
+        for h in handles {
+            let r = h.await.expect("task join");
+            assert!(r.is_ok(), "concurrent caller failed: {r:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_aborts_when_overall_deadline_exceeded() {
+        // Mock always returns 429 with Retry-After much larger than the
+        // (test-shrunken) overall deadline. Expect bail with last 429.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "60"))
+            .mount(&server)
+            .await;
+
+        let mut client = build_test_client(&server.uri());
+        client.set_overall_retry_deadline_for_test(Duration::from_secs(2));
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "expected error after retry budget exhausted, got {res:?}");
+        // Loose bound: don't assert exact wall-clock (antipattern).
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_honors_retry_after_when_it_fits_budget() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let started = std::time::Instant::now();
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(
+            res.is_ok(),
+            "expected success after Retry-After-honored retry, got {res:?}"
+        );
+        // Loose lower bound: at least ~800ms (header said 1s).
+        assert!(
+            started.elapsed() >= Duration::from_millis(800),
+            "expected >= ~1s elapsed; got {:?}",
+            started.elapsed()
+        );
+    }
 }

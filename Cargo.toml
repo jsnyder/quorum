@@ -37,6 +37,9 @@ anyhow = "1"
 fs2 = "0.4"
 thiserror = "2"
 
+# HTTP date parsing (Retry-After header)
+httpdate = "1"
+
 # URL parsing
 url = "2"
 
@@ -121,6 +124,7 @@ predicates = "3"
 test-case = "3"
 tempfile = "3"
 insta = { version = "1", features = ["json"] }
+wiremock = "0.6"
 
 [profile.release]
 opt-level = 3
