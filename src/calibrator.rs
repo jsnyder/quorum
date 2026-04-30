@@ -131,15 +131,26 @@ pub fn calibrate(
     // uses the same reference time (#123 Layer 1 — clock injection refactor).
     let now = chrono::Utc::now();
 
-    // Filter out auto-calibrate feedback if configured
-    let filtered: Vec<&FeedbackEntry> = if config.use_auto_feedback {
-        feedback.iter().collect()
-    } else {
-        feedback
-            .iter()
-            .filter(|e| !matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_)))
-            .collect()
-    };
+    // Filter precedent pool. Two filters layered:
+    // 1. Auto-calibrate exclusion (existing) — gated by config.use_auto_feedback.
+    // 2. OutOfScope FP exclusion (#123 Layer 1) — these represent "real defect,
+    //    tracked elsewhere", NOT suppression signal. Including them as FP
+    //    precedents would suppress legitimate findings whose follow-ups are
+    //    just deferred to other PRs/issues.
+    let filtered: Vec<&FeedbackEntry> = feedback
+        .iter()
+        .filter(|e| {
+            // OutOfScope FPs always excluded from the precedent pool.
+            if let (Verdict::Fp, Some(crate::feedback::FpKind::OutOfScope { .. })) =
+                (&e.verdict, &e.fp_kind)
+            {
+                return false;
+            }
+            // Auto-calibrate exclusion (when not enabled).
+            config.use_auto_feedback
+                || !matches!(e.provenance, crate::feedback::Provenance::AutoCalibrate(_))
+        })
+        .collect();
 
     if filtered.is_empty() {
         return CalibrationResult {
@@ -394,6 +405,16 @@ pub fn calibrate_with_index(
             .filter(|s| {
                 if config.use_auto_feedback { true }
                 else { !matches!(s.entry.provenance, crate::feedback::Provenance::AutoCalibrate(_)) }
+            })
+            // OutOfScope FP exclusion (#123 Layer 1) — these represent "real
+            // defect, tracked elsewhere", NOT suppression signal. Excluding
+            // them from the precedent pool prevents legitimate findings from
+            // being suppressed by deferrals.
+            .filter(|s| {
+                !matches!(
+                    (&s.entry.verdict, &s.entry.fp_kind),
+                    (Verdict::Fp, Some(crate::feedback::FpKind::OutOfScope { .. }))
+                )
             })
             .filter(|s| precedent_metric_compatible(&finding_title_for_metric, &s.entry.finding_title))
             .collect();
@@ -836,6 +857,77 @@ mod tests {
             "None@100d expected ≈0.4346, got {}",
             none_w,
         );
+    }
+
+    /// #123 Layer 1 (Task 5): OutOfScope FPs are excluded from the precedent
+    /// pool entirely — they represent "real defect, tracked elsewhere", NOT
+    /// suppression signal. Pair this with `fp_kind_hallucination_does_suppress_precedent_pool`
+    /// (positive control) so we know the absence-of-suppression isn't because
+    /// suppression itself is broken.
+    #[test]
+    fn fp_kind_out_of_scope_excluded_from_precedent_pool() {
+        let make_oos = |idx: i64| FeedbackEntry {
+            file_path: "src/foo.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: format!("OutOfScope #{}", idx),
+            model: None,
+            timestamp: chrono::Utc::now() - chrono::Duration::days(idx),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::OutOfScope {
+                tracked_in: Some(format!("#{}", idx)),
+            }),
+        };
+        let feedback = vec![make_oos(1), make_oos(2), make_oos(3)];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(
+            result.findings.len(), 1,
+            "OutOfScope FPs must NOT suppress (they're 'real, tracked elsewhere', not 'wrong')"
+        );
+        assert_eq!(result.suppressed, 0);
+    }
+
+    /// POSITIVE CONTROL for fp_kind_out_of_scope_excluded_from_precedent_pool.
+    /// Same body, only the kind differs. With Hallucination, the FPs DO
+    /// suppress (existing calibrator behavior). Without this control passing,
+    /// the OutOfScope test could pass for the wrong reason (e.g. suppression
+    /// itself broken, threshold misconfigured).
+    #[test]
+    fn fp_kind_hallucination_does_suppress_precedent_pool() {
+        let make_halluc = |idx: i64| FeedbackEntry {
+            file_path: "src/foo.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Fp,
+            reason: format!("Hallucination #{}", idx),
+            model: None,
+            timestamp: chrono::Utc::now() - chrono::Duration::days(idx),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: Some(crate::feedback::FpKind::Hallucination),
+        };
+        let feedback = vec![make_halluc(1), make_halluc(2), make_halluc(3)];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security")
+                .build(),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        // 3 same-title Hallucination FPs MUST suppress (existing behavior).
+        // If this fails, the OutOfScope test above is meaningless — it could
+        // be passing because suppression itself is broken.
+        assert_eq!(
+            result.findings.len(), 0,
+            "control: 3 Hallucination FPs MUST suppress; if this fails, suppression itself is broken"
+        );
+        assert_eq!(result.suppressed, 1);
     }
 
     // -- No feedback: passthrough --
