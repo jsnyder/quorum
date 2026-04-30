@@ -119,6 +119,86 @@ pub fn parse_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     })
 }
 
+/// #117: retry + timeout layering on transient upstream failures.
+///
+/// Per-call timeout (`HttpTimeouts::total`, default 300s) is unchanged from
+/// production baseline — must not preempt valid reasoning-model calls that
+/// take 4-8min. The `OVERALL_RETRY_DEADLINE_SECS` budget bounds *only the
+/// retry tail*, not single happy-path calls. `read_timeout` (default 120s)
+/// catches trickle-after-first-byte without affecting healthy think-then-burst
+/// LLM responses.
+const MAX_RETRIES: u32 = 3;
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_HTTP_READ_TIMEOUT_SECS: u64 = 120;
+const OVERALL_RETRY_DEADLINE_SECS: u64 = 600;
+const BACKOFF_BASE_MS: u64 = 500;
+const BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+const BACKOFF_JITTER_FRAC: f64 = 0.2;
+
+fn is_retriable(s: reqwest::StatusCode) -> bool {
+    matches!(s.as_u16(), 429 | 500 | 502 | 503 | 504)
+}
+
+/// Parse a `Retry-After` header value. Accepts:
+/// - decimal seconds (e.g. `"60"`, `" 30 "`)
+/// - HTTP-date (RFC 7231) — converts to remaining seconds; past dates → ZERO
+///
+/// Returns `None` for negative numbers, garbage, unit suffixes (`"60s"`),
+/// and malformed bytes. Callers should fall back to `compute_backoff`.
+fn parse_retry_after_value(raw: &str) -> Option<std::time::Duration> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = s.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    if let Ok(when) = httpdate::parse_http_date(s) {
+        return Some(
+            when.duration_since(std::time::SystemTime::now())
+                .unwrap_or(std::time::Duration::ZERO),
+        );
+    }
+    None
+}
+
+fn compute_backoff(attempt: u32) -> std::time::Duration {
+    // 2^attempt with overflow → cap. Doubling for shifts >= 64 bits is
+    // already past the cap so saturating to MAX is fine.
+    let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    let ms = BACKOFF_BASE_MS.saturating_mul(multiplier);
+    std::cmp::min(std::time::Duration::from_millis(ms), BACKOFF_CAP)
+}
+
+/// Apply ±BACKOFF_JITTER_FRAC jitter around `base`. `rand_unit` in [0.0, 1.0)
+/// is mapped to [-frac, +frac]. Used only when `Retry-After` is absent —
+/// server-supplied wait wins for thundering-herd avoidance.
+fn apply_jitter(base: std::time::Duration, rand_unit: f64) -> std::time::Duration {
+    let scale = 1.0 + (rand_unit * 2.0 - 1.0) * BACKOFF_JITTER_FRAC;
+    let scaled_ms = (base.as_millis() as f64 * scale.max(0.0)) as u64;
+    std::time::Duration::from_millis(scaled_ms)
+}
+
+/// Cheap per-call jitter source — avoids pulling `rand` for one use site.
+/// Returns a value in [0.0, 1.0). Quality matters less than independence
+/// across concurrent callers; nanosecond Instant works at parallel=4.
+fn jitter_unit() -> f64 {
+    let nanos = std::time::Instant::now().elapsed().subsec_nanos() as u64;
+    (nanos % 1_000_000) as f64 / 1_000_000.0
+}
+
+fn retry_after_fits_budget(
+    started_at: std::time::Instant,
+    overall_deadline: std::time::Duration,
+    retry_after: std::time::Duration,
+    now: std::time::Instant,
+) -> bool {
+    let elapsed = now.saturating_duration_since(started_at);
+    let remaining = overall_deadline.saturating_sub(elapsed);
+    // `<=` so a knife-edge wakeup doesn't drop a valid retry.
+    retry_after <= remaining
+}
+
 /// Models that require the Responses API instead of Chat Completions.
 const RESPONSES_API_MODELS: &[&str] = &[
     "gpt-5.3-codex",
@@ -882,6 +962,7 @@ pub struct ToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test(flavor = "current_thread")]
     async fn block_on_async_works_from_within_current_thread_runtime() {
@@ -1678,4 +1759,116 @@ mod tests {
 
     // Integration tests requiring a real API endpoint are in tests/llm_integration.rs
     // and gated behind the QUORUM_API_KEY env var check.
+
+    // ===================================================================
+    // #117 — retry + timeout layering
+    // ===================================================================
+
+    #[test]
+    fn is_retriable_returns_true_for_transient_status() {
+        for s in [429u16, 500, 502, 503, 504] {
+            assert!(
+                is_retriable(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} should be retriable"
+            );
+        }
+    }
+
+    #[test]
+    fn is_retriable_returns_false_for_success_and_permanent_4xx() {
+        for s in [200u16, 201, 204, 400, 401, 403, 404, 422] {
+            assert!(
+                !is_retriable(reqwest::StatusCode::from_u16(s).unwrap()),
+                "{s} should NOT be retriable"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_retry_after_seconds_form() {
+        assert_eq!(parse_retry_after_value("60"), Some(std::time::Duration::from_secs(60)));
+        assert_eq!(parse_retry_after_value("0"), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after_value(" 30 "), Some(std::time::Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_form() {
+        // Wider envelope to absorb VM clock jitter on CI runners. The +120s
+        // future gives a [60,120] valid window, with the 60s floor rejecting
+        // the "past-date returns ZERO" silent-pass case.
+        let future = std::time::SystemTime::now() + Duration::from_secs(120);
+        let httpdate_s = httpdate::fmt_http_date(future);
+        let dur = parse_retry_after_value(&httpdate_s).expect("http-date must parse");
+        assert!(
+            dur.as_secs() >= 60 && dur.as_secs() <= 120,
+            "expected 60-120s remaining, got {dur:?}"
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_past_http_date_returns_zero() {
+        let past = std::time::SystemTime::now() - Duration::from_secs(60);
+        let httpdate_s = httpdate::fmt_http_date(past);
+        assert_eq!(parse_retry_after_value(&httpdate_s), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_retry_after_huge_seconds_value() {
+        assert_eq!(
+            parse_retry_after_value("86400"),
+            Some(std::time::Duration::from_secs(86400))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_handles_whitespace_and_unicode_garbage() {
+        assert_eq!(parse_retry_after_value(""), None);
+        assert_eq!(parse_retry_after_value("not-a-number"), None);
+        assert_eq!(parse_retry_after_value("-5"), None);
+        assert_eq!(parse_retry_after_value("\t\n"), None);
+        assert_eq!(parse_retry_after_value("60s"), None);
+    }
+
+    #[test]
+    fn compute_backoff_grows_exponentially_capped() {
+        assert_eq!(compute_backoff(0), Duration::from_millis(500));
+        assert_eq!(compute_backoff(1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(2), Duration::from_secs(2));
+        // Cap at 30s — even attempt 10 should not exceed cap.
+        assert!(compute_backoff(10) <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn apply_jitter_with_deterministic_seeds_is_within_bounds() {
+        // Using fixed `rand_unit` values instead of stochastic sampling.
+        let base = Duration::from_millis(1000);
+        // unit=0.0 → scale = 1 + (0 - 1) * 0.2 = 0.8 → 800ms
+        assert_eq!(apply_jitter(base, 0.0), Duration::from_millis(800));
+        // unit=0.5 → scale = 1 + 0 * 0.2 = 1.0 → 1000ms
+        assert_eq!(apply_jitter(base, 0.5), Duration::from_millis(1000));
+        // unit≈1.0 → scale ≈ 1 + 0.999 * 0.2 ≈ 1.1998 → ~1199ms
+        let max = apply_jitter(base, 0.999);
+        assert!(
+            max >= Duration::from_millis(1190) && max <= Duration::from_millis(1200),
+            "got {max:?}"
+        );
+    }
+
+    #[test]
+    fn jitter_unit_returns_value_in_zero_one() {
+        let u = jitter_unit();
+        assert!(u >= 0.0 && u < 1.0, "got {u}");
+    }
+
+    #[test]
+    fn retry_after_fits_budget_respects_remaining_time() {
+        let now = std::time::Instant::now();
+        let started = now - Duration::from_secs(100);
+        let total = Duration::from_secs(120);
+        // 20s budget left. 10s retry-after fits; 60s does not.
+        assert!(retry_after_fits_budget(started, total, Duration::from_secs(10), now));
+        assert!(!retry_after_fits_budget(started, total, Duration::from_secs(60), now));
+        // Knife-edge: retry_after exactly equals remaining → fits (uses <=).
+        assert!(retry_after_fits_budget(started, total, Duration::from_secs(20), now));
+    }
 }
