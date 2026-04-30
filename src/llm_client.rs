@@ -652,6 +652,95 @@ impl OpenAiClient {
         }
     }
 
+    /// #117: send a request with retry on transient 429/5xx + bounded by
+    /// `overall_retry_deadline`. Honors `Retry-After` when supplied by
+    /// upstream and the wait fits the remaining budget; otherwise uses
+    /// jittered exponential backoff. Only retries truly transient transport
+    /// errors (timeout/connect/request); decode/builder errors bail.
+    async fn send_with_retry(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> anyhow::Result<reqwest::Response> {
+        let started_at = std::time::Instant::now();
+        let overall_deadline = self.overall_retry_deadline;
+        let mut last_status: Option<reqwest::StatusCode> = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            let cloned = req
+                .try_clone()
+                .ok_or_else(|| anyhow::anyhow!("request body must be clonable for retry"))?;
+            let resp = match cloned.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    let transient = e.is_timeout() || e.is_connect() || e.is_request();
+                    if !transient || attempt == MAX_RETRIES {
+                        return Err(anyhow::anyhow!(
+                            "transport error after {} attempt(s): {}",
+                            attempt + 1,
+                            e
+                        ));
+                    }
+                    let backoff = apply_jitter(compute_backoff(attempt), jitter_unit());
+                    if !retry_after_fits_budget(
+                        started_at,
+                        overall_deadline,
+                        backoff,
+                        std::time::Instant::now(),
+                    ) {
+                        anyhow::bail!("transport error and retry budget exhausted: {e}");
+                    }
+                    tracing::warn!(
+                        error = %e,
+                        attempt,
+                        backoff_ms = %backoff.as_millis(),
+                        "transport error; will retry"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            if status.is_success() || !is_retriable(status) || attempt == MAX_RETRIES {
+                return Ok(resp);
+            }
+            last_status = Some(status);
+
+            // Retry-After (server-supplied) wins; otherwise jittered backoff.
+            let retry_after_hdr = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_retry_after_value);
+            let backoff = match retry_after_hdr {
+                Some(d) => d,
+                None => apply_jitter(compute_backoff(attempt), jitter_unit()),
+            };
+
+            if !retry_after_fits_budget(
+                started_at,
+                overall_deadline,
+                backoff,
+                std::time::Instant::now(),
+            ) {
+                // Return the last response so the caller's error path fires.
+                return Ok(resp);
+            }
+            tracing::warn!(
+                status = %status,
+                attempt,
+                backoff_ms = %backoff.as_millis(),
+                "retriable upstream; retrying"
+            );
+            tokio::time::sleep(backoff).await;
+        }
+        Err(anyhow::anyhow!(
+            "exhausted retries (last status: {:?})",
+            last_status
+        ))
+    }
+
+
     async fn chat_completion(&self, model: &str, prompt: &str) -> anyhow::Result<LlmResponse> {
         let system_msg = Self::system_prompt();
 
@@ -676,13 +765,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -730,13 +818,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/responses", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -801,13 +888,12 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self.http
+        let req = self.http
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -1381,6 +1467,31 @@ mod tests {
         }
         f();
     }
+
+    /// Builds an `OpenAiClient` configured to talk to a wiremock test
+    /// server on 127.0.0.1. Sets the policy env vars (allow_private + 127
+    /// allowlist) inside `with_env` so they're restored after construction —
+    /// the resulting client doesn't depend on env state for subsequent calls.
+    #[cfg(test)]
+    fn build_test_client(server_uri: &str) -> OpenAiClient {
+        use std::cell::RefCell;
+        let cell: RefCell<Option<OpenAiClient>> = RefCell::new(None);
+        with_env(
+            &[
+                ("QUORUM_ALLOWED_BASE_URL_HOSTS", Some("127.0.0.1")),
+                ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some("1")),
+                ("QUORUM_UNSAFE_BASE_URL", None),
+                ("QUORUM_HTTP_TIMEOUT", None),
+                ("QUORUM_HTTP_READ_TIMEOUT", None),
+            ],
+            || {
+                *cell.borrow_mut() =
+                    Some(OpenAiClient::new(server_uri, "sk-test").expect("must construct"));
+            },
+        );
+        cell.into_inner().expect("client built")
+    }
+
 
     #[test]
     fn from_env_parses_csv_allowlist_with_trim_and_lowercase() {
@@ -1984,5 +2095,244 @@ mod tests {
         assert!(!retry_after_fits_budget(started, total, Duration::from_secs(60), now));
         // Knife-edge: retry_after exactly equals remaining → fits (uses <=).
         assert!(retry_after_fits_budget(started, total, Duration::from_secs(20), now));
+    }
+
+    // ===================================================================
+    // #117 wiremock integration — send_with_retry wired into POST sites
+    // ===================================================================
+    //
+    // Mock registration order matters in wiremock 0.6: when multiple Mocks
+    // match the same request, the most-recently-registered one wins for
+    // priority in case of ties. We use `up_to_n_times(N)` to constrain
+    // the failure mock to exactly N hits, then a fallthrough mock provides
+    // the success response.
+
+    fn mock_response_200() -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_after_429() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_succeeds_after_503() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after 503 retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_400() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "400 should bail; got {res:?}");
+        let received = server.received_requests().await.expect("requests");
+        assert_eq!(received.len(), 1, "expected exactly 1 attempt");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_does_not_retry_after_5xx_then_4xx() {
+        // Proves is_retriable is checked on EACH attempt, not cached on first.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "400 should bail; got {res:?}");
+        let received = server.received_requests().await.expect("requests");
+        assert_eq!(received.len(), 2, "expected exactly 2 attempts (500 + 400)");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_falls_back_to_backoff_when_no_retry_after_header() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429)) // no Retry-After header
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_ok(), "expected success after backoff retry, got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_treats_garbage_retry_after_as_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "not-a-number"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(
+            res.is_ok(),
+            "garbage Retry-After must not panic; expected success, got {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_is_reentrant_safe_under_concurrent_callers() {
+        // Smoke test that 4 concurrent callers each surviving a 429 retry
+        // don't deadlock or share state. Doesn't assert statistical jitter
+        // independence — just reentrancy.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(4)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = std::sync::Arc::new(build_test_client(&server.uri()));
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                c.chat_completion("gpt-5.4", "test").await
+            }));
+        }
+        for h in handles {
+            let r = h.await.expect("task join");
+            assert!(r.is_ok(), "concurrent caller failed: {r:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_aborts_when_overall_deadline_exceeded() {
+        // Mock always returns 429 with Retry-After much larger than the
+        // (test-shrunken) overall deadline. Expect bail with last 429.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "60"))
+            .mount(&server)
+            .await;
+
+        let mut client = build_test_client(&server.uri());
+        client.set_overall_retry_deadline_for_test(Duration::from_secs(2));
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(res.is_err(), "expected error after retry budget exhausted, got {res:?}");
+        // Loose bound: don't assert exact wall-clock (antipattern).
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_honors_retry_after_when_it_fits_budget() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let started = std::time::Instant::now();
+        let client = build_test_client(&server.uri());
+        let res = client.chat_completion("gpt-5.4", "test prompt").await;
+        assert!(
+            res.is_ok(),
+            "expected success after Retry-After-honored retry, got {res:?}"
+        );
+        // Loose lower bound: at least ~800ms (header said 1s).
+        assert!(
+            started.elapsed() >= Duration::from_millis(800),
+            "expected >= ~1s elapsed; got {:?}",
+            started.elapsed()
+        );
     }
 }
