@@ -257,7 +257,10 @@ impl QuorumHandler {
         let model = self.config.model.clone();
         let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
             .await
-            .map_err(|e| format!("review task failed: {}", e))?
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "chat", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -280,7 +283,10 @@ impl QuorumHandler {
         let model = self.config.model.clone();
         let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
             .await
-            .map_err(|e| format!("review task failed: {}", e))?
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "debug", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -317,7 +323,10 @@ impl QuorumHandler {
         let model = self.config.model.clone();
         let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
             .await
-            .map_err(|e| format!("review task failed: {}", e))?
+            .map_err(|e| {
+                tracing::warn!(error = %e, tool = "testgen", "blocking review task failed");
+                format!("review task failed: {}", e)
+            })?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -972,11 +981,15 @@ mod tests {
             })
             .await
             .expect("handle_debug ok");
-        let json = serde_json::to_string(&result).expect("serialize result");
+        // Tighten scope: assert sentinel is in result.content (the user-facing
+        // tool output), not anywhere in the serialized wrapper. Keeps the
+        // assertion shape-agnostic about CallToolResult internals while
+        // still failing if the prompt/response wiring breaks.
+        let body = serde_json::to_string(&result.content).expect("serialize content");
         assert!(
-            json.contains(SENTINEL),
-            "response must contain sentinel from EchoLlm; got: {}",
-            json
+            body.contains(SENTINEL),
+            "response.content must contain sentinel from EchoLlm; got: {}",
+            body
         );
     }
 
@@ -1027,11 +1040,15 @@ mod tests {
             })
             .await
             .expect("handle_testgen ok");
-        let json = serde_json::to_string(&result).expect("serialize result");
+        // Tighten scope: assert sentinel is in result.content (the user-facing
+        // tool output), not anywhere in the serialized wrapper. Keeps the
+        // assertion shape-agnostic about CallToolResult internals while
+        // still failing if the prompt/response wiring breaks.
+        let body = serde_json::to_string(&result.content).expect("serialize content");
         assert!(
-            json.contains(SENTINEL),
-            "response must contain sentinel from EchoLlm; got: {}",
-            json
+            body.contains(SENTINEL),
+            "response.content must contain sentinel from EchoLlm; got: {}",
+            body
         );
     }
 
