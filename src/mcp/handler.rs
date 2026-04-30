@@ -286,9 +286,12 @@ impl QuorumHandler {
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
 
-    fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
-        let reviewer = self.llm_reviewer.as_ref()
-            .ok_or("Testgen requires QUORUM_API_KEY to be set.")?;
+    async fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
+        let reviewer = Arc::clone(
+            self.llm_reviewer
+                .as_ref()
+                .ok_or("Testgen requires QUORUM_API_KEY to be set.")?,
+        );
 
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
@@ -311,7 +314,10 @@ impl QuorumHandler {
             framework_hint, lang_name, params.file_path, lang_name, redacted_code
         );
 
-        let resp = reviewer.review(&prompt, &self.config.model)
+        let model = self.config.model.clone();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+            .await
+            .map_err(|e| format!("review task failed: {}", e))?
             .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
@@ -413,7 +419,7 @@ impl ServerHandler for QuorumHandler {
             "testgen" => {
                 let tool: TestgenTool = serde_json::from_value(args_value)
                     .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
-                self.handle_testgen(tool)
+                self.handle_testgen(tool).await
             }
             _ => return Err(CallToolError::unknown_tool(params.name)),
         };
@@ -974,38 +980,59 @@ mod tests {
         );
     }
 
-    #[test]
-    fn testgen_requires_api_key() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_requires_api_key() {
         let handler = handler_no_llm();
         let params = TestgenTool {
             code: "fn add(a: i32, b: i32) -> i32 { a + b }".into(),
             file_path: "math.rs".into(),
             framework: None,
         };
-        assert!(handler.handle_testgen(params).is_err());
+        assert!(handler.handle_testgen(params).await.is_err());
     }
 
-    #[test]
-    fn testgen_with_llm_returns_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_with_llm_returns_response() {
         let handler = handler_with_fake_llm();
         let params = TestgenTool {
             code: "def add(a, b):\n    return a + b\n".into(),
             file_path: "math.py".into(),
             framework: Some("pytest".into()),
         };
-        let result = handler.handle_testgen(params).unwrap();
+        let result = handler.handle_testgen(params).await.unwrap();
         assert!(!result.content.is_empty());
     }
 
-    #[test]
-    fn testgen_rejects_unsupported_extension() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_rejects_unsupported_extension() {
         let handler = handler_with_fake_llm();
         let params = TestgenTool {
             code: "code".into(),
             file_path: "file.xyz".into(),
             framework: None,
         };
-        assert!(handler.handle_testgen(params).is_err());
+        assert!(handler.handle_testgen(params).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_testgen_returns_llm_content() {
+        // Behavioral smoke test mirror of handle_debug_returns_llm_content.
+        const SENTINEL: &str = "testgen-fake-output-2026-04-29";
+        let handler = handler_with_echo_llm(SENTINEL);
+        let result = handler
+            .handle_testgen(TestgenTool {
+                file_path: "f.rs".into(),
+                code: "fn x() {}".into(),
+                framework: None,
+            })
+            .await
+            .expect("handle_testgen ok");
+        let json = serde_json::to_string(&result).expect("serialize result");
+        assert!(
+            json.contains(SENTINEL),
+            "response must contain sentinel from EchoLlm; got: {}",
+            json
+        );
     }
 
     // -- Cache integration --
