@@ -80,6 +80,17 @@ pub struct FeedbackTool {
     /// retain the existing empty-string default.
     #[serde(default)]
     pub category: Option<String>,
+    /// Optional: discriminate the FP verdict by reason (#123 Layer 1).
+    /// Only meaningful when `verdict = "fp"`; silently dropped on other
+    /// verdicts. Variants serialize via the same `snake_case` wire
+    /// representation as the underlying `feedback::FpKind` enum, so
+    /// schema-driven clients see strings like `"hallucination"`,
+    /// `"trust_model_assumption"`, or struct payloads
+    /// `{"compensating_control": {"reference": "PR #99"}}`.
+    /// Required associated data missing (e.g. `compensating_control`
+    /// without `reference`) is rejected by serde at deserialization.
+    #[serde(default, rename = "fpKind", skip_serializing_if = "Option::is_none")]
+    pub fp_kind: Option<crate::feedback::FpKind>,
 }
 
 #[mcp_tool(

@@ -133,10 +133,42 @@ impl QuorumHandler {
             },
         };
 
+        // #123 Layer 1: fp_kind is meaningful only for verdict=Fp on the
+        // Human path. We drop it on non-Fp verdicts (with a warning so the
+        // dropped flag is visible) and we drop it on the External path
+        // (matches the CLI External surface, which also doesn't thread
+        // fp_kind through ExternalVerdictInput yet — keeps the wire
+        // contract uniform across ingestion surfaces).
+        let fp_kind = if matches!(verdict, Verdict::Fp) {
+            if let Some(crate::feedback::FpKind::OutOfScope { tracked_in: None }) =
+                &params.fp_kind
+            {
+                tracing::warn!(
+                    "MCP feedback: out_of_scope fp_kind recorded without tracked_in; \
+                     deferral has no tracking link"
+                );
+            }
+            params.fp_kind.clone()
+        } else {
+            if params.fp_kind.is_some() {
+                tracing::warn!(
+                    "MCP feedback: fpKind was provided but verdict is not 'fp'; \
+                     ignoring the field"
+                );
+            }
+            None
+        };
+
         // External-agent path: when from_agent is provided, route through
         // record_external so Provenance::External is serialized and the
         // calibrator applies the 0.7 weight. Human path is unchanged below.
         if let Some(agent) = params.from_agent {
+            if fp_kind.is_some() {
+                tracing::warn!(
+                    "MCP feedback: fpKind dropped on External path \
+                     (ExternalVerdictInput does not carry fp_kind yet)"
+                );
+            }
             let input = crate::feedback::ExternalVerdictInput {
                 file_path: params.file_path,
                 finding_title: params.finding,
@@ -170,7 +202,7 @@ impl QuorumHandler {
             model: params.model,
             timestamp: chrono::Utc::now(),
             provenance: crate::feedback::Provenance::Human,
-            fp_kind: None,
+            fp_kind,
         };
 
         self.feedback_store
@@ -518,6 +550,7 @@ mod tests {
             agent_model: None,
             confidence: None,
             category: None,
+            fp_kind: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -559,6 +592,7 @@ mod tests {
             agent_model: None,
             confidence: None,
             category: None,
+            fp_kind: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -603,6 +637,7 @@ mod tests {
             agent_model: None,
             confidence: None,
             category: None,
+            fp_kind: None,
         };
 
         let err = handler.handle_feedback(params).expect_err("must reject");
@@ -641,6 +676,7 @@ mod tests {
             agent_model: Some("gemini-3-pro-preview".into()),
             confidence: Some(0.9),
             category: None,
+            fp_kind: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -683,6 +719,7 @@ mod tests {
             agent_model: None,
             confidence: None,
             category: None,
+            fp_kind: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -1288,5 +1325,144 @@ mod tests {
             })
             .unwrap();
         assert_eq!(cfg.focus, None);
+    }
+
+    // --- Task 8: MCP fpKind round-trip (issue #123) ---
+
+    /// All five FpKind variants must persist through the MCP boundary
+    /// when verdict=fp. Each variant goes in via FeedbackTool, comes back
+    /// out via FeedbackStore::load_all unchanged. This is the wire-contract
+    /// test that proves MCP clients can write any kind we accept on the CLI.
+    #[test]
+    fn mcp_feedback_persists_fp_kind_each_variant() {
+        use crate::feedback::FpKind;
+
+        let cases = vec![
+            ("hallucination", FpKind::Hallucination),
+            (
+                "compensating_control",
+                FpKind::CompensatingControl {
+                    reference: "PR #99".into(),
+                },
+            ),
+            ("trust_model_assumption", FpKind::TrustModelAssumption),
+            (
+                "pattern_overgeneralization",
+                FpKind::PatternOvergeneralization {
+                    discriminator_hint: Some("dyn config — not literal".into()),
+                },
+            ),
+            (
+                "out_of_scope",
+                FpKind::OutOfScope {
+                    tracked_in: Some("issue #200".into()),
+                },
+            ),
+        ];
+
+        for (label, kind) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fb.jsonl");
+            let handler = QuorumHandler {
+                config: Config {
+                    base_url: "https://example.com".into(),
+                    api_key: None,
+                    model: "test".into(),
+                },
+                feedback_store: FeedbackStore::new(path.clone()),
+                llm_reviewer: None,
+                parse_cache: Arc::new(ParseCache::new(10)),
+            };
+
+            let params = FeedbackTool {
+                file_path: "src/a.rs".into(),
+                finding: format!("variant {label}"),
+                verdict: crate::mcp::tools::FeedbackVerdict::Fp,
+                reason: "round-trip".into(),
+                model: None,
+                blamed_chunks: None,
+                from_agent: None,
+                agent_model: None,
+                confidence: None,
+                category: None,
+                fp_kind: Some(kind.clone()),
+            };
+            handler.handle_feedback(params).unwrap();
+
+            let store = FeedbackStore::new(path);
+            let all = store.load_all().unwrap();
+            assert_eq!(all.len(), 1, "variant {label} must persist");
+            assert_eq!(
+                all[0].fp_kind.as_ref(),
+                Some(&kind),
+                "variant {label} must round-trip unchanged"
+            );
+        }
+    }
+
+    /// `compensating_control` requires `reference`. The MCP boundary leans
+    /// on serde to enforce this — the field is non-optional in the FpKind
+    /// variant, so a JSON payload missing it must fail at deserialization.
+    /// This is a wire-contract test, not a runtime-handler test: it proves
+    /// schema-driven clients see the constraint.
+    #[test]
+    fn mcp_feedback_rejects_compensating_control_missing_reference() {
+        let json = r#"{
+            "filePath": "src/a.rs",
+            "finding": "x",
+            "verdict": "fp",
+            "reason": "r",
+            "fpKind": { "compensating_control": {} }
+        }"#;
+        let result: Result<FeedbackTool, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "missing `reference` on compensating_control must fail at parse: {:?}",
+            result.ok()
+        );
+    }
+
+    /// fp_kind on a non-fp verdict must be silently dropped at the MCP
+    /// boundary (with a warning, but no error). The Human entry persisted
+    /// to disk must have fp_kind = None.
+    #[test]
+    fn mcp_feedback_drops_fp_kind_when_verdict_is_not_fp() {
+        use crate::feedback::FpKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fb.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/a.rs".into(),
+            finding: "x".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
+            reason: "r".into(),
+            model: None,
+            blamed_chunks: None,
+            from_agent: None,
+            agent_model: None,
+            confidence: None,
+            category: None,
+            fp_kind: Some(FpKind::Hallucination),
+        };
+        handler.handle_feedback(params).unwrap();
+
+        let store = FeedbackStore::new(path);
+        let all = store.load_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            all[0].fp_kind, None,
+            "fp_kind must be dropped when verdict is not fp"
+        );
     }
 }
