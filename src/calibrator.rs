@@ -875,6 +875,40 @@ mod tests {
         );
     }
 
+    /// #123 Layer 1 (Task 9): regression lock for verdict-coupling.
+    ///
+    /// `fp_kind` is meaningful only for `Verdict::Fp`. The exhaustive match
+    /// in `verdict_weight` already pins this — the catch-all arm
+    /// `(Tp | Partial | Wontfix | ContextMisleading {..}, _) => 120.0`
+    /// ignores `fp_kind` for non-Fp verdicts. This test exists so a future
+    /// refactor that drops the catch-all and accidentally consults `fp_kind`
+    /// for TP entries fails immediately. Passes by construction today.
+    #[test]
+    fn fp_kind_ignored_on_tp_verdict() {
+        let now = pinned_now();
+        let entry = FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: now - chrono::Duration::days(40),
+            provenance: crate::feedback::Provenance::Human,
+            // If this entry's fp_kind ever leaks into recency-tau selection,
+            // we'd get the 40d trust-model branch — weight ≈ 1.0 * e^(-1) =
+            // 0.368. The regression lock asserts we land on the 120d default.
+            fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
+        };
+        let w = verdict_weight(&entry, now);
+        // 1.0 (Human) * e^(-40/120) ≈ 0.7165 — uses 120d default branch.
+        assert!(
+            (0.715..=0.718).contains(&w),
+            "fp_kind must be ignored when verdict != Fp; expected ≈0.717, got {}",
+            w,
+        );
+    }
+
     /// #123 Layer 1 (Task 5): OutOfScope FPs are excluded from the precedent
     /// pool entirely — they represent "real defect, tracked elsewhere", NOT
     /// suppression signal. Pair this with `fp_kind_hallucination_does_suppress_precedent_pool`
