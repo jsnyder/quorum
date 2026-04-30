@@ -54,6 +54,42 @@ impl Default for Provenance {
     }
 }
 
+/// Discriminates `Verdict::Fp` entries by reason. Calibrator applies
+/// different decay/scope rules per kind. `Option<FpKind> = None` ↔
+/// Hallucination semantics — preserves behavior on pre-bump entries
+/// (no migration needed). See docs/plans/2026-04-29-issue-123-fpkind-design.md.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FpKind {
+    /// LLM invented a defect that doesn't exist. Structural; never expires.
+    Hallucination,
+
+    /// Real defect, but a compensating control elsewhere prevents it.
+    /// `reference` is the load-bearing assumption — if the control is
+    /// removed, the FP becomes stale.
+    CompensatingControl { reference: String },
+
+    /// FP under the current trust model only. Likely-rotting — calibrator
+    /// applies a 40d half-life (vs 120d default).
+    TrustModelAssumption,
+
+    /// Pattern fires correctly on similar code in different contexts; THIS
+    /// instance is the exception. Calibrator does NOT learn to blanket-suppress;
+    /// `discriminator_hint` goes into the few-shot prompt instead so the LLM
+    /// can re-flag the pattern but distinguish.
+    PatternOvergeneralization {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        discriminator_hint: Option<String>,
+    },
+
+    /// Real defect, but tracked in another PR/issue. Not actually an FP —
+    /// excluded from the precedent pool entirely.
+    OutOfScope {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracked_in: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEntry {
     pub file_path: String,
@@ -65,6 +101,13 @@ pub struct FeedbackEntry {
     pub timestamp: DateTime<Utc>,
     #[serde(default)]
     pub provenance: Provenance,
+
+    /// Discriminates `Verdict::Fp` entries by reason (#123 Layer 1). None ↔
+    /// Hallucination semantics for back-compat with pre-bump rows.
+    /// Meaningful only when `verdict == Fp`; ignored on Tp/Partial/Wontfix/
+    /// ContextMisleading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fp_kind: Option<FpKind>,
 }
 
 /// Input for recording a verdict from an external review agent.
@@ -695,6 +738,7 @@ impl FeedbackStore {
                 model: input.agent_model,
                 confidence,
             },
+            fp_kind: None,
         };
         self.record(&entry)
     }
@@ -719,6 +763,7 @@ impl FeedbackStore {
             model: None,
             timestamp: Utc::now(),
             provenance: Provenance::Human,
+            fp_kind: None,
         };
         self.record(&entry)
     }
@@ -733,6 +778,64 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         (FeedbackStore::new(path), dir)
+    }
+
+    // -------------------------------------------------------------------
+    // #123 Layer 1 — FpKind enum + per-kind calibrator (Task 1 RED)
+    // -------------------------------------------------------------------
+
+    /// Pre-bump entries (no `fp_kind` key) MUST deserialize to fp_kind: None
+    /// so the existing 2302 rows in ~/.quorum/feedback.jsonl don't shift
+    /// behavior. Re-serialization MUST omit the key (skip_serializing_if).
+    #[test]
+    fn fp_kind_pre_bump_row_deserializes_with_none() {
+        let pre_bump = r#"{
+            "file_path": "src/foo.rs",
+            "finding_title": "Test finding",
+            "finding_category": "security",
+            "verdict": "fp",
+            "reason": "Pre-bump entry",
+            "model": null,
+            "timestamp": "2026-04-14T00:00:00Z",
+            "provenance": "human"
+        }"#;
+        let entry: FeedbackEntry = serde_json::from_str(pre_bump).expect("deserialize");
+        assert_eq!(entry.fp_kind, None);
+
+        let reserialized = serde_json::to_string(&entry).expect("serialize");
+        assert!(
+            !reserialized.contains("fp_kind"),
+            "skip_serializing_if=Option::is_none must keep pre-bump rows compact; got: {}",
+            reserialized
+        );
+
+        // Round-trip equality: re-deserialize must reproduce the original
+        // (no silent data loss beyond the absent fp_kind key).
+        let round_trip: FeedbackEntry = serde_json::from_str(&reserialized).expect("re-deserialize");
+        assert_eq!(round_trip.fp_kind, entry.fp_kind);
+        assert_eq!(round_trip.file_path, entry.file_path);
+        assert_eq!(round_trip.finding_title, entry.finding_title);
+    }
+
+    /// #123 Layer 1 (Task 2): each FpKind variant must round-trip through
+    /// serde without losing associated data. Locks the wire format.
+    #[test]
+    fn fp_kind_serde_round_trip_each_variant() {
+        let cases = vec![
+            FpKind::Hallucination,
+            FpKind::TrustModelAssumption,
+            FpKind::CompensatingControl { reference: "PR #99 line 42".into() },
+            FpKind::PatternOvergeneralization { discriminator_hint: Some("hint text".into()) },
+            FpKind::PatternOvergeneralization { discriminator_hint: None },
+            FpKind::OutOfScope { tracked_in: Some("#456".into()) },
+            FpKind::OutOfScope { tracked_in: None },
+        ];
+        for original in cases {
+            let json = serde_json::to_string(&original).expect("serialize");
+            let round_trip: FpKind = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("deserialize {}: {}", json, e));
+            assert_eq!(original, round_trip, "round-trip mismatch; json={}", json);
+        }
     }
 
     /// One well-formed `ExternalVerdictInputWire` line for inbox-hardening tests.
@@ -822,6 +925,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance: Provenance::Unknown,
+            fp_kind: None,
         }
     }
 
@@ -894,6 +998,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance: Provenance::Human,
+            fp_kind: None,
         };
         assert_eq!(entry.provenance, Provenance::Human);
     }
@@ -1053,6 +1158,7 @@ mod tests {
                 model: Some("gemini-3-pro-preview".into()),
                 confidence: Some(0.9),
             },
+            fp_kind: None,
         };
         store.record(&entry).unwrap();
         let all = store.load_all().unwrap();

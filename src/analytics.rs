@@ -243,6 +243,7 @@ mod tests {
             model: Some(model.into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Unknown,
+            fp_kind: None,
         }
     }
 
@@ -256,6 +257,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance,
+            fp_kind: None,
         }
     }
 

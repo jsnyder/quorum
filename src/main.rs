@@ -1397,6 +1397,7 @@ fn run_feedback_inner(
         model: model.map(|s| s.to_string()),
         timestamp: chrono::Utc::now(),
         provenance: feedback::Provenance::Human,
+        fp_kind: None,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());

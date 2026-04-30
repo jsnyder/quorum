@@ -647,6 +647,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         }
     }
 
@@ -896,6 +897,7 @@ mod tests {
             model: Some("o3".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+            fp_kind: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
@@ -918,6 +920,7 @@ mod tests {
             model: Some("o3".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+            fp_kind: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -961,6 +964,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         };
         let auto_fp = FeedbackEntry {
             file_path: "test.py".into(),
@@ -971,6 +975,7 @@ mod tests {
             model: Some("o3".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+            fp_kind: None,
         };
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
@@ -995,6 +1000,7 @@ mod tests {
             model: None,
             timestamp: Utc::now() - chrono::Duration::days(90),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         };
         let recent_fp = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -1005,6 +1011,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         };
 
         let config = CalibratorConfig::default();
@@ -1029,6 +1036,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         };
 
         let config = CalibratorConfig::default();
@@ -1048,6 +1056,7 @@ mod tests {
             model: None,
             timestamp: Utc::now() - chrono::Duration::days(90),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         };
         let weight = verdict_weight(&old_entry);
         assert!(weight >= 0.3,
@@ -1067,6 +1076,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::PostFix,
+            fp_kind: None,
         };
 
         let config = CalibratorConfig::default();
@@ -1089,6 +1099,7 @@ mod tests {
             model: Some("o3".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+            fp_kind: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
@@ -1110,6 +1121,7 @@ mod tests {
             model: Some("o3".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::AutoCalibrate("o3".into()),
+            fp_kind: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -1237,6 +1249,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::PostFix,
+            fp_kind: None,
         };
 
         let config = CalibratorConfig::default();
@@ -1762,6 +1775,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
         }
     }
 
@@ -1867,6 +1881,7 @@ mod tests {
                 model: None,
                 confidence: None,
             },
+            fp_kind: None,
         };
         let w = verdict_weight(&entry);
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
@@ -1890,6 +1905,7 @@ mod tests {
                 model: None,
                 confidence: conf,
             },
+            fp_kind: None,
         };
         let cases: &[(&str, Option<f32>)] = &[
             ("None", None),
@@ -1921,6 +1937,7 @@ mod tests {
             model: None,
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Unknown,
+            fp_kind: None,
         };
         let w = verdict_weight(&entry);
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
@@ -1943,6 +1960,7 @@ mod tests {
                 model: None,
                 confidence: None,
             },
+            fp_kind: None,
         }
     }
 
@@ -2045,6 +2063,7 @@ mod tests {
                 model: None,
                 confidence: None,
             },
+            fp_kind: None,
         }
     }
 

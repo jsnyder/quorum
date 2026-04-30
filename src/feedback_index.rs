@@ -470,6 +470,7 @@ mod tests {
             model: Some("gpt-5.4".into()),
             timestamp: Utc::now(),
             provenance: Provenance::Unknown,
+            fp_kind: None,
         }
     }
 
@@ -740,6 +741,7 @@ mod tests {
             model: None,
             timestamp: ts,
             provenance: Provenance::Human,
+            fp_kind: None,
         };
         let e_fp = FeedbackEntry { verdict: Verdict::Fp, reason: "false alarm".into(), ..e_tp.clone() };
         store.record(&e_tp).unwrap();
