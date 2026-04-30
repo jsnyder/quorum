@@ -672,7 +672,6 @@ impl OpenAiClient {
     ) -> anyhow::Result<reqwest::Response> {
         let started_at = std::time::Instant::now();
         let overall_deadline = self.overall_retry_deadline;
-        let mut last_status: Option<reqwest::StatusCode> = None;
 
         for attempt in 0..=MAX_RETRIES {
             let cloned = req
@@ -713,8 +712,6 @@ impl OpenAiClient {
             if status.is_success() || !is_retriable(status) || attempt == MAX_RETRIES {
                 return Ok(resp);
             }
-            last_status = Some(status);
-
             // Retry-After (server-supplied) wins; otherwise jittered backoff.
             let retry_after_hdr = resp
                 .headers()
@@ -743,10 +740,12 @@ impl OpenAiClient {
             );
             tokio::time::sleep(backoff).await;
         }
-        Err(anyhow::anyhow!(
-            "exhausted retries (last status: {:?})",
-            last_status
-        ))
+        // Loop bodies always return: every iteration either returns Ok
+        // (success / non-retriable / final-attempt-with-retriable-status),
+        // or returns Err (transport error on final attempt or non-transient
+        // transport error), or hits a continue. The for `0..=MAX_RETRIES`
+        // bound terminates, so falling through is unreachable by construction.
+        unreachable!("send_with_retry loop invariant violated")
     }
 
 
