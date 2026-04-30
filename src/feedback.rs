@@ -127,6 +127,33 @@ pub struct ExternalVerdictInput {
     pub confidence: Option<f32>,
 }
 
+/// #123 Layer 1 (Task 10): adoption telemetry for the FpKind taxonomy.
+///
+/// Returns the fraction of `Verdict::Fp` entries that carry a `fp_kind`
+/// discriminator. Numerator: FP entries where `fp_kind.is_some()`.
+/// Denominator: total FP entries. `None` when there are no FP entries
+/// (denominator zero — utilization undefined, not zero).
+///
+/// Layer 1 only delivers value if reviewers actually tag new FPs. Low
+/// utilization → Layer 3 (LLM-driven backfill of the existing 2302-entry
+/// corpus) becomes critical. High utilization → Layer 1 alone may suffice.
+pub fn compute_fp_kind_utilization_rate(entries: &[FeedbackEntry]) -> Option<f32> {
+    let mut total_fp = 0u32;
+    let mut tagged_fp = 0u32;
+    for e in entries {
+        if matches!(e.verdict, Verdict::Fp) {
+            total_fp += 1;
+            if e.fp_kind.is_some() {
+                tagged_fp += 1;
+            }
+        }
+    }
+    if total_fp == 0 {
+        return None;
+    }
+    Some(tagged_fp as f32 / total_fp as f32)
+}
+
 /// Clamp confidence to [0,1], mapping NaN/±Inf to None.
 /// `f32::clamp` is NOT NaN-safe — this wraps it with an `is_finite` gate
 /// (quorum self-review 2026-04-24).
@@ -836,6 +863,73 @@ mod tests {
                 .unwrap_or_else(|e| panic!("deserialize {}: {}", json, e));
             assert_eq!(original, round_trip, "round-trip mismatch; json={}", json);
         }
+    }
+
+    /// #123 Layer 1 (Task 10): adoption telemetry helper tests.
+    fn make_entry(verdict: Verdict, fp_kind: Option<FpKind>) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "f".into(),
+            finding_title: "t".into(),
+            finding_category: "".into(),
+            verdict,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind,
+        }
+    }
+
+    #[test]
+    fn fp_kind_utilization_rate_computed_correctly() {
+        // 3 FPs (2 tagged), 1 TP — TP must NOT affect denominator even when
+        // it carries a fp_kind (which the calibrator ignores anyway).
+        let entries = vec![
+            make_entry(Verdict::Fp, Some(FpKind::Hallucination)),
+            make_entry(Verdict::Fp, Some(FpKind::TrustModelAssumption)),
+            make_entry(Verdict::Fp, None),
+            make_entry(Verdict::Tp, Some(FpKind::Hallucination)),
+        ];
+        let rate = compute_fp_kind_utilization_rate(&entries).expect("denominator > 0");
+        let expected = 2.0_f32 / 3.0;
+        assert!(
+            (rate - expected).abs() < 1e-6,
+            "expected ≈{}, got {}",
+            expected,
+            rate,
+        );
+    }
+
+    #[test]
+    fn fp_kind_utilization_rate_none_when_no_fp() {
+        // No FP entries → denominator is zero → utilization is undefined,
+        // not 0.0. Returning None keeps the metric honest in the JSONL log.
+        let entries = vec![
+            make_entry(Verdict::Tp, None),
+            make_entry(Verdict::Partial, None),
+            make_entry(Verdict::Wontfix, None),
+        ];
+        assert_eq!(compute_fp_kind_utilization_rate(&entries), None);
+    }
+
+    #[test]
+    fn fp_kind_utilization_rate_one_when_all_tagged() {
+        let entries = vec![
+            make_entry(Verdict::Fp, Some(FpKind::Hallucination)),
+            make_entry(Verdict::Fp, Some(FpKind::TrustModelAssumption)),
+        ];
+        let rate = compute_fp_kind_utilization_rate(&entries).expect("denominator > 0");
+        assert!((rate - 1.0).abs() < 1e-6, "expected 1.0, got {}", rate);
+    }
+
+    #[test]
+    fn fp_kind_utilization_rate_zero_when_none_tagged() {
+        let entries = vec![
+            make_entry(Verdict::Fp, None),
+            make_entry(Verdict::Fp, None),
+        ];
+        let rate = compute_fp_kind_utilization_rate(&entries).expect("denominator > 0");
+        assert!((rate - 0.0).abs() < 1e-6, "expected 0.0, got {}", rate);
     }
 
     /// One well-formed `ExternalVerdictInputWire` line for inbox-hardening tests.

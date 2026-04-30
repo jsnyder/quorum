@@ -1081,6 +1081,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             context7_resolved: file_results.iter().map(|r| r.enrichment_metrics.context7_resolved).sum(),
             context7_resolve_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_resolve_failed).sum(),
             context7_query_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_query_failed).sum(),
+            // #123 Layer 1 (Task 10): adoption telemetry for the FpKind
+            // taxonomy. Computed over the loaded feedback store (same one
+            // pipeline_cfg.feedback was built from). None when no FP
+            // entries exist — utilization is undefined, not zero.
+            fp_kind_utilization_rate: feedback::compute_fp_kind_utilization_rate(
+                &pipeline_cfg.feedback,
+            ),
         };
         let _ = telem_store.record(&telem_entry);
 

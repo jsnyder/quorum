@@ -19,6 +19,13 @@ pub struct TelemetryEntry {
     #[serde(default)] pub context7_resolved: u32,
     #[serde(default)] pub context7_resolve_failed: u32,
     #[serde(default)] pub context7_query_failed: u32,
+    /// #123 Layer 1 (Task 10): fraction of `Verdict::Fp` feedback entries
+    /// that carry a `fp_kind` discriminator. Range [0.0, 1.0]. `None` when
+    /// the loaded feedback store has no FP entries (denominator zero).
+    /// Informs Layer 3 prioritization. `serde(default)` for back-compat
+    /// with pre-bump rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fp_kind_utilization_rate: Option<f32>,
 }
 
 pub struct TelemetryStore {
@@ -91,6 +98,7 @@ mod tests {
             context7_resolved: 0,
             context7_resolve_failed: 0,
             context7_query_failed: 0,
+            fp_kind_utilization_rate: None,
         }
     }
 
