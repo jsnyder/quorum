@@ -1351,6 +1351,7 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
 
 /// Core feedback logic -- testable with custom feedback path.
 /// `json`: explicit `--json` flag (when true, force JSON output even on a TTY).
+#[allow(clippy::too_many_arguments)]
 fn run_feedback_inner(
     file: &str,
     finding: &str,
@@ -1359,6 +1360,7 @@ fn run_feedback_inner(
     model: Option<&str>,
     blamed_chunks: Option<&str>,
     category: Option<&str>,
+    fp_kind: Option<feedback::FpKind>,
     json: bool,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
@@ -1397,7 +1399,7 @@ fn run_feedback_inner(
         model: model.map(|s| s.to_string()),
         timestamp: chrono::Utc::now(),
         provenance: feedback::Provenance::Human,
-        fp_kind: None,
+        fp_kind,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
@@ -1525,10 +1527,28 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         if let Some(parent) = feedback_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        // Derive fp_kind from CLI flags. Errors only when verdict=fp and
+        // a kind was specified that requires associated data (e.g.
+        // compensating-control needs --fp-reference). Returns None silently
+        // when verdict != fp; warn the user so the dropped flag is visible.
+        let fp_kind = match opts.into_fp_kind() {
+            Ok(k) => {
+                if opts.fp_kind.is_some() && k.is_none() {
+                    tracing::warn!(
+                        "--fp-kind was provided but verdict is not fp; ignoring the flag"
+                    );
+                }
+                k
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return 3;
+            }
+        };
         let (exit_code, output) = run_feedback_inner(
             &opts.file, &opts.finding, &opts.verdict, &opts.reason,
             opts.model.as_deref(), opts.blamed_chunks.as_deref(),
-            opts.category.as_deref(), opts.json, &feedback_path,
+            opts.category.as_deref(), fp_kind, opts.json, &feedback_path,
         );
         if exit_code != 0 {
             eprintln!("{}", output);
@@ -1571,7 +1591,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, None, false, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1585,7 +1605,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, None, false, &path,
+            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, None, None, false, &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1596,7 +1616,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, None, false, &path,
+            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1608,7 +1628,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, None, None, false, &path,
+            "src/auth.rs", "Test finding", "fp", "Not real", None, None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1620,7 +1640,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, None, false, &path,
+            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, None, None, false, &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1632,7 +1652,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, None, false, &path,
+            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1650,7 +1670,7 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, None, false, &path,
+            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, None, None, false, &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1669,6 +1689,7 @@ mod feedback_tests {
             None,
             Some("chunk-abc,chunk-def"),
             None,
+            None, // fp_kind
             false,
             &path,
         );
@@ -1705,6 +1726,7 @@ mod feedback_tests {
             None,
             Some("a,,b"),
             None,
+            None, // fp_kind
             false,
             &path,
         );
@@ -1727,6 +1749,7 @@ mod feedback_tests {
             None,
             None, // user omitted --blamed-chunks entirely
             None,
+            None, // fp_kind
             false,
             &path,
         );
