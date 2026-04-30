@@ -162,14 +162,15 @@ No public API change. No CLI flag change. No MCP tool schema change.
 | AC5 | No public API change, no CLI flag change, no MCP tool schema change. | Compile + existing handler suite |
 | AC6 | All pre-existing handler tests pass after `Box<dyn>` → `Arc<dyn>` swap. | Existing ~15 constructor-touching tests |
 | AC7 | `cargo test --bin quorum`, `cargo clippy --all-targets`, `cargo build --release` clean. | DoD checklist |
-| AC8 | `JoinError` from a panicking blocking task is surfaced as `"review task failed: {e}"`. | Not asserted (gap G1) |
+| AC8 | `JoinError` from a panicking blocking task is surfaced as `"review task failed: {e}"`. | T4 `handle_chat_surfaces_join_error_on_panic` |
 
 | Test | Asserts | AC |
 |---|---|---|
 | T1 `handle_chat_runs_concurrent_llm_calls_in_parallel` | N=4 concurrent `handle_chat().await` calls all reach `Barrier::wait()` and complete within 5s under `worker_threads=1`. | AC1, AC2 |
 | T2 `handle_debug_returns_llm_content` | Serialized `CallToolResult` contains EchoLlm sentinel `debug-fake-output-2026-04-29`. | AC3, AC5 |
 | T3 `handle_testgen_returns_llm_content` | Serialized `CallToolResult` contains EchoLlm sentinel `testgen-fake-output-2026-04-29`. | AC4, AC5 |
+| T4 `handle_chat_surfaces_join_error_on_panic` | A panic inside the blocking review task surfaces as `Err("review task failed: ...")` and does NOT unwind the worker. | AC8 |
 
-**Accepted coverage gaps:** G1 JoinError-on-panic path (low value vs. cost; behavior documented). G2 blocking-pool starvation (clustered with #130). G3 MCP-side request cancellation reclaiming in-flight `reqwest::blocking` work (unchanged behavior; documented). G4 async-trait migration (#131). G5 pipeline-side blocking (#81). G6 wiremock real-network coverage of the new path (`OpenAiClient` already covered by #117 wiremock suite).
+**Accepted coverage gaps:** G2 blocking-pool starvation (clustered with #130). G3 MCP-side request cancellation reclaiming in-flight `reqwest::blocking` work (unchanged behavior; documented). G4 async-trait migration (#131). G5 pipeline-side blocking (#81). G6 wiremock real-network coverage of the new path (`OpenAiClient` already covered by #117 wiremock suite). (G1 JoinError-on-panic path was closed by adding test T4 `handle_chat_surfaces_join_error_on_panic` per pre-merge code review.)
 
 **Phase 3 reviewers:** test-planning-implementation produced the AC table; testing-antipatterns-expert returned **GO** with two non-blocking nits (use `tempfile::TempDir` over `/tmp/unused-*.jsonl` — deferred for consistency with existing test convention; promote Task 7 Step 4 from optional to required — Task 1 Step 2 already covers this RED check).
