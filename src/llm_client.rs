@@ -2172,7 +2172,10 @@ mod tests {
         let client = build_test_client(&server.uri());
         let res = client.chat_completion("gpt-5.4", "test prompt").await;
         assert!(res.is_err(), "400 should bail; got {res:?}");
-        let received = server.received_requests().await.expect("requests");
+        let received = server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests");
         assert_eq!(received.len(), 1, "expected exactly 1 attempt");
     }
 
@@ -2197,7 +2200,10 @@ mod tests {
         let client = build_test_client(&server.uri());
         let res = client.chat_completion("gpt-5.4", "test prompt").await;
         assert!(res.is_err(), "400 should bail; got {res:?}");
-        let received = server.received_requests().await.expect("requests");
+        let received = server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests");
         assert_eq!(received.len(), 2, "expected exactly 2 attempts (500 + 400)");
     }
 
