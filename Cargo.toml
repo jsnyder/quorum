@@ -34,6 +34,7 @@ serde_json = "1"
 
 # Error handling
 anyhow = "1"
+httpdate = "1"
 fs2 = "0.4"
 thiserror = "2"
 
@@ -121,6 +122,7 @@ predicates = "3"
 test-case = "3"
 tempfile = "3"
 insta = { version = "1", features = ["json"] }
+wiremock = "0.6"
 
 [profile.release]
 opt-level = 3
