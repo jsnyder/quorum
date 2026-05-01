@@ -201,10 +201,22 @@ impl AgentState {
                         // violating the configured bound across multi-call turns.
                         let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
                         let output = if output.len() > remaining {
-                            let body_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
-                            let safe_end = output.floor_char_boundary(body_budget);
-                            let mut truncated = output[..safe_end].to_string();
-                            truncated.push_str(TRUNCATION_MARKER);
+                            // Self-review Finding 2: when remaining < TRUNCATION_MARKER.len()
+                            // (e.g. earlier tool calls already consumed most of the budget),
+                            // we cannot fit the marker without overshooting max_bytes_read.
+                            // Drop the marker and truncate to `remaining` bytes — the strict
+                            // byte cap takes priority over the "[truncated]" signal. The
+                            // limit_reached() check fires next turn either way.
+                            let truncated = if remaining < TRUNCATION_MARKER.len() {
+                                let safe_end = output.floor_char_boundary(remaining);
+                                output[..safe_end].to_string()
+                            } else {
+                                let body_budget = remaining - TRUNCATION_MARKER.len();
+                                let safe_end = output.floor_char_boundary(body_budget);
+                                let mut t = output[..safe_end].to_string();
+                                t.push_str(TRUNCATION_MARKER);
+                                t
+                            };
                             eprintln!("Agent: byte limit ({}) reached", config.max_bytes_read);
                             truncated
                         } else {
@@ -575,6 +587,46 @@ mod tests {
             "wrap_listing_with_budget exceeded share_budget: got {} bytes, budget {}",
             wrapped.len(),
             share_budget
+        );
+    }
+
+    #[test]
+    fn execute_tool_call_respects_byte_budget_below_marker_length() {
+        // Self-review Finding 2 (small-budget boundary). When `remaining` is
+        // smaller than TRUNCATION_MARKER.len() (37 bytes), the existing guard
+        // set body_budget=0 via saturating_sub but still appended the full
+        // marker, so output.len() = MARKER.len() > remaining and
+        // total_bytes_read overshot max_bytes_read.
+        //
+        // Pre-load total_bytes_read so only 20 bytes (< 37) remain. A single
+        // big-file read must still respect the cap. Existing #169 test uses a
+        // 100-byte fresh budget so MARKER.len() < remaining and the path
+        // doesn't trigger.
+        let dir = TempDir::new().unwrap();
+        let payload = "a".repeat(500);
+        std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig {
+            max_iterations: 1,
+            max_tool_calls: 5,
+            max_bytes_read: 100,
+        };
+        // remaining = 100 - 80 = 20 < TRUNCATION_MARKER.len() (37).
+        let mut state = AgentState {
+            total_bytes_read: 80,
+            total_tool_calls: 0,
+        };
+        let tc = ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"big.txt"}"#.into(),
+        };
+        let _ = state.execute_tool_call(&tc, &tools, &config);
+        assert!(
+            state.total_bytes_read <= config.max_bytes_read,
+            "total_bytes_read ({}) exceeded max_bytes_read ({}) at small-budget boundary",
+            state.total_bytes_read,
+            config.max_bytes_read
         );
     }
 
