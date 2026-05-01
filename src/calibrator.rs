@@ -136,6 +136,14 @@ pub fn calibrate(
     feedback: &[FeedbackEntry],
     config: &CalibratorConfig,
 ) -> CalibrationResult {
+    // Ablation knob: bypass calibrator post-processing entirely. Honored by
+    // BOTH `calibrate` and `calibrate_with_index` so the env switch behaves
+    // consistently regardless of whether the embedding index is available.
+    // (Quorum self-review 2026-05-01 caught the inconsistency.)
+    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
+    }
+
     // Capture `now` once so every verdict_weight invocation in this calibration
     // uses the same reference time (#123 Layer 1 — clock injection refactor).
     let now = chrono::Utc::now();
@@ -297,9 +305,20 @@ pub fn calibrate(
 
         // Boost: TP clearly dominates FP
         if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
-            finding.severity = boost_severity(&finding.severity);
+            // Track A rubric gate: refuse calibrator severity bumps that the
+            // finding's own text doesn't justify under the rubric (CLAUDE.md
+            // severity_rubric). Bump-suppression preserves the original
+            // severity but still records the confirmation. Default ON; set
+            // `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
+            let proposed = boost_severity(&finding.severity);
+            let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
+                .map(|v| v != "off" && v != "0")
+                .unwrap_or(true);
+            if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
+                finding.severity = proposed;
+                boosted += 1;
+            }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
-            boosted += 1;
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
@@ -372,6 +391,12 @@ pub fn calibrate_with_index(
     config: &CalibratorConfig,
 ) -> CalibrationResult {
     if index.is_empty() {
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
+    }
+    // Ablation knob: bypass calibrator post-processing entirely. Used by the
+    // calibrator-eval harness to isolate few-shot effects from post-hoc
+    // severity bumps. Returns findings unchanged.
+    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
@@ -535,9 +560,20 @@ pub fn calibrate_with_index(
 
         // Boost: TP clearly dominates FP
         if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
-            finding.severity = boost_severity(&finding.severity);
+            // Track A rubric gate: refuse calibrator severity bumps that the
+            // finding's own text doesn't justify under the rubric (CLAUDE.md
+            // severity_rubric). Bump-suppression preserves the original
+            // severity but still records the confirmation. Default ON; set
+            // `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
+            let proposed = boost_severity(&finding.severity);
+            let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
+                .map(|v| v != "off" && v != "0")
+                .unwrap_or(true);
+            if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
+                finding.severity = proposed;
+                boosted += 1;
+            }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
-            boosted += 1;
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
@@ -571,6 +607,129 @@ fn boost_severity(severity: &Severity) -> Severity {
         Severity::Medium => Severity::High,
         Severity::High => Severity::Critical,
         Severity::Critical => Severity::Critical,
+    }
+}
+
+/// Track A rubric gate: does the finding's own evidence justify a calibrator
+/// severity bump TO `target`? Without this, vote-weighted severity can mimic
+/// the corpus's severity distribution instead of the rubric, producing the
+/// inflation pattern observed in the 2026-05-01 4-arm ablation (calibrator-only
+/// arm bumped 6 HIGH → 14 HIGH on a 7-file sample, with ≥3 finds plainly
+/// violating the "stylistic concerns are never high" rubric clause).
+///
+/// Gate fires only when `target` is High or Critical:
+/// - `Critical`: requires explicit rubric-clause keywords (RCE / auth bypass /
+///   credential leak / data corruption / guaranteed crash) in the finding's
+///   title or description.
+/// - `High`: stylistic categories (style/complexity/performance/maintainability/
+///   api-design) only reach High when the text cites a concrete bug they hide.
+///   Other categories (security/logic/concurrency/etc.) reach High freely —
+///   the LLM's category assignment is the gating signal there.
+/// - Below High: no gate.
+///
+/// Returning `false` means the calibrator must NOT apply the bump (keep the
+/// LLM's emitted severity). The calibrator can still mark the finding as
+/// confirmed; only the severity-raise is suppressed.
+fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
+    let haystack = format!("{} {}", finding.title, finding.description).to_lowercase();
+    let cat = finding.category.to_lowercase();
+
+    // Word-boundary aware keyword check: a keyword matches if every char on
+    // either side of an occurrence is non-alphanumeric (or start/end of
+    // string). This avoids false matches like "rce" inside "force" — the
+    // exact bug that prompted this gate's first iteration: a "brute force"
+    // mention on an MD5 finding tripped the "rce" keyword and let the bump
+    // through.
+    fn contains_word(haystack: &str, needle: &str) -> bool {
+        let nlen = needle.len();
+        if nlen == 0 || haystack.len() < nlen {
+            return false;
+        }
+        let bytes = haystack.as_bytes();
+        let mut i = 0;
+        while i + nlen <= bytes.len() {
+            if &bytes[i..i + nlen] == needle.as_bytes() {
+                let left_ok = i == 0 || !(bytes[i - 1] as char).is_alphanumeric();
+                let right_ok = i + nlen == bytes.len()
+                    || !(bytes[i + nlen] as char).is_alphanumeric();
+                if left_ok && right_ok {
+                    return true;
+                }
+            }
+            i += 1;
+        }
+        false
+    }
+
+    match target {
+        Severity::Critical => {
+            // CRITICAL = data corruption, RCE, auth bypass, credential leak,
+            // or guaranteed production crash. Require evidence in the text.
+            const CRITICAL_KEYWORDS: &[&str] = &[
+                "rce",
+                "remote code execution",
+                "code execution",
+                "arbitrary code",
+                "data corruption",
+                "auth bypass",
+                "authentication bypass",
+                "credential leak",
+                "credential exfil",
+                "secret leak",
+                "guaranteed crash",
+                "guaranteed production crash",
+                "data loss",
+            ];
+            CRITICAL_KEYWORDS.iter().any(|k| contains_word(&haystack, k))
+        }
+        Severity::High => {
+            // Allowlist of categories that may freely promote medium → high.
+            // Anything else (quality, lint, ast-pattern, unknown, bug,
+            // best-practices, etc.) requires explicit bug-evidence keywords.
+            // Inversion (was: blocklist of 5 stylistic categories) per
+            // 2026-05-01 gpt-5.5 review: a blocklist silently lets every
+            // unrecognized category through, defeating the gate.
+            const HIGH_FREE_CATEGORIES: &[&str] = &[
+                "security",
+                "correctness",
+                "logic",
+                "concurrency",
+                "reliability",
+                "robustness",
+                "error-handling",
+                "error handling",
+                "validation",
+            ];
+            // Compound categories like "security/correctness" qualify if the
+            // first segment is in the allowlist — be liberal about the head.
+            let head = cat.split(&['/', ',', ' '][..]).next().unwrap_or(&cat);
+            let allow_free = HIGH_FREE_CATEGORIES
+                .iter()
+                .any(|c| *c == cat.as_str() || *c == head);
+            if allow_free {
+                true
+            } else {
+                const HIGH_EVIDENCE_KEYWORDS: &[&str] = &[
+                    "hides a bug",
+                    "hidden bug",
+                    "race condition",
+                    "resource leak",
+                    "memory leak",
+                    "exploit",
+                    "vulnerability",
+                    "injection",
+                    "data race",
+                    "use-after-free",
+                    "null deref",
+                    "null dereference",
+                    "buffer overflow",
+                    "unsafe",
+                ];
+                HIGH_EVIDENCE_KEYWORDS.iter().any(|k| contains_word(&haystack, k))
+            }
+        }
+        // Medium and below: no gate
+        _ => true,
     }
 }
 
@@ -710,6 +869,228 @@ mod tests {
             provenance: crate::feedback::Provenance::Human,
             fp_kind: None,
         }
+    }
+
+    fn finding_at(title: &str, category: &str, severity: Severity, description: &str) -> Finding {
+        FindingBuilder::new()
+            .title(title)
+            .category(category)
+            .severity(severity)
+            .description(description)
+            .build()
+    }
+
+    // --- Track A rubric gate tests ---
+
+    #[test]
+    fn rubric_gate_blocks_complexity_bump_to_high() {
+        // Stylistic complexity finding at MEDIUM should NOT bump to HIGH —
+        // the rubric forbids stylistic concerns above MEDIUM unless they
+        // demonstrate a hidden bug. This was the most-replicated rubric
+        // violation in the 2026-05-01 4-arm ablation.
+        let f = finding_at(
+            "Function `build_review_prompt` has cyclomatic complexity 22",
+            "complexity",
+            Severity::Medium,
+            "The function body is 220 lines and branches deeply.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::High, &f),
+            "complexity-only finding must not justify HIGH severity"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_ast_pattern_high_without_evidence() {
+        // ast-grep findings can be anything — must require keyword evidence
+        // before promoting to HIGH. Was free-passing under the prior blocklist
+        // (caught by 2026-05-01 gpt-5.5 review).
+        let f = finding_at(
+            "subprocess-no-check: subprocess.run() without check=True",
+            "ast-pattern",
+            Severity::Medium,
+            "Add check=True or inspect the return code.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::High, &f),
+            "generic ast-pattern finding must not auto-promote to HIGH"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_ast_pattern_high_with_evidence() {
+        // Same category, but evidence keyword present → allowed.
+        let f = finding_at(
+            "block-on-in-async: calling `block_on` inside an async context",
+            "ast-pattern",
+            Severity::Medium,
+            "Causes a deadlock or a data race in the runtime; use `.await`.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::High, &f),
+            "ast-pattern finding citing a race condition must justify HIGH"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_quality_and_unknown_categories_to_high() {
+        for (title, cat, desc) in [
+            ("Unused variable", "quality", "Cosmetic only."),
+            ("Some bug", "bug", "Probably wrong."),
+            ("Magic constant 100 reused", "best-practices", "Pull into constant."),
+            ("Logging missing", "observability", "Add structured logging."),
+            ("Some thing", "unknown", "Unclassified."),
+        ] {
+            let f = finding_at(title, cat, Severity::Medium, desc);
+            assert!(
+                !rubric_supports_severity_bump(&Severity::High, &f),
+                "category `{cat}` must NOT auto-promote MEDIUM→HIGH without evidence keyword"
+            );
+        }
+    }
+
+    #[test]
+    fn rubric_gate_compound_category_uses_head() {
+        // "security/correctness" splits on '/'; head is "security" → allowed.
+        let f = finding_at(
+            "X is unsafe",
+            "security/correctness",
+            Severity::Medium,
+            "An issue.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::High, &f),
+            "compound category with allowlisted head must permit HIGH"
+        );
+        // Unknown head is blocked.
+        let f2 = finding_at(
+            "Y is wrong",
+            "lint/quality",
+            Severity::Medium,
+            "An issue.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::High, &f2),
+            "compound category with non-allowlisted head must require evidence"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_md5_bump_to_critical() {
+        // MD5 hashing is "broken cryptographic primitive" → HIGH per rubric,
+        // not CRITICAL. Without the gate, calibrator was bumping HIGH→CRITICAL
+        // on this pattern (observed in 2026-05-01 ch-03 calibrated arm).
+        let f = finding_at(
+            "Passwords are hashed with unsalted MD5",
+            "security",
+            Severity::High,
+            "User passwords use MD5, a fast broken hash function.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "broken-crypto finding without credential-leak evidence must not justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_rce_bump_to_critical() {
+        // ch-16 finding mentions "code execution" → rubric explicit "RCE" → CRITICAL.
+        let f = finding_at(
+            "Uploading into web root with weak extension blacklist enables code execution",
+            "security",
+            Severity::High,
+            "The blocklist of `.jsp` is bypassable; uploaded `.jspx` files execute as JSP.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "explicit RCE evidence must justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_credential_leak_bump_to_critical() {
+        let f = finding_at(
+            "Unauthenticated admin endpoint leaks all stored password hashes",
+            "security",
+            Severity::High,
+            "The /admin/usernames handler returns the entire userDatabase including credential leak.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "credential-leak evidence must justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_high_for_security_categories_without_keywords() {
+        // Security/logic findings can reach HIGH freely — the LLM's category
+        // assignment is the gating signal. Only stylistic categories require
+        // bug-keyword evidence to reach HIGH.
+        let f = finding_at(
+            "Race condition in shared HashMap",
+            "concurrency",
+            Severity::Medium,
+            "Spring controllers are singletons; concurrent writes can corrupt the map.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::High, &f),
+            "non-stylistic category must allow HIGH bump without explicit keywords"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_does_not_block_below_high() {
+        // Bumps to MEDIUM, LOW, INFO are not gated.
+        let f = finding_at(
+            "Function `foo` has cyclomatic complexity 8",
+            "complexity",
+            Severity::Low,
+            "A simple style observation.",
+        );
+        assert!(rubric_supports_severity_bump(&Severity::Medium, &f));
+        assert!(rubric_supports_severity_bump(&Severity::Low, &f));
+        assert!(rubric_supports_severity_bump(&Severity::Info, &f));
+    }
+
+    #[test]
+    fn rubric_gate_brute_force_does_not_match_rce_keyword() {
+        // Regression: word-boundary check. "brute force" used to match the
+        // "rce" keyword (substring of "force"), letting the calibrator bump
+        // MD5 password-hashing findings to CRITICAL. Caught in the
+        // 2026-05-01 4-arm gate validation run.
+        let f = finding_at(
+            "Passwords are hashed with unsalted MD5",
+            "security",
+            Severity::High,
+            "MD5 is broken for password storage. Leaked hashes can be cracked \
+             with precomputed tables or GPU brute force.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "'brute force' must not match 'rce' keyword via substring"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_word_boundary_blocks_substring_matches() {
+        // Word-boundary check: "exploitation" must not match the "exploit"
+        // keyword (which is the stylistic-HIGH list, not Critical, but the
+        // same word-boundary helper services both). The gate fires only on
+        // a stylistic category, so use complexity here.
+        let f = finding_at(
+            "Function `f` has cyclomatic complexity 30",
+            "complexity",
+            Severity::Medium,
+            "The function is hard to maintain. Post-exploitation cleanup also \
+             happens in the same scope, contributing to size.",
+        );
+        // "post-exploitation" must NOT trigger the "exploit" stylistic-HIGH
+        // keyword (otherwise we'd let complexity findings reach HIGH on any
+        // tangential mention of an exploit).
+        assert!(
+            !rubric_supports_severity_bump(&Severity::High, &f),
+            "'exploitation' must not match 'exploit' via substring inside a stylistic finding"
+        );
     }
 
     #[test]
@@ -1167,6 +1548,39 @@ mod tests {
         let result = calibrate(findings, &feedback, &config);
         assert_eq!(result.findings[0].severity, Severity::Medium);
         assert_eq!(result.boosted, 0);
+    }
+
+    #[test]
+    fn calibrate_env_disable_short_circuits_non_indexed_path() {
+        // Regression: QUORUM_DISABLE_CALIBRATOR was only honored in
+        // calibrate_with_index. Quorum self-review (2026-05-01) caught
+        // that the non-indexed `calibrate()` would still suppress / boost,
+        // so ablation runs that fell back to it produced misleading data.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Buffer overflow")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let feedback = vec![
+            fb("Buffer overflow", "security", Verdict::Tp),
+            fb("Buffer overflow", "security", Verdict::Tp),
+            fb("Buffer overflow", "security", Verdict::Tp),
+        ];
+        // SAFETY: tests run single-threaded for env mutations in this crate
+        // (no parallel test runner config); reset after the assertion.
+        unsafe {
+            std::env::set_var("QUORUM_DISABLE_CALIBRATOR", "1");
+        }
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        unsafe {
+            std::env::remove_var("QUORUM_DISABLE_CALIBRATOR");
+        }
+        assert_eq!(result.findings[0].severity, Severity::Medium, "must not boost when disabled");
+        assert_eq!(result.boosted, 0);
+        assert_eq!(result.suppressed, 0);
+        assert!(result.traces.is_empty(), "no traces should be emitted when disabled");
     }
 
     // -- Mixed precedent --
