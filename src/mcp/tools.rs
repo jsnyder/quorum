@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
     description = "Review code for bugs, security issues, and quality problems. Returns structured findings with severity, category, and line numbers."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewTool {
     /// The code to review
     pub code: String,
@@ -41,6 +42,7 @@ pub enum FeedbackVerdict {
     description = "Record whether a review finding was a true positive (tp), false positive (fp), partial, wontfix, or context_misleading. Improves future reviews."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FeedbackTool {
     /// File path the finding was about
     #[serde(rename = "filePath")]
@@ -98,6 +100,7 @@ pub struct FeedbackTool {
     description = "List available models, supported languages, and detectable domains/frameworks."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CatalogTool {
     /// What to list: models, languages, or domains
     pub query: String,
@@ -108,6 +111,7 @@ pub struct CatalogTool {
     description = "Ask questions about code. Provide a file for context and ask anything about its behavior, design, or potential issues."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ChatTool {
     /// The question to ask
     pub question: String,
@@ -124,6 +128,7 @@ pub struct ChatTool {
     description = "Analyze code with a specific error message for debugging help. Returns potential causes and fixes."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DebugTool {
     /// The error message or stack trace
     pub error: String,
@@ -139,6 +144,7 @@ pub struct DebugTool {
     description = "Generate tests for a function or module. Returns test code in the appropriate framework."
 )]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TestgenTool {
     /// The code to generate tests for
     pub code: String,
@@ -269,5 +275,87 @@ mod tests {
         let json = r#"{"code":"def add(a,b): return a+b","filePath":"math.py"}"#;
         let tool: TestgenTool = serde_json::from_str(json).unwrap();
         assert!(tool.framework.is_none());
+    }
+
+    // Issue #134: MCP boundary must reject unknown fields. Without
+    // `deny_unknown_fields`, a typo such as `"filepath"` (lowercase 'p')
+    // silently deserializes to a struct missing `file_path`, and the schema
+    // surfaces no error. All six tool structs are wire contracts for
+    // schema-driven clients; misspellings should fail loudly at parse time.
+    //
+    // Each test sends an otherwise-valid payload with one extra field that
+    // is *not* declared on the struct.
+
+    #[test]
+    fn review_tool_rejects_unknown_field() {
+        let json = r#"{"code":"fn main(){}","filePath":"src/main.rs","bogus":"x"}"#;
+        let result: Result<ReviewTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "ReviewTool must reject unknown field");
+    }
+
+    #[test]
+    fn feedback_tool_rejects_unknown_field() {
+        // Plausible typo: `findingTitle` (correct field is `finding`).
+        let json = r#"{"filePath":"src/auth.rs","finding":"SQLi","verdict":"tp","reason":"r","findingTitle":"oops"}"#;
+        let result: Result<FeedbackTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "FeedbackTool must reject unknown field");
+    }
+
+    #[test]
+    fn catalog_tool_rejects_unknown_field() {
+        let json = r#"{"query":"models","extra":1}"#;
+        let result: Result<CatalogTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "CatalogTool must reject unknown field");
+    }
+
+    #[test]
+    fn chat_tool_rejects_unknown_field() {
+        let json = r#"{"question":"why?","unexpected":true}"#;
+        let result: Result<ChatTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "ChatTool must reject unknown field");
+    }
+
+    #[test]
+    fn debug_tool_rejects_unknown_field() {
+        let json = r#"{"error":"NPE","code":"x()","filePath":"a.rs","stack":"..."}"#;
+        let result: Result<DebugTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "DebugTool must reject unknown field");
+    }
+
+    #[test]
+    fn testgen_tool_rejects_unknown_field() {
+        let json = r#"{"code":"x","filePath":"a.py","language":"python"}"#;
+        let result: Result<TestgenTool, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "TestgenTool must reject unknown field");
+    }
+
+    // Happy-path acceptance: deny_unknown_fields must NOT break payloads
+    // that exercise every declared field.
+
+    #[test]
+    fn feedback_tool_accepts_all_declared_fields() {
+        let json = r#"{
+            "filePath":"src/a.rs",
+            "finding":"x",
+            "verdict":"fp",
+            "reason":"r",
+            "model":"gpt-5.4",
+            "blamedChunks":["c1"],
+            "fromAgent":"pal",
+            "agentModel":"gemini",
+            "confidence":0.9,
+            "category":"security",
+            "fpKind":"hallucination"
+        }"#;
+        let tool: FeedbackTool = serde_json::from_str(json).expect("all declared fields must parse");
+        assert_eq!(tool.verdict, FeedbackVerdict::Fp);
+        assert_eq!(tool.from_agent.as_deref(), Some("pal"));
+    }
+
+    #[test]
+    fn review_tool_accepts_all_declared_fields() {
+        let json = r#"{"code":"fn x(){}","filePath":"a.rs","focus":"security"}"#;
+        let tool: ReviewTool = serde_json::from_str(json).expect("declared fields must parse");
+        assert_eq!(tool.focus.as_deref(), Some("security"));
     }
 }
