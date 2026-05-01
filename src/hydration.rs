@@ -58,8 +58,15 @@ pub fn hydrate(
         collect_type_refs_in_range(&root, source, lang, &type_kinds, start, end,
             &all_types, &mut ctx.type_definitions, &mut seen_types);
 
+        // Walk identifier-like leaf nodes (NOT comments / string literals) in the
+        // changed range so import filtering can avoid matching tokens that look
+        // like identifiers but live inside a comment or string body.
+        let mut idents_in_range = std::collections::HashSet::new();
+        collect_identifiers_in_range(&root, source, start, end, &mut idents_in_range);
+
         collect_import_refs_in_range(&root, source, &import_kinds, start, end,
-            &all_imports, &mut ctx.import_targets, &mut ctx.qualified_names);
+            &all_imports, &idents_in_range,
+            &mut ctx.import_targets, &mut ctx.qualified_names);
     }
 
     // Caller blast radius: if changed lines contain a function definition,
@@ -181,6 +188,39 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     let text = import_text.trim().trim_end_matches(';');
 
     if text.starts_with("use ") {
+        // Rust: handle grouped `use std::collections::{HashMap, BTreeSet}` first.
+        if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}')) {
+            if open < close {
+                let inner = &text[open + 1..close];
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() || part == "*" {
+                        continue;
+                    }
+                    // Handle `Foo as Bar` aliases inside the group.
+                    let name = if let Some(alias) = part.split(" as ").nth(1) {
+                        alias.trim()
+                    } else {
+                        // Handle nested paths like `io::{self, Read}` — take last segment.
+                        part.rsplit("::").next().unwrap_or(part).trim()
+                    };
+                    if !name.is_empty() && name != "*" && name != "self" {
+                        names.push(name.to_string());
+                    } else if name == "self" {
+                        // `use foo::{self, ...}` brings `foo` into scope; surface the
+                        // parent segment (between "use " and "::{").
+                        let head = &text[..open];
+                        if let Some(parent) = head.rsplit("::").next() {
+                            let parent = parent.trim();
+                            if !parent.is_empty() {
+                                names.push(parent.to_string());
+                            }
+                        }
+                    }
+                }
+                return names;
+            }
+        }
         // Rust: last segment after ::, handle `as` aliases
         if let Some(last) = text.rsplit("::").next() {
             let name = last.trim().trim_end_matches(';');
@@ -205,16 +245,65 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
         }
     } else if text.starts_with("import ") {
-        // TS: import { X, Y } from './module'
-        if text.contains('{') && text.contains('}') {
-            if let Some(start) = text.find('{') {
-                if let Some(end) = text.find('}') {
-                    let inner = &text[start + 1..end];
-                    for part in inner.split(',') {
-                        let name = part.trim().split(" as ").next().unwrap_or("").trim();
-                        if !name.is_empty() {
-                            names.push(name.to_string());
-                        }
+        // TypeScript imports always include ` from `; Python `import sys` does not.
+        // This lets us route the parse without language plumbing.
+        let is_ts = text.contains(" from ");
+        if is_ts {
+            // Strip the trailing ` from "module"` (or `' '`) clause so we only parse
+            // the import-clause portion.
+            let clause_end = text.rfind(" from ").unwrap_or(text.len());
+            let clause = text["import ".len()..clause_end].trim();
+
+            // Split on the first top-level `{` to separate the default/namespace
+            // half from the named-import group. Default imports come BEFORE the
+            // brace; named imports come INSIDE it.
+            let (head, group) = match clause.find('{') {
+                Some(open) => {
+                    let close = clause.rfind('}').unwrap_or(clause.len());
+                    let inner = if close > open {
+                        Some(clause[open + 1..close].to_string())
+                    } else {
+                        None
+                    };
+                    let head = clause[..open].trim().trim_end_matches(',').trim().to_string();
+                    (head, inner)
+                }
+                None => (clause.to_string(), None),
+            };
+
+            // Head may contain: "" | "foo" | "* as ns" | "foo, * as ns"
+            for part in head.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                if let Some(after_as) = part.split(" as ").nth(1) {
+                    // namespace or aliased default — local binding is after `as`.
+                    let name = after_as.trim();
+                    if !name.is_empty() && name != "*" {
+                        names.push(name.to_string());
+                    }
+                } else if part != "*" {
+                    // default import: bare identifier.
+                    names.push(part.to_string());
+                }
+            }
+
+            if let Some(inner) = group {
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    // For `default as foo` re-export form OR `bar as baz`, prefer
+                    // the local binding (after `as`).
+                    let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                        after_as.trim()
+                    } else {
+                        part
+                    };
+                    if !name.is_empty() && name != "*" {
+                        names.push(name.to_string());
                     }
                 }
             }
@@ -242,9 +331,16 @@ fn collect_calls_in_range(
     qnames_out: &mut Vec<String>,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    let node_line = node.start_position().row as u32 + 1;
+    let call_start = node.start_position().row as u32 + 1;
+    let call_end = node.end_position().row as u32 + 1;
 
-    if call_kinds.contains(&node.kind()) && node_line >= start_line && node_line <= end_line {
+    // Overlap, not start-only: a multiline call expression like
+    //     helper(
+    //         1,
+    //         2,
+    //     )
+    // starts before the changed range but its inner lines may be in-range.
+    if call_kinds.contains(&node.kind()) && call_start <= end_line && call_end >= start_line {
         // Extract the function name being called
         if let Some(func_node) = node.child_by_field_name("function") {
             let func_text = &source[func_node.byte_range()];
@@ -270,6 +366,10 @@ fn collect_calls_in_range(
         }
     }
 
+    // Always recurse, regardless of whether this node was itself in-range —
+    // tree-sitter's recursive descent already covers nested calls f(g(h())),
+    // and we want to keep finding calls inside outer scopes that happen to
+    // open before the changed range.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
             collect_calls_in_range(&child, source, _lang, call_kinds, start_line, end_line,
@@ -314,33 +414,92 @@ fn collect_type_refs_in_range(
     }
 }
 
+/// Walk identifier-like leaf nodes inside [start_line, end_line], excluding
+/// comments and string-literal interiors. Used by `collect_import_refs_in_range`
+/// to scope imports to identifiers actually referenced in the changed range
+/// without false-matching tokens that appear in comments or string content.
+fn collect_identifiers_in_range(
+    node: &tree_sitter::Node,
+    source: &str,
+    start_line: u32,
+    end_line: u32,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let kind = node.kind();
+    // Skip subtrees that cannot legitimately reference an imported name.
+    // tree-sitter kind names are language-stable for these.
+    if kind.contains("comment")
+        || kind == "string_literal"
+        || kind == "string"
+        || kind == "raw_string_literal"
+        || kind == "template_string"
+    {
+        return;
+    }
+
+    let n_start = node.start_position().row as u32 + 1;
+    let n_end = node.end_position().row as u32 + 1;
+    if n_end < start_line || n_start > end_line {
+        return;
+    }
+
+    if node.child_count() == 0 {
+        // Leaf — capture identifier-shaped text only when this leaf overlaps the range.
+        if n_start <= end_line && n_end >= start_line {
+            let text = &source[node.byte_range()];
+            if is_identifier_like(text) {
+                out.insert(text.to_string());
+            }
+        }
+        return;
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            collect_identifiers_in_range(&child, source, start_line, end_line, out);
+        }
+    }
+}
+
+fn is_identifier_like(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[allow(clippy::too_many_arguments)]
 fn collect_import_refs_in_range(
     _node: &tree_sitter::Node,
     _source: &str,
     _import_kinds: &[&str],
-    start_line: u32,
+    _start_line: u32,
     _end_line: u32,
     all_imports: &[(String, String)],
+    idents_in_range: &std::collections::HashSet<String>,
     out: &mut Vec<String>,
     qnames_out: &mut Vec<String>,
 ) {
-    // Check which imports are referenced: for now, include all imports
-    // whose imported name appears to be used. We simply include imports
-    // that are in the file — a more precise approach would check for
-    // identifier usage in the changed range, but for Phase 1 this suffices.
-    // We include imports whose declaration line falls within the changed range,
-    // OR whose imported name is used in the changed range.
-    // For simplicity, include all file-level imports (they're cheap context).
+    // Per-call scoping: only surface imports whose imported name actually
+    // appears as an identifier in the changed range. Avoids the previous
+    // behaviour of dumping every file-level import on every review, which
+    // dragged unrelated modules into the LLM prompt and broke import-target
+    // filtering downstream.
+    //
+    // We rely on a tree-sitter identifier walk (collect_identifiers_in_range)
+    // rather than a textual substring search, so identifier-shaped tokens
+    // inside comments or string literals do not count as references.
     let mut seen = std::collections::HashSet::new();
     for (name, text) in all_imports {
-        if !seen.contains(name) {
-            // Include the import if it provides context for the changed region
-            // Simple heuristic: include all imports (they're cheap context)
-            if start_line > 0 { // always true when we have changed lines
-                out.push(format!("{}: {}", name, text.trim()));
-                qnames_out.push(name.clone());
-                seen.insert(name.clone());
-            }
+        if seen.contains(name) {
+            continue;
+        }
+        if idents_in_range.contains(name) {
+            out.push(format!("{}: {}", name, text.trim()));
+            qnames_out.push(name.clone());
+            seen.insert(name.clone());
         }
     }
 }
@@ -368,9 +527,20 @@ pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
                     .split(|c: char| !c.is_ascii_digit())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if let (Some(start), Some(count)) = (nums.first(), nums.get(1)) {
-                    if let (Ok(s), Ok(c)) = (start.parse::<u32>(), count.parse::<u32>()) {
-                        current_ranges.push((s, s + c.saturating_sub(1).max(0)));
+                if let Some(start_str) = nums.first() {
+                    if let Ok(s) = start_str.parse::<u32>() {
+                        // Count is optional in unified diff format (defaults to 1).
+                        // "@@ -10 +10 @@" means a single-line change at line 10.
+                        let count = nums
+                            .get(1)
+                            .and_then(|c| c.parse::<u32>().ok())
+                            .unwrap_or(1);
+                        // Pure-deletion hunks (+N,0) have count==0 and contribute no
+                        // changed lines on the new side — skip rather than emit a
+                        // garbage (N, N-1) range from saturating_sub underflow.
+                        if count > 0 {
+                            current_ranges.push((s, s + count - 1));
+                        }
                     }
                 }
             }
@@ -776,6 +946,218 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #175: hydrate handles multi-byte UTF-8 source (paper-bug regression) --
+
+    #[test]
+    fn hydrate_correctly_processes_source_with_multibyte_utf8() {
+        let source = "// Greeting: こんにちは 🦀\n\
+                      fn helper() -> String { \"x\".to_string() }\n\
+                      fn process(input: &str) -> String {\n\
+                      \x20   let _ = helper();\n\
+                      \x20   input.to_string()\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        // Range [(4,4)] covers `let _ = helper();`. Line 1's multibyte chars
+        // would expose any line-to-byte arithmetic that ignored UTF-8 boundaries.
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+
+        // Positive assertion: the function ran to completion AND produced
+        // expected results. Without this, a swallowed panic returning
+        // Default would pass a no-panic check vacuously.
+        assert!(
+            ctx.callee_signatures.iter().any(|s| s.starts_with("fn helper")),
+            "expected `helper` callee even when source contains multibyte UTF-8; got {:?}",
+            ctx.callee_signatures
+        );
+    }
+
+    #[test]
+    fn hydrate_does_not_panic_when_change_range_contains_emoji() {
+        let source = "fn greet() -> &'static str {\n\
+                      \x20   \"こんにちは 🦀\"\n\
+                      }\n\
+                      fn caller() { greet(); }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]); // emoji line
+        // Hydration may or may not pick up greet's signature here — but it MUST NOT panic.
+        let _ = ctx;
+    }
+
+    // -- #174: import_targets scoping to changed range --
+
+    #[test]
+    fn import_targets_only_includes_imports_referenced_in_changed_range() {
+        let source = "use std::collections::HashMap;\n\
+                      use std::sync::Arc;\n\
+                      fn touched() {\n\
+                      \x20   let _: Arc<u32> = Arc::new(0);\n\
+                      }\n\
+                      fn untouched() {\n\
+                      \x20   let _: HashMap<String, u32> = HashMap::new();\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        // Only line 4 (Arc usage in `touched`) changes.
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+        let arc_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
+            .count();
+        let hashmap_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+            .count();
+        assert_eq!(arc_count, 1, "Arc must be hydrated exactly once; got {:?}", ctx.import_targets);
+        assert_eq!(hashmap_count, 0, "HashMap must NOT be hydrated; got {:?}", ctx.import_targets);
+        assert!(!ctx.import_targets.is_empty(), "import_targets unexpectedly empty");
+    }
+
+    #[test]
+    fn import_targets_symmetric_when_changed_range_covers_other_function() {
+        let source = "use std::collections::HashMap;\n\
+                      use std::sync::Arc;\n\
+                      fn touched() {\n\
+                      \x20   let _: Arc<u32> = Arc::new(0);\n\
+                      }\n\
+                      fn untouched() {\n\
+                      \x20   let _: HashMap<String, u32> = HashMap::new();\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(7, 7)]); // HashMap line
+        let arc_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
+            .count();
+        let hashmap_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+            .count();
+        assert_eq!(arc_count, 0, "Arc must NOT be hydrated when HashMap line is changed");
+        assert_eq!(hashmap_count, 1, "HashMap must be hydrated; got {:?}", ctx.import_targets);
+    }
+
+    // -- #173: TypeScript default/namespace import bindings --
+
+    #[test]
+    fn extract_imported_names_typescript_default_import_uses_local_binding() {
+        let names = extract_imported_names("import foo from \"x\";");
+        assert_eq!(names, vec!["foo".to_string()], "got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_mixed_default_and_named() {
+        let names = extract_imported_names("import foo, { bar, baz } from \"x\";");
+        assert_eq!(names, vec!["foo".to_string(), "bar".to_string(), "baz".to_string()],
+            "mixed default+named must yield local binding plus named members; got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_namespace_import() {
+        let names = extract_imported_names("import * as ns from \"x\";");
+        assert_eq!(names, vec!["ns".to_string()], "got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_default_with_namespace() {
+        let names = extract_imported_names("import foo, * as ns from \"x\";");
+        assert_eq!(names, vec!["foo".to_string(), "ns".to_string()], "got {names:?}");
+    }
+
+    // -- #172: extract_imported_names splits Rust grouped use --
+
+    #[test]
+    fn extract_imported_names_splits_rust_grouped_use() {
+        let names = extract_imported_names("use std::collections::{HashMap, BTreeSet};");
+        assert_eq!(names, vec!["HashMap".to_string(), "BTreeSet".to_string()]);
+    }
+
+    // -- #170: collect_calls_in_range overlap (not start-only) --
+
+    #[test]
+    fn collect_calls_in_range_finds_call_when_only_inner_line_changed() {
+        let source = "fn helper(a: i32, b: i32) -> i32 { a + b }\n\
+                      fn caller() {\n\
+                      \x20   helper(\n\
+                      \x20       1,\n\
+                      \x20       2,\n\
+                      \x20   );\n\
+                      }\n";
+        // helper() spans lines 3..=6 (the call expression). Only line 4 (the "1," argument) is in the changed range.
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+        let helper_sigs: Vec<_> = ctx.callee_signatures.iter()
+            .filter(|s| s.starts_with("fn helper"))
+            .collect();
+        assert_eq!(helper_sigs.len(), 1,
+            "expected exactly one `fn helper` signature; got {:?}", ctx.callee_signatures);
+    }
+
+    #[test]
+    fn collect_calls_in_range_negative_control_does_not_hydrate_callees_outside_range() {
+        // Same source; range [(1,1)] covers only the `fn helper` definition line.
+        // No CALL of helper exists in that range, so callee_signatures must be empty.
+        let source = "fn helper(a: i32, b: i32) -> i32 { a + b }\n\
+                      fn caller() {\n\
+                      \x20   helper(\n\
+                      \x20       1,\n\
+                      \x20       2,\n\
+                      \x20   );\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
+        assert!(ctx.callee_signatures.iter().all(|s| !s.starts_with("fn helper")),
+            "range [(1,1)] should not hydrate `helper` as a callee; got {:?}", ctx.callee_signatures);
+    }
+
+    // -- #171: parse_unified_diff omitted-count handling --
+
+    #[test]
+    fn parse_unified_diff_handles_omitted_count_in_hunk_header() {
+        // Single-line hunks omit the ",1" count: "@@ -10 +10 @@"
+        let diff = "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -10 +10 @@\n-old\n+new\n";
+        let result = parse_unified_diff(diff);
+        assert_eq!(result.len(), 1, "expected one file");
+        assert_eq!(result[0].0, "file.rs");
+        assert_eq!(result[0].1, vec![(10, 10)], "single-line hunk should yield (10, 10)");
+    }
+
+    #[test]
+    fn parse_unified_diff_does_not_panic_on_signed_line_numbers() {
+        // The "-" prefix in "-10" must not mis-parse as negative or panic.
+        let diff = "+++ b/x.rs\n@@ -10 +10 @@\n";
+        let _ = parse_unified_diff(diff); // must not panic
+    }
+
+    #[test]
+    fn parse_unified_diff_handles_asymmetric_omitted_count() {
+        // -1,3 has count, +5 omits count (single-line add).
+        let diff = "+++ b/x.rs\n@@ -1,3 +5 @@\n-a\n-b\n-c\n+x\n";
+        let result = parse_unified_diff(diff);
+        assert_eq!(result, vec![("x.rs".into(), vec![(5, 5)])]);
+    }
+
+    #[test]
+    fn parse_unified_diff_handles_pure_deletion_hunk() {
+        // +N,0 = pure deletion at line N. Must not produce a (N, N-1) garbage range.
+        let diff = "+++ b/y.rs\n@@ -10,3 +10,0 @@\n-a\n-b\n-c\n";
+        let result = parse_unified_diff(diff);
+        // Either the hunk is filtered out entirely, OR the range collapses to (N, N).
+        // Author's choice; document and assert one.
+        if let Some((_, ranges)) = result.first() {
+            for &(s, e) in ranges {
+                assert!(s <= e, "saturating_sub produced inverted range ({s}, {e})");
+            }
+        }
     }
 
     #[test]
