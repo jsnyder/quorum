@@ -124,21 +124,31 @@ impl TelemetryStore {
         loop {
             buf.clear();
             // read_until lets us bound how many bytes we'll allocate per
-            // line: we read up to MAX_JSONL_LINE_BYTES + 1 to detect
-            // overflow without slurping the rest of an oversized line.
-            let mut limited = (&mut reader).take((MAX_JSONL_LINE_BYTES + 1) as u64);
+            // line: we read up to MAX_JSONL_LINE_BYTES + 2 so that a
+            // payload of exactly MAX bytes followed by \r\n is still
+            // captured as a non-oversized line, while a payload of
+            // MAX+1 (with or without newline) is unambiguously oversized.
+            let mut limited = (&mut reader).take((MAX_JSONL_LINE_BYTES + 2) as u64);
             let n = limited.read_until(b'\n', &mut buf)?;
             if n == 0 {
                 break;
             }
             line_no += 1;
 
-            // Detect oversized line. We read up to MAX_JSONL_LINE_BYTES + 1
-            // bytes via Read::take, so the only way `buf.len()` exceeds
-            // MAX_JSONL_LINE_BYTES is if the real line is strictly longer
-            // than the cap. A line of *exactly* MAX_JSONL_LINE_BYTES at
-            // EOF (no trailing newline) is fine and must NOT be rejected.
-            let oversized = buf.len() > MAX_JSONL_LINE_BYTES;
+            // Detect oversized line. The cap applies to the JSONL *payload*
+            // (i.e. the bytes excluding the trailing `\n` / `\r\n`), so a
+            // record of exactly MAX_JSONL_LINE_BYTES bytes is valid whether
+            // or not it carries a trailing newline. Since Read::take is
+            // configured for MAX + 1 bytes, we have at most one extra
+            // payload byte to disambiguate: payload_len > MAX means the
+            // real line truly exceeded the cap.
+            let payload_len = if buf.ends_with(b"\n") {
+                let n = buf.len() - 1;
+                if n > 0 && buf[n - 1] == b'\r' { n - 1 } else { n }
+            } else {
+                buf.len()
+            };
+            let oversized = payload_len > MAX_JSONL_LINE_BYTES;
             if oversized {
                 // Drain the rest of the line so we resync to the next
                 // newline without allocating it.
@@ -479,6 +489,32 @@ mod tests {
         assert!(
             !stats.errors[0].error.contains("exceeds"),
             "EOF line at-or-under cap must not be flagged as oversized: {}",
+            stats.errors[0].error
+        );
+    }
+
+    #[test]
+    fn newline_terminated_line_at_cap_payload_is_not_oversized() {
+        // Quorum re-review #2 (gpt-5.4, severity=high): the cap applies
+        // to the JSONL *payload*, not to the raw buffer that includes
+        // the trailing newline. A payload of exactly MAX bytes followed
+        // by '\n' (so buf.len() = MAX + 1) must NOT be flagged oversized.
+        // We exercise the boundary at a smaller, tractable size — the
+        // logic is identical regardless of the absolute cap.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        // 64 KiB of garbage (well under the 1 MiB cap) followed by '\n'.
+        // The point is the trailing-newline boundary, not the cap value.
+        let body = format!("{}\n", "y".repeat(64 * 1024));
+        std::fs::write(&path, body).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.errors.len(), 1);
+        assert!(
+            !stats.errors[0].error.contains("exceeds"),
+            "newline-terminated line at-or-under cap must not be flagged oversized: {}",
             stats.errors[0].error
         );
     }
