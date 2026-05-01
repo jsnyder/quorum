@@ -87,17 +87,19 @@ Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for ca
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).
 
-**FpKind taxonomy (#123, v0.18.0+):** when recording an `fp` verdict, classify the reason via `--fp-kind <variant>` (CLI) or `fpKind` (MCP). The calibrator decays old precedents per-kind, on the theory that some FP classes age out faster than others:
+**FpKind taxonomy (#123, v0.18.0+):** when recording an `fp` verdict, classify the reason via `--fp-kind <variant>` (CLI, kebab-case) or `fpKind` (MCP, snake_case — note: the wire formats are asymmetric, the CLI drops the `_assumption` suffix on `trust-model`). The calibrator decays old precedents per-kind:
 
-| Variant | Decay half-life | Meaning |
-|---------|-----------------|---------|
-| `hallucination` | 30d (fast) | Finding references code/API that doesn't exist (line off by N, wrong function name, fabricated import) |
-| `pattern-overgeneralization` | 60d | Pattern matched syntactically but the surrounding context makes it benign (e.g. `unwrap()` on a value the type system guarantees is `Some`) |
-| `trust-model` | 120d | Reviewer mis-modeled the trust boundary (e.g. flagged user-supplied data that's actually internal-only, or vice versa) |
-| `compensating-control` | 120d | Real pattern but mitigated upstream (e.g. SQL string concatenation behind an authenticated, parameter-validating handler) |
-| `out-of-scope` | 90d | Pre-existing issue surfaced by a diff-scoped review — not introduced by this change |
+| CLI flag | MCP `fpKind` | τ (days) | Half-life | Meaning |
+|----------|--------------|---------:|----------:|---------|
+| `hallucination` | `hallucination` | 120 | ~83d | Finding references code/API that doesn't exist (line off by N, wrong function name, fabricated import) |
+| `pattern-overgeneralization` | `pattern_overgeneralization` | 120 | ~83d | Pattern matched syntactically but context makes it benign (e.g. `unwrap()` on a value the type system guarantees is `Some`). Optional `--fp-discriminator` teaches the LLM how to distinguish |
+| `trust-model` | `trust_model_assumption` | 40 | ~28d | Reviewer mis-modeled the trust boundary — decays 3× faster because trust models evolve |
+| `compensating-control` | `compensating_control` | 120 | ~83d | Real pattern but mitigated upstream. **Requires** `--fp-reference <file:line\|PR\|URL>` (CLI) or nested `{reference: "..."}` (MCP) |
+| `out-of-scope` | `out_of_scope` | 120 | ~83d | Pre-existing issue surfaced by a diff-scoped review — not introduced by this change. Optional `--fp-tracked-in <PR/issue>` records the follow-up link |
 
-`fp_kind_utilization_rate` is reported in `quorum stats` Feedback Health when ≥10% of FPs in the rolling window are tagged. Untagged FPs use the legacy uniform decay (83d half-life).
+The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kind_utilization_rate` is reported in `quorum stats` Feedback Health when ≥10% of FPs in the rolling window are tagged. Untagged FPs (and `Option<FpKind> = None` for pre-bump rows) use the default τ=120d.
+
+**fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `FeedbackStore::record_external` / `ExternalVerdictInput`, which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary so dropped fields are visible. fp_kind only persists on the Human / direct ingestion paths.
 
 **External-agent ingestion (issue #32):** verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) flow through three paths, all funneling through `FeedbackStore::record_external`: (1) `~/.quorum/inbox/*.jsonl` drained at the top of every `review`/`stats` invocation via claim-then-ingest (atomic rename to `inbox/processing/` before parse, archive to `inbox/processed/` on success); (2) `quorum feedback --from-agent <name> [--agent-model <m>] [--confidence 0..1] [--category <c>]`; (3) MCP `feedback` tool with `fromAgent` field. Trust boundary: External may only record `tp`/`fp`/`partial` — `wontfix` and `context_misleading` are rejected at the chokepoint. Confidence is clamped to [0,1] (NaN-safe), agent name is normalized (trim+lowercase). Tier breakdown by Provenance shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
 

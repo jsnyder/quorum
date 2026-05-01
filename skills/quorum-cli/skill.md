@@ -136,25 +136,37 @@ Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert meta
 
 ### Classifying false positives with `fp_kind` (v0.18.0+)
 
-When recording an `fp`, classify *why* it was wrong via `--fp-kind` (CLI) or `fpKind` (MCP). The calibrator decays each class on its own half-life:
+When recording an `fp`, classify *why* it was wrong via `--fp-kind` (CLI, kebab-case) or `fpKind` (MCP, snake_case). **The wire formats are asymmetric** — the CLI drops the `_assumption` suffix on `trust-model`, and some variants carry payload fields:
 
-| Variant | Half-life | When to use |
-|---------|-----------|-------------|
-| `hallucination` | 30d | Reviewer cited code/API that doesn't exist (wrong line, fabricated function, nonexistent import) |
-| `pattern-overgeneralization` | 60d | Pattern matched but surrounding context makes it benign (e.g. `unwrap()` on type-system-guaranteed `Some`) |
-| `trust-model` | 120d | Wrong threat model (flagged internal-only data as user-supplied or vice versa) |
-| `compensating-control` | 120d | Real pattern, mitigated upstream (e.g. SQL concat behind authenticated parameter-validating handler) |
-| `out-of-scope` | 90d | Pre-existing issue surfaced by diff-scoped review — not introduced by this change |
+| CLI flag | MCP `fpKind` | τ | Half-life | When to use |
+|----------|--------------|---:|----------:|-------------|
+| `hallucination` | `hallucination` | 120d | ~83d | Reviewer cited code/API that doesn't exist (wrong line, fabricated function, nonexistent import) |
+| `pattern-overgeneralization` | `pattern_overgeneralization` | 120d | ~83d | Pattern matched but context makes it benign. Pass `--fp-discriminator` (or MCP nested `discriminator_hint`) to teach the LLM the distinction |
+| `trust-model` | `trust_model_assumption` | 40d | ~28d | Wrong threat model — decays 3× faster because trust models evolve |
+| `compensating-control` | `compensating_control` | 120d | ~83d | Real pattern, mitigated upstream. **Requires** `--fp-reference <file:line\|PR\|URL>` (CLI) or nested `{reference: "..."}` (MCP) |
+| `out-of-scope` | `out_of_scope` | 120d | ~83d | Pre-existing in diff-scoped review. Optional `--fp-tracked-in` (CLI) / `tracked_in` (MCP) records follow-up link |
 
 ```bash
 # CLI
 quorum feedback --file src/x.rs --finding "unwrap on Option" --verdict fp \
-    --fp-kind pattern-overgeneralization --reason "type-system-guaranteed Some"
+    --fp-kind pattern-overgeneralization --fp-discriminator "type-system-guaranteed Some" \
+    --reason "context-specific exception"
 
-# MCP feedback tool — pass fpKind: "hallucination" alongside verdict: "fp"
+quorum feedback --file src/x.rs --finding "SQL concat" --verdict fp \
+    --fp-kind compensating-control --fp-reference "src/auth.rs:42" \
+    --reason "param-validating handler upstream"
+
+# MCP feedback tool — fpKind values:
+#   "hallucination"
+#   "trust_model_assumption"
+#   {"compensating_control": {"reference": "PR #99"}}
+#   {"pattern_overgeneralization": {"discriminator_hint": "..."}}  # discriminator_hint optional
+#   {"out_of_scope": {"tracked_in": "issue #200"}}                  # tracked_in optional
 ```
 
-Untagged FPs use the legacy uniform 83d half-life. `quorum stats` reports `fp_kind_utilization_rate` once ≥10% of recent FPs are tagged.
+Untagged FPs use the default τ=120d (~83d half-life). `quorum stats` reports `fp_kind_utilization_rate` once ≥10% of recent FPs are tagged.
+
+**fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `ExternalVerdictInput` which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary. Don't expect fp_kind to persist for external-agent verdicts.
 
 ### What NOT to do
 
