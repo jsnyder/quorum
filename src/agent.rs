@@ -204,7 +204,8 @@ impl AgentState {
                         // marker that pushes total_bytes_read past max_bytes_read,
                         // violating the configured bound across multi-call turns.
                         let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
-                        let output = if output.len() > remaining {
+                        let truncated_path = output.len() > remaining;
+                        let output = if truncated_path {
                             // Self-review Finding 2: when remaining < TRUNCATION_MARKER.len()
                             // (e.g. earlier tool calls already consumed most of the budget),
                             // we cannot fit the marker without overshooting max_bytes_read.
@@ -226,7 +227,18 @@ impl AgentState {
                         } else {
                             output
                         };
-                        self.total_bytes_read += output.len();
+                        // CR round-3: when truncation fired, the rendered bytes
+                        // can be < remaining (floor_char_boundary may back off
+                        // past a multi-byte UTF-8 codepoint, or the markered
+                        // branch reserves marker length). Either way, the cap
+                        // has been reached — set total_bytes_read to the cap so
+                        // limit_reached() trips on the next turn instead of
+                        // wasting an iteration on a budget that's already gone.
+                        if truncated_path {
+                            self.total_bytes_read = config.max_bytes_read;
+                        } else {
+                            self.total_bytes_read += output.len();
+                        }
                         output
                     }
                     Err(e) => format!("Error: {}", e),
@@ -703,6 +715,67 @@ mod tests {
         assert!(
             state.total_bytes_read <= config.max_bytes_read,
             "total_bytes_read ({}) exceeded max_bytes_read ({}) at small-budget boundary",
+            state.total_bytes_read,
+            config.max_bytes_read
+        );
+    }
+
+    #[test]
+    fn execute_tool_call_truncation_marks_budget_exhausted_on_utf8_backoff() {
+        // CR round-3 concern. `output.floor_char_boundary(remaining)` may back
+        // off several bytes to land on a UTF-8 codepoint boundary. In the
+        // markerless branch (`remaining < TRUNCATION_MARKER.len()`) the result
+        // is `truncated.len() < remaining`, so `total_bytes_read += output.len()`
+        // leaves the running total below `max_bytes_read`. The next iteration's
+        // `limit_reached()` check returns false even though the tool output was
+        // already truncated by the budget — wasting a turn re-querying the same
+        // capped budget. After truncation, the cap MUST be considered reached.
+        let dir = TempDir::new().unwrap();
+        // read_file prefixes output with "   N | " (7 bytes for line 1), so
+        // for max_bytes_read=20 the truncation boundary lands at content byte
+        // 13 (output byte 20). Place a 2-byte UTF-8 char (`é`) at content
+        // bytes 12-13 so output bytes 19-20 straddle the codepoint:
+        // floor_char_boundary(20) backs off to 19, leaving truncated.len()=19.
+        let mut payload = "a".repeat(12);
+        payload.push('é');
+        std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig {
+            max_iterations: 1,
+            max_tool_calls: 5,
+            max_bytes_read: 20,
+        };
+        let mut state = AgentState {
+            total_bytes_read: 0,
+            total_tool_calls: 0,
+        };
+        let tc = ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"big.txt"}"#.into(),
+        };
+        let result = state.execute_tool_call(&tc, &tools, &config);
+
+        // Positive: the tool ran (not a silent error path) and the rendered
+        // bytes fit within the configured cap.
+        let result_str = result.expect("execute_tool_call returned None — tool did not run");
+        assert!(
+            !result_str.is_empty(),
+            "tool result was empty — execution path didn't return content"
+        );
+        assert!(
+            result_str.len() <= config.max_bytes_read,
+            "rendered result exceeded budget: result_len={} max={}",
+            result_str.len(),
+            config.max_bytes_read
+        );
+
+        // Limit must register as reached after a truncating call, even when
+        // floor_char_boundary backs off and the appended bytes < remaining.
+        assert!(
+            state.limit_reached(&config),
+            "limit_reached must return true after truncating call \
+             (total_bytes_read={}, max_bytes_read={})",
             state.total_bytes_read,
             config.max_bytes_read
         );
