@@ -235,6 +235,22 @@ fn jitter_unit() -> f64 {
     (nanos % 1_000_000) as f64 / 1_000_000.0
 }
 
+/// Classify whether a `reqwest::Error` from a `send().await` call is a
+/// transient network-layer failure that's worth retrying.
+///
+/// #146: the prior classifier was
+///     `e.is_timeout() || e.is_connect() || e.is_request()`
+/// where `is_request()` is reqwest's catch-all "Request kind" predicate
+/// covering decode errors, body errors, redirect errors, and other
+/// non-network failures. Treating those as transient burns the retry
+/// budget (and load on upstream) on errors that will never recover.
+///
+/// We retry only on shapes that genuinely look like network flakiness:
+/// connect-time failures and timeouts.
+pub(crate) fn is_transient_transport_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect()
+}
+
 fn retry_after_fits_budget(
     started_at: std::time::Instant,
     overall_deadline: std::time::Duration,
@@ -344,9 +360,47 @@ fn matches_truthy(v: &str) -> bool {
 /// invasive (filed as a follow-up). This validator addresses the dominant
 /// threats (typo, env-injection, embedded creds, IP-literal SSRF) without
 /// the resolver hook.
+/// #156: when `url::Url::parse` fails on a URL that contains
+/// `user:password@host`, the raw input (and possibly parts of the
+/// inner parser error) include the credentials. Echoing that into a
+/// terminal message, daemon log, or telemetry record is a credential
+/// leak. The always-on userinfo-rejection branch runs only AFTER a
+/// successful parse, so it cannot defend against this path on its own.
+///
+/// This helper does string-level redaction of any `user:password@`
+/// segment between the scheme `://` and the next `/`, `?`, `#`, or
+/// end-of-string, replacing it with `[REDACTED]@`. It is intentionally
+/// permissive in input shape because by definition the URL did not
+/// parse — relying on `url::Url::set_username` would be circular.
+fn redact_userinfo_for_error(raw: &str) -> String {
+    // Find scheme://host start.
+    let Some(scheme_end) = raw.find("://") else {
+        return raw.to_string();
+    };
+    let after_scheme = scheme_end + 3;
+    let rest = &raw[after_scheme..];
+    // Find the end of the authority component.
+    let auth_end = rest
+        .find(['/', '?', '#'])
+        .unwrap_or(rest.len());
+    let authority = &rest[..auth_end];
+    // No userinfo present?
+    let Some(at_idx) = authority.rfind('@') else {
+        return raw.to_string();
+    };
+    let mut out = String::with_capacity(raw.len());
+    out.push_str(&raw[..after_scheme]);
+    out.push_str("[REDACTED]@");
+    out.push_str(&authority[at_idx + 1..]);
+    out.push_str(&rest[auth_end..]);
+    out
+}
+
 pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Result<()> {
-    let parsed = url::Url::parse(base_url)
-        .map_err(|e| anyhow::anyhow!("base_url {base_url:?} is not a valid URL: {e}"))?;
+    let parsed = url::Url::parse(base_url).map_err(|e| {
+        let safe = redact_userinfo_for_error(base_url);
+        anyhow::anyhow!("base_url {safe:?} is not a valid URL: {e}")
+    })?;
 
     if !matches!(parsed.scheme(), "http" | "https") {
         anyhow::bail!(
@@ -425,6 +479,30 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
                 anyhow::bail!(actionable_error_for_unknown_host(base_url, &dn, policy));
             }
         }
+    }
+
+    // #147: reject plaintext http:// against public/allowlisted hosts. The
+    // scheme alone leaks the API key and request body to any on-path
+    // observer. By the time we reach this point the host has already passed
+    // private-IP / allowlist gates, so the only remaining shape is "public
+    // host with plaintext scheme" — which has no legitimate use case absent
+    // an explicit opt-out. The two opt-outs are pre-existing:
+    //   - `allow_private_ips` (QUORUM_ALLOW_PRIVATE_BASE_URL=1): trusted
+    //     LAN / on-prem / Ollama. The check is short-circuited here because
+    //     by reaching this line under that flag the host is private — the
+    //     user already accepted the plaintext exposure on their LAN.
+    //   - `unsafe_bypass` (QUORUM_UNSAFE_BASE_URL=1): handled at the top
+    //     of this function; never reaches here.
+    if parsed.scheme() == "http" && !policy.allow_private_ips {
+        anyhow::bail!(
+            "base_url {base_url:?} uses plaintext http:// scheme. \
+             API keys and request bodies would be sent unencrypted. \
+             Use https:// instead. \
+             For on-prem / Ollama deployments on a trusted LAN, set:\n  \
+             export QUORUM_ALLOW_PRIVATE_BASE_URL=1\n\
+             To bypass scheme + allowlist + IP checks entirely (development only):\n  \
+             export QUORUM_UNSAFE_BASE_URL=1"
+        );
     }
 
     Ok(())
@@ -565,19 +643,29 @@ pub(crate) async fn read_capped_error_body(mut resp: reqwest::Response) -> Strin
 pub(crate) fn sanitize_error_body(raw: &str) -> String {
     use std::sync::LazyLock;
     static SECRET_PAT: LazyLock<regex::Regex> = LazyLock::new(|| {
-        // Three patterns, all case-insensitive:
-        //   - bearer\s+TOKEN  (Authorization header echo)
-        //   - sk-...          (catch-all suffix covers sk-proj-, sk-svcacct-,
-        //                       sk-org-, sk-ant-api03-, sk-live-, sk-test-)
-        //   - api[_-]?key=... (JSON / form-encoded key fields)
+        // Patterns, all case-insensitive:
+        //   - bearer\s+TOKEN              (Authorization header echo)
+        //   - sk-...                      (OAI / Anthropic key shapes)
+        //   - api[_-]?key=...             (JSON / form-encoded api_key)
+        //   - x-api-key:...               (#144: APIGW / Anthropic header)
+        //   - "token"|"secret"|"access_token":"..."  (#144: JSON fields)
+        //
+        // Bearer tokens include JWTs (`header.payload.signature`,
+        // base64url with `=` padding) — Quorum self-review of #119
+        // flagged that the prior `[A-Za-z0-9_-]+` charset truncated
+        // JWTs at the first dot, leaving most of the credential visible.
+        // Field separator for api_key allows space/underscore/hyphen
+        // (catches `api key:`, `api_key:`, `api-key:`, `apikey:`).
         regex::Regex::new(
-            // Bearer tokens include JWTs (`header.payload.signature`,
-            // base64url with `=` padding) — Quorum self-review of #119
-            // flagged that the prior `[A-Za-z0-9_-]+` charset truncated
-            // JWTs at the first dot, leaving most of the credential visible.
-            // Field separator for api_key allows space/underscore/hyphen
-            // (catches `api key:`, `api_key:`, `api-key:`, `apikey:`).
-            r#"(?i)(bearer\s+[A-Za-z0-9_\-\.=]+|sk-[A-Za-z0-9_\-]+|api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+)"#,
+            r#"(?ix)
+            (
+                bearer\s+[A-Za-z0-9_\-\.=]+
+              | sk-[A-Za-z0-9_\-]+
+              | api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+
+              | x-api-key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+
+              | "(?:token|secret|access_token)"\s*:\s*"[^"]+"
+            )
+            "#,
         )
         .expect("static regex")
     });
@@ -674,13 +762,34 @@ impl OpenAiClient {
         let overall_deadline = self.overall_retry_deadline;
 
         for attempt in 0..=MAX_RETRIES {
+            // #157: top-of-loop deadline gate. The pre-existing
+            // `retry_after_fits_budget(...)` check runs BEFORE the next
+            // sleep, but the wakeup itself can land us past the deadline
+            // (the budget check uses `<=` for knife-edge equality, so
+            // zero-remaining still allows zero-backoff to schedule). Without
+            // this top gate, that wakeup would issue another upstream
+            // request we have no budget to service.
+            //
+            // For attempt 0 this is a no-op (elapsed ~ 0).
+            if attempt > 0 {
+                let elapsed = started_at.elapsed();
+                if elapsed >= overall_deadline {
+                    anyhow::bail!(
+                        "retry budget exhausted before attempt {} (elapsed {:?} >= deadline {:?})",
+                        attempt + 1,
+                        elapsed,
+                        overall_deadline
+                    );
+                }
+            }
+
             let cloned = req
                 .try_clone()
                 .ok_or_else(|| anyhow::anyhow!("request body must be clonable for retry"))?;
             let resp = match cloned.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    let transient = e.is_timeout() || e.is_connect() || e.is_request();
+                    let transient = is_transient_transport_error(&e);
                     if !transient || attempt == MAX_RETRIES {
                         return Err(anyhow::anyhow!(
                             "transport error after {} attempt(s): {}",
@@ -1437,6 +1546,94 @@ mod tests {
         assert!(validate_base_url("ftp://api.openai.com/", &policy).is_err());
     }
 
+    // --- #147: reject http:// scheme by default ---
+
+    #[test]
+    fn validate_base_url_rejects_plain_http_against_public_host_under_default_policy() {
+        // #147: plaintext http:// to a public host leaks the API key and
+        // request body to any on-path observer. Default policy must reject
+        // it — the host might be on the allowlist, but the scheme alone is
+        // disqualifying. The only way to opt back in is the same env vars
+        // that already cover unusual deployments
+        // (`QUORUM_ALLOW_PRIVATE_BASE_URL=1` for on-prem / Ollama,
+        //  `QUORUM_UNSAFE_BASE_URL=1` for everything else).
+        let policy = BaseUrlPolicy::default();
+        let res = validate_base_url("http://api.openai.com/v1", &policy);
+        assert!(
+            res.is_err(),
+            "default policy must reject plaintext http:// to allowlisted host"
+        );
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("http"),
+            "error must mention http scheme; got {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_to_private_host_when_allow_private_ips_set() {
+        // Ollama / on-prem LLMs are typically http://. The plaintext-scheme
+        // ban must NOT fire when the user has already opted into private
+        // hosts via QUORUM_ALLOW_PRIVATE_BASE_URL=1 — that flag implies
+        // "I know what network I'm on."
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://10.0.5.42:8080/v1",
+        ] {
+            assert!(
+                validate_base_url(url, &policy).is_ok(),
+                "allow_private_ips must override plaintext-scheme ban for {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_under_unsafe_bypass() {
+        // QUORUM_UNSAFE_BASE_URL=1 already disables the host-allowlist
+        // and IP-block checks. It must also disable the plaintext-scheme
+        // ban — that flag is the documented "I accept all the risks"
+        // footgun, and exempting only some checks would be inconsistent.
+        let policy = BaseUrlPolicy {
+            unsafe_bypass: true,
+            ..Default::default()
+        };
+        assert!(
+            validate_base_url("http://api.openai.com/v1", &policy).is_ok(),
+            "unsafe_bypass must accept plaintext http:// to public host"
+        );
+    }
+
+    // --- #156: parse-error path must redact userinfo ---
+
+    #[test]
+    fn validate_base_url_parse_error_redacts_userinfo_in_error_message() {
+        // #156: when url::Url::parse fails, the error message returned by
+        // validate_base_url echoes the raw input via `{base_url:?}` AND
+        // the inner parser error, both of which can include embedded
+        // credentials before the always-on userinfo-rejection branch ever
+        // runs. The fix must scrub `user:password@` from the error before
+        // it flows to terminal output, daemon logs, or telemetry.
+        let policy = BaseUrlPolicy::default();
+        // A URL with userinfo + an invalid port — `url::Url::parse` fails.
+        let url = "https://leaky-user:super-secret-pw@example.com:notaport/v1";
+        let err = validate_base_url(url, &policy)
+            .expect_err("must fail to parse");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("super-secret-pw"),
+            "password must not appear in parse-error message; got: {msg}"
+        );
+        assert!(
+            !msg.contains("leaky-user"),
+            "username must not appear in parse-error message; got: {msg}"
+        );
+    }
+
     // --- #119: BaseUrlPolicy::from_env ---
     //
     // Process env is global; serialize these tests via a Mutex so parallel
@@ -1693,6 +1890,65 @@ mod tests {
         let s = sanitize_error_body(raw);
         // 'hunter2' is NOT scrubbed — it's not a bearer/sk-/api_key shape.
         assert!(s.contains("hunter2"), "scope: not scrubbing arbitrary literals");
+    }
+
+    // --- #144: expand sanitize_error_body coverage ---
+
+    #[test]
+    fn sanitize_error_body_scrubs_authorization_header_echo() {
+        // Some OAI-compatible gateways echo the full request header line
+        // (`Authorization: Bearer <token>`) on validation errors. The bare
+        // `bearer` pattern catches the inner token, but a gateway dumping
+        // headers may also surface the literal value of any other header.
+        // Pin the canonical Authorization-header echo shape.
+        let raw = "401: Authorization: Bearer abcXYZ123_456_secret_token";
+        let s = sanitize_error_body(raw);
+        assert!(
+            !s.contains("abcXYZ123_456_secret_token"),
+            "Authorization header token must be scrubbed; got: {s}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_x_api_key_header() {
+        // x-api-key is the canonical Anthropic / API-Gateway header. A
+        // gateway echoing request headers leaks it verbatim.
+        let raw = "400: X-Api-Key: super-secret-value-9000";
+        let s = sanitize_error_body(raw);
+        assert!(
+            !s.contains("super-secret-value-9000"),
+            "x-api-key header value must be scrubbed; got: {s}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_generic_json_token_field() {
+        // JSON-encoded gateway errors that echo `"token": "..."`,
+        // `"access_token": "..."`, or `"secret": "..."` fields must scrub
+        // the value. The existing regex only knows about `api_key`.
+        for raw in [
+            r#"{"error":"unauthorized","token":"my-bearer-9000"}"#,
+            r#"{"access_token":"a1b2c3d4e5f6","msg":"expired"}"#,
+            r#"{"secret":"shh-do-not-leak","msg":"x"}"#,
+        ] {
+            let s = sanitize_error_body(raw);
+            for sensitive in ["my-bearer-9000", "a1b2c3d4e5f6", "shh-do-not-leak"] {
+                assert!(
+                    !s.contains(sensitive),
+                    "sensitive field value {sensitive:?} must be scrubbed in {raw:?}; got {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_error_body_preserves_token_word_without_value() {
+        // Defensive: the bare word "token" appearing in prose without a
+        // following `: <value>` shape must NOT be over-scrubbed. We only
+        // redact when there's a key=value-shaped credential.
+        let raw = "rate limit exceeded; refresh your token and retry";
+        let s = sanitize_error_body(raw);
+        assert_eq!(s, raw, "must not over-scrub when no value follows");
     }
 
     // --- #119: OpenAiClient::new wiring ---
@@ -2374,6 +2630,105 @@ mod tests {
             started.elapsed() >= Duration::from_millis(800),
             "expected >= ~1s elapsed; got {:?}",
             started.elapsed()
+        );
+    }
+
+    // --- #157: top-of-loop deadline check ---
+
+    #[tokio::test]
+    async fn send_with_retry_aborts_at_top_of_loop_when_deadline_already_exceeded() {
+        // #157: today the deadline is enforced only via
+        // `retry_after_fits_budget(...)` BEFORE the next sleep — the *start*
+        // of the next iteration goes straight into `cloned.send().await`
+        // with no deadline gate. If the previous sleep finished past the
+        // deadline (knife-edge: `<=` lets zero-remaining through) we still
+        // issue another upstream request that we can never service.
+        //
+        // Concrete repro: a slow upstream (server delays each response by
+        // longer than the overall deadline). The first send burns the
+        // entire budget; the loop body's existing pre-sleep gate runs, sees
+        // backoff fits the (now-zero) remaining, sleeps zero, goes to top,
+        // and fires a second send. The fix adds a top-of-loop gate.
+        //
+        // Assertion shape: server should receive AT MOST 1 request — the
+        // first send. Without the top-of-loop check it receives 2+.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let hit_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let hit_count_cl = hit_count.clone();
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(move |_: &wiremock::Request| {
+                hit_count_cl.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_delay(Duration::from_millis(150))
+            })
+            .mount(&server)
+            .await;
+
+        let mut client = build_test_client(&server.uri());
+        // Deadline shorter than the per-response delay → after the first
+        // send returns, elapsed >= deadline.
+        client.set_overall_retry_deadline_for_test(Duration::from_millis(100));
+        let _ = client.chat_completion("gpt-5.4", "test").await;
+
+        let total = hit_count.load(Ordering::SeqCst);
+        assert!(
+            total <= 1,
+            "deadline already exceeded after first send; expected at most 1 hit, got {total}"
+        );
+    }
+
+    // --- #146: retry classification — drop is_request() catch-all ---
+
+    #[tokio::test]
+    async fn is_transient_transport_error_rejects_decode_errors() {
+        // #146: the prior classifier was
+        //     e.is_timeout() || e.is_connect() || e.is_request()
+        // `is_request()` is reqwest's catch-all "Request kind" predicate
+        // and returns TRUE for non-network failures including JSON
+        // `is_decode()` errors, body errors, and redirect errors. Treating
+        // those as transient causes wasted retry budget (and amplifies
+        // upstream load) on errors that will never recover.
+        //
+        // RED: today the inline classifier in `send_with_retry` would
+        // declare a decode error transient. Once we extract it into a
+        // free `is_transient_transport_error(&reqwest::Error)` and drop
+        // the `is_request()` arm, decode errors become non-transient.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("definitely not json"))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/x", server.uri()))
+            .send()
+            .await
+            .expect("send must succeed (server returns 200)");
+        let decode_err = resp
+            .json::<serde_json::Value>()
+            .await
+            .expect_err("decode of garbage must fail");
+
+        // Sanity-check: this error is decode-shaped (is_decode() / is_request()
+        // both true; is_connect() / is_timeout() both false). If the test
+        // setup fails this invariant, the assertion below is meaningless.
+        assert!(
+            decode_err.is_decode() && !decode_err.is_connect() && !decode_err.is_timeout(),
+            "test setup invalid: expected decode-only error, got {decode_err:?}"
+        );
+
+        assert!(
+            !is_transient_transport_error(&decode_err),
+            "decode errors must NOT be classified transient (#146)"
         );
     }
 }
