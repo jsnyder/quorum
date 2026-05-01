@@ -381,7 +381,7 @@ fn redact_userinfo_for_error(raw: &str) -> String {
     let rest = &raw[after_scheme..];
     // Find the end of the authority component.
     let auth_end = rest
-        .find(|c: char| matches!(c, '/' | '?' | '#'))
+        .find(['/', '?', '#'])
         .unwrap_or(rest.len());
     let authority = &rest[..auth_end];
     // No userinfo present?
