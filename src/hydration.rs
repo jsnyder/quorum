@@ -181,6 +181,39 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     let text = import_text.trim().trim_end_matches(';');
 
     if text.starts_with("use ") {
+        // Rust: handle grouped `use std::collections::{HashMap, BTreeSet}` first.
+        if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}')) {
+            if open < close {
+                let inner = &text[open + 1..close];
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() || part == "*" {
+                        continue;
+                    }
+                    // Handle `Foo as Bar` aliases inside the group.
+                    let name = if let Some(alias) = part.split(" as ").nth(1) {
+                        alias.trim()
+                    } else {
+                        // Handle nested paths like `io::{self, Read}` — take last segment.
+                        part.rsplit("::").next().unwrap_or(part).trim()
+                    };
+                    if !name.is_empty() && name != "*" && name != "self" {
+                        names.push(name.to_string());
+                    } else if name == "self" {
+                        // `use foo::{self, ...}` brings `foo` into scope; surface the
+                        // parent segment (between "use " and "::{").
+                        let head = &text[..open];
+                        if let Some(parent) = head.rsplit("::").next() {
+                            let parent = parent.trim();
+                            if !parent.is_empty() {
+                                names.push(parent.to_string());
+                            }
+                        }
+                    }
+                }
+                return names;
+            }
+        }
         // Rust: last segment after ::, handle `as` aliases
         if let Some(last) = text.rsplit("::").next() {
             let name = last.trim().trim_end_matches(';');
@@ -798,6 +831,14 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #172: extract_imported_names splits Rust grouped use --
+
+    #[test]
+    fn extract_imported_names_splits_rust_grouped_use() {
+        let names = extract_imported_names("use std::collections::{HashMap, BTreeSet};");
+        assert_eq!(names, vec!["HashMap".to_string(), "BTreeSet".to_string()]);
     }
 
     // -- #170: collect_calls_in_range overlap (not start-only) --
