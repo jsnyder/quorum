@@ -224,6 +224,13 @@ fn query_feedback_precedents(
 ) -> Vec<String> {
     use crate::feedback::{Provenance, Verdict};
 
+    // Ablation knob: bypass few-shot precedent injection entirely. Used by
+    // the calibrator-eval harness to isolate prompt-side effects from
+    // post-hoc calibrator effects. Returns no precedents to inject.
+    if std::env::var("QUORUM_DISABLE_FEW_SHOT").is_ok() {
+        return Vec::new();
+    }
+
     // Query with language + filename + first 200 chars of code for better semantic matching
     let code_snippet: String = code.chars().take(200).collect();
     let query = format!(
