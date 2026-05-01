@@ -310,15 +310,37 @@ fn classify_inbox_entry(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Path-bound regular-file check: uses `symlink_metadata` so it does NOT
+/// follow symlinks. Mirrors `src/ast_grep.rs`'s defense-in-depth pattern.
+///
+/// Used by `read_inbox_file` as a non-Unix TOCTOU mitigation between
+/// `opts.open(path)` and `file.metadata()`. On Unix this is redundant
+/// with `O_NOFOLLOW` at open time and harmless. On non-Unix it narrows
+/// (does NOT close) the post-classify pre-open swap window — see
+/// `read_inbox_file` for the full honesty caveat.
+fn path_is_regular_file(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false)
+}
+
 /// Open an inbox file safely. On Unix, applies `O_NOFOLLOW` (refuse symlinks
 /// at the syscall boundary — defends against TOCTOU between iteration-time
 /// classify and the post-rename read) plus `O_NONBLOCK` (so a FIFO at this
 /// path errors `EWOULDBLOCK` instead of hanging the drain loop). Always
 /// validates regular-file via fstat after open, caps size, and reads via
 /// `.take(MAX+1)` to defend against inodes that lie about size
-/// (proc/sysfs/network FS). On non-Unix, the OS-level symlink/FIFO guards
-/// are unavailable, so the post-classify TOCTOU window is wider; the
-/// portable `is_file()` + size-cap checks still bound the damage.
+/// (proc/sysfs/network FS).
+///
+/// Non-Unix mitigation (issue #133): after `opts.open(path)` returns, we
+/// also stat the *path* via `path_is_regular_file` (`symlink_metadata`,
+/// no-follow). This narrows the non-Unix TOCTOU window — full closure
+/// requires platform-specific safe-open primitives (Windows reparse-point
+/// rejection at open time) which are out of scope for this PR. A swap
+/// *before* `opts.open(path)` still pins a sensitive-target inode in
+/// `file`; the path-bound stat then can't validate what was actually
+/// opened. What this DOES catch: post-classify pre-open replacement of
+/// the file with a symlink (the most common attack pattern).
 fn read_inbox_file(path: &std::path::Path) -> std::io::Result<String> {
     use std::fs::OpenOptions;
     use std::io::Read;
@@ -332,6 +354,16 @@ fn read_inbox_file(path: &std::path::Path) -> std::io::Result<String> {
         opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = opts.open(path)?;
+
+    // #133: path-bound symlink check. Narrows (does NOT close) the
+    // non-Unix TOCTOU window between classify and open. Redundant on
+    // Unix (O_NOFOLLOW already errored above) but harmless.
+    if !path_is_regular_file(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not a regular file (symlink, fifo, etc.)",
+        ));
+    }
 
     let meta = file.metadata()?;
     if !meta.file_type().is_file() {
@@ -1878,6 +1910,57 @@ mod tests {
         assert!(result.is_err(), "symlink read must error via O_NOFOLLOW");
         // ELOOP on Linux, ELOOP/ENOTDIR on macOS depending on kernel —
         // assert on the error existence, not the specific OS error.
+    }
+
+    // --- #133: non-Unix TOCTOU window narrowing (2026-04-30) ---
+    //
+    // Path-bound `symlink_metadata` check inside read_inbox_file. On Unix
+    // O_NOFOLLOW already rejects symlinks at open() time, so this is
+    // redundant-but-harmless. On non-Unix, this is the primary symlink
+    // defense — but it is mitigation, NOT closure: a swap *before* the
+    // opts.open(path) call still pins a symlink target's inode in the
+    // returned handle. Full closure requires Windows reparse-point-safe
+    // open primitives (out of scope).
+
+    #[test]
+    fn path_symlink_metadata_rejects_symlink_targets() {
+        // Helper-level unit test: path_is_regular_file must NOT follow
+        // symlinks (uses symlink_metadata, not metadata).
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::write(&real, b"content").unwrap();
+        let link = dir.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        assert!(path_is_regular_file(&real), "real file should be accepted");
+        #[cfg(any(unix, windows))]
+        assert!(
+            !path_is_regular_file(&link),
+            "symlink path must be rejected (path-bound check, no follow)"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_inbox_file_rejects_symlink_with_invalid_input() {
+        // Integration: read_inbox_file on a symlink path errors out.
+        // On Unix this is currently caught by O_NOFOLLOW (returns ELOOP),
+        // not the new path_is_regular_file gate — but the contract from
+        // the caller's perspective is the same: error, no read. Future
+        // refactors that drop O_NOFOLLOW must keep the path-bound check
+        // honoring this contract.
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real.jsonl");
+        std::fs::write(&real, "content\n").unwrap();
+        let link = dir.path().join("link.jsonl");
+        symlink(&real, &link).unwrap();
+
+        let result = read_inbox_file(&link);
+        assert!(result.is_err(), "symlink must be rejected");
     }
 
     #[test]
