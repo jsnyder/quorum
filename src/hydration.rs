@@ -368,9 +368,20 @@ pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
                     .split(|c: char| !c.is_ascii_digit())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if let (Some(start), Some(count)) = (nums.first(), nums.get(1)) {
-                    if let (Ok(s), Ok(c)) = (start.parse::<u32>(), count.parse::<u32>()) {
-                        current_ranges.push((s, s + c.saturating_sub(1).max(0)));
+                if let Some(start_str) = nums.first() {
+                    if let Ok(s) = start_str.parse::<u32>() {
+                        // Count is optional in unified diff format (defaults to 1).
+                        // "@@ -10 +10 @@" means a single-line change at line 10.
+                        let count = nums
+                            .get(1)
+                            .and_then(|c| c.parse::<u32>().ok())
+                            .unwrap_or(1);
+                        // Pure-deletion hunks (+N,0) have count==0 and contribute no
+                        // changed lines on the new side — skip rather than emit a
+                        // garbage (N, N-1) range from saturating_sub underflow.
+                        if count > 0 {
+                            current_ranges.push((s, s + count - 1));
+                        }
                     }
                 }
             }
@@ -776,6 +787,47 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #171: parse_unified_diff omitted-count handling --
+
+    #[test]
+    fn parse_unified_diff_handles_omitted_count_in_hunk_header() {
+        // Single-line hunks omit the ",1" count: "@@ -10 +10 @@"
+        let diff = "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -10 +10 @@\n-old\n+new\n";
+        let result = parse_unified_diff(diff);
+        assert_eq!(result.len(), 1, "expected one file");
+        assert_eq!(result[0].0, "file.rs");
+        assert_eq!(result[0].1, vec![(10, 10)], "single-line hunk should yield (10, 10)");
+    }
+
+    #[test]
+    fn parse_unified_diff_does_not_panic_on_signed_line_numbers() {
+        // The "-" prefix in "-10" must not mis-parse as negative or panic.
+        let diff = "+++ b/x.rs\n@@ -10 +10 @@\n";
+        let _ = parse_unified_diff(diff); // must not panic
+    }
+
+    #[test]
+    fn parse_unified_diff_handles_asymmetric_omitted_count() {
+        // -1,3 has count, +5 omits count (single-line add).
+        let diff = "+++ b/x.rs\n@@ -1,3 +5 @@\n-a\n-b\n-c\n+x\n";
+        let result = parse_unified_diff(diff);
+        assert_eq!(result, vec![("x.rs".into(), vec![(5, 5)])]);
+    }
+
+    #[test]
+    fn parse_unified_diff_handles_pure_deletion_hunk() {
+        // +N,0 = pure deletion at line N. Must not produce a (N, N-1) garbage range.
+        let diff = "+++ b/y.rs\n@@ -10,3 +10,0 @@\n-a\n-b\n-c\n";
+        let result = parse_unified_diff(diff);
+        // Either the hunk is filtered out entirely, OR the range collapses to (N, N).
+        // Author's choice; document and assert one.
+        if let Some((_, ranges)) = result.first() {
+            for &(s, e) in ranges {
+                assert!(s <= e, "saturating_sub produced inverted range ({s}, {e})");
+            }
+        }
     }
 
     #[test]
