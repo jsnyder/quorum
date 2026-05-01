@@ -762,6 +762,27 @@ impl OpenAiClient {
         let overall_deadline = self.overall_retry_deadline;
 
         for attempt in 0..=MAX_RETRIES {
+            // #157: top-of-loop deadline gate. The pre-existing
+            // `retry_after_fits_budget(...)` check runs BEFORE the next
+            // sleep, but the wakeup itself can land us past the deadline
+            // (the budget check uses `<=` for knife-edge equality, so
+            // zero-remaining still allows zero-backoff to schedule). Without
+            // this top gate, that wakeup would issue another upstream
+            // request we have no budget to service.
+            //
+            // For attempt 0 this is a no-op (elapsed ~ 0).
+            if attempt > 0 {
+                let elapsed = started_at.elapsed();
+                if elapsed >= overall_deadline {
+                    anyhow::bail!(
+                        "retry budget exhausted before attempt {} (elapsed {:?} >= deadline {:?})",
+                        attempt + 1,
+                        elapsed,
+                        overall_deadline
+                    );
+                }
+            }
+
             let cloned = req
                 .try_clone()
                 .ok_or_else(|| anyhow::anyhow!("request body must be clonable for retry"))?;
@@ -2609,6 +2630,55 @@ mod tests {
             started.elapsed() >= Duration::from_millis(800),
             "expected >= ~1s elapsed; got {:?}",
             started.elapsed()
+        );
+    }
+
+    // --- #157: top-of-loop deadline check ---
+
+    #[tokio::test]
+    async fn send_with_retry_aborts_at_top_of_loop_when_deadline_already_exceeded() {
+        // #157: today the deadline is enforced only via
+        // `retry_after_fits_budget(...)` BEFORE the next sleep — the *start*
+        // of the next iteration goes straight into `cloned.send().await`
+        // with no deadline gate. If the previous sleep finished past the
+        // deadline (knife-edge: `<=` lets zero-remaining through) we still
+        // issue another upstream request that we can never service.
+        //
+        // Concrete repro: a slow upstream (server delays each response by
+        // longer than the overall deadline). The first send burns the
+        // entire budget; the loop body's existing pre-sleep gate runs, sees
+        // backoff fits the (now-zero) remaining, sleeps zero, goes to top,
+        // and fires a second send. The fix adds a top-of-loop gate.
+        //
+        // Assertion shape: server should receive AT MOST 1 request — the
+        // first send. Without the top-of-loop check it receives 2+.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let hit_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let hit_count_cl = hit_count.clone();
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(move |_: &wiremock::Request| {
+                hit_count_cl.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_delay(Duration::from_millis(150))
+            })
+            .mount(&server)
+            .await;
+
+        let mut client = build_test_client(&server.uri());
+        // Deadline shorter than the per-response delay → after the first
+        // send returns, elapsed >= deadline.
+        client.set_overall_retry_deadline_for_test(Duration::from_millis(100));
+        let _ = client.chat_completion("gpt-5.4", "test").await;
+
+        let total = hit_count.load(Ordering::SeqCst);
+        assert!(
+            total <= 1,
+            "deadline already exceeded after first send; expected at most 1 hit, got {total}"
         );
     }
 
