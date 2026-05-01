@@ -273,6 +273,71 @@ mod tests {
     }
 
     #[test]
+    fn malformed_lines_become_parse_errors_with_line_numbers() {
+        // #139: malformed JSONL must surface as structured ParseError
+        // (line_no, snippet, error) — not silently dropped.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        let good = serde_json::to_string(&sample_entry()).unwrap();
+        let body = format!("{good}\nthis is not json\n{good}\n{{partial:\n");
+        std::fs::write(&path, body).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(stats.kept, 2);
+        assert_eq!(stats.skipped, 2);
+        assert_eq!(stats.errors.len(), 2);
+        assert_eq!(stats.errors[0].line_no, 2);
+        assert_eq!(stats.errors[1].line_no, 4);
+        assert!(stats.errors[0].snippet.starts_with("this is not"));
+        assert!(!stats.errors[0].error.is_empty());
+    }
+
+    #[test]
+    fn empty_lines_do_not_count_as_skipped() {
+        // Whitespace-only / blank lines are quietly elided — they are NOT
+        // a parse failure and must not inflate stats.skipped.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        let good = serde_json::to_string(&sample_entry()).unwrap();
+        let body = format!("\n{good}\n   \n{good}\n");
+        std::fs::write(&path, body).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(stats.kept, 2);
+        assert_eq!(stats.skipped, 0);
+        assert!(stats.errors.is_empty());
+    }
+
+    #[test]
+    fn very_long_malformed_line_snippet_is_truncated_to_80_chars() {
+        // Per GPT-5.5 review: confirm the 80-char snippet cap holds for
+        // pathologically long malformed rows. Use a multi-byte char to
+        // also exercise the chars()-based (Unicode-scalar-safe) truncation.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        // 500 copies of a 3-byte UTF-8 char = 1500 bytes / 500 chars,
+        // none of which is valid JSON.
+        let huge = "\u{2603}".repeat(500); // ☃ snowman
+        std::fs::write(&path, format!("{huge}\n")).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.errors.len(), 1);
+        let err = &stats.errors[0];
+        assert_eq!(err.line_no, 1);
+        // Snippet must be exactly 80 Unicode scalars, NOT 80 bytes —
+        // chars().take(80) on multi-byte input must not panic or split.
+        assert_eq!(err.snippet.chars().count(), 80);
+        // And the snippet must be valid UTF-8 (implied by being a String,
+        // but assert the byte count is the expected 3 * 80 = 240 to
+        // confirm we didn't accidentally byte-truncate).
+        assert_eq!(err.snippet.len(), 240);
+    }
+
+    #[test]
     fn load_since_filters_by_date() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("telemetry.jsonl");
