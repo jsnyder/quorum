@@ -6,6 +6,11 @@ use crate::finding::Finding;
 use crate::pipeline::LlmReviewer;
 use crate::tools::ToolRegistry;
 
+/// Marker appended when a tool output is truncated to fit `max_bytes_read`.
+/// Exposed at crate scope so regression tests can assert exact byte
+/// accounting without drift between test and production constants.
+pub(crate) const TRUNCATION_MARKER: &str = "\n... (truncated: byte limit reached)";
+
 /// Trait for multi-turn LLM interaction with tool calling.
 pub trait AgentReviewer: Send + Sync {
     fn chat_turn(
@@ -113,13 +118,12 @@ impl AgentState {
                         // Without this, a tool call near the budget cap appends a
                         // marker that pushes total_bytes_read past max_bytes_read,
                         // violating the configured bound across multi-call turns.
-                        const MARKER: &str = "\n... (truncated: byte limit reached)";
                         let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
                         let output = if output.len() > remaining {
-                            let body_budget = remaining.saturating_sub(MARKER.len());
+                            let body_budget = remaining.saturating_sub(TRUNCATION_MARKER.len());
                             let safe_end = output.floor_char_boundary(body_budget);
                             let mut truncated = output[..safe_end].to_string();
-                            truncated.push_str(MARKER);
+                            truncated.push_str(TRUNCATION_MARKER);
                             eprintln!("Agent: byte limit ({}) reached", config.max_bytes_read);
                             truncated
                         } else {
@@ -355,6 +359,45 @@ mod tests {
             "single truncated call must not push total_bytes_read ({}) past max ({})",
             state.total_bytes_read,
             config.max_bytes_read
+        );
+    }
+
+    #[test]
+    fn execute_tool_call_respects_max_bytes_read_invariant_with_marker() {
+        // #169 regression. After a single budget-exhausting tool call:
+        //   1. The rendered output must end with TRUNCATION_MARKER (positive
+        //      assertion that the tool actually executed and was truncated,
+        //      not silently swallowed by an error path).
+        //   2. total_bytes_read must equal max_bytes_read EXACTLY — the marker
+        //      is reserved up-front so the running total lands on the cap, not
+        //      below it (which would waste budget) and not above (which is the
+        //      bug). Strict equality, not <=.
+        let dir = TempDir::new().unwrap();
+        let payload = "a".repeat(200);
+        std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
+        let tools = ToolRegistry::new(dir.path());
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 1, max_bytes_read: 100 };
+        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let tc = ToolCall {
+            id: "t".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"big.txt"}"#.into(),
+        };
+        let result = state.execute_tool_call(&tc, &tools, &config);
+
+        // Positive: tool actually executed (not a vacuous error path).
+        let result_str = result.expect("execute_tool_call returned None — tool did not run");
+        assert!(
+            result_str.ends_with(TRUNCATION_MARKER),
+            "rendered tool result must end with truncation marker; got tail: {:?}",
+            &result_str[result_str.len().saturating_sub(60)..]
+        );
+
+        // Strict equality on byte count — not <=. The fix's whole purpose is
+        // to make the cap exact.
+        assert_eq!(
+            state.total_bytes_read, config.max_bytes_read,
+            "total_bytes_read must equal max_bytes_read after a budget-exceeding call"
         );
     }
 
