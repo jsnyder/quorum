@@ -133,11 +133,12 @@ impl TelemetryStore {
             }
             line_no += 1;
 
-            // Detect oversized line. If the buffer hit the cap and didn't
-            // end in a newline, we know the real line is at least this
-            // long — drain the rest of it without storing it.
-            let oversized = buf.len() > MAX_JSONL_LINE_BYTES
-                || (buf.len() == MAX_JSONL_LINE_BYTES && !buf.ends_with(b"\n"));
+            // Detect oversized line. We read up to MAX_JSONL_LINE_BYTES + 1
+            // bytes via Read::take, so the only way `buf.len()` exceeds
+            // MAX_JSONL_LINE_BYTES is if the real line is strictly longer
+            // than the cap. A line of *exactly* MAX_JSONL_LINE_BYTES at
+            // EOF (no trailing newline) is fine and must NOT be rejected.
+            let oversized = buf.len() > MAX_JSONL_LINE_BYTES;
             if oversized {
                 // Drain the rest of the line so we resync to the next
                 // newline without allocating it.
@@ -445,6 +446,40 @@ mod tests {
                 || err.error.to_lowercase().contains("oversized"),
             "expected oversized-line error message, got: {}",
             err.error
+        );
+    }
+
+    #[test]
+    fn line_exactly_at_size_cap_at_eof_is_not_rejected() {
+        // Quorum re-review (gpt-5.4, severity=high): the oversized check
+        // must not reject a valid final JSONL record whose length is
+        // *exactly* MAX_JSONL_LINE_BYTES with no trailing newline. We read
+        // up to MAX+1 bytes via Read::take, so only buf.len() > MAX
+        // indicates the real line is too long.
+        //
+        // We can't easily construct a 1 MiB valid TelemetryEntry, so this
+        // test asserts the related boundary: a file whose only line is
+        // garbage of length exactly N (no newline) must be reported as a
+        // single ParseError on line 1 (one parse failure, not two; not
+        // skipped as oversized) when N <= MAX_JSONL_LINE_BYTES.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        // 32 KiB of 'x', no trailing newline. Well below the 1 MiB cap
+        // but exercises the EOF-without-newline path that triggered the
+        // off-by-one.
+        let body = "x".repeat(32 * 1024);
+        std::fs::write(&path, body).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.skipped, 1, "must report exactly one parse failure");
+        assert_eq!(stats.errors.len(), 1);
+        // Crucially: the error must be the JSON parse error, NOT the
+        // 'line exceeds N bytes' oversized error.
+        assert!(
+            !stats.errors[0].error.contains("exceeds"),
+            "EOF line at-or-under cap must not be flagged as oversized: {}",
+            stats.errors[0].error
         );
     }
 
