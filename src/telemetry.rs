@@ -28,6 +28,33 @@ pub struct TelemetryEntry {
     pub fp_kind_utilization_rate: Option<f32>,
 }
 
+/// Structured per-line parse failure surfaced by `load_all_with_stats`.
+///
+/// Mirrors the shape of `feedback::LoadStats`/`ParseError` (#92): the caller
+/// (e.g. `quorum stats`) decides whether/how to log. The store itself is
+/// silent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParseError {
+    /// 1-indexed line number in the source file.
+    pub line_no: usize,
+    /// First 80 characters of the offending line, for diagnostics.
+    /// Truncated on Unicode-scalar boundaries (`chars().take(80)`),
+    /// so this is always valid UTF-8 even for multibyte content.
+    pub snippet: String,
+    /// `serde_json::Error::to_string()` from the failed parse.
+    pub error: String,
+}
+
+/// Aggregate counters returned alongside parsed entries by
+/// `load_all_with_stats`. Empty/whitespace lines do NOT count toward
+/// `skipped` — they are quietly elided.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadStats {
+    pub kept: usize,
+    pub skipped: usize,
+    pub errors: Vec<ParseError>,
+}
+
 pub struct TelemetryStore {
     path: PathBuf,
 }
@@ -54,26 +81,63 @@ impl TelemetryStore {
         Ok(())
     }
 
-    pub fn load_all(&self) -> anyhow::Result<Vec<TelemetryEntry>> {
+    /// Stream-parse the JSONL file line-by-line and return the parsed
+    /// entries together with structured counters/errors.
+    ///
+    /// Memory footprint is bounded by the longest line, not by the total
+    /// file size — this is the fix for #138 (previously the whole file was
+    /// slurped into a `String`). Per #139, malformed lines are surfaced as
+    /// structured `ParseError { line_no, snippet, error }` instead of being
+    /// silently dropped.
+    ///
+    /// Empty/whitespace-only lines are quietly elided and do NOT count
+    /// toward `skipped`. The store itself does not log; the caller decides
+    /// what to do with `stats.errors` (consistent with `feedback.rs`).
+    pub fn load_all_with_stats(&self) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
+        use std::io::{BufRead, BufReader};
+
         if !self.path.exists() {
-            return Ok(vec![]);
+            return Ok((vec![], LoadStats::default()));
         }
-        let content = std::fs::read_to_string(&self.path)?;
-        let mut entries = Vec::new();
-        for line in content.lines() {
+        let file = std::fs::File::open(&self.path)?;
+        let reader = BufReader::new(file);
+        let mut entries: Vec<TelemetryEntry> = Vec::new();
+        let mut stats = LoadStats::default();
+
+        for (idx, line) in reader.lines().enumerate() {
+            let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str(line) {
-                Ok(entry) => entries.push(entry),
-                Err(_) => continue,
+            match serde_json::from_str::<TelemetryEntry>(&line) {
+                Ok(entry) => {
+                    entries.push(entry);
+                    stats.kept += 1;
+                }
+                Err(e) => {
+                    stats.skipped += 1;
+                    stats.errors.push(ParseError {
+                        line_no: idx + 1,
+                        snippet: line.chars().take(80).collect(),
+                        error: e.to_string(),
+                    });
+                }
             }
         }
-        Ok(entries)
+        Ok((entries, stats))
+    }
+
+    pub fn load_all(&self) -> anyhow::Result<Vec<TelemetryEntry>> {
+        Ok(self.load_all_with_stats()?.0)
     }
 
     pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<TelemetryEntry>> {
-        Ok(self.load_all()?.into_iter().filter(|e| e.ts >= since).collect())
+        Ok(self
+            .load_all_with_stats()?
+            .0
+            .into_iter()
+            .filter(|e| e.ts >= since)
+            .collect())
     }
 }
 
@@ -181,6 +245,31 @@ mod tests {
 
         let entries = store.load_all().unwrap();
         assert_eq!(entries.len(), 2); // skipped 2 bad lines
+    }
+
+    #[test]
+    fn load_all_streams_does_not_oom_on_large_file() {
+        // 1000-line synthetic file; the streaming impl must return all
+        // entries without slurping the whole file into a single string.
+        // We can't strictly assert "did not OOM" but we CAN assert the
+        // new load_all_with_stats API exists and returns structured
+        // counts — the streaming switch is observed via that API.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&path).unwrap();
+            let entry = serde_json::to_string(&sample_entry()).unwrap();
+            for _ in 0..1000 {
+                writeln!(f, "{}", entry).unwrap();
+            }
+        }
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert_eq!(entries.len(), 1000);
+        assert_eq!(stats.kept, 1000);
+        assert_eq!(stats.skipped, 0);
+        assert!(stats.errors.is_empty());
     }
 
     #[test]
