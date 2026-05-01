@@ -398,11 +398,20 @@ pub async fn review_file(
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review
         } else {
-        // Hydrate context: use diff ranges if available, else full file
+        // Hydrate context: use diff ranges if available, else full file.
+        //
+        // #137: match on full repo-relative path equality (NOT ends_with),
+        // resolved through the project root so `src/foo.rs` does not
+        // cross-match `nested/src/foo.rs`.
         let changed_lines: Vec<(u32, u32)> = if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+            // Hoist canonicalization out of the filter loop: review_path and
+            // repo_root are loop-invariant, only diff_path varies. Without
+            // this, large diffs paid 2 canonicalize syscalls per range entry.
+            let repo_root = find_project_root(file_path);
+            let resolver = ReviewPathResolver::new(&file_str, &repo_root);
             diff_ranges
                 .iter()
-                .filter(|(path, _)| file_str.ends_with(path.as_str()) || path.ends_with(&file_str))
+                .filter(|(path, _)| resolver.matches(path))
                 .flat_map(|(_, ranges)| ranges.clone())
                 .collect()
         } else {
@@ -692,6 +701,73 @@ fn extract_ident_from_signature(sig: &str) -> Option<String> {
 }
 
 /// Walk up from file path to find the project root (directory containing pyproject.toml, package.json, Cargo.toml, etc.)
+/// Pre-computed repo-relative form of the review path, so the diff_ranges
+/// filter can do O(1) component-equality per iteration instead of two
+/// `canonicalize` syscalls per iteration. (#137 perf — both `repo_root` and
+/// `review_path` are loop-invariants.)
+///
+/// `None` means "no legitimate repo-relative form exists" — e.g. the review
+/// path resolves outside `repo_root`. In that case every diff_path comparison
+/// must return `false`; wrong context is worse than no context.
+pub(crate) struct ReviewPathResolver {
+    /// Repo-relative path (canonicalized on both sides), or None if unresolvable.
+    review_rel: Option<std::path::PathBuf>,
+}
+impl ReviewPathResolver {
+    pub(crate) fn new(review_path: &str, repo_root: &Path) -> Self {
+        let review = Path::new(review_path);
+        let review_abs: std::path::PathBuf = if review.is_absolute() {
+            review.to_path_buf()
+        } else {
+            repo_root.join(review)
+        };
+        let review_canon = std::fs::canonicalize(&review_abs).unwrap_or(review_abs);
+        let root_canon =
+            std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+        let review_rel = review_canon
+            .strip_prefix(&root_canon)
+            .ok()
+            .map(|p| p.to_path_buf());
+        Self { review_rel }
+    }
+
+    /// True iff `diff_path` (always repo-relative, as produced by the diff
+    /// parser) refers to the same file as the resolver's review path.
+    pub(crate) fn matches(&self, diff_path: &str) -> bool {
+        let Some(ref review_rel) = self.review_rel else {
+            return false;
+        };
+        Path::new(diff_path).components().eq(review_rel.components())
+    }
+}
+
+/// True iff `diff_path` (always repo-relative, as produced by the diff parser)
+/// refers to the same file as `review_path` (may be absolute or relative as the
+/// user supplied it).
+///
+/// Strategy: normalize `review_path` to repo-relative via `Path::strip_prefix`
+/// using the supplied `repo_root`, then test full path equality. If
+/// normalization fails — e.g. `review_path` resolves outside `repo_root`, or
+/// canonicalization fails on a path-traversal layout — return `false`. Wrong
+/// context for the LLM is worse than no context, so refuse the match rather
+/// than risk cross-matching siblings (#137).
+///
+/// NOTE: a naive `ends_with` over component suffixes still cross-matches
+/// `src/foo.rs` ↔ `nested/src/foo.rs` because the component sequence
+/// `[src, foo.rs]` IS a tail of `[nested, src, foo.rs]`. Full repo-relative
+/// equality is required.
+///
+/// For loops, prefer `ReviewPathResolver::new(...)` once outside the loop and
+/// `resolver.matches(diff_path)` inside — this thin wrapper rebuilds the
+/// resolver on every call.
+pub(crate) fn diff_path_matches(
+    diff_path: &str,
+    review_path: &str,
+    repo_root: &Path,
+) -> bool {
+    ReviewPathResolver::new(review_path, repo_root).matches(diff_path)
+}
+
 pub fn find_project_root(file_path: &Path) -> std::path::PathBuf {
     let markers = [
         "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py",
@@ -1541,5 +1617,127 @@ mod tests {
             Some(&EmptyReviewer), &cfg,
         ).await;
         assert!(result.is_ok());
+    }
+
+    // ---------------------------------------------------------------------
+    // #137 — diff_path_matches: full repo-relative equality, NOT ends_with.
+    //
+    // Component-suffix matching is INSUFFICIENT: `[src, foo.rs]` IS a tail of
+    // `[nested, src, foo.rs]`, so a naive ends_with would still cross-match
+    // sibling files. The matcher resolves both sides through repo_root and
+    // compares the full repo-relative component sequence.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn diff_path_matches_rejects_sibling_with_same_basename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("nested/src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("nested/src/foo.rs"), "").unwrap();
+
+        let nested = tmp
+            .path()
+            .join("nested/src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            !diff_path_matches("src/foo.rs", &nested, tmp.path()),
+            "must not cross-match sibling file with the same basename"
+        );
+    }
+
+    #[test]
+    fn diff_path_matches_canonical_same_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+
+        let rel = tmp.path().join("src/foo.rs").to_string_lossy().to_string();
+        assert!(diff_path_matches("src/foo.rs", &rel, tmp.path()));
+    }
+
+    #[test]
+    fn diff_path_matches_absolute_review_path_under_repo_root() {
+        // diff_path is repo-relative; review path is absolute but resolves
+        // under repo_root. Must match.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+
+        let abs = tmp
+            .path()
+            .join("src/foo.rs")
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(diff_path_matches("src/foo.rs", &abs, tmp.path()));
+    }
+
+    #[test]
+    fn diff_path_matches_returns_false_when_review_outside_repo() {
+        // Review path resolves outside repo_root → refuse to match. Wrong
+        // context for the LLM is worse than no context.
+        let repo = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(other.path().join("src")).unwrap();
+        std::fs::write(other.path().join("src/foo.rs"), "").unwrap();
+
+        let outside = other
+            .path()
+            .join("src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        assert!(!diff_path_matches("src/foo.rs", &outside, repo.path()));
+    }
+
+    // ---------------------------------------------------------------------
+    // #137 perf — ReviewPathResolver: canonicalization is a loop-invariant.
+    // The resolver is constructed once before the diff_ranges filter so the
+    // hot path is just `Path::components().eq()`. These tests assert the
+    // observable behavior matches the back-compat wrapper across many
+    // diff_path inputs from a single resolver instance.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn review_path_resolver_matches_repeatedly_on_single_instance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("nested/src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("nested/src/foo.rs"), "").unwrap();
+
+        let review = tmp
+            .path()
+            .join("src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        let resolver = ReviewPathResolver::new(&review, tmp.path());
+
+        // Many diff_paths against the same resolver — exercises the hot loop.
+        assert!(resolver.matches("src/foo.rs"));
+        assert!(!resolver.matches("nested/src/foo.rs"));
+        assert!(!resolver.matches("src/bar.rs"));
+        assert!(!resolver.matches("other/src/foo.rs"));
+        // Idempotent — second call should not re-canonicalize.
+        assert!(resolver.matches("src/foo.rs"));
+    }
+
+    #[test]
+    fn review_path_resolver_outside_repo_never_matches() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(other.path().join("src")).unwrap();
+        std::fs::write(other.path().join("src/foo.rs"), "").unwrap();
+
+        let outside = other
+            .path()
+            .join("src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        let resolver = ReviewPathResolver::new(&outside, repo.path());
+        assert!(!resolver.matches("src/foo.rs"));
+        assert!(!resolver.matches("anything"));
     }
 }
