@@ -87,7 +87,7 @@ Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for ca
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).
 
-**FpKind taxonomy (#123, v0.18.0+):** when recording an `fp` verdict, classify the reason via `--fp-kind <variant>` (CLI, kebab-case) or `fpKind` (MCP, snake_case — note: the wire formats are asymmetric, the CLI drops the `_assumption` suffix on `trust-model`). The calibrator decays old precedents per-kind:
+**FpKind taxonomy (#123, v0.18.0+):** when recording an `fp` verdict, classify the reason via `--fp-kind <variant>` (CLI, kebab-case) or `fpKind` (MCP, snake_case). The CLI and MCP variant names are not just case-converted — they're independent enums and one pair diverges: CLI shortens to `trust-model` while MCP uses the full `trust_model_assumption`. The calibrator decays old precedents per-kind:
 
 | CLI flag | MCP `fpKind` | τ (days) | Half-life | Meaning |
 |----------|--------------|---------:|----------:|---------|

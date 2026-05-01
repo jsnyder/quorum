@@ -136,7 +136,7 @@ Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert meta
 
 ### Classifying false positives with `fp_kind` (v0.18.0+)
 
-When recording an `fp`, classify *why* it was wrong via `--fp-kind` (CLI, kebab-case) or `fpKind` (MCP, snake_case). **The wire formats are asymmetric** — the CLI drops the `_assumption` suffix on `trust-model`, and some variants carry payload fields:
+When recording an `fp`, classify *why* it was wrong via `--fp-kind` (CLI, kebab-case) or `fpKind` (MCP, snake_case). The CLI and MCP enums are independent — one pair diverges (CLI uses `trust-model`, MCP uses `trust_model_assumption`) — and some variants carry payload fields:
 
 | CLI flag | MCP `fpKind` | τ | Half-life | When to use |
 |----------|--------------|---:|----------:|-------------|

@@ -231,7 +231,7 @@ quorum feedback --file src/x.rs --finding "Bug" --verdict tp --reason "confirmed
 
 Provenance weights: `post_fix` (1.5x), `human` (1.0x), `external` (0.7x, capped at 1.4 globally), `auto_calibrate` (0.5x, soft-suppresses to INFO), `unknown` (0.3x).
 
-**FpKind** (v0.18.0+) classifies *why* an FP was wrong, so the calibrator can decay each class on its own schedule. The CLI accepts kebab-case (`--fp-kind`); MCP uses snake_case (`fpKind`) — and the names diverge slightly (CLI drops the `_assumption` suffix on `trust-model`):
+**FpKind** (v0.18.0+) classifies *why* an FP was wrong, so the calibrator can decay each class on its own schedule. The CLI accepts kebab-case (`--fp-kind`); MCP uses snake_case (`fpKind`). The names are independent enums and one pair diverges: CLI shortens to `trust-model` while MCP uses the full `trust_model_assumption`.
 
 | CLI | MCP `fpKind` | τ | Half-life | When to use |
 |-----|--------------|---:|----------:|-------------|
