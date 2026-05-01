@@ -398,11 +398,16 @@ pub async fn review_file(
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review
         } else {
-        // Hydrate context: use diff ranges if available, else full file
+        // Hydrate context: use diff ranges if available, else full file.
+        //
+        // #137: match on full repo-relative path equality (NOT ends_with),
+        // resolved through the project root so `src/foo.rs` does not
+        // cross-match `nested/src/foo.rs`.
         let changed_lines: Vec<(u32, u32)> = if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+            let repo_root = find_project_root(file_path);
             diff_ranges
                 .iter()
-                .filter(|(path, _)| file_str.ends_with(path.as_str()) || path.ends_with(&file_str))
+                .filter(|(path, _)| diff_path_matches(path, &file_str, &repo_root))
                 .flat_map(|(_, ranges)| ranges.clone())
                 .collect()
         } else {
@@ -692,6 +697,41 @@ fn extract_ident_from_signature(sig: &str) -> Option<String> {
 }
 
 /// Walk up from file path to find the project root (directory containing pyproject.toml, package.json, Cargo.toml, etc.)
+/// True iff `diff_path` (always repo-relative, as produced by the diff parser)
+/// refers to the same file as `review_path` (may be absolute or relative as the
+/// user supplied it).
+///
+/// Strategy: normalize `review_path` to repo-relative via `Path::strip_prefix`
+/// using the supplied `repo_root`, then test full path equality. If
+/// normalization fails — e.g. `review_path` resolves outside `repo_root`, or
+/// canonicalization fails on a path-traversal layout — return `false`. Wrong
+/// context for the LLM is worse than no context, so refuse the match rather
+/// than risk cross-matching siblings (#137).
+///
+/// NOTE: a naive `ends_with` over component suffixes still cross-matches
+/// `src/foo.rs` ↔ `nested/src/foo.rs` because the component sequence
+/// `[src, foo.rs]` IS a tail of `[nested, src, foo.rs]`. Full repo-relative
+/// equality is required.
+pub(crate) fn diff_path_matches(
+    diff_path: &str,
+    review_path: &str,
+    repo_root: &Path,
+) -> bool {
+    let review = Path::new(review_path);
+    let review_abs: std::path::PathBuf = if review.is_absolute() {
+        review.to_path_buf()
+    } else {
+        repo_root.join(review)
+    };
+    let review_canon = std::fs::canonicalize(&review_abs).unwrap_or(review_abs);
+    let root_canon =
+        std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let Ok(review_rel) = review_canon.strip_prefix(&root_canon) else {
+        return false;
+    };
+    Path::new(diff_path).components().eq(review_rel.components())
+}
+
 pub fn find_project_root(file_path: &Path) -> std::path::PathBuf {
     let markers = [
         "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py",
@@ -1541,5 +1581,78 @@ mod tests {
             Some(&EmptyReviewer), &cfg,
         ).await;
         assert!(result.is_ok());
+    }
+
+    // ---------------------------------------------------------------------
+    // #137 — diff_path_matches: full repo-relative equality, NOT ends_with.
+    //
+    // Component-suffix matching is INSUFFICIENT: `[src, foo.rs]` IS a tail of
+    // `[nested, src, foo.rs]`, so a naive ends_with would still cross-match
+    // sibling files. The matcher resolves both sides through repo_root and
+    // compares the full repo-relative component sequence.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn diff_path_matches_rejects_sibling_with_same_basename() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("nested/src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("nested/src/foo.rs"), "").unwrap();
+
+        let nested = tmp
+            .path()
+            .join("nested/src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            !diff_path_matches("src/foo.rs", &nested, tmp.path()),
+            "must not cross-match sibling file with the same basename"
+        );
+    }
+
+    #[test]
+    fn diff_path_matches_canonical_same_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+
+        let rel = tmp.path().join("src/foo.rs").to_string_lossy().to_string();
+        assert!(diff_path_matches("src/foo.rs", &rel, tmp.path()));
+    }
+
+    #[test]
+    fn diff_path_matches_absolute_review_path_under_repo_root() {
+        // diff_path is repo-relative; review path is absolute but resolves
+        // under repo_root. Must match.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/foo.rs"), "").unwrap();
+
+        let abs = tmp
+            .path()
+            .join("src/foo.rs")
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(diff_path_matches("src/foo.rs", &abs, tmp.path()));
+    }
+
+    #[test]
+    fn diff_path_matches_returns_false_when_review_outside_repo() {
+        // Review path resolves outside repo_root → refuse to match. Wrong
+        // context for the LLM is worse than no context.
+        let repo = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(other.path().join("src")).unwrap();
+        std::fs::write(other.path().join("src/foo.rs"), "").unwrap();
+
+        let outside = other
+            .path()
+            .join("src/foo.rs")
+            .to_string_lossy()
+            .to_string();
+        assert!(!diff_path_matches("src/foo.rs", &outside, repo.path()));
     }
 }
