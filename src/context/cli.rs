@@ -614,10 +614,16 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
 fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
     // Up-front validation: failing here means the on-disk file is never
     // touched, which is the cheapest way to satisfy the atomicity contract.
+    //
+    // Defense-in-depth (#135): re-run the strict allowlist validator from
+    // `crate::cli::validate_source_name`. clap's value_parser already gates
+    // the command-line surface, but every API caller that builds `AddArgs`
+    // directly (programmatic users, MCP wiring, tests) must hit the same
+    // gate before we touch the on-disk file or join `<home>/sources/<name>`
+    // anywhere downstream.
     let name = args.name.trim();
-    if name.is_empty() {
-        return Err(anyhow!("source name must not be empty"));
-    }
+    crate::cli::validate_source_name(name)
+        .map_err(|e| anyhow!("source name invalid: {e}"))?;
     let kind = SourceKind::parse_cli(&args.kind).ok_or_else(|| {
         anyhow!(
             "unknown kind '{}' (expected one of: rust, typescript, javascript, python, go, terraform, service, docs)",

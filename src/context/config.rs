@@ -227,9 +227,14 @@ impl SourcesConfig {
     /// config. This preserves any hand edits, comments, and formatting in
     /// the `[context]` block and existing `[[source]]` entries.
     pub fn append_source(path: &Path, entry: &SourceEntry) -> Result<(), ConfigError> {
-        if entry.name.trim().is_empty() {
-            return Err(ConfigError::Invalid("source name must not be empty".into()));
-        }
+        // Defense-in-depth (#135): single source of truth for source-name
+        // validity lives in `crate::cli::validate_source_name`. The CLI
+        // gates `--name` at parse time and `run_add` re-checks; this is the
+        // last line of defense for any caller bypassing both (e.g. a
+        // future programmatic config writer or a hand-edited entry round-
+        // tripping through `from_str`).
+        crate::cli::validate_source_name(entry.name.trim())
+            .map_err(|e| ConfigError::Invalid(format!("source name invalid: {e}")))?;
         match &entry.location {
             SourceLocation::Path(p) => {
                 if p.as_os_str().is_empty() {
