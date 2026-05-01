@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 
@@ -99,6 +100,12 @@ pub fn load_rules(
     home_dir: &Path,
 ) -> Vec<RuleConfig<SupportLang>> {
     let mut rules = Vec::new();
+    // Dedup key is `(language, id)` — bundled rules legitimately reuse ids
+    // across grammars (e.g. `bind-all-interfaces` in both python and
+    // javascript). Within a single grammar, a duplicate id is the bug:
+    // ast-grep would double-fire and the user-vs-bundled override semantics
+    // would be ambiguous (#145).
+    let mut seen_ids: HashSet<(SupportLang, String)> = HashSet::new();
     let globals = GlobalRules::default();
 
     let bundled_dir = project_dir.join("rules");
@@ -180,7 +187,26 @@ pub fn load_rules(
                     }
                 };
                 match from_yaml_string::<SupportLang>(&yaml, &globals) {
-                    Ok(parsed) => rules.extend(parsed),
+                    Ok(parsed) => {
+                        for rule in parsed {
+                            // #145: dedupe by rule id across bundled+user trees.
+                            // Bundled rules are scanned first (`[&bundled_dir, &user_dir]`),
+                            // so a user rule colliding with a bundled id is dropped here
+                            // and a structured warning surfaces the shadow attempt. This
+                            // prevents both silent-shadow bugs and double-fire on every
+                            // match (one finding per duplicate rule).
+                            if !seen_ids.insert((rule.language, rule.id.clone())) {
+                                tracing::warn!(
+                                    rule_id = %rule.id,
+                                    language = ?rule.language,
+                                    path = %rule_path.display(),
+                                    "ast-grep: skipping duplicate rule id within language (already loaded from another file)"
+                                );
+                                continue;
+                            }
+                            rules.push(rule);
+                        }
+                    }
                     Err(e) => {
                         eprintln!("ast-grep: skipping malformed rule {}: {}", rule_path.display(), e);
                     }
@@ -1112,6 +1138,82 @@ rule:
         assert!(
             !ids.contains(&"oversized-rule".to_string()),
             "rule file >1 MiB must be skipped; ids={ids:?}"
+        );
+    }
+
+    // ── #145: duplicate rule IDs across bundled+user dirs ──
+
+    #[test]
+    fn load_rules_deduplicates_user_overriding_bundled_id() {
+        // Adversarial: a user rule shares its `id` with a bundled rule.
+        // Today the loader silently emits both — `scan_file` then double-fires
+        // on every match (one finding per duplicate rule). The bug is silent
+        // shadowing / duplication. Expected behavior: the first-seen rule
+        // wins, the duplicate is skipped with a structured warning, and the
+        // returned set has at most one rule per id.
+        let project = tempfile::tempdir().unwrap();
+        let bundled_ts = project.path().join("rules").join("typescript");
+        std::fs::create_dir_all(&bundled_ts).unwrap();
+        let bundled_yaml = r#"id: shared-id
+language: TypeScript
+severity: warning
+message: bundled
+rule:
+  pattern: console.log($$$ARGS)
+"#;
+        std::fs::write(bundled_ts.join("shared.yml"), bundled_yaml).unwrap();
+
+        let home = tempfile::tempdir().unwrap();
+        let user_ts = home.path().join(".quorum").join("rules").join("typescript");
+        std::fs::create_dir_all(&user_ts).unwrap();
+        let user_yaml = r#"id: shared-id
+language: TypeScript
+severity: error
+message: user-override
+rule:
+  pattern: console.log($$$ARGS)
+"#;
+        std::fs::write(user_ts.join("shared.yml"), user_yaml).unwrap();
+
+        let rules = load_rules(project.path(), home.path());
+        let count = rules.iter().filter(|r| r.id == "shared-id").count();
+        assert_eq!(
+            count, 1,
+            "duplicate rule id `shared-id` must be deduplicated; found {count} copies in {:?}",
+            rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn load_rules_no_double_fire_on_duplicate_rule_id() {
+        // Behavioral consequence of dedup: scan_file must produce exactly one
+        // finding per match site, not N where N = number of rule copies.
+        let project = tempfile::tempdir().unwrap();
+        let bundled_ts = project.path().join("rules").join("typescript");
+        std::fs::create_dir_all(&bundled_ts).unwrap();
+        let yaml = r#"id: dup-rule
+language: TypeScript
+severity: warning
+message: dup
+rule:
+  pattern: eval($$$ARGS)
+"#;
+        std::fs::write(bundled_ts.join("a.yml"), yaml).unwrap();
+
+        let home = tempfile::tempdir().unwrap();
+        let user_ts = home.path().join(".quorum").join("rules").join("typescript");
+        std::fs::create_dir_all(&user_ts).unwrap();
+        std::fs::write(user_ts.join("b.yml"), yaml).unwrap();
+
+        let rules = load_rules(project.path(), home.path());
+        let findings = scan_file("eval('x');", "ts", &rules);
+        let dup_findings = findings
+            .iter()
+            .filter(|f| f.title.contains("dup-rule"))
+            .count();
+        assert_eq!(
+            dup_findings, 1,
+            "duplicate rule id must not double-fire on the same match; got {dup_findings}"
         );
     }
 
