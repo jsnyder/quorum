@@ -238,16 +238,65 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
         }
     } else if text.starts_with("import ") {
-        // TS: import { X, Y } from './module'
-        if text.contains('{') && text.contains('}') {
-            if let Some(start) = text.find('{') {
-                if let Some(end) = text.find('}') {
-                    let inner = &text[start + 1..end];
-                    for part in inner.split(',') {
-                        let name = part.trim().split(" as ").next().unwrap_or("").trim();
-                        if !name.is_empty() {
-                            names.push(name.to_string());
-                        }
+        // TypeScript imports always include ` from `; Python `import sys` does not.
+        // This lets us route the parse without language plumbing.
+        let is_ts = text.contains(" from ");
+        if is_ts {
+            // Strip the trailing ` from "module"` (or `' '`) clause so we only parse
+            // the import-clause portion.
+            let clause_end = text.rfind(" from ").unwrap_or(text.len());
+            let clause = text["import ".len()..clause_end].trim();
+
+            // Split on the first top-level `{` to separate the default/namespace
+            // half from the named-import group. Default imports come BEFORE the
+            // brace; named imports come INSIDE it.
+            let (head, group) = match clause.find('{') {
+                Some(open) => {
+                    let close = clause.rfind('}').unwrap_or(clause.len());
+                    let inner = if close > open {
+                        Some(clause[open + 1..close].to_string())
+                    } else {
+                        None
+                    };
+                    let head = clause[..open].trim().trim_end_matches(',').trim().to_string();
+                    (head, inner)
+                }
+                None => (clause.to_string(), None),
+            };
+
+            // Head may contain: "" | "foo" | "* as ns" | "foo, * as ns"
+            for part in head.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                if let Some(after_as) = part.split(" as ").nth(1) {
+                    // namespace or aliased default — local binding is after `as`.
+                    let name = after_as.trim();
+                    if !name.is_empty() && name != "*" {
+                        names.push(name.to_string());
+                    }
+                } else if part != "*" {
+                    // default import: bare identifier.
+                    names.push(part.to_string());
+                }
+            }
+
+            if let Some(inner) = group {
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    // For `default as foo` re-export form OR `bar as baz`, prefer
+                    // the local binding (after `as`).
+                    let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                        after_as.trim()
+                    } else {
+                        part
+                    };
+                    if !name.is_empty() && name != "*" {
+                        names.push(name.to_string());
                     }
                 }
             }
@@ -831,6 +880,33 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #173: TypeScript default/namespace import bindings --
+
+    #[test]
+    fn extract_imported_names_typescript_default_import_uses_local_binding() {
+        let names = extract_imported_names("import foo from \"x\";");
+        assert_eq!(names, vec!["foo".to_string()], "got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_mixed_default_and_named() {
+        let names = extract_imported_names("import foo, { bar, baz } from \"x\";");
+        assert_eq!(names, vec!["foo".to_string(), "bar".to_string(), "baz".to_string()],
+            "mixed default+named must yield local binding plus named members; got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_namespace_import() {
+        let names = extract_imported_names("import * as ns from \"x\";");
+        assert_eq!(names, vec!["ns".to_string()], "got {names:?}");
+    }
+
+    #[test]
+    fn extract_imported_names_typescript_default_with_namespace() {
+        let names = extract_imported_names("import foo, * as ns from \"x\";");
+        assert_eq!(names, vec!["foo".to_string(), "ns".to_string()], "got {names:?}");
     }
 
     // -- #172: extract_imported_names splits Rust grouped use --
