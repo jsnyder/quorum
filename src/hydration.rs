@@ -242,9 +242,16 @@ fn collect_calls_in_range(
     qnames_out: &mut Vec<String>,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    let node_line = node.start_position().row as u32 + 1;
+    let call_start = node.start_position().row as u32 + 1;
+    let call_end = node.end_position().row as u32 + 1;
 
-    if call_kinds.contains(&node.kind()) && node_line >= start_line && node_line <= end_line {
+    // Overlap, not start-only: a multiline call expression like
+    //     helper(
+    //         1,
+    //         2,
+    //     )
+    // starts before the changed range but its inner lines may be in-range.
+    if call_kinds.contains(&node.kind()) && call_start <= end_line && call_end >= start_line {
         // Extract the function name being called
         if let Some(func_node) = node.child_by_field_name("function") {
             let func_text = &source[func_node.byte_range()];
@@ -270,6 +277,10 @@ fn collect_calls_in_range(
         }
     }
 
+    // Always recurse, regardless of whether this node was itself in-range —
+    // tree-sitter's recursive descent already covers nested calls f(g(h())),
+    // and we want to keep finding calls inside outer scopes that happen to
+    // open before the changed range.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
             collect_calls_in_range(&child, source, _lang, call_kinds, start_line, end_line,
@@ -787,6 +798,48 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #170: collect_calls_in_range overlap (not start-only) --
+
+    #[test]
+    fn collect_calls_in_range_finds_call_when_only_inner_line_changed() {
+        let source = "fn helper(a: i32, b: i32) -> i32 { a + b }\n\
+                      fn caller() {\n\
+                      \x20   helper(\n\
+                      \x20       1,\n\
+                      \x20       2,\n\
+                      \x20   );\n\
+                      }\n";
+        // helper() spans lines 3..=6 (the call expression). Only line 4 (the "1," argument) is in the changed range.
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+        let helper_sigs: Vec<_> = ctx.callee_signatures.iter()
+            .filter(|s| s.starts_with("fn helper"))
+            .collect();
+        assert_eq!(helper_sigs.len(), 1,
+            "expected exactly one `fn helper` signature; got {:?}", ctx.callee_signatures);
+    }
+
+    #[test]
+    fn collect_calls_in_range_negative_control_does_not_hydrate_callees_outside_range() {
+        // Same source; range [(1,1)] covers only the `fn helper` definition line.
+        // No CALL of helper exists in that range, so callee_signatures must be empty.
+        let source = "fn helper(a: i32, b: i32) -> i32 { a + b }\n\
+                      fn caller() {\n\
+                      \x20   helper(\n\
+                      \x20       1,\n\
+                      \x20       2,\n\
+                      \x20   );\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
+        assert!(ctx.callee_signatures.iter().all(|s| !s.starts_with("fn helper")),
+            "range [(1,1)] should not hydrate `helper` as a callee; got {:?}", ctx.callee_signatures);
     }
 
     // -- #171: parse_unified_diff omitted-count handling --
