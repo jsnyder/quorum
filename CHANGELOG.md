@@ -4,6 +4,12 @@
 
 _No unreleased changes._
 
+## [0.18.1] - 2026-04-30
+
+### Security
+
+- **`validate_base_url` http-rejection now scoped to actual host classification (#167).** The v0.18.0 #147 fix used `if scheme == "http" && !policy.allow_private_ips`, which incorrectly assumed reaching that check with `allow_private_ips=true` implied a private host. In fact public allowlisted hosts (`api.openai.com`, `api.anthropic.com`, etc.) also reached the check, so setting `QUORUM_ALLOW_PRIVATE_BASE_URL=1` for an Ollama deployment inadvertently permitted plaintext `http://` to public destinations — leaking the API key in cleartext on every request. Fix: track `host_is_private` during the existing host-classification arms (`Ipv4`, `Ipv6`, `Domain`); the scheme check now keys on `!host_is_private` instead of `!policy.allow_private_ips`. The flag now correctly only gates the *private-host* rejection, not the HTTPS requirement for public hosts. Surfaced by quorum's own self-review on v0.18.0 ~2 hours after #147 shipped — the post-#118 prompt carve-out elevated this to HIGH instead of demoting under the old "defensive-programming" rule (self-improvement loop validation). Two regression tests: `validate_base_url_rejects_http_for_public_host_even_with_allow_private_ips` (the bug, now closed); `validate_base_url_allows_http_for_private_ip_with_allow_private_ips` (regression-lock for the legitimate Ollama / on-prem case).
+
 ## [0.18.0] - 2026-04-30
 
 ### Feedback
