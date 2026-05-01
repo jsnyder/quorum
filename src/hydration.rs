@@ -948,6 +948,48 @@ fn process(data: &str) {
         );
     }
 
+    // -- #175: hydrate handles multi-byte UTF-8 source (paper-bug regression) --
+
+    #[test]
+    fn hydrate_correctly_processes_source_with_multibyte_utf8() {
+        let source = "// Greeting: こんにちは 🦀\n\
+                      fn helper() -> String { \"x\".to_string() }\n\
+                      fn process(input: &str) -> String {\n\
+                      \x20   let _ = helper();\n\
+                      \x20   input.to_string()\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        // Range [(4,4)] covers `let _ = helper();`. Line 1's multibyte chars
+        // would expose any line-to-byte arithmetic that ignored UTF-8 boundaries.
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+
+        // Positive assertion: the function ran to completion AND produced
+        // expected results. Without this, a swallowed panic returning
+        // Default would pass a no-panic check vacuously.
+        assert!(
+            ctx.callee_signatures.iter().any(|s| s.starts_with("fn helper")),
+            "expected `helper` callee even when source contains multibyte UTF-8; got {:?}",
+            ctx.callee_signatures
+        );
+    }
+
+    #[test]
+    fn hydrate_does_not_panic_when_change_range_contains_emoji() {
+        let source = "fn greet() -> &'static str {\n\
+                      \x20   \"こんにちは 🦀\"\n\
+                      }\n\
+                      fn caller() { greet(); }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]); // emoji line
+        // Hydration may or may not pick up greet's signature here — but it MUST NOT panic.
+        let _ = ctx;
+    }
+
     // -- #174: import_targets scoping to changed range --
 
     #[test]
