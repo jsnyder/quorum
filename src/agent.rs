@@ -558,14 +558,18 @@ mod tests {
             .and_then(|s| s.split(LISTING_CLOSE_TAG).next())
             .expect("wrapper must open and close");
         let total = body.len() + LISTING_OPEN_TAG.len() + LISTING_CLOSE_TAG.len();
+        // The listing block is budgeted with max_bytes_read / 2 (see agent_review:
+        // file_listing share). Assert against the share, not the full budget, so a
+        // regression that lets the wrapped listing use the entire budget fails the test.
+        let listing_share_budget = config.max_bytes_read / 2;
         assert!(
-            total <= config.max_bytes_read,
-            "wrapped listing exceeded budget: body={} open={} close={} total={} max={}",
+            total <= listing_share_budget,
+            "wrapped listing exceeded share budget: body={} open={} close={} total={} share_max={}",
             body.len(),
             LISTING_OPEN_TAG.len(),
             LISTING_CLOSE_TAG.len(),
             total,
-            config.max_bytes_read
+            listing_share_budget
         );
     }
 
