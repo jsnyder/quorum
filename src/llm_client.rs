@@ -565,19 +565,29 @@ pub(crate) async fn read_capped_error_body(mut resp: reqwest::Response) -> Strin
 pub(crate) fn sanitize_error_body(raw: &str) -> String {
     use std::sync::LazyLock;
     static SECRET_PAT: LazyLock<regex::Regex> = LazyLock::new(|| {
-        // Three patterns, all case-insensitive:
-        //   - bearer\s+TOKEN  (Authorization header echo)
-        //   - sk-...          (catch-all suffix covers sk-proj-, sk-svcacct-,
-        //                       sk-org-, sk-ant-api03-, sk-live-, sk-test-)
-        //   - api[_-]?key=... (JSON / form-encoded key fields)
+        // Patterns, all case-insensitive:
+        //   - bearer\s+TOKEN              (Authorization header echo)
+        //   - sk-...                      (OAI / Anthropic key shapes)
+        //   - api[_-]?key=...             (JSON / form-encoded api_key)
+        //   - x-api-key:...               (#144: APIGW / Anthropic header)
+        //   - "token"|"secret"|"access_token":"..."  (#144: JSON fields)
+        //
+        // Bearer tokens include JWTs (`header.payload.signature`,
+        // base64url with `=` padding) — Quorum self-review of #119
+        // flagged that the prior `[A-Za-z0-9_-]+` charset truncated
+        // JWTs at the first dot, leaving most of the credential visible.
+        // Field separator for api_key allows space/underscore/hyphen
+        // (catches `api key:`, `api_key:`, `api-key:`, `apikey:`).
         regex::Regex::new(
-            // Bearer tokens include JWTs (`header.payload.signature`,
-            // base64url with `=` padding) — Quorum self-review of #119
-            // flagged that the prior `[A-Za-z0-9_-]+` charset truncated
-            // JWTs at the first dot, leaving most of the credential visible.
-            // Field separator for api_key allows space/underscore/hyphen
-            // (catches `api key:`, `api_key:`, `api-key:`, `apikey:`).
-            r#"(?i)(bearer\s+[A-Za-z0-9_\-\.=]+|sk-[A-Za-z0-9_\-]+|api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+)"#,
+            r#"(?ix)
+            (
+                bearer\s+[A-Za-z0-9_\-\.=]+
+              | sk-[A-Za-z0-9_\-]+
+              | api[\s_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+
+              | x-api-key["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]+
+              | "(?:token|secret|access_token)"\s*:\s*"[^"]+"
+            )
+            "#,
         )
         .expect("static regex")
     });
@@ -1693,6 +1703,65 @@ mod tests {
         let s = sanitize_error_body(raw);
         // 'hunter2' is NOT scrubbed — it's not a bearer/sk-/api_key shape.
         assert!(s.contains("hunter2"), "scope: not scrubbing arbitrary literals");
+    }
+
+    // --- #144: expand sanitize_error_body coverage ---
+
+    #[test]
+    fn sanitize_error_body_scrubs_authorization_header_echo() {
+        // Some OAI-compatible gateways echo the full request header line
+        // (`Authorization: Bearer <token>`) on validation errors. The bare
+        // `bearer` pattern catches the inner token, but a gateway dumping
+        // headers may also surface the literal value of any other header.
+        // Pin the canonical Authorization-header echo shape.
+        let raw = "401: Authorization: Bearer abcXYZ123_456_secret_token";
+        let s = sanitize_error_body(raw);
+        assert!(
+            !s.contains("abcXYZ123_456_secret_token"),
+            "Authorization header token must be scrubbed; got: {s}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_x_api_key_header() {
+        // x-api-key is the canonical Anthropic / API-Gateway header. A
+        // gateway echoing request headers leaks it verbatim.
+        let raw = "400: X-Api-Key: super-secret-value-9000";
+        let s = sanitize_error_body(raw);
+        assert!(
+            !s.contains("super-secret-value-9000"),
+            "x-api-key header value must be scrubbed; got: {s}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_body_scrubs_generic_json_token_field() {
+        // JSON-encoded gateway errors that echo `"token": "..."`,
+        // `"access_token": "..."`, or `"secret": "..."` fields must scrub
+        // the value. The existing regex only knows about `api_key`.
+        for raw in [
+            r#"{"error":"unauthorized","token":"my-bearer-9000"}"#,
+            r#"{"access_token":"a1b2c3d4e5f6","msg":"expired"}"#,
+            r#"{"secret":"shh-do-not-leak","msg":"x"}"#,
+        ] {
+            let s = sanitize_error_body(raw);
+            for sensitive in ["my-bearer-9000", "a1b2c3d4e5f6", "shh-do-not-leak"] {
+                assert!(
+                    !s.contains(sensitive),
+                    "sensitive field value {sensitive:?} must be scrubbed in {raw:?}; got {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_error_body_preserves_token_word_without_value() {
+        // Defensive: the bare word "token" appearing in prose without a
+        // following `: <value>` shape must NOT be over-scrubbed. We only
+        // redact when there's a key=value-shaped credential.
+        let raw = "rate limit exceeded; refresh your token and retry";
+        let s = sanitize_error_body(raw);
+        assert_eq!(s, raw, "must not over-scrub when no value follows");
     }
 
     // --- #119: OpenAiClient::new wiring ---
