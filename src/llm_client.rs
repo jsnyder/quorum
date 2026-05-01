@@ -235,6 +235,22 @@ fn jitter_unit() -> f64 {
     (nanos % 1_000_000) as f64 / 1_000_000.0
 }
 
+/// Classify whether a `reqwest::Error` from a `send().await` call is a
+/// transient network-layer failure that's worth retrying.
+///
+/// #146: the prior classifier was
+///     `e.is_timeout() || e.is_connect() || e.is_request()`
+/// where `is_request()` is reqwest's catch-all "Request kind" predicate
+/// covering decode errors, body errors, redirect errors, and other
+/// non-network failures. Treating those as transient burns the retry
+/// budget (and load on upstream) on errors that will never recover.
+///
+/// We retry only on shapes that genuinely look like network flakiness:
+/// connect-time failures and timeouts.
+pub(crate) fn is_transient_transport_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect()
+}
+
 fn retry_after_fits_budget(
     started_at: std::time::Instant,
     overall_deadline: std::time::Duration,
@@ -690,7 +706,7 @@ impl OpenAiClient {
             let resp = match cloned.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    let transient = e.is_timeout() || e.is_connect() || e.is_request();
+                    let transient = is_transient_transport_error(&e);
                     if !transient || attempt == MAX_RETRIES {
                         return Err(anyhow::anyhow!(
                             "transport error after {} attempt(s): {}",
@@ -2443,6 +2459,56 @@ mod tests {
             started.elapsed() >= Duration::from_millis(800),
             "expected >= ~1s elapsed; got {:?}",
             started.elapsed()
+        );
+    }
+
+    // --- #146: retry classification — drop is_request() catch-all ---
+
+    #[tokio::test]
+    async fn is_transient_transport_error_rejects_decode_errors() {
+        // #146: the prior classifier was
+        //     e.is_timeout() || e.is_connect() || e.is_request()
+        // `is_request()` is reqwest's catch-all "Request kind" predicate
+        // and returns TRUE for non-network failures including JSON
+        // `is_decode()` errors, body errors, and redirect errors. Treating
+        // those as transient causes wasted retry budget (and amplifies
+        // upstream load) on errors that will never recover.
+        //
+        // RED: today the inline classifier in `send_with_retry` would
+        // declare a decode error transient. Once we extract it into a
+        // free `is_transient_transport_error(&reqwest::Error)` and drop
+        // the `is_request()` arm, decode errors become non-transient.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("definitely not json"))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{}/x", server.uri()))
+            .send()
+            .await
+            .expect("send must succeed (server returns 200)");
+        let decode_err = resp
+            .json::<serde_json::Value>()
+            .await
+            .expect_err("decode of garbage must fail");
+
+        // Sanity-check: this error is decode-shaped (is_decode() / is_request()
+        // both true; is_connect() / is_timeout() both false). If the test
+        // setup fails this invariant, the assertion below is meaningless.
+        assert!(
+            decode_err.is_decode() && !decode_err.is_connect() && !decode_err.is_timeout(),
+            "test setup invalid: expected decode-only error, got {decode_err:?}"
+        );
+
+        assert!(
+            !is_transient_transport_error(&decode_err),
+            "decode errors must NOT be classified transient (#146)"
         );
     }
 }
