@@ -87,10 +87,46 @@ pub enum ContextCommand {
     Doctor(ContextDoctorOpts),
 }
 
+/// Validate `--name` (and any other "becomes a single directory component"
+/// argument). The value lands at `~/.quorum/sources/<name>/`, so it must be:
+///
+/// - 1..=64 ASCII chars from `[a-zA-Z0-9_-]`
+/// - not start with `.` (no hidden dirs, no `.`/`..` traversal)
+///
+/// This validator is the single source of truth shared by clap's
+/// `value_parser`, the `run_add` handler (defense-in-depth), and
+/// `SourcesConfig::append_source` (config-write boundary). It returns the
+/// owned `String` clap stores into the typed field.
+pub fn validate_source_name(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err("--name must not be empty".into());
+    }
+    if s.len() > 64 {
+        return Err(format!(
+            "--name length must be 1..=64 (got {})",
+            s.len()
+        ));
+    }
+    if s.starts_with('.') {
+        return Err("--name must not start with '.'".into());
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "--name may only contain [a-zA-Z0-9_-] (no path separators, spaces, or unicode)"
+                .into(),
+        );
+    }
+    Ok(s.to_string())
+}
+
 #[derive(Parser)]
 pub struct ContextAddOpts {
     /// Short unique name for the source (used as a directory key).
-    #[arg(long)]
+    /// Must be 1..=64 chars from [a-zA-Z0-9_-] and not start with '.'.
+    #[arg(long, value_parser = validate_source_name)]
     pub name: String,
 
     /// Source kind: rust, typescript, javascript, python, go, terraform, service, docs.
@@ -1106,4 +1142,122 @@ mod tests {
             res.err().map(|e| e.kind())
         );
     }
+
+    // --- Issue #135: clap-layer validation for `--name` -----------------------
+    //
+    // The `--name` value becomes a single directory component under
+    // `~/.quorum/sources/<name>/`. Path-traversal characters, leading dots,
+    // and overlong values must be rejected at parse time; the handler also
+    // re-validates as defense-in-depth (see `src/context/cli.rs::run_add`).
+
+    #[test]
+    fn context_add_name_rejects_dotdot() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "../etc",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err(), "../etc must be rejected at parse time");
+    }
+
+    #[test]
+    fn context_add_name_rejects_absolute() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "/etc/passwd",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_slash() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "a/b",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_backslash() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", r"a\b",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_leading_dot() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", ".hidden",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_overlong() {
+        use clap::Parser;
+        let long = "a".repeat(65);
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", &long,
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_empty() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_accepts_simple() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "my-source_1",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_ok(), "simple alnum/dash/underscore must parse: {:?}", r.err().map(|e| e.to_string()));
+    }
+
+    #[test]
+    fn context_add_name_accepts_64_chars() {
+        use clap::Parser;
+        let max_len = "a".repeat(64);
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", &max_len,
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_ok(), "64-char name (max allowed) must parse");
+    }
+
 }
