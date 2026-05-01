@@ -481,6 +481,10 @@ fn add_rejects_control_characters_in_user_strings() {
     run_context_cmd(&ContextCmd::Init, &deps).expect("init");
 
     // Newline in name would corrupt the TOML even after string escaping.
+    // After #135, a newline in `--name` is rejected by the stricter
+    // allowlist (`[a-zA-Z0-9_-]`) BEFORE the generic control-char branch
+    // fires, so the error message changes shape. Either path is correct;
+    // we just need the name to be rejected.
     let bad_name = AddArgs {
         name: "core\nlie".to_string(),
         kind: "rust".to_string(),
@@ -490,7 +494,11 @@ fn add_rejects_control_characters_in_user_strings() {
     };
     let err = run_context_cmd(&ContextCmd::Add(bad_name), &deps)
         .expect_err("control char in name must be rejected");
-    assert!(format!("{err}").contains("control character"));
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains("name") || msg.contains("control character"),
+        "name with newline must be rejected (allowlist or control-char path): {msg}"
+    );
 
     // Same for url, rev, path, ignore glob.
     for args in [
@@ -530,6 +538,105 @@ fn add_rejects_control_characters_in_user_strings() {
             .expect_err("control char must be rejected");
         assert!(format!("{err}").contains("control character"));
     }
+}
+
+// --- Issue #135 defense-in-depth ------------------------------------------
+//
+// `validate_source_name` is also enforced at the clap value_parser layer
+// (see `src/cli/mod.rs`), but every API caller that constructs `AddArgs`
+// directly (programmatic users, tests, future MCP wiring) must hit the same
+// gate. A path-traversal name that bypasses clap MUST still be rejected by
+// the handler before any on-disk write happens — otherwise a future code
+// path that joins `<home>/sources/<name>` could escape the sources root.
+
+#[test]
+fn add_rejects_path_traversal_name_at_handler() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let err = run_context_cmd(
+        &ContextCmd::Add(path_add_args("../etc", "rust", "/tmp/x")),
+        &deps,
+    )
+    .expect_err("../etc must be rejected by handler even if clap is bypassed");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("name"),
+        "error must mention --name: {msg}"
+    );
+}
+
+#[test]
+fn add_rejects_slash_in_name_at_handler() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let err = run_context_cmd(
+        &ContextCmd::Add(path_add_args("a/b", "rust", "/tmp/x")),
+        &deps,
+    )
+    .expect_err("path separator must be rejected by handler");
+    let msg = format!("{err}").to_lowercase();
+    assert!(msg.contains("name"));
+}
+
+#[test]
+fn add_rejects_leading_dot_at_handler() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let err = run_context_cmd(
+        &ContextCmd::Add(path_add_args(".hidden", "rust", "/tmp/x")),
+        &deps,
+    )
+    .expect_err("leading dot must be rejected by handler");
+    let msg = format!("{err}").to_lowercase();
+    assert!(msg.contains("name"));
+}
+
+#[test]
+fn add_rejects_overlong_name_at_handler() {
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let too_long = "a".repeat(65);
+    let err = run_context_cmd(
+        &ContextCmd::Add(path_add_args(&too_long, "rust", "/tmp/x")),
+        &deps,
+    )
+    .expect_err("65-char name must be rejected by handler");
+    let msg = format!("{err}").to_lowercase();
+    assert!(msg.contains("name"));
+}
+
+#[test]
+fn append_source_rejects_path_traversal_name() {
+    // SourcesConfig::append_source is the config-write boundary; even a
+    // hand-rolled SourceEntry constructed outside the CLI must be gated.
+    use super::config::{SourceEntry, SourceKind};
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    let path = deps.home_dir().join("sources.toml");
+    let entry = SourceEntry {
+        name: "../etc".to_string(),
+        kind: SourceKind::Rust,
+        location: SourceLocation::Path(PathBuf::from("/tmp/x")),
+        paths: Vec::new(),
+        weight: None,
+        ignore: Vec::new(),
+    };
+    let err = SourcesConfig::append_source(&path, &entry)
+        .expect_err("traversal name at config layer must be rejected");
+    let msg = format!("{err}").to_lowercase();
+    assert!(msg.contains("name"), "error must mention name: {msg}");
+}
+
+#[test]
+fn add_accepts_valid_name_at_handler() {
+    // Positive control: the validator must NOT regress on legit names.
+    let deps = TestDeps::new();
+    run_context_cmd(&ContextCmd::Init, &deps).expect("init");
+    run_context_cmd(
+        &ContextCmd::Add(path_add_args("my-app_1", "rust", "/tmp/x")),
+        &deps,
+    )
+    .expect("alnum/dash/underscore name must be accepted");
 }
 
 #[test]

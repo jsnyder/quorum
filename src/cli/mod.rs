@@ -87,10 +87,61 @@ pub enum ContextCommand {
     Doctor(ContextDoctorOpts),
 }
 
+/// Validate `--name` (and any other "becomes a single directory component"
+/// argument). The value lands at `~/.quorum/sources/<name>/`, so it must be:
+///
+/// - 1..=64 ASCII chars from `[a-zA-Z0-9_-]`
+/// - not start with `.` (no hidden dirs, no `.`/`..` traversal)
+///
+/// This validator is the single source of truth shared by clap's
+/// `value_parser`, the `run_add` handler (defense-in-depth), and
+/// `SourcesConfig::append_source` (config-write boundary). It returns the
+/// owned `String` clap stores into the typed field.
+pub fn validate_source_name(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err("--name must not be empty".into());
+    }
+    if s.len() > 64 {
+        return Err(format!(
+            "--name length must be 1..=64 (got {})",
+            s.len()
+        ));
+    }
+    if s.starts_with('.') {
+        return Err("--name must not start with '.'".into());
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "--name may only contain [a-zA-Z0-9_-] (no path separators, spaces, or unicode)"
+                .into(),
+        );
+    }
+    Ok(s.to_string())
+}
+
+/// Validate `--k` for `quorum context query`. clap 4.5's
+/// `value_parser!(usize).range(...)` is unsupported (the ranged parser only
+/// takes primitive integer types like u64/i64), so we hand-roll the
+/// validator and keep the field type `Option<usize>` to avoid downstream
+/// type churn.
+pub fn validate_k(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e| format!("--k must be a positive integer: {e}"))?;
+    if !(1..=100).contains(&n) {
+        return Err(format!("--k must be in 1..=100 (got {n})"));
+    }
+    Ok(n)
+}
+
 #[derive(Parser)]
 pub struct ContextAddOpts {
     /// Short unique name for the source (used as a directory key).
-    #[arg(long)]
+    /// Must be 1..=64 chars from [a-zA-Z0-9_-] and not start with '.'.
+    #[arg(long, value_parser = validate_source_name)]
     pub name: String,
 
     /// Source kind: rust, typescript, javascript, python, go, terraform, service, docs.
@@ -162,8 +213,8 @@ pub struct ContextQueryOpts {
     #[arg(long)]
     pub source: Option<String>,
 
-    /// Return up to this many chunks.
-    #[arg(long)]
+    /// Return up to this many chunks. Range: 1..=100.
+    #[arg(long, value_parser = validate_k)]
     pub k: Option<usize>,
 
     /// Include per-chunk scoring details.
@@ -1105,5 +1156,183 @@ mod tests {
             "single-flag invocation must parse; got {:?}",
             res.err().map(|e| e.kind())
         );
+    }
+
+    // --- Issue #135: clap-layer validation for `--name` -----------------------
+    //
+    // The `--name` value becomes a single directory component under
+    // `~/.quorum/sources/<name>/`. Path-traversal characters, leading dots,
+    // and overlong values must be rejected at parse time; the handler also
+    // re-validates as defense-in-depth (see `src/context/cli.rs::run_add`).
+
+    #[test]
+    fn context_add_name_rejects_dotdot() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "../etc",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err(), "../etc must be rejected at parse time");
+    }
+
+    #[test]
+    fn context_add_name_rejects_absolute() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "/etc/passwd",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_slash() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "a/b",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_backslash() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", r"a\b",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_leading_dot() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", ".hidden",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_overlong() {
+        use clap::Parser;
+        let long = "a".repeat(65);
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", &long,
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_rejects_empty() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn context_add_name_accepts_simple() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", "my-source_1",
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_ok(), "simple alnum/dash/underscore must parse: {:?}", r.err().map(|e| e.to_string()));
+    }
+
+    #[test]
+    fn context_add_name_accepts_64_chars() {
+        use clap::Parser;
+        let max_len = "a".repeat(64);
+        let r = Args::try_parse_from([
+            "quorum", "context", "add",
+            "--name", &max_len,
+            "--kind", "rust",
+            "--path", "/tmp/x",
+        ]);
+        assert!(r.is_ok(), "64-char name (max allowed) must parse");
+    }
+
+    // --- Issue #136: clap-layer validation for `--k` --------------------------
+    //
+    // `clap::value_parser!(usize).range(...)` is NOT supported in clap 4.5
+    // (the ranged parser only takes u64/i64-style integer types), so we use
+    // a custom `validate_k` value_parser and keep the field type
+    // `Option<usize>` to avoid downstream type churn.
+
+    #[test]
+    fn context_query_k_rejects_zero() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "0",
+        ]);
+        assert!(r.is_err(), "--k 0 must be rejected (would produce empty results)");
+    }
+
+    #[test]
+    fn context_query_k_rejects_above_cap() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "101",
+        ]);
+        assert!(r.is_err(), "--k 101 must be rejected (above 100 cap)");
+    }
+
+    #[test]
+    fn context_query_k_rejects_negative() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "-1",
+        ]);
+        assert!(r.is_err(), "--k -1 must be rejected (not a usize)");
+    }
+
+    #[test]
+    fn context_query_k_accepts_in_range() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "50",
+        ]);
+        assert!(r.is_ok(), "--k 50 must parse");
+    }
+
+    #[test]
+    fn context_query_k_accepts_one() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "1",
+        ]);
+        assert!(r.is_ok(), "--k 1 must parse (lower bound)");
+    }
+
+    #[test]
+    fn context_query_k_accepts_hundred() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "100",
+        ]);
+        assert!(r.is_ok(), "--k 100 must parse (upper bound)");
     }
 }
