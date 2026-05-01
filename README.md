@@ -163,6 +163,17 @@ Add to your Claude Code MCP config:
 
 6 tools: `review`, `chat`, `debug`, `testgen`, `feedback`, `catalog`
 
+### Bundled Claude Code skill
+
+A `quorum-cli` Claude Code skill ships with the repo at `skills/quorum-cli/skill.md`. It teaches Claude when to reach for which review mode, how to record feedback, and the v0.18.0+ `fp_kind` taxonomy.
+
+```bash
+mkdir -p ~/.claude/skills/quorum-cli
+cp skills/quorum-cli/skill.md ~/.claude/skills/quorum-cli/
+```
+
+Re-run after `git pull` to keep it in sync with the repo's source of truth.
+
 ## Auto-Calibration
 
 Every LLM review automatically triages its own findings using a second model pass:
@@ -193,16 +204,38 @@ quorum improves over time through feedback. Record verdicts on findings:
 quorum feedback --file src/auth.rs --finding "SQL injection" --verdict tp --reason "Fixed with params"
 quorum feedback --file src/auth.rs --finding "complexity 5" --verdict fp --reason "Trivial match"
 
+# False positive with structured kind (v0.18.0+)
+quorum feedback --file src/x.rs --finding "unwrap on Option" --verdict fp \
+    --fp-kind pattern-overgeneralization --reason "type-system-guaranteed Some"
+quorum feedback --file src/x.rs --finding "fabricated function" --verdict fp \
+    --fp-kind hallucination --reason "no such function in this module"
+
+# After applying a fix (1.5x calibrator weight)
+quorum feedback --file src/x.rs --finding "Bug" --verdict tp --reason "Fixed in PR #200" \
+    --provenance post_fix
+
 # From another review agent (pal, third-opinion, gemini, reviewdog, ...)
 quorum feedback --file src/x.rs --finding "Bug" --verdict tp --reason "confirmed" \
     --from-agent pal --agent-model gpt-5.4 --confidence 0.9
 
-# Or via MCP feedback tool (in Claude Code), with optional fromAgent / agentModel / confidence fields
+# Or via MCP feedback tool (in Claude Code), with optional fromAgent / agentModel / confidence / fpKind fields
 # Or programmatically via the FeedbackStore API
 # Or by dropping JSONL files into ~/.quorum/inbox/ -- drained automatically on next review/stats
 ```
 
 Provenance weights: `post_fix` (1.5x), `human` (1.0x), `external` (0.7x, capped at 1.4 globally), `auto_calibrate` (0.5x, soft-suppresses to INFO), `unknown` (0.3x).
+
+**FpKind** (v0.18.0+) classifies *why* an FP was wrong, so the calibrator can decay each class on its own half-life:
+
+| Variant | Decay | When to use |
+|---------|-------|-------------|
+| `hallucination` | 30d | Reviewer cited code/API that doesn't exist |
+| `pattern-overgeneralization` | 60d | Pattern matched but context makes it benign |
+| `trust-model` | 120d | Wrong threat model (internal vs. user-supplied) |
+| `compensating-control` | 120d | Real pattern, mitigated upstream |
+| `out-of-scope` | 90d | Pre-existing in diff-scoped review |
+
+Untagged FPs use the legacy uniform 83d half-life. `quorum stats` reports `fp_kind_utilization_rate` once ≥10% of recent FPs are tagged.
 
 External-agent verdicts go through a stricter trust boundary: only `tp`/`fp`/`partial` are accepted (no `wontfix`/`context_misleading`), confidence is clamped to [0,1], and the global External contribution to any finding's TP/FP weight is capped to prevent a single misbehaving agent from dominating calibration.
 
@@ -253,7 +286,18 @@ QUORUM_MODEL=gpt-5.4                        # default review model
 QUORUM_REASONING_EFFORT=low                 # default reasoning depth
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,claude       # for --ensemble mode
 CONTEXT7_API_KEY=...                         # enables framework doc injection
+
+# HTTP timeouts (v0.18.0+)
+QUORUM_HTTP_TIMEOUT=300        # total LLM request timeout, seconds (default 300)
+QUORUM_HTTP_READ_TIMEOUT=120   # idle/read timeout, seconds (default 120)
+
+# base_url validation (v0.18.0+)
+QUORUM_ALLOWED_BASE_URL_HOSTS=litellm.example.com   # comma-separated host allowlist
+QUORUM_ALLOW_PRIVATE_BASE_URL=1                      # allow private/loopback IPs (LAN dev)
+QUORUM_UNSAFE_BASE_URL=1                             # disable SSRF/scheme guards (last resort)
 ```
+
+The base_url validator requires HTTPS by default, rejects credentials embedded in the URL, blocks private/loopback IPs unless explicitly opted in, and consults `QUORUM_ALLOWED_BASE_URL_HOSTS` when set. Use the host allowlist for self-hosted LiteLLM proxies on the public internet; use `QUORUM_ALLOW_PRIVATE_BASE_URL=1` for LAN/dev deployments.
 
 ## Exit Codes
 

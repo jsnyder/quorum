@@ -28,7 +28,18 @@ QUORUM_BASE_URL=https://litellm.example.com   # OpenAI-compatible endpoint
 QUORUM_API_KEY=sk-...                          # enables LLM review
 QUORUM_MODEL=gpt-5.4                           # default model
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
+
+# HTTP timeouts (#117, v0.18.0+)
+QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
+QUORUM_HTTP_READ_TIMEOUT=120   # idle/read timeout, seconds (default 120)
+
+# base_url validation (#119, v0.18.0+)
+QUORUM_ALLOWED_BASE_URL_HOSTS=litellm.5745.house  # allowlist of permitted hosts (comma-separated)
+QUORUM_ALLOW_PRIVATE_BASE_URL=1                    # allow private/loopback IPs (LANs, dev)
+QUORUM_UNSAFE_BASE_URL=1                           # disable all SSRF/scheme guards (last resort)
 ```
+
+The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS by default, rejects credentials in the URL, blocks private/loopback IPs, and consults `QUORUM_ALLOWED_BASE_URL_HOSTS` if set. v0.18.1 fixed a `QUORUM_ALLOW_PRIVATE_BASE_URL` bypass where the HTTP scheme would be permitted on public IPs (#167) — the scheme check now keys on whether the resolved host is actually private, not on the env var alone.
 
 ## Supported Languages
 
@@ -75,6 +86,18 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).
+
+**FpKind taxonomy (#123, v0.18.0+):** when recording an `fp` verdict, classify the reason via `--fp-kind <variant>` (CLI) or `fpKind` (MCP). The calibrator decays old precedents per-kind, on the theory that some FP classes age out faster than others:
+
+| Variant | Decay half-life | Meaning |
+|---------|-----------------|---------|
+| `hallucination` | 30d (fast) | Finding references code/API that doesn't exist (line off by N, wrong function name, fabricated import) |
+| `pattern-overgeneralization` | 60d | Pattern matched syntactically but the surrounding context makes it benign (e.g. `unwrap()` on a value the type system guarantees is `Some`) |
+| `trust-model` | 120d | Reviewer mis-modeled the trust boundary (e.g. flagged user-supplied data that's actually internal-only, or vice versa) |
+| `compensating-control` | 120d | Real pattern but mitigated upstream (e.g. SQL string concatenation behind an authenticated, parameter-validating handler) |
+| `out-of-scope` | 90d | Pre-existing issue surfaced by a diff-scoped review — not introduced by this change |
+
+`fp_kind_utilization_rate` is reported in `quorum stats` Feedback Health when ≥10% of FPs in the rolling window are tagged. Untagged FPs use the legacy uniform decay (83d half-life).
 
 **External-agent ingestion (issue #32):** verdicts from other review agents (pal, third-opinion, gemini, reviewdog, ...) flow through three paths, all funneling through `FeedbackStore::record_external`: (1) `~/.quorum/inbox/*.jsonl` drained at the top of every `review`/`stats` invocation via claim-then-ingest (atomic rename to `inbox/processing/` before parse, archive to `inbox/processed/` on success); (2) `quorum feedback --from-agent <name> [--agent-model <m>] [--confidence 0..1] [--category <c>]`; (3) MCP `feedback` tool with `fromAgent` field. Trust boundary: External may only record `tp`/`fp`/`partial` — `wontfix` and `context_misleading` are rejected at the chokepoint. Confidence is clamped to [0,1] (NaN-safe), agent name is normalized (trim+lowercase). Tier breakdown by Provenance shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
 
