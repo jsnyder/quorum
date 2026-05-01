@@ -58,8 +58,15 @@ pub fn hydrate(
         collect_type_refs_in_range(&root, source, lang, &type_kinds, start, end,
             &all_types, &mut ctx.type_definitions, &mut seen_types);
 
+        // Walk identifier-like leaf nodes (NOT comments / string literals) in the
+        // changed range so import filtering can avoid matching tokens that look
+        // like identifiers but live inside a comment or string body.
+        let mut idents_in_range = std::collections::HashSet::new();
+        collect_identifiers_in_range(&root, source, start, end, &mut idents_in_range);
+
         collect_import_refs_in_range(&root, source, &import_kinds, start, end,
-            &all_imports, &mut ctx.import_targets, &mut ctx.qualified_names);
+            &all_imports, &idents_in_range,
+            &mut ctx.import_targets, &mut ctx.qualified_names);
     }
 
     // Caller blast radius: if changed lines contain a function definition,
@@ -407,33 +414,92 @@ fn collect_type_refs_in_range(
     }
 }
 
+/// Walk identifier-like leaf nodes inside [start_line, end_line], excluding
+/// comments and string-literal interiors. Used by `collect_import_refs_in_range`
+/// to scope imports to identifiers actually referenced in the changed range
+/// without false-matching tokens that appear in comments or string content.
+fn collect_identifiers_in_range(
+    node: &tree_sitter::Node,
+    source: &str,
+    start_line: u32,
+    end_line: u32,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let kind = node.kind();
+    // Skip subtrees that cannot legitimately reference an imported name.
+    // tree-sitter kind names are language-stable for these.
+    if kind.contains("comment")
+        || kind == "string_literal"
+        || kind == "string"
+        || kind == "raw_string_literal"
+        || kind == "template_string"
+    {
+        return;
+    }
+
+    let n_start = node.start_position().row as u32 + 1;
+    let n_end = node.end_position().row as u32 + 1;
+    if n_end < start_line || n_start > end_line {
+        return;
+    }
+
+    if node.child_count() == 0 {
+        // Leaf — capture identifier-shaped text only when this leaf overlaps the range.
+        if n_start <= end_line && n_end >= start_line {
+            let text = &source[node.byte_range()];
+            if is_identifier_like(text) {
+                out.insert(text.to_string());
+            }
+        }
+        return;
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            collect_identifiers_in_range(&child, source, start_line, end_line, out);
+        }
+    }
+}
+
+fn is_identifier_like(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[allow(clippy::too_many_arguments)]
 fn collect_import_refs_in_range(
     _node: &tree_sitter::Node,
     _source: &str,
     _import_kinds: &[&str],
-    start_line: u32,
+    _start_line: u32,
     _end_line: u32,
     all_imports: &[(String, String)],
+    idents_in_range: &std::collections::HashSet<String>,
     out: &mut Vec<String>,
     qnames_out: &mut Vec<String>,
 ) {
-    // Check which imports are referenced: for now, include all imports
-    // whose imported name appears to be used. We simply include imports
-    // that are in the file — a more precise approach would check for
-    // identifier usage in the changed range, but for Phase 1 this suffices.
-    // We include imports whose declaration line falls within the changed range,
-    // OR whose imported name is used in the changed range.
-    // For simplicity, include all file-level imports (they're cheap context).
+    // Per-call scoping: only surface imports whose imported name actually
+    // appears as an identifier in the changed range. Avoids the previous
+    // behaviour of dumping every file-level import on every review, which
+    // dragged unrelated modules into the LLM prompt and broke import-target
+    // filtering downstream.
+    //
+    // We rely on a tree-sitter identifier walk (collect_identifiers_in_range)
+    // rather than a textual substring search, so identifier-shaped tokens
+    // inside comments or string literals do not count as references.
     let mut seen = std::collections::HashSet::new();
     for (name, text) in all_imports {
-        if !seen.contains(name) {
-            // Include the import if it provides context for the changed region
-            // Simple heuristic: include all imports (they're cheap context)
-            if start_line > 0 { // always true when we have changed lines
-                out.push(format!("{}: {}", name, text.trim()));
-                qnames_out.push(name.clone());
-                seen.insert(name.clone());
-            }
+        if seen.contains(name) {
+            continue;
+        }
+        if idents_in_range.contains(name) {
+            out.push(format!("{}: {}", name, text.trim()));
+            qnames_out.push(name.clone());
+            seen.insert(name.clone());
         }
     }
 }
@@ -880,6 +946,58 @@ fn process(data: &str) {
             "expected bare 'validate' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- #174: import_targets scoping to changed range --
+
+    #[test]
+    fn import_targets_only_includes_imports_referenced_in_changed_range() {
+        let source = "use std::collections::HashMap;\n\
+                      use std::sync::Arc;\n\
+                      fn touched() {\n\
+                      \x20   let _: Arc<u32> = Arc::new(0);\n\
+                      }\n\
+                      fn untouched() {\n\
+                      \x20   let _: HashMap<String, u32> = HashMap::new();\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        // Only line 4 (Arc usage in `touched`) changes.
+        let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
+        let arc_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
+            .count();
+        let hashmap_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+            .count();
+        assert_eq!(arc_count, 1, "Arc must be hydrated exactly once; got {:?}", ctx.import_targets);
+        assert_eq!(hashmap_count, 0, "HashMap must NOT be hydrated; got {:?}", ctx.import_targets);
+        assert!(!ctx.import_targets.is_empty(), "import_targets unexpectedly empty");
+    }
+
+    #[test]
+    fn import_targets_symmetric_when_changed_range_covers_other_function() {
+        let source = "use std::collections::HashMap;\n\
+                      use std::sync::Arc;\n\
+                      fn touched() {\n\
+                      \x20   let _: Arc<u32> = Arc::new(0);\n\
+                      }\n\
+                      fn untouched() {\n\
+                      \x20   let _: HashMap<String, u32> = HashMap::new();\n\
+                      }\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(7, 7)]); // HashMap line
+        let arc_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
+            .count();
+        let hashmap_count = ctx.import_targets.iter()
+            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+            .count();
+        assert_eq!(arc_count, 0, "Arc must NOT be hydrated when HashMap line is changed");
+        assert_eq!(hashmap_count, 1, "HashMap must be hydrated; got {:?}", ctx.import_targets);
     }
 
     // -- #173: TypeScript default/namespace import bindings --
