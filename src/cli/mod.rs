@@ -122,6 +122,21 @@ pub fn validate_source_name(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+/// Validate `--k` for `quorum context query`. clap 4.5's
+/// `value_parser!(usize).range(...)` is unsupported (the ranged parser only
+/// takes primitive integer types like u64/i64), so we hand-roll the
+/// validator and keep the field type `Option<usize>` to avoid downstream
+/// type churn.
+pub fn validate_k(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e| format!("--k must be a positive integer: {e}"))?;
+    if !(1..=100).contains(&n) {
+        return Err(format!("--k must be in 1..=100 (got {n})"));
+    }
+    Ok(n)
+}
+
 #[derive(Parser)]
 pub struct ContextAddOpts {
     /// Short unique name for the source (used as a directory key).
@@ -198,8 +213,8 @@ pub struct ContextQueryOpts {
     #[arg(long)]
     pub source: Option<String>,
 
-    /// Return up to this many chunks.
-    #[arg(long)]
+    /// Return up to this many chunks. Range: 1..=100.
+    #[arg(long, value_parser = validate_k)]
     pub k: Option<usize>,
 
     /// Include per-chunk scoring details.
@@ -1260,4 +1275,64 @@ mod tests {
         assert!(r.is_ok(), "64-char name (max allowed) must parse");
     }
 
+    // --- Issue #136: clap-layer validation for `--k` --------------------------
+    //
+    // `clap::value_parser!(usize).range(...)` is NOT supported in clap 4.5
+    // (the ranged parser only takes u64/i64-style integer types), so we use
+    // a custom `validate_k` value_parser and keep the field type
+    // `Option<usize>` to avoid downstream type churn.
+
+    #[test]
+    fn context_query_k_rejects_zero() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "0",
+        ]);
+        assert!(r.is_err(), "--k 0 must be rejected (would produce empty results)");
+    }
+
+    #[test]
+    fn context_query_k_rejects_above_cap() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "101",
+        ]);
+        assert!(r.is_err(), "--k 101 must be rejected (above 100 cap)");
+    }
+
+    #[test]
+    fn context_query_k_rejects_negative() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "-1",
+        ]);
+        assert!(r.is_err(), "--k -1 must be rejected (not a usize)");
+    }
+
+    #[test]
+    fn context_query_k_accepts_in_range() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "50",
+        ]);
+        assert!(r.is_ok(), "--k 50 must parse");
+    }
+
+    #[test]
+    fn context_query_k_accepts_one() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "1",
+        ]);
+        assert!(r.is_ok(), "--k 1 must parse (lower bound)");
+    }
+
+    #[test]
+    fn context_query_k_accepts_hundred() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "query", "hello", "--k", "100",
+        ]);
+        assert!(r.is_ok(), "--k 100 must parse (upper bound)");
+    }
 }
