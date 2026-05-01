@@ -431,9 +431,16 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
     // add `localhost` / `127.0.0.1` to QUORUM_ALLOWED_BASE_URL_HOSTS just to
     // run Ollama — Quorum self-review of #119 caught the prior version
     // requiring both env vars). Public hosts still go through the allowlist.
+    //
+    // We also track `host_is_private` here so the plaintext-http check
+    // below can scope itself correctly (#167): public allowlisted hosts
+    // also reach that check, so `allow_private_ips` alone must NOT exempt
+    // them from the HTTPS requirement.
+    let mut host_is_private = false;
     match host {
         url::Host::Ipv4(ip) => {
             if ipv4_is_local_or_special(ip) {
+                host_is_private = true;
                 if !policy.allow_private_ips {
                     anyhow::bail!(actionable_error_for_private_ip(base_url, &ip.to_string()));
                 }
@@ -455,6 +462,7 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
                 ipv6_is_local_or_special(ip)
             };
             if is_local {
+                host_is_private = true;
                 if !policy.allow_private_ips {
                     anyhow::bail!(actionable_error_for_private_ip(base_url, &ip.to_string()));
                 }
@@ -471,6 +479,7 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
             // "localhost"-family DNS names treated as loopback. Doesn't catch
             // attacker-controlled DNS that resolves to 127.0.0.1 — see #126.
             if is_localhost_name(&dn) {
+                host_is_private = true;
                 if !policy.allow_private_ips {
                     anyhow::bail!(actionable_error_for_private_ip(base_url, &dn));
                 }
@@ -481,19 +490,20 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         }
     }
 
-    // #147: reject plaintext http:// against public/allowlisted hosts. The
-    // scheme alone leaks the API key and request body to any on-path
-    // observer. By the time we reach this point the host has already passed
-    // private-IP / allowlist gates, so the only remaining shape is "public
-    // host with plaintext scheme" — which has no legitimate use case absent
-    // an explicit opt-out. The two opt-outs are pre-existing:
-    //   - `allow_private_ips` (QUORUM_ALLOW_PRIVATE_BASE_URL=1): trusted
-    //     LAN / on-prem / Ollama. The check is short-circuited here because
-    //     by reaching this line under that flag the host is private — the
-    //     user already accepted the plaintext exposure on their LAN.
+    // #147 + #167: reject plaintext http:// against public/allowlisted
+    // hosts. The scheme alone leaks the API key and request body to any
+    // on-path observer. The opt-outs are scope-limited:
+    //   - private/loopback host (computed above as `host_is_private`):
+    //     trusted LAN / on-prem / Ollama. `allow_private_ips` already gated
+    //     the host above; reaching here with `host_is_private=true` means
+    //     the user opted in for that specific deployment shape and accepted
+    //     plaintext on their LAN. (#167: previously this branch keyed on
+    //     `!policy.allow_private_ips`, which inadvertently exempted public
+    //     allowlisted hosts whenever the flag was set — leaking the API
+    //     key in cleartext to api.openai.com / api.anthropic.com / etc.)
     //   - `unsafe_bypass` (QUORUM_UNSAFE_BASE_URL=1): handled at the top
     //     of this function; never reaches here.
-    if parsed.scheme() == "http" && !policy.allow_private_ips {
+    if parsed.scheme() == "http" && !host_is_private {
         anyhow::bail!(
             "base_url {base_url:?} uses plaintext http:// scheme. \
              API keys and request bodies would be sent unencrypted. \
@@ -1590,6 +1600,51 @@ mod tests {
                 "allow_private_ips must override plaintext-scheme ban for {url}"
             );
         }
+    }
+
+    #[test]
+    fn validate_base_url_rejects_http_for_public_host_even_with_allow_private_ips() {
+        // #167: the #147 scheme-rejection check used
+        //   `if scheme=="http" && !allow_private_ips`
+        // which short-circuits under the wrong assumption that reaching the
+        // check with `allow_private_ips=true` implies a private host. In
+        // fact public allowlisted hosts (api.openai.com, api.anthropic.com,
+        // ...) also reach the check, so setting QUORUM_ALLOW_PRIVATE_BASE_URL=1
+        // for an Ollama deployment inadvertently permitted plaintext http://
+        // to public destinations — leaking the API key in cleartext.
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        let res = validate_base_url("http://api.openai.com/v1", &policy);
+        assert!(
+            res.is_err(),
+            "allow_private_ips must NOT permit plaintext http:// to a public host"
+        );
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("http") && msg.contains("https"),
+            "error must mention plaintext http and recommend https; got {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_for_private_ip_with_allow_private_ips() {
+        // Regression-lock for the legitimate case (#167 fix must preserve
+        // this): http://localhost / 127.0.0.1 under allow_private_ips
+        // continues to be accepted — that is the entire point of the flag.
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        assert!(
+            validate_base_url("http://localhost:11434/v1", &policy).is_ok(),
+            "allow_private_ips must continue to accept http://localhost"
+        );
+        assert!(
+            validate_base_url("http://127.0.0.1:11434/v1", &policy).is_ok(),
+            "allow_private_ips must continue to accept http://127.0.0.1"
+        );
     }
 
     #[test]
