@@ -443,6 +443,30 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         }
     }
 
+    // #147: reject plaintext http:// against public/allowlisted hosts. The
+    // scheme alone leaks the API key and request body to any on-path
+    // observer. By the time we reach this point the host has already passed
+    // private-IP / allowlist gates, so the only remaining shape is "public
+    // host with plaintext scheme" — which has no legitimate use case absent
+    // an explicit opt-out. The two opt-outs are pre-existing:
+    //   - `allow_private_ips` (QUORUM_ALLOW_PRIVATE_BASE_URL=1): trusted
+    //     LAN / on-prem / Ollama. The check is short-circuited here because
+    //     by reaching this line under that flag the host is private — the
+    //     user already accepted the plaintext exposure on their LAN.
+    //   - `unsafe_bypass` (QUORUM_UNSAFE_BASE_URL=1): handled at the top
+    //     of this function; never reaches here.
+    if parsed.scheme() == "http" && !policy.allow_private_ips {
+        anyhow::bail!(
+            "base_url {base_url:?} uses plaintext http:// scheme. \
+             API keys and request bodies would be sent unencrypted. \
+             Use https:// instead. \
+             For on-prem / Ollama deployments on a trusted LAN, set:\n  \
+             export QUORUM_ALLOW_PRIVATE_BASE_URL=1\n\
+             To bypass scheme + allowlist + IP checks entirely (development only):\n  \
+             export QUORUM_UNSAFE_BASE_URL=1"
+        );
+    }
+
     Ok(())
 }
 
@@ -1461,6 +1485,68 @@ mod tests {
         };
         assert!(validate_base_url("file:///etc/passwd", &policy).is_err());
         assert!(validate_base_url("ftp://api.openai.com/", &policy).is_err());
+    }
+
+    // --- #147: reject http:// scheme by default ---
+
+    #[test]
+    fn validate_base_url_rejects_plain_http_against_public_host_under_default_policy() {
+        // #147: plaintext http:// to a public host leaks the API key and
+        // request body to any on-path observer. Default policy must reject
+        // it — the host might be on the allowlist, but the scheme alone is
+        // disqualifying. The only way to opt back in is the same env vars
+        // that already cover unusual deployments
+        // (`QUORUM_ALLOW_PRIVATE_BASE_URL=1` for on-prem / Ollama,
+        //  `QUORUM_UNSAFE_BASE_URL=1` for everything else).
+        let policy = BaseUrlPolicy::default();
+        let res = validate_base_url("http://api.openai.com/v1", &policy);
+        assert!(
+            res.is_err(),
+            "default policy must reject plaintext http:// to allowlisted host"
+        );
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("http"),
+            "error must mention http scheme; got {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_to_private_host_when_allow_private_ips_set() {
+        // Ollama / on-prem LLMs are typically http://. The plaintext-scheme
+        // ban must NOT fire when the user has already opted into private
+        // hosts via QUORUM_ALLOW_PRIVATE_BASE_URL=1 — that flag implies
+        // "I know what network I'm on."
+        let policy = BaseUrlPolicy {
+            allow_private_ips: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8000/v1",
+            "http://10.0.5.42:8080/v1",
+        ] {
+            assert!(
+                validate_base_url(url, &policy).is_ok(),
+                "allow_private_ips must override plaintext-scheme ban for {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_under_unsafe_bypass() {
+        // QUORUM_UNSAFE_BASE_URL=1 already disables the host-allowlist
+        // and IP-block checks. It must also disable the plaintext-scheme
+        // ban — that flag is the documented "I accept all the risks"
+        // footgun, and exempting only some checks would be inconsistent.
+        let policy = BaseUrlPolicy {
+            unsafe_bypass: true,
+            ..Default::default()
+        };
+        assert!(
+            validate_base_url("http://api.openai.com/v1", &policy).is_ok(),
+            "unsafe_bypass must accept plaintext http:// to public host"
+        );
     }
 
     // --- #119: BaseUrlPolicy::from_env ---
