@@ -192,10 +192,30 @@ impl TelemetryStore {
             if line_bytes.iter().all(|b| b.is_ascii_whitespace()) {
                 continue;
             }
-            // Convert to &str (lossy on invalid UTF-8 — surfaced as a
-            // parse error below).
-            let line: std::borrow::Cow<'_, str> = String::from_utf8_lossy(line_bytes);
-            match serde_json::from_str::<TelemetryEntry>(&line) {
+            // Strict UTF-8 validation. `from_utf8_lossy` would silently
+            // replace bad bytes with U+FFFD and could let a corrupted
+            // row "successfully" deserialize with mutated string fields.
+            // We treat invalid UTF-8 as a parse error and use a lossy
+            // snippet only for the diagnostic message.
+            let line = match std::str::from_utf8(line_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    stats.skipped += 1;
+                    if stats.errors.len() < MAX_PARSE_ERRORS {
+                        let snippet: String = String::from_utf8_lossy(line_bytes)
+                            .chars()
+                            .take(80)
+                            .collect();
+                        stats.errors.push(ParseError {
+                            line_no,
+                            snippet,
+                            error: format!("invalid UTF-8: {e}"),
+                        });
+                    }
+                    continue;
+                }
+            };
+            match serde_json::from_str::<TelemetryEntry>(line) {
                 Ok(entry) => {
                     entries.push(entry);
                     stats.kept += 1;
@@ -515,6 +535,45 @@ mod tests {
         assert!(
             !stats.errors[0].error.contains("exceeds"),
             "newline-terminated line at-or-under cap must not be flagged oversized: {}",
+            stats.errors[0].error
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_is_rejected_as_parse_error_not_silently_rewritten() {
+        // Quorum re-review #3 (gpt-5.4, severity=high): the loader must
+        // not run JSONL bytes through `from_utf8_lossy` before parsing,
+        // because U+FFFD replacements could mutate string fields and
+        // make a corrupted row "successfully" deserialize. Strict
+        // UTF-8 validation is required at this trust boundary.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("telemetry.jsonl");
+        let good = serde_json::to_string(&sample_entry()).unwrap();
+        // Build a single line with an invalid UTF-8 byte sequence
+        // (lone continuation byte 0xFF) embedded inside it.
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        // Second line: an opening brace + lone 0xFF + closing brace +
+        // newline. Looks JSON-shaped but is not valid UTF-8.
+        bytes.extend_from_slice(b"{\"model\":\"");
+        bytes.push(0xFF);
+        bytes.extend_from_slice(b"\"}\n");
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&path, &bytes).unwrap();
+        let store = TelemetryStore::new(path);
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        // Two valid rows, one rejected for invalid UTF-8.
+        assert_eq!(entries.len(), 2, "valid rows must still parse");
+        assert_eq!(stats.kept, 2);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.errors.len(), 1);
+        assert_eq!(stats.errors[0].line_no, 2);
+        assert!(
+            stats.errors[0].error.to_lowercase().contains("utf-8")
+                || stats.errors[0].error.to_lowercase().contains("utf8"),
+            "expected UTF-8 error, got: {}",
             stats.errors[0].error
         );
     }
