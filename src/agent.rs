@@ -136,13 +136,30 @@ fn render_review_prompt(
 fn wrap_listing_with_budget(listing: &str, share_budget: usize) -> String {
     const TRUNC_NOTE: &str = "\n... (truncated)";
     let wrapper_overhead = LISTING_OPEN_TAG.len() + LISTING_CLOSE_TAG.len();
-    // If the budget can't even fit the wrapper, emit an empty body.
-    let body_budget = share_budget.saturating_sub(wrapper_overhead);
+    // Self-review Finding 1: if the budget can't even fit the wrapper tags
+    // themselves, emitting `OPEN + "" + CLOSE` would already exceed
+    // share_budget. Bail out with an empty string so the contract
+    // (rendered_listing.len() <= share_budget) holds at every boundary.
+    if share_budget < wrapper_overhead {
+        return String::new();
+    }
+    let body_budget = share_budget - wrapper_overhead;
     let escaped = escape_for_xml_wrap(listing);
     let body = if escaped.len() > body_budget {
-        let trunc_room = body_budget.saturating_sub(TRUNC_NOTE.len());
-        let safe_end = escaped.floor_char_boundary(trunc_room);
-        format!("{}{}", &escaped[..safe_end], TRUNC_NOTE)
+        // Self-review Finding 1 (cont.): when body_budget < TRUNC_NOTE.len(),
+        // we cannot fit the truncation note without overshooting share_budget.
+        // Drop the note and truncate to body_budget bytes — the strict size
+        // bound the caller relies on takes priority over the cosmetic
+        // "[truncated]" signal. The agent loop's limit_reached() check still
+        // fires next turn.
+        if body_budget < TRUNC_NOTE.len() {
+            let safe_end = escaped.floor_char_boundary(body_budget);
+            escaped[..safe_end].to_string()
+        } else {
+            let trunc_room = body_budget - TRUNC_NOTE.len();
+            let safe_end = escaped.floor_char_boundary(trunc_room);
+            format!("{}{}", &escaped[..safe_end], TRUNC_NOTE)
+        }
     } else {
         escaped
     };
@@ -537,6 +554,27 @@ mod tests {
             LISTING_CLOSE_TAG.len(),
             total,
             config.max_bytes_read
+        );
+    }
+
+    #[test]
+    fn wrap_listing_with_budget_respects_bound_below_trunc_note_length() {
+        // Self-review Finding 1 (small-budget boundary). When the per-listing
+        // share of max_bytes_read is smaller than wrapper_overhead + TRUNC_NOTE,
+        // both saturating_sub paths bottom out at 0 but the full TRUNC_NOTE was
+        // still appended, so the wrapped listing exceeded share_budget.
+        //
+        // share_budget=20: wrapper_overhead = 16+17 = 33 > 20, so we must emit
+        // an empty string entirely. Without the fix, body=""+TRUNC_NOTE(16) and
+        // total = 0+16+33 = 49 > 20.
+        let oversized = "x".repeat(500);
+        let share_budget = 20_usize;
+        let wrapped = wrap_listing_with_budget(&oversized, share_budget);
+        assert!(
+            wrapped.len() <= share_budget,
+            "wrap_listing_with_budget exceeded share_budget: got {} bytes, budget {}",
+            wrapped.len(),
+            share_budget
         );
     }
 
