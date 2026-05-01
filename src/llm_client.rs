@@ -360,9 +360,47 @@ fn matches_truthy(v: &str) -> bool {
 /// invasive (filed as a follow-up). This validator addresses the dominant
 /// threats (typo, env-injection, embedded creds, IP-literal SSRF) without
 /// the resolver hook.
+/// #156: when `url::Url::parse` fails on a URL that contains
+/// `user:password@host`, the raw input (and possibly parts of the
+/// inner parser error) include the credentials. Echoing that into a
+/// terminal message, daemon log, or telemetry record is a credential
+/// leak. The always-on userinfo-rejection branch runs only AFTER a
+/// successful parse, so it cannot defend against this path on its own.
+///
+/// This helper does string-level redaction of any `user:password@`
+/// segment between the scheme `://` and the next `/`, `?`, `#`, or
+/// end-of-string, replacing it with `[REDACTED]@`. It is intentionally
+/// permissive in input shape because by definition the URL did not
+/// parse — relying on `url::Url::set_username` would be circular.
+fn redact_userinfo_for_error(raw: &str) -> String {
+    // Find scheme://host start.
+    let Some(scheme_end) = raw.find("://") else {
+        return raw.to_string();
+    };
+    let after_scheme = scheme_end + 3;
+    let rest = &raw[after_scheme..];
+    // Find the end of the authority component.
+    let auth_end = rest
+        .find(|c: char| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(rest.len());
+    let authority = &rest[..auth_end];
+    // No userinfo present?
+    let Some(at_idx) = authority.rfind('@') else {
+        return raw.to_string();
+    };
+    let mut out = String::with_capacity(raw.len());
+    out.push_str(&raw[..after_scheme]);
+    out.push_str("[REDACTED]@");
+    out.push_str(&authority[at_idx + 1..]);
+    out.push_str(&rest[auth_end..]);
+    out
+}
+
 pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Result<()> {
-    let parsed = url::Url::parse(base_url)
-        .map_err(|e| anyhow::anyhow!("base_url {base_url:?} is not a valid URL: {e}"))?;
+    let parsed = url::Url::parse(base_url).map_err(|e| {
+        let safe = redact_userinfo_for_error(base_url);
+        anyhow::anyhow!("base_url {safe:?} is not a valid URL: {e}")
+    })?;
 
     if !matches!(parsed.scheme(), "http" | "https") {
         anyhow::bail!(
@@ -1546,6 +1584,32 @@ mod tests {
         assert!(
             validate_base_url("http://api.openai.com/v1", &policy).is_ok(),
             "unsafe_bypass must accept plaintext http:// to public host"
+        );
+    }
+
+    // --- #156: parse-error path must redact userinfo ---
+
+    #[test]
+    fn validate_base_url_parse_error_redacts_userinfo_in_error_message() {
+        // #156: when url::Url::parse fails, the error message returned by
+        // validate_base_url echoes the raw input via `{base_url:?}` AND
+        // the inner parser error, both of which can include embedded
+        // credentials before the always-on userinfo-rejection branch ever
+        // runs. The fix must scrub `user:password@` from the error before
+        // it flows to terminal output, daemon logs, or telemetry.
+        let policy = BaseUrlPolicy::default();
+        // A URL with userinfo + an invalid port — `url::Url::parse` fails.
+        let url = "https://leaky-user:super-secret-pw@example.com:notaport/v1";
+        let err = validate_base_url(url, &policy)
+            .expect_err("must fail to parse");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("super-secret-pw"),
+            "password must not appear in parse-error message; got: {msg}"
+        );
+        assert!(
+            !msg.contains("leaky-user"),
+            "username must not appear in parse-error message; got: {msg}"
         );
     }
 
