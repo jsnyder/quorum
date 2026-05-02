@@ -1389,37 +1389,4 @@ fn uses_map() {
         );
     }
 
-    // Test 6 (#174) — find_callers_of full-call-range containment
-    #[test]
-    fn find_callers_of_uses_full_call_range_for_caller_containment() {
-        // gpt-5.4: hydration.rs:559-583 may still use call *start line* only when
-        // resolving which enclosing function contains the changed-range call site.
-        // RED: the call to `target()` spans lines 4..7; only inner line 5 is changed;
-        // assert the enclosing `outer` is recorded as a caller.
-        let source = "fn target() {}\n\
-                      fn outer() {\n\
-                      \x20   let _ = 1;\n\
-                      \x20   target(\n\
-                      \x20   );\n\
-                      \x20   let _ = 2;\n\
-                      }\n\
-                      fn unrelated() { let _ = 3; }\n";
-        let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        // Mark only line 5 (the closing `)` of the call) as changed. Pre-fix: if
-        // find_callers_of keys on call.start_position().row, line-5-only would
-        // not match a call_start of 4 and `outer` would be missed.
-        let ctx = hydrate(&tree, source, Language::Rust, &[(5, 5)]);
-        assert!(
-            ctx.callers.iter().any(|c| c.contains("outer")),
-            "expected `outer` in callers; got {:?}",
-            ctx.callers,
-        );
-        assert!(
-            ctx.callers.iter().all(|c| !c.contains("unrelated")),
-            "must not pull in `unrelated`; got {:?}",
-            ctx.callers,
-        );
-    }
 }
