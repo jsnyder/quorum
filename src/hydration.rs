@@ -1288,4 +1288,105 @@ fn uses_map() {
         let names = extract_imported_names("import os.path, foo.bar as baz");
         assert_eq!(names, vec!["path", "baz"]);
     }
+
+    // -- Batch 4 reality verification: regression pins for #168-#175 --
+
+    // Test 1 (#175) — UTF-8 boundary safety
+    #[test]
+    fn hydrate_does_not_panic_on_multibyte_utf8_at_buffer_boundary() {
+        // Adversarial: multi-byte UTF-8 immediately before EOF (no trailing newline),
+        // a CJK char inside a comment, and a BOM-like prefix. If any &source[i..j]
+        // slice were computed from a non-tree-sitter byte index, this would panic.
+        let source = "\u{FEFF}// 测试 unwrap() — 🦀 こんにちは\n\
+                      fn helper() -> u32 { 0 }\n\
+                      fn caller() {\n\
+                      \x20   let _ = helper();\n\
+                      }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hydrate(&tree, source, Language::Rust, &[(4, 4)])
+        }));
+        assert!(res.is_ok(), "hydrate panicked on multi-byte UTF-8 input");
+        let ctx = res.unwrap();
+        // Real behavior assertion — not vacuous: helper() must still hydrate.
+        assert!(
+            ctx.callee_signatures.iter().any(|s| s.contains("helper")),
+            "expected helper() to hydrate even with multi-byte source; got {:?}",
+            ctx.callee_signatures,
+        );
+    }
+
+    // Test 2 (#171) — pure-deletion hunk
+    #[test]
+    fn parse_unified_diff_handles_pure_deletion_hunk_without_underflow() {
+        // Hunk header "@@ -1 +0,0 @@" = full-file or single-line pure deletion.
+        // count=0 must NOT push a (0, 0u32-1) underflow range, and must not panic.
+        let diff = "+++ b/foo.rs\n@@ -1 +0,0 @@\n-only line\n";
+        let result = parse_unified_diff(diff);
+        // Per fix at hydration.rs:535-543 (count > 0 guard), pure deletion drops
+        // foo.rs entirely (current_ranges stays empty, save-current-file block
+        // at line 519 only pushes when !is_empty()). Pin this exact behavior.
+        let foo = result.iter().find(|(p, _)| p == "foo.rs");
+        assert!(
+            foo.is_none(),
+            "pure-deletion hunk should drop foo.rs entirely; got entry: {:?}",
+            foo,
+        );
+    }
+
+    // Test 3 (#172) — nested grouped use (known limit pin)
+    #[test]
+    fn extract_imported_names_handles_nested_grouped_use() {
+        // Pre-#172 bug glued names with ", ". Post-fix grouped-use loop at
+        // hydration.rs:191-220 splits on ',' then rsplit("::") on each part.
+        // For `bar::{Baz}` rsplit("::") returns the literal "{Baz}" — i.e. nested
+        // groups are a KNOWN LIMIT, not fixed by #172. Pin current shape exactly:
+        let names = extract_imported_names("use foo::{bar::{Baz}, zot}");
+        assert_eq!(
+            names,
+            vec!["{Baz}".to_string(), "zot".to_string()],
+            "nested grouped use produces literal '{{Baz}}' — known limit; \
+             a future AST-based extractor should yield ['Baz', 'zot']. \
+             File follow-up issue if this assertion changes."
+        );
+    }
+
+    // Test 4 (#173) — TypeScript default-import local binding
+    #[test]
+    fn extract_imported_names_typescript_default_import_uses_local_binding_pin() {
+        // Pre-fix: returned ["default"]. Post-fix at hydration.rs:247-310:
+        // emits the local binding identifier.
+        let names = extract_imported_names("import foo from \"x\";");
+        assert_eq!(names, vec!["foo".to_string()], "got {:?}", names);
+    }
+
+    // Test 5 (#170) — TS arrow-fn multi-line call site overlap
+    #[test]
+    fn collect_calls_in_range_finds_typescript_arrow_fn_multiline_call() {
+        // gpt-5.4-named edge: arrow-fn const declaration whose call is multi-line.
+        // Pre-fix: only the start line was checked; if changed range is the *inner*
+        // line, the call was missed.
+        let source = "function g(a: number, b: number): number { return a + b; }\n\
+                      const f = () => g(\n\
+                      \x20   1,\n\
+                      \x20   2,\n\
+                      );\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        // Only line 3 (the "1," argument) is in the changed range.
+        let ctx = hydrate(&tree, source, Language::TypeScript, &[(3, 3)]);
+        assert_eq!(
+            ctx.callee_signatures.iter().filter(|s| s.contains("g")).count(),
+            1,
+            "expected exactly one signature containing 'g'; got {:?}",
+            ctx.callee_signatures,
+        );
+    }
+
 }
