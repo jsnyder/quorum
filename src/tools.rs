@@ -119,13 +119,16 @@ impl ToolRegistry {
         let path_str = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("path required"))?;
         let resolved = self.resolve_path(path_str)?;
 
-        // Read only up to budget + 1 byte to detect truncation without
-        // allocating the full file.
         let file = std::fs::File::open(&resolved)?;
         let read_limit = (max_output_bytes as u64).saturating_add(1);
-        let mut limited = String::new();
+        let mut buf = Vec::new();
         use std::io::Read;
-        file.take(read_limit).read_to_string(&mut limited)?;
+        file.take(read_limit).read_to_end(&mut buf)?;
+        let valid_len = match std::str::from_utf8(&buf) {
+            Ok(_) => buf.len(),
+            Err(e) => e.valid_up_to(),
+        };
+        let limited = String::from_utf8_lossy(&buf[..valid_len]).into_owned();
 
         let start = args["start_line"].as_u64().map(|n| n as usize).unwrap_or(1);
         let end = args["end_line"].as_u64().map(|n| n as usize);
@@ -552,5 +555,17 @@ mod tests {
             .execute("list_files", &serde_json::json!({}), 300)
             .unwrap();
         assert!(result.len() <= 300);
+    }
+
+    #[test]
+    fn read_file_handles_utf8_boundary_truncation() {
+        let dir = setup_repo();
+        let content = "hello\u{1F600}world\u{1F600}end";
+        std::fs::write(dir.path().join("emoji.txt"), content).unwrap();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("read_file", &serde_json::json!({"path": "emoji.txt"}), 15)
+            .unwrap();
+        assert!(result.len() <= 15, "result {} exceeds budget 15", result.len());
     }
 }
