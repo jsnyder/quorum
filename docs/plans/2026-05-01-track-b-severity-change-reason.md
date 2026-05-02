@@ -90,7 +90,7 @@ fn trace_entry_deserializes_pre_track_b_lines() {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/calibrator-trace-reason
+cd "$(git rev-parse --show-toplevel)"
 cargo test --bin quorum -p quorum severity_change_reason_serializes_snake_case trace_entry_omits_reason_when_none trace_entry_deserializes_pre_track_b_lines 2>&1 | tail -10
 ```
 Expected: 3 errors, "cannot find type `SeverityChangeReason`" / "no field `severity_change_reason`".
@@ -640,7 +640,7 @@ that are not CRITICAL per the rubric.
 **Step 1: Full verification**
 
 ```bash
-cd /Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/calibrator-trace-reason
+cd "$(git rev-parse --show-toplevel)"
 cargo test --bin quorum 2>&1 | tail -3
 cargo build --release --bin quorum 2>&1 | tail -3
 cargo clippy --bin quorum 2>&1 | grep -E "(calibrator|calibrator_trace)\.rs:" | head -10

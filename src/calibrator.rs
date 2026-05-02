@@ -27,6 +27,12 @@ pub struct CalibratorConfig {
     /// suppressed). Each prior confirmation raises the threshold linearly
     /// from the global floor toward 1.0.
     pub inject_suppress_after: u32,
+    /// Ablation override for `QUORUM_DISABLE_CALIBRATOR`. When `Some(b)`, the
+    /// calibrator uses `b` directly. When `None` (default), it consults the
+    /// env var. Tests should prefer `Some(true)` over mutating the env to
+    /// avoid the cross-test race documented in `docs/TEST_STRATEGY.md`
+    /// ("Env var leakage between tests").
+    pub disable_calibrator: Option<bool>,
 }
 
 impl Default for CalibratorConfig {
@@ -37,8 +43,18 @@ impl Default for CalibratorConfig {
             boost_tp: true,
             use_auto_feedback: true,
             inject_suppress_after: 3,
+            disable_calibrator: None,
         }
     }
+}
+
+/// True when the calibrator should bypass post-processing entirely. Honors
+/// the explicit config override first; otherwise falls back to the
+/// `QUORUM_DISABLE_CALIBRATOR` env var (production ablation knob).
+fn calibrator_disabled(config: &CalibratorConfig) -> bool {
+    config
+        .disable_calibrator
+        .unwrap_or_else(|| std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok())
 }
 
 // Issue #97: cap on the global External-provenance contribution to any single
@@ -137,10 +153,15 @@ pub fn calibrate(
     config: &CalibratorConfig,
 ) -> CalibrationResult {
     // Ablation knob: bypass calibrator post-processing entirely. Honored by
-    // BOTH `calibrate` and `calibrate_with_index` so the env switch behaves
+    // BOTH `calibrate` and `calibrate_with_index` so the disable behaves
     // consistently regardless of whether the embedding index is available.
     // (Quorum self-review 2026-05-01 caught the inconsistency.)
-    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
+    //
+    // `calibrator_disabled` checks `config.disable_calibrator` first, then
+    // falls back to the `QUORUM_DISABLE_CALIBRATOR` env var. Tests should
+    // prefer the config field to avoid env mutation races (CR review on
+    // PR #189, citing docs/TEST_STRATEGY.md).
+    if calibrator_disabled(config) {
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
@@ -438,10 +459,12 @@ pub fn calibrate_with_index(
 ) -> CalibrationResult {
     // Ablation knob: bypass calibrator post-processing entirely. Must be
     // checked BEFORE any trace emission — including the empty-index NoMatch
-    // path below. Otherwise an empty index would still emit traces under
-    // QUORUM_DISABLE_CALIBRATOR=1, partially defeating the ablation contract.
+    // path below. Otherwise an empty index would still emit traces when
+    // disabled, partially defeating the ablation contract.
     // (Quorum self-review 2026-05-01 caught the ordering bug.)
-    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
+    //
+    // See `calibrator_disabled` for config-vs-env precedence.
+    if calibrator_disabled(config) {
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
     if index.is_empty() {
@@ -1734,15 +1757,14 @@ mod tests {
             fb("Buffer overflow", "security", Verdict::Tp),
             fb("Buffer overflow", "security", Verdict::Tp),
         ];
-        // SAFETY: tests run single-threaded for env mutations in this crate
-        // (no parallel test runner config); reset after the assertion.
-        unsafe {
-            std::env::set_var("QUORUM_DISABLE_CALIBRATOR", "1");
-        }
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-        unsafe {
-            std::env::remove_var("QUORUM_DISABLE_CALIBRATOR");
-        }
+        // Use the config override instead of std::env::set_var to avoid the
+        // cross-test race documented in docs/TEST_STRATEGY.md (CR review on
+        // PR #189). Production still honors QUORUM_DISABLE_CALIBRATOR.
+        let config = CalibratorConfig {
+            disable_calibrator: Some(true),
+            ..CalibratorConfig::default()
+        };
+        let result = calibrate(findings, &feedback, &config);
         assert_eq!(result.findings[0].severity, Severity::Medium, "must not boost when disabled");
         assert_eq!(result.boosted, 0);
         assert_eq!(result.suppressed, 0);
@@ -3322,18 +3344,17 @@ mod tests {
                 .severity(Severity::Medium)
                 .build(),
         ];
-        // SAFETY: tests run single-threaded for env mutations in this crate;
-        // reset after the assertion.
-        unsafe {
-            std::env::set_var("QUORUM_DISABLE_CALIBRATOR", "1");
-        }
-        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
-        unsafe {
-            std::env::remove_var("QUORUM_DISABLE_CALIBRATOR");
-        }
+        // Use the config override instead of std::env::set_var to avoid the
+        // cross-test race documented in docs/TEST_STRATEGY.md (CR review on
+        // PR #189). Production still honors QUORUM_DISABLE_CALIBRATOR.
+        let config = CalibratorConfig {
+            disable_calibrator: Some(true),
+            ..CalibratorConfig::default()
+        };
+        let result = calibrate_with_index(findings, &mut index, &config);
         assert!(
             result.traces.is_empty(),
-            "DISABLE_CALIBRATOR must short-circuit before NoMatch trace emission, \
+            "Disabled calibrator must short-circuit before NoMatch trace emission, \
              even when the index is empty (got {} traces)",
             result.traces.len()
         );
