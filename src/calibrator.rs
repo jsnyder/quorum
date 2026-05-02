@@ -436,6 +436,14 @@ pub fn calibrate_with_index(
     index: &mut crate::feedback_index::FeedbackIndex,
     config: &CalibratorConfig,
 ) -> CalibrationResult {
+    // Ablation knob: bypass calibrator post-processing entirely. Must be
+    // checked BEFORE any trace emission — including the empty-index NoMatch
+    // path below. Otherwise an empty index would still emit traces under
+    // QUORUM_DISABLE_CALIBRATOR=1, partially defeating the ablation contract.
+    // (Quorum self-review 2026-05-01 caught the ordering bug.)
+    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
+    }
     if index.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the index is empty.
@@ -459,12 +467,6 @@ pub fn calibrate_with_index(
             })
             .collect();
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
-    }
-    // Ablation knob: bypass calibrator post-processing entirely. Used by the
-    // calibrator-eval harness to isolate few-shot effects from post-hoc
-    // severity bumps. Returns findings unchanged.
-    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
-        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
     // Capture `now` once so every verdict_weight invocation in this calibration
@@ -3301,6 +3303,42 @@ mod tests {
             result.traces[0].severity_change_reason,
             Some(SeverityChangeReason::NoMatch)
         );
+    }
+
+    #[test]
+    fn calibrate_with_index_disable_env_overrides_empty_index_traces() {
+        // Regression: Track B's empty-index NoMatch trace emission was placed
+        // BEFORE the QUORUM_DISABLE_CALIBRATOR check, partially defeating the
+        // ablation knob. Self-review (2026-05-01) caught this.
+        // Disable must always short-circuit before any trace emission.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Empty index — nothing recorded.
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let findings = vec![
+            FindingBuilder::new()
+                .title("X")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        // SAFETY: tests run single-threaded for env mutations in this crate;
+        // reset after the assertion.
+        unsafe {
+            std::env::set_var("QUORUM_DISABLE_CALIBRATOR", "1");
+        }
+        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
+        unsafe {
+            std::env::remove_var("QUORUM_DISABLE_CALIBRATOR");
+        }
+        assert!(
+            result.traces.is_empty(),
+            "DISABLE_CALIBRATOR must short-circuit before NoMatch trace emission, \
+             even when the index is empty (got {} traces)",
+            result.traces.len()
+        );
+        assert_eq!(result.boosted, 0);
+        assert_eq!(result.suppressed, 0);
     }
 
     #[test]
