@@ -65,13 +65,19 @@ impl ToolRegistry {
         ]
     }
 
-    pub fn execute(&self, tool_name: &str, args: &serde_json::Value) -> anyhow::Result<String> {
-        match tool_name {
-            "read_file" => self.exec_read_file(args),
-            "grep" => self.exec_grep(args),
-            "list_files" => self.exec_list_files(args),
+    pub fn execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        max_output_bytes: usize,
+    ) -> anyhow::Result<String> {
+        let result = match tool_name {
+            "read_file" => self.exec_read_file(args)?,
+            "grep" => self.exec_grep(args)?,
+            "list_files" => self.exec_list_files(args)?,
             _ => anyhow::bail!("Unknown tool: {}", tool_name),
-        }
+        };
+        Ok(truncate(&result, max_output_bytes))
     }
 
     fn resolve_path(&self, relative: &str) -> anyhow::Result<PathBuf> {
@@ -246,8 +252,18 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{}\n... (truncated)", truncated)
+        const MARKER: &str = "\n... (truncated)";
+        // Reserve space for the marker within the budget so the total
+        // output (body + marker) never exceeds `max`.
+        if max < MARKER.len() {
+            // Budget too small to fit the marker; just hard-truncate.
+            let safe_end = s.floor_char_boundary(max);
+            s[..safe_end].to_string()
+        } else {
+            let body_budget = max - MARKER.len();
+            let safe_end = s.floor_char_boundary(body_budget);
+            format!("{}{}", &s[..safe_end], MARKER)
+        }
     }
 }
 
@@ -293,7 +309,7 @@ mod tests {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("read_file", &serde_json::json!({"path": "main.py"}))
+            .execute("read_file", &serde_json::json!({"path": "main.py"}), usize::MAX)
             .unwrap();
         assert!(result.contains("def hello"));
     }
@@ -306,6 +322,7 @@ mod tests {
             .execute(
                 "read_file",
                 &serde_json::json!({"path": "main.py", "start_line": 1, "end_line": 2}),
+                usize::MAX,
             )
             .unwrap();
         assert!(result.contains("def hello"));
@@ -319,6 +336,7 @@ mod tests {
         let result = reg.execute(
             "read_file",
             &serde_json::json!({"path": "../../etc/passwd"}),
+            usize::MAX,
         );
         assert!(result.is_err());
     }
@@ -330,6 +348,7 @@ mod tests {
         let result = reg.execute(
             "read_file",
             &serde_json::json!({"path": "/etc/passwd"}),
+            usize::MAX,
         );
         assert!(result.is_err());
     }
@@ -341,7 +360,7 @@ mod tests {
         std::fs::write(dir.path().join("big.txt"), &big).unwrap();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("read_file", &serde_json::json!({"path": "big.txt"}))
+            .execute("read_file", &serde_json::json!({"path": "big.txt"}), usize::MAX)
             .unwrap();
         assert!(result.len() < 20000, "Should truncate large files");
     }
@@ -351,7 +370,7 @@ mod tests {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("grep", &serde_json::json!({"pattern": "SECRET"}))
+            .execute("grep", &serde_json::json!({"pattern": "SECRET"}), usize::MAX)
             .unwrap();
         assert!(result.contains("SECRET"));
         assert!(result.contains("auth.py"));
@@ -365,6 +384,7 @@ mod tests {
             .execute(
                 "grep",
                 &serde_json::json!({"pattern": "def", "max_results": 2}),
+                usize::MAX,
             )
             .unwrap();
         let matches: Vec<&str> = result.lines().filter(|l| l.contains("def")).collect();
@@ -376,7 +396,7 @@ mod tests {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("list_files", &serde_json::json!({}))
+            .execute("list_files", &serde_json::json!({}), usize::MAX)
             .unwrap();
         assert!(result.contains("main.py"));
         assert!(result.contains("auth.py"));
@@ -387,7 +407,7 @@ mod tests {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("list_files", &serde_json::json!({"pattern": "*.py"}))
+            .execute("list_files", &serde_json::json!({"pattern": "*.py"}), usize::MAX)
             .unwrap();
         assert!(result.contains("main.py"));
     }
@@ -398,7 +418,7 @@ mod tests {
         let reg = ToolRegistry::new(dir.path());
         // Model sends "*" meaning "all files" — should not filter everything out
         let result = reg
-            .execute("list_files", &serde_json::json!({"path": "src", "pattern": "*"}))
+            .execute("list_files", &serde_json::json!({"path": "src", "pattern": "*"}), usize::MAX)
             .unwrap();
         assert!(result.contains("auth.py"), "Star glob should match all files, got: {}", result);
     }
@@ -408,7 +428,7 @@ mod tests {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
         let result = reg
-            .execute("list_files", &serde_json::json!({"path": "src"}))
+            .execute("list_files", &serde_json::json!({"path": "src"}), usize::MAX)
             .unwrap();
         assert!(result.contains("auth.py"));
         assert!(result.contains("db.py"));
@@ -418,6 +438,47 @@ mod tests {
     fn execute_unknown_tool_errors() {
         let dir = setup_repo();
         let reg = ToolRegistry::new(dir.path());
-        assert!(reg.execute("nonexistent", &serde_json::json!({})).is_err());
+        assert!(reg.execute("nonexistent", &serde_json::json!({}), usize::MAX).is_err());
+    }
+
+    #[test]
+    fn execute_read_file_respects_max_output_bytes() {
+        let dir = setup_repo();
+        std::fs::write(dir.path().join("big.txt"), "x".repeat(10_000)).unwrap();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("read_file", &serde_json::json!({"path": "big.txt"}), 200)
+            .unwrap();
+        assert!(
+            result.len() <= 200,
+            "read_file output {} exceeded max_output_bytes 200",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn execute_grep_respects_max_output_bytes() {
+        let dir = setup_repo();
+        let content: String = (0..500).map(|i| format!("match line {}\n", i)).collect();
+        std::fs::write(dir.path().join("many.txt"), &content).unwrap();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("grep", &serde_json::json!({"pattern": "match"}), 300)
+            .unwrap();
+        assert!(
+            result.len() <= 300,
+            "grep output {} exceeded max_output_bytes 300",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn execute_with_large_budget_returns_full_output() {
+        let dir = setup_repo();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("read_file", &serde_json::json!({"path": "main.py"}), usize::MAX)
+            .unwrap();
+        assert!(result.contains("print"), "full output should include file content");
     }
 }

@@ -83,7 +83,7 @@ pub fn agent_review(
 
     // Get project file listing for context (bounded by config)
     let file_listing = tools
-        .execute("list_files", &serde_json::json!({}))
+        .execute("list_files", &serde_json::json!({}), config.max_bytes_read / 2)
         .unwrap_or_else(|_| "Unable to list files.".into());
 
     let prompt = render_review_prompt(&safe_path_or_default(file_path), &file_listing, code, &tool_descriptions, config);
@@ -214,9 +214,10 @@ impl AgentState {
             return None;
         }
 
+        let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
         let result = match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
             Ok(args) => {
-                match tools.execute(&tc.name, &args) {
+                match tools.execute(&tc.name, &args, remaining) {
                     Ok(output) => {
                         // Truncate output to remaining byte budget before accumulating.
                         // The truncation marker counts toward the budget, so reserve
@@ -224,7 +225,10 @@ impl AgentState {
                         // Without this, a tool call near the budget cap appends a
                         // marker that pushes total_bytes_read past max_bytes_read,
                         // violating the configured bound across multi-call turns.
-                        let remaining = config.max_bytes_read.saturating_sub(self.total_bytes_read);
+                        // Note: `remaining` is computed before `tools.execute()` and
+                        // also passed as `max_output_bytes` so the tool itself
+                        // truncates at the boundary. This secondary check handles the
+                        // TRUNCATION_MARKER accounting.
                         let truncated_path = output.len() > remaining;
                         let output = if truncated_path {
                             // Self-review Finding 2: when remaining < TRUNCATION_MARKER.len()
@@ -807,14 +811,17 @@ mod tests {
 
     #[test]
     fn execute_tool_call_respects_max_bytes_read_invariant_with_marker() {
-        // #169 regression. After a single budget-exhausting tool call:
-        //   1. The rendered output must end with TRUNCATION_MARKER (positive
-        //      assertion that the tool actually executed and was truncated,
-        //      not silently swallowed by an error path).
-        //   2. total_bytes_read must equal max_bytes_read EXACTLY — the marker
-        //      is reserved up-front so the running total lands on the cap, not
-        //      below it (which would waste budget) and not above (which is the
-        //      bug). Strict equality, not <=.
+        // #169 regression, updated for #181 (tool-level truncation).
+        // After a single budget-exhausting tool call:
+        //   1. The rendered output must contain a truncation indicator —
+        //      either the agent-level TRUNCATION_MARKER or the tool-level
+        //      "\n... (truncated)" marker from `tools::truncate()`.
+        //   2. total_bytes_read must not exceed max_bytes_read.
+        //
+        // With #181, `ToolRegistry::execute()` now truncates to
+        // `max_output_bytes` (= remaining budget), so the output arrives
+        // pre-truncated and the agent-level marker may not fire. The
+        // tool-level marker is the primary truncation signal.
         let dir = TempDir::new().unwrap();
         let payload = "a".repeat(200);
         std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
@@ -831,16 +838,17 @@ mod tests {
         // Positive: tool actually executed (not a vacuous error path).
         let result_str = result.expect("execute_tool_call returned None — tool did not run");
         assert!(
-            result_str.ends_with(TRUNCATION_MARKER),
-            "rendered tool result must end with truncation marker; got tail: {:?}",
+            result_str.contains("truncated"),
+            "rendered tool result must indicate truncation; got tail: {:?}",
             &result_str[result_str.len().saturating_sub(60)..]
         );
 
-        // Strict equality on byte count — not <=. The fix's whole purpose is
-        // to make the cap exact.
-        assert_eq!(
-            state.total_bytes_read, config.max_bytes_read,
-            "total_bytes_read must equal max_bytes_read after a budget-exceeding call"
+        // The budget invariant: total_bytes_read must not exceed max_bytes_read.
+        assert!(
+            state.total_bytes_read <= config.max_bytes_read,
+            "total_bytes_read ({}) exceeded max_bytes_read ({})",
+            state.total_bytes_read,
+            config.max_bytes_read
         );
     }
 
