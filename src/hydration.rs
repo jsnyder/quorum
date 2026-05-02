@@ -236,7 +236,7 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
         }
     } else if text.starts_with("from ") {
         // Python: from X import a, b, c  /  from X import (a, b as c)
-        if let Some(after_import) = text.split("import").nth(1) {
+        if let Some(after_import) = text.split(" import ").nth(1) {
             let cleaned = after_import.trim().trim_start_matches('(').trim_end_matches(')');
             for part in cleaned.split(',') {
                 let part = part.trim();
@@ -318,15 +318,21 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
             return names;
         }
-        // Python: import sys / import foo.bar / import foo.bar as baz
-        let module = text.trim_start_matches("import ").trim();
-        let name = if let Some(after_as) = module.split(" as ").nth(1) {
-            after_as.trim()
-        } else {
-            module.split('.').last().unwrap_or(module).trim()
-        };
-        if !name.is_empty() {
-            names.push(name.to_string());
+        // Python: import sys / import os, sys / import foo.bar as baz
+        let modules = text.trim_start_matches("import ").trim();
+        for part in modules.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                after_as.trim()
+            } else {
+                part.split('.').last().unwrap_or(part).trim()
+            };
+            if !name.is_empty() {
+                names.push(name.to_string());
+            }
         }
     }
     names
@@ -1263,5 +1269,23 @@ fn uses_map() {
     fn python_import_simple_no_alias() {
         let names = extract_imported_names("import sys");
         assert_eq!(names, vec!["sys"]);
+    }
+
+    #[test]
+    fn python_from_importlib_not_split_on_module_name() {
+        let names = extract_imported_names("from importlib import abc");
+        assert_eq!(names, vec!["abc"]);
+    }
+
+    #[test]
+    fn python_import_comma_separated_modules() {
+        let names = extract_imported_names("import os, sys, json");
+        assert_eq!(names, vec!["os", "sys", "json"]);
+    }
+
+    #[test]
+    fn python_import_comma_separated_dotted_with_alias() {
+        let names = extract_imported_names("import os.path, foo.bar as baz");
+        assert_eq!(names, vec!["path", "baz"]);
     }
 }
