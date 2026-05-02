@@ -208,6 +208,7 @@ pub fn calibrate(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
+                severity_change_reason: None,
             });
             output.push(finding);
             continue;
@@ -287,6 +288,7 @@ pub fn calibrate(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
+                severity_change_reason: None,
             });
             suppressed += 1;
             continue; // don't add to output
@@ -337,6 +339,7 @@ pub fn calibrate(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
+            severity_change_reason: None,
         });
 
         output.push(finding);
@@ -466,6 +469,7 @@ pub fn calibrate_with_index(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
+                severity_change_reason: None,
             });
             output.push(finding);
             continue;
@@ -542,6 +546,7 @@ pub fn calibrate_with_index(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
+                severity_change_reason: None,
             });
             suppressed += 1;
             continue;
@@ -592,6 +597,7 @@ pub fn calibrate_with_index(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
+            severity_change_reason: None,
         });
 
         output.push(finding);
