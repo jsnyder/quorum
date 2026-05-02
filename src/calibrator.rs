@@ -757,6 +757,10 @@ fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
         Severity::Critical => {
             // CRITICAL = data corruption, RCE, auth bypass, credential leak,
             // or guaranteed production crash. Require evidence in the text.
+            // Active-voice / explicit phrasing only. Track B fix (codex review
+            // 2026-05-01): "secret leak" matched speculative phrasings ("logs
+            // may leak secrets") and "data loss" matched ephemeral state
+            // ("lossy cache cleanup"); both are HIGH at most, not CRITICAL.
             const CRITICAL_KEYWORDS: &[&str] = &[
                 "rce",
                 "remote code execution",
@@ -767,10 +771,16 @@ fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
                 "authentication bypass",
                 "credential leak",
                 "credential exfil",
-                "secret leak",
+                "credentials leaked",
+                "leaks credentials",
+                "leaks the password",
+                "leaks all passwords",
+                "secret exfil",
+                "exfiltrates secrets",
                 "guaranteed crash",
                 "guaranteed production crash",
-                "data loss",
+                "durable data loss",
+                "permanent data loss",
             ];
             CRITICAL_KEYWORDS.iter().any(|k| contains_word(&haystack, k))
         }
@@ -1182,6 +1192,68 @@ mod tests {
         assert!(
             !rubric_supports_severity_bump(&Severity::High, &f),
             "'exploitation' must not match 'exploit' via substring inside a stylistic finding"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_speculative_secret_leak_to_critical() {
+        // Codex review #3 (2026-05-01): "logs may leak secrets" is not CRITICAL —
+        // it's a speculative information-disclosure HIGH at most. Track A's
+        // "secret leak" keyword incorrectly matched this phrasing.
+        let f = finding_at(
+            "Verbose error logger may leak secrets to log files",
+            "security",
+            Severity::High,
+            "If the user passes secrets in query params, they could appear in log files.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "speculative 'may leak secrets' phrasing must NOT justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_lossy_cache_cleanup_to_critical() {
+        // Same review: "lossy cache cleanup loses ephemeral state" is not CRITICAL.
+        // Tighten "data loss" -> "durable data loss" so transient state is excluded.
+        let f = finding_at(
+            "Cache eviction loses ephemeral query state",
+            "correctness",
+            Severity::High,
+            "Items can be evicted from the in-memory cache, causing data loss for unsaved drafts.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "ephemeral 'data loss' phrasing must NOT justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_explicit_credential_leak_to_critical() {
+        // Verify the tightened phrasing still catches the real cases.
+        let f = finding_at(
+            "Endpoint leaks credentials to unauthenticated callers",
+            "security",
+            Severity::High,
+            "GET /admin returns the password hash table.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "explicit 'leaks credentials' must justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_durable_data_loss_to_critical() {
+        let f = finding_at(
+            "Migration drops user_settings table without backup",
+            "correctness",
+            Severity::High,
+            "The migration causes durable data loss for ~50k users.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "explicit 'durable data loss' must justify CRITICAL"
         );
     }
 
