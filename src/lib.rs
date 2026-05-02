@@ -45,6 +45,10 @@ pub mod calibrator;
 // Calibrator tracing: structured per-finding decision trace.
 pub mod calibrator_trace;
 
+// Calibrator fingerprint: stable projection over CalibratorTraceEntry for
+// refactor parity testing (PR1 Phase 0).
+pub mod calibrator_fingerprint;
+
 // Project domain detection (HA, ESPHome, etc.) — leaf module.
 pub mod domain;
 
