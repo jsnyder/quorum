@@ -431,7 +431,7 @@ fn calibrate_with_index_records_severity_change_reasons() {
             .severity(Severity::Medium)
             .build(),
     ];
-    let result = calibrate_with_index(findings, &[], &index, &CalibratorConfig::default());
+    let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
     assert_eq!(
         result.traces[0].severity_change_reason,
         Some(SeverityChangeReason::NoMatch)
