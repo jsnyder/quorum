@@ -1177,4 +1177,34 @@ mod tests {
         let result = wrap_code_with_budget(code, budget);
         assert!(result.is_empty(), "should return empty when budget can't fit tags");
     }
+
+    #[test]
+    fn execute_tool_call_multi_call_budget_accounting() {
+        let config = AgentConfig { max_bytes_read: 100, ..AgentConfig::default() };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a".repeat(60)).unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b".repeat(60)).unwrap();
+        let tools = crate::tools::ToolRegistry::new(dir.path());
+        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let tc1 = crate::llm_client::ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"a.txt"}"#.into(),
+        };
+        let tc2 = crate::llm_client::ToolCall {
+            id: "2".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"b.txt"}"#.into(),
+        };
+        let r1 = state.execute_tool_call(&tc1, &tools, &config);
+        assert!(r1.is_some(), "first call should succeed");
+        let r2 = state.execute_tool_call(&tc2, &tools, &config);
+        assert!(r2.is_some(), "second call should succeed (may be truncated)");
+        assert!(
+            state.total_bytes_read <= config.max_bytes_read,
+            "total_bytes_read {} exceeds max {}",
+            state.total_bytes_read,
+            config.max_bytes_read
+        );
+    }
 }
