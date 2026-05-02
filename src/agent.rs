@@ -45,6 +45,7 @@ pub struct AgentConfig {
     pub max_iterations: usize,
     pub max_tool_calls: usize,
     pub max_bytes_read: usize,
+    pub max_code_bytes: usize,
 }
 
 impl Default for AgentConfig {
@@ -53,6 +54,7 @@ impl Default for AgentConfig {
             max_iterations: 3,
             max_tool_calls: 10,
             max_bytes_read: 50_000,
+            max_code_bytes: 100_000,
         }
     }
 }
@@ -635,6 +637,7 @@ mod tests {
             max_iterations: 1,
             max_tool_calls: 1,
             max_bytes_read: 100,
+            ..AgentConfig::default()
         };
         let prompt = render_review_prompt_with_budget_for_test("src/main.rs", &oversized, "x = 1", &config);
 
@@ -700,6 +703,7 @@ mod tests {
             max_iterations: 1,
             max_tool_calls: 5,
             max_bytes_read: 100,
+            ..AgentConfig::default()
         };
         // remaining = 100 - 80 = 20 < TRUNCATION_MARKER.len() (37).
         let mut state = AgentState {
@@ -744,6 +748,7 @@ mod tests {
             max_iterations: 1,
             max_tool_calls: 5,
             max_bytes_read: 20,
+            ..AgentConfig::default()
         };
         let mut state = AgentState {
             total_bytes_read: 0,
@@ -795,7 +800,7 @@ mod tests {
         let payload = "a".repeat(200);
         std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 1, max_bytes_read: 100 };
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 1, max_bytes_read: 100, ..AgentConfig::default() };
         let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
         let tc = ToolCall {
             id: "t".into(),
@@ -981,7 +986,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000 };
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000, ..AgentConfig::default() };
 
         let reviewer = FakeAgentReviewer::new(vec![
             LlmTurnResult::ToolCalls(vec![ToolCall {
@@ -1001,7 +1006,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.py"), "x").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 5, max_tool_calls: 2, max_bytes_read: 50_000 };
+        let config = AgentConfig { max_iterations: 5, max_tool_calls: 2, max_bytes_read: 50_000, ..AgentConfig::default() };
 
         let reviewer = FakeAgentReviewer::new(vec![
             // 3 tool calls in one turn — exceeds limit of 2
@@ -1062,7 +1067,7 @@ mod tests {
         // max_bytes_read=8 => /2=4 => slices at byte 4 (mid-UTF-8 of é)
         std::fs::write(dir.path().join("café.py"), "x = 1").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 3, max_tool_calls: 10, max_bytes_read: 8 };
+        let config = AgentConfig { max_iterations: 3, max_tool_calls: 10, max_bytes_read: 8, ..AgentConfig::default() };
         let reviewer = FakeReviewer::always("[]");
         // Should not panic on truncation at mid-multibyte boundary
         let result = agent_review("x = 1", "test.py", &reviewer, "m", &tools, &config);
@@ -1075,7 +1080,7 @@ mod tests {
         std::fs::write(dir.path().join("t.py"), "x").unwrap();
         let tools = ToolRegistry::new(dir.path());
         // Config with max_iterations=1 to force the final turn path
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000 };
+        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000, ..AgentConfig::default() };
 
         struct FailingAgentReviewer {
             call_count: Mutex<usize>,
@@ -1103,5 +1108,11 @@ mod tests {
         let result = agent_loop("x", "t.py", &reviewer, "m", &tools, &config);
         // Should propagate the error, not silently return empty
         assert!(result.is_err(), "API error should propagate, not be swallowed");
+    }
+
+    #[test]
+    fn agent_config_has_max_code_bytes_default() {
+        let config = AgentConfig::default();
+        assert_eq!(config.max_code_bytes, 100_000);
     }
 }
