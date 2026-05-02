@@ -437,7 +437,28 @@ pub fn calibrate_with_index(
     config: &CalibratorConfig,
 ) -> CalibrationResult {
     if index.is_empty() {
-        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
+        // Track B: emit NoMatch traces so the eval harness sees per-finding
+        // calibration outcomes even when the index is empty.
+        let traces = findings
+            .iter()
+            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: f.title.clone(),
+                finding_category: f.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: f.severity.clone(),
+                output_severity: f.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
+            })
+            .collect();
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
     }
     // Ablation knob: bypass calibrator post-processing entirely. Used by the
     // calibrator-eval harness to isolate few-shot effects from post-hoc
@@ -512,7 +533,9 @@ pub fn calibrate_with_index(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
-                severity_change_reason: None,
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
             });
             output.push(finding);
             continue;
@@ -573,6 +596,9 @@ pub fn calibrate_with_index(
             ));
         }
 
+        // Track B: track WHY this finding's severity did or did not change.
+        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
+
         // Full suppress: FP weight only. Wontfix no longer contributes.
         let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
@@ -589,7 +615,9 @@ pub fn calibrate_with_index(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
-                severity_change_reason: None,
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::Disputed,
+                ),
             });
             suppressed += 1;
             continue;
@@ -603,6 +631,7 @@ pub fn calibrate_with_index(
         {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
         }
 
@@ -620,13 +649,27 @@ pub fn calibrate_with_index(
             if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
                 finding.severity = proposed;
                 boosted += 1;
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+            } else {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
+                );
             }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            if reason.is_none() {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
+                );
+            }
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
+        // Track B: still classify mixed signal as "weight too low to act on".
+        if reason.is_none() {
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+        }
 
         traces.push(crate::calibrator_trace::CalibratorTraceEntry {
             finding_title: finding.title.clone(),
@@ -640,7 +683,7 @@ pub fn calibrate_with_index(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
-            severity_change_reason: None,
+            severity_change_reason: reason,
         });
 
         output.push(finding);
@@ -3160,6 +3203,31 @@ mod tests {
         assert_eq!(
             result.traces[0].severity_change_reason,
             Some(crate::calibrator_trace::SeverityChangeReason::Disputed)
+        );
+    }
+
+    #[test]
+    fn calibrate_with_index_records_severity_change_reasons() {
+        use crate::calibrator_trace::SeverityChangeReason;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Index built from a corpus that won't match the test finding.
+        store.record(&fb("Totally unrelated foo", "other", Verdict::Tp)).unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Race condition in shared map")
+                .category("concurrency")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(SeverityChangeReason::NoMatch)
         );
     }
 
