@@ -235,10 +235,19 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
         }
     } else if text.starts_with("from ") {
-        // Python: from X import a, b, c
+        // Python: from X import a, b, c  /  from X import (a, b as c)
         if let Some(after_import) = text.split("import").nth(1) {
-            for part in after_import.split(',') {
-                let name = part.trim().split(" as ").next().unwrap_or("").trim();
+            let cleaned = after_import.trim().trim_start_matches('(').trim_end_matches(')');
+            for part in cleaned.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                    after_as.trim()
+                } else {
+                    part
+                };
                 if !name.is_empty() {
                     names.push(name.to_string());
                 }
@@ -309,9 +318,13 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
             return names;
         }
-        // Python: import sys
+        // Python: import sys / import foo.bar / import foo.bar as baz
         let module = text.trim_start_matches("import ").trim();
-        let name = module.split('.').last().unwrap_or(module).trim();
+        let name = if let Some(after_as) = module.split(" as ").nth(1) {
+            after_as.trim()
+        } else {
+            module.split('.').last().unwrap_or(module).trim()
+        };
         if !name.is_empty() {
             names.push(name.to_string());
         }
@@ -1206,5 +1219,49 @@ fn uses_map() {
         let tree = parse(source, Language::Rust).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(2, 5)]);
         assert!(ctx.callers.is_empty(), "wide body edit should not trigger caller blast radius");
+    }
+
+    // -- #179: Python import parsing returns correct local names --
+
+    #[test]
+    fn python_from_import_as_returns_local_binding() {
+        let names = extract_imported_names("from os.path import join as pjoin, exists");
+        assert_eq!(names, vec!["pjoin", "exists"]);
+    }
+
+    #[test]
+    fn python_from_import_parenthesized() {
+        let names = extract_imported_names("from os import (path, getcwd, listdir)");
+        assert_eq!(names, vec!["path", "getcwd", "listdir"]);
+    }
+
+    #[test]
+    fn python_from_import_parenthesized_with_alias_and_trailing_comma() {
+        let names = extract_imported_names("from os import (path as p, getcwd,)");
+        assert_eq!(names, vec!["p", "getcwd"]);
+    }
+
+    #[test]
+    fn python_from_import_mixed_alias_and_plain() {
+        let names = extract_imported_names("from x import foo, bar as b");
+        assert_eq!(names, vec!["foo", "b"]);
+    }
+
+    #[test]
+    fn python_import_as_returns_alias() {
+        let names = extract_imported_names("import foo.bar as baz");
+        assert_eq!(names, vec!["baz"]);
+    }
+
+    #[test]
+    fn python_import_dotted_no_alias() {
+        let names = extract_imported_names("import os.path");
+        assert_eq!(names, vec!["path"]);
+    }
+
+    #[test]
+    fn python_import_simple_no_alias() {
+        let names = extract_imported_names("import sys");
+        assert_eq!(names, vec!["sys"]);
     }
 }
