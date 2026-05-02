@@ -72,7 +72,7 @@ pub fn hydrate(
     // Caller blast radius: if changed lines contain a function definition,
     // find all callers of that function in the file
     for &(start, end) in changed_lines {
-        for (name, _, fstart, fend) in &all_funcs {
+        for (name, _, fstart, _fend) in &all_funcs {
             if *fstart >= start && *fstart <= end {
                 // This function's signature is in the changed region
                 find_callers_of(&root, source, lang, &call_kinds, name, &all_funcs, &mut ctx.callers);
