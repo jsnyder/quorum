@@ -423,7 +423,7 @@ fn calibrate_with_index_records_severity_change_reasons() {
     use crate::calibrator_trace::SeverityChangeReason;
     use crate::feedback_index::FeedbackIndex;
 
-    let index = FeedbackIndex::default();
+    let mut index = FeedbackIndex::default();
     let findings = vec![
         FindingBuilder::new()
             .title("Race condition in shared map")
