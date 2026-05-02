@@ -955,7 +955,7 @@ impl Calibrator {
 
     /// Record one ContextMisleading confirmation for `chunk_id`. Primarily for
     /// tests; the production path rebuilds state via [`Self::from_feedback`].
-    pub(crate) fn record_misleading(&mut self, chunk_id: &str, _finding_title: &str) {
+    pub fn record_misleading(&mut self, chunk_id: &str, _finding_title: &str) {
         *self.misleading_counts.entry(chunk_id.to_string()).or_insert(0) += 1;
     }
 

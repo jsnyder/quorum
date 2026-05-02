@@ -1,12 +1,30 @@
 #![allow(dead_code)]
 
+// Library half of the bin/lib hybrid split: re-export `quorum::foo` modules
+// at the binary crate root so existing `crate::foo` paths inside main.rs and
+// its submodules continue to resolve unchanged. See `src/lib.rs` for the
+// actual module declarations and rationale for the split.
+pub use quorum::analysis;
+pub use quorum::ast_grep;
+pub use quorum::calibrator;
+pub use quorum::calibrator_trace;
+pub use quorum::domain;
+pub use quorum::embeddings;
+pub use quorum::feedback;
+pub use quorum::feedback_index;
+pub use quorum::finding;
+pub use quorum::hydration;
+pub use quorum::merge;
+pub use quorum::parser;
+pub use quorum::patterns;
+pub use quorum::prompt_sanitize;
+pub use quorum::redact;
+
 mod agent;
 mod analytics;
-mod analysis;
-mod ast_grep;
 mod cache;
-mod calibrator;
-mod calibrator_trace;
+mod pipeline;
+mod review;
 mod cli;
 mod cli_io;
 mod config;
@@ -17,25 +35,12 @@ mod dep_manifest;
 mod dimensions;
 mod glyphs;
 mod http_server;
-mod domain;
-mod embeddings;
-mod feedback;
-mod feedback_index;
-mod finding;
 mod formatting;
-mod hydration;
 mod linter;
 mod llm_client;
 mod mcp;
-mod merge;
 mod output;
-mod parser;
-mod patterns;
-mod pipeline;
 mod progress;
-mod prompt_sanitize;
-mod redact;
-mod review;
 mod review_log;
 mod stats;
 mod suppress;

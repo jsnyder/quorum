@@ -81,12 +81,19 @@ impl Finding {
     }
 }
 
-#[cfg(test)]
+// Builder for `Finding` values.
+//
+// Previously gated behind `#[cfg(test)]`, but the bin/lib hybrid split made
+// that unworkable: `#[cfg(test)]` is per-crate, so when `cargo test --bin
+// quorum` builds the bin in test mode, the lib (where `Finding` now lives)
+// is built in non-test mode and the gated builder is invisible to the bin's
+// `#[cfg(test)]` modules. The builder is small, allocation-only, and adds
+// negligible production binary size; keeping it always-on is the simplest
+// fix.
 pub struct FindingBuilder {
     inner: Finding,
 }
 
-#[cfg(test)]
 impl FindingBuilder {
     pub fn new() -> Self {
         Self {

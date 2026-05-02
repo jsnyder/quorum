@@ -210,7 +210,7 @@ impl QuorumHandler {
             .map_err(|e| format!("Failed to record feedback: {}", e))?;
 
         let count = self.feedback_store.count().unwrap_or(0);
-        let msg = format!("Recorded {} feedback. Total entries: {}", entry.verdict_label(), count);
+        let msg = format!("Recorded {} feedback. Total entries: {}", verdict_label(&entry), count);
         Ok(CallToolResult::text_content(vec![msg.into()]))
     }
 
@@ -366,15 +366,16 @@ impl QuorumHandler {
     }
 }
 
-impl FeedbackEntry {
-    fn verdict_label(&self) -> &'static str {
-        match self.verdict {
-            Verdict::Tp => "true positive",
-            Verdict::Fp => "false positive",
-            Verdict::Partial => "partial",
-            Verdict::Wontfix => "wontfix",
-            Verdict::ContextMisleading { .. } => "context misleading",
-        }
+// Free function rather than `impl FeedbackEntry`, because `FeedbackEntry`
+// now lives in the `quorum` library crate (bin/lib hybrid split) and Rust's
+// orphan rules forbid inherent impl blocks on out-of-crate types.
+fn verdict_label(entry: &FeedbackEntry) -> &'static str {
+    match entry.verdict {
+        Verdict::Tp => "true positive",
+        Verdict::Fp => "false positive",
+        Verdict::Partial => "partial",
+        Verdict::Wontfix => "wontfix",
+        Verdict::ContextMisleading { .. } => "context misleading",
     }
 }
 
