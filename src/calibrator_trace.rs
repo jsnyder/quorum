@@ -1,10 +1,10 @@
 //! Calibrator decision tracing: structured records of per-finding calibration decisions.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use crate::finding::{CalibratorAction, Severity};
 use crate::feedback::Verdict;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrecedentTrace {
     pub finding_title: String,
     pub verdict: Verdict,
@@ -14,7 +14,31 @@ pub struct PrecedentTrace {
     pub file_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Why the calibrator did (or did not) change a finding's severity.
+///
+/// Serialized into `~/.quorum/calibrator_traces.jsonl` for eval-harness
+/// measurement. `None` means "the field wasn't set" (backward compat with
+/// pre-Track-B trace lines); not a value the live calibrator should produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeverityChangeReason {
+    /// Calibrator raised severity (gate allowed). `output_severity > input_severity`.
+    Boosted,
+    /// Calibrator wanted to raise severity but the rubric gate refused.
+    /// `output_severity == input_severity`, but a boost was attempted.
+    BoostBlockedByGate,
+    /// FP / wontfix precedent demoted finding to Info.
+    /// `output_severity < input_severity`.
+    Disputed,
+    /// TP precedent existed but didn't reach the 1.5 / 2x boost thresholds.
+    /// `output_severity == input_severity`, no boost attempted.
+    BoostWeightTooLow,
+    /// No precedents in the corpus matched this finding.
+    /// `output_severity == input_severity`, no calibration applied.
+    NoMatch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibratorTraceEntry {
     pub finding_title: String,
     pub finding_category: String,
@@ -27,6 +51,10 @@ pub struct CalibratorTraceEntry {
     pub action: Option<CalibratorAction>,
     pub input_severity: Severity,
     pub output_severity: Severity,
+    /// Track B: why severity did or did not change.
+    /// `None` only for backward-compat with pre-Track-B trace lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity_change_reason: Option<SeverityChangeReason>,
 }
 
 #[cfg(test)]
@@ -54,6 +82,7 @@ mod tests {
             action: Some(CalibratorAction::Confirmed),
             input_severity: Severity::Medium,
             output_severity: Severity::High,
+            severity_change_reason: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -74,9 +103,62 @@ mod tests {
             action: None,
             input_severity: Severity::Low,
             output_severity: Severity::Low,
+            severity_change_reason: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
         assert!(json.contains("\"action\":null"));
+    }
+
+    #[test]
+    fn severity_change_reason_serializes_snake_case() {
+        use SeverityChangeReason::*;
+        for (variant, expected) in [
+            (Boosted, "\"boosted\""),
+            (BoostBlockedByGate, "\"boost_blocked_by_gate\""),
+            (Disputed, "\"disputed\""),
+            (BoostWeightTooLow, "\"boost_weight_too_low\""),
+            (NoMatch, "\"no_match\""),
+        ] {
+            let s = serde_json::to_string(&variant).unwrap();
+            assert_eq!(s, expected, "variant {variant:?} must serialize to {expected}");
+        }
+    }
+
+    #[test]
+    fn trace_entry_omits_reason_when_none() {
+        // Backward compat: pre-Track-B trace lines carry no reason field.
+        let trace = CalibratorTraceEntry {
+            finding_title: "x".into(),
+            finding_category: "y".into(),
+            tp_weight: 0.0,
+            fp_weight: 0.0,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.0,
+            soft_fp_weight: 0.0,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Low,
+            output_severity: Severity::Low,
+            severity_change_reason: None,
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(!json.contains("severity_change_reason"),
+            "None reason must be omitted from JSON to keep traces backward-compatible");
+    }
+
+    #[test]
+    fn trace_entry_deserializes_pre_track_b_lines() {
+        // A trace line written before Track B has no severity_change_reason field.
+        // It must still deserialize, with reason defaulting to None.
+        let pre_track_b = r#"{
+            "finding_title":"x","finding_category":"y",
+            "tp_weight":0.0,"fp_weight":0.0,"wontfix_weight":0.0,
+            "full_suppress_weight":0.0,"soft_fp_weight":0.0,
+            "matched_precedents":[],"action":null,
+            "input_severity":"low","output_severity":"low"
+        }"#;
+        let trace: CalibratorTraceEntry = serde_json::from_str(pre_track_b).unwrap();
+        assert!(trace.severity_change_reason.is_none());
     }
 }

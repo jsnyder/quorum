@@ -27,6 +27,12 @@ pub struct CalibratorConfig {
     /// suppressed). Each prior confirmation raises the threshold linearly
     /// from the global floor toward 1.0.
     pub inject_suppress_after: u32,
+    /// Ablation override for `QUORUM_DISABLE_CALIBRATOR`. When `Some(b)`, the
+    /// calibrator uses `b` directly. When `None` (default), it consults the
+    /// env var. Tests should prefer `Some(true)` over mutating the env to
+    /// avoid the cross-test race documented in `docs/TEST_STRATEGY.md`
+    /// ("Env var leakage between tests").
+    pub disable_calibrator: Option<bool>,
 }
 
 impl Default for CalibratorConfig {
@@ -37,8 +43,18 @@ impl Default for CalibratorConfig {
             boost_tp: true,
             use_auto_feedback: true,
             inject_suppress_after: 3,
+            disable_calibrator: None,
         }
     }
+}
+
+/// True when the calibrator should bypass post-processing entirely. Honors
+/// the explicit config override first; otherwise falls back to the
+/// `QUORUM_DISABLE_CALIBRATOR` env var (production ablation knob).
+fn calibrator_disabled(config: &CalibratorConfig) -> bool {
+    config
+        .disable_calibrator
+        .unwrap_or_else(|| std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok())
 }
 
 // Issue #97: cap on the global External-provenance contribution to any single
@@ -137,10 +153,15 @@ pub fn calibrate(
     config: &CalibratorConfig,
 ) -> CalibrationResult {
     // Ablation knob: bypass calibrator post-processing entirely. Honored by
-    // BOTH `calibrate` and `calibrate_with_index` so the env switch behaves
+    // BOTH `calibrate` and `calibrate_with_index` so the disable behaves
     // consistently regardless of whether the embedding index is available.
     // (Quorum self-review 2026-05-01 caught the inconsistency.)
-    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
+    //
+    // `calibrator_disabled` checks `config.disable_calibrator` first, then
+    // falls back to the `QUORUM_DISABLE_CALIBRATOR` env var. Tests should
+    // prefer the config field to avoid env mutation races (CR review on
+    // PR #189, citing docs/TEST_STRATEGY.md).
+    if calibrator_disabled(config) {
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
 
@@ -170,11 +191,32 @@ pub fn calibrate(
         .collect();
 
     if filtered.is_empty() {
+        // Track B: emit NoMatch traces so the eval harness sees per-finding
+        // calibration outcomes even when the corpus is empty / fully filtered.
+        let traces = findings
+            .iter()
+            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: f.title.clone(),
+                finding_category: f.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: f.severity.clone(),
+                output_severity: f.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
+            })
+            .collect();
         return CalibrationResult {
             findings,
             suppressed: 0,
             boosted: 0,
-            traces: vec![],
+            traces,
         };
     }
 
@@ -208,6 +250,9 @@ pub fn calibrate(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
             });
             output.push(finding);
             continue;
@@ -271,6 +316,9 @@ pub fn calibrate(
             ));
         }
 
+        // Track B: track WHY this finding's severity did or did not change.
+        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
+
         // Full suppress: FP weight only. Wontfix no longer contributes.
         let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
@@ -287,6 +335,9 @@ pub fn calibrate(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::Disputed,
+                ),
             });
             suppressed += 1;
             continue; // don't add to output
@@ -300,6 +351,7 @@ pub fn calibrate(
         {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
         }
 
@@ -317,13 +369,27 @@ pub fn calibrate(
             if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
                 finding.severity = proposed;
                 boosted += 1;
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+            } else {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
+                );
             }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            if reason.is_none() {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
+                );
+            }
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
+        // Track B: still classify mixed signal as "weight too low to act on".
+        if reason.is_none() {
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+        }
 
         traces.push(crate::calibrator_trace::CalibratorTraceEntry {
             finding_title: finding.title.clone(),
@@ -337,6 +403,7 @@ pub fn calibrate(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
+            severity_change_reason: reason,
         });
 
         output.push(finding);
@@ -390,14 +457,39 @@ pub fn calibrate_with_index(
     index: &mut crate::feedback_index::FeedbackIndex,
     config: &CalibratorConfig,
 ) -> CalibrationResult {
-    if index.is_empty() {
+    // Ablation knob: bypass calibrator post-processing entirely. Must be
+    // checked BEFORE any trace emission — including the empty-index NoMatch
+    // path below. Otherwise an empty index would still emit traces when
+    // disabled, partially defeating the ablation contract.
+    // (Quorum self-review 2026-05-01 caught the ordering bug.)
+    //
+    // See `calibrator_disabled` for config-vs-env precedence.
+    if calibrator_disabled(config) {
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
     }
-    // Ablation knob: bypass calibrator post-processing entirely. Used by the
-    // calibrator-eval harness to isolate few-shot effects from post-hoc
-    // severity bumps. Returns findings unchanged.
-    if std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok() {
-        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces: vec![] };
+    if index.is_empty() {
+        // Track B: emit NoMatch traces so the eval harness sees per-finding
+        // calibration outcomes even when the index is empty.
+        let traces = findings
+            .iter()
+            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: f.title.clone(),
+                finding_category: f.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: f.severity.clone(),
+                output_severity: f.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
+            })
+            .collect();
+        return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
     }
 
     // Capture `now` once so every verdict_weight invocation in this calibration
@@ -466,6 +558,9 @@ pub fn calibrate_with_index(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
             });
             output.push(finding);
             continue;
@@ -526,6 +621,9 @@ pub fn calibrate_with_index(
             ));
         }
 
+        // Track B: track WHY this finding's severity did or did not change.
+        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
+
         // Full suppress: FP weight only. Wontfix no longer contributes.
         let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
@@ -542,6 +640,9 @@ pub fn calibrate_with_index(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::Disputed,
+                ),
             });
             suppressed += 1;
             continue;
@@ -555,6 +656,7 @@ pub fn calibrate_with_index(
         {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
         }
 
@@ -572,13 +674,27 @@ pub fn calibrate_with_index(
             if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
                 finding.severity = proposed;
                 boosted += 1;
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+            } else {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
+                );
             }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            if reason.is_none() {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
+                );
+            }
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
+        // Track B: still classify mixed signal as "weight too low to act on".
+        if reason.is_none() {
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+        }
 
         traces.push(crate::calibrator_trace::CalibratorTraceEntry {
             finding_title: finding.title.clone(),
@@ -592,6 +708,7 @@ pub fn calibrate_with_index(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
+            severity_change_reason: reason,
         });
 
         output.push(finding);
@@ -665,6 +782,10 @@ fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
         Severity::Critical => {
             // CRITICAL = data corruption, RCE, auth bypass, credential leak,
             // or guaranteed production crash. Require evidence in the text.
+            // Active-voice / explicit phrasing only. Track B fix (codex review
+            // 2026-05-01): "secret leak" matched speculative phrasings ("logs
+            // may leak secrets") and "data loss" matched ephemeral state
+            // ("lossy cache cleanup"); both are HIGH at most, not CRITICAL.
             const CRITICAL_KEYWORDS: &[&str] = &[
                 "rce",
                 "remote code execution",
@@ -675,10 +796,16 @@ fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
                 "authentication bypass",
                 "credential leak",
                 "credential exfil",
-                "secret leak",
+                "credentials leaked",
+                "leaks credentials",
+                "leaks the password",
+                "leaks all passwords",
+                "secret exfil",
+                "exfiltrates secrets",
                 "guaranteed crash",
                 "guaranteed production crash",
-                "data loss",
+                "durable data loss",
+                "permanent data loss",
             ];
             CRITICAL_KEYWORDS.iter().any(|k| contains_word(&haystack, k))
         }
@@ -1090,6 +1217,68 @@ mod tests {
         assert!(
             !rubric_supports_severity_bump(&Severity::High, &f),
             "'exploitation' must not match 'exploit' via substring inside a stylistic finding"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_speculative_secret_leak_to_critical() {
+        // Codex review #3 (2026-05-01): "logs may leak secrets" is not CRITICAL —
+        // it's a speculative information-disclosure HIGH at most. Track A's
+        // "secret leak" keyword incorrectly matched this phrasing.
+        let f = finding_at(
+            "Verbose error logger may leak secrets to log files",
+            "security",
+            Severity::High,
+            "If the user passes secrets in query params, they could appear in log files.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "speculative 'may leak secrets' phrasing must NOT justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_blocks_lossy_cache_cleanup_to_critical() {
+        // Same review: "lossy cache cleanup loses ephemeral state" is not CRITICAL.
+        // Tighten "data loss" -> "durable data loss" so transient state is excluded.
+        let f = finding_at(
+            "Cache eviction loses ephemeral query state",
+            "correctness",
+            Severity::High,
+            "Items can be evicted from the in-memory cache, causing data loss for unsaved drafts.",
+        );
+        assert!(
+            !rubric_supports_severity_bump(&Severity::Critical, &f),
+            "ephemeral 'data loss' phrasing must NOT justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_explicit_credential_leak_to_critical() {
+        // Verify the tightened phrasing still catches the real cases.
+        let f = finding_at(
+            "Endpoint leaks credentials to unauthenticated callers",
+            "security",
+            Severity::High,
+            "GET /admin returns the password hash table.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "explicit 'leaks credentials' must justify CRITICAL"
+        );
+    }
+
+    #[test]
+    fn rubric_gate_allows_durable_data_loss_to_critical() {
+        let f = finding_at(
+            "Migration drops user_settings table without backup",
+            "correctness",
+            Severity::High,
+            "The migration causes durable data loss for ~50k users.",
+        );
+        assert!(
+            rubric_supports_severity_bump(&Severity::Critical, &f),
+            "explicit 'durable data loss' must justify CRITICAL"
         );
     }
 
@@ -1568,15 +1757,14 @@ mod tests {
             fb("Buffer overflow", "security", Verdict::Tp),
             fb("Buffer overflow", "security", Verdict::Tp),
         ];
-        // SAFETY: tests run single-threaded for env mutations in this crate
-        // (no parallel test runner config); reset after the assertion.
-        unsafe {
-            std::env::set_var("QUORUM_DISABLE_CALIBRATOR", "1");
-        }
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
-        unsafe {
-            std::env::remove_var("QUORUM_DISABLE_CALIBRATOR");
-        }
+        // Use the config override instead of std::env::set_var to avoid the
+        // cross-test race documented in docs/TEST_STRATEGY.md (CR review on
+        // PR #189). Production still honors QUORUM_DISABLE_CALIBRATOR.
+        let config = CalibratorConfig {
+            disable_calibrator: Some(true),
+            ..CalibratorConfig::default()
+        };
+        let result = calibrate(findings, &feedback, &config);
         assert_eq!(result.findings[0].severity, Severity::Medium, "must not boost when disabled");
         assert_eq!(result.boosted, 0);
         assert_eq!(result.suppressed, 0);
@@ -3020,6 +3208,179 @@ mod tests {
             "calibrate_with_index must also cap External; got tp_weight={} (cap={})",
             trace.tp_weight,
             EXTERNAL_WEIGHT_CAP
+        );
+    }
+
+    // --- Track B severity_change_reason tests ---
+
+    #[test]
+    fn calibrate_records_no_match_reason_when_corpus_empty() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Some finding never seen before")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let result = calibrate(findings, &[], &CalibratorConfig::default());
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::NoMatch)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_boosted_reason_when_bump_succeeds() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Race condition in shared HashMap")
+                .category("concurrency")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let feedback = vec![
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::High);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::Boosted)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_boost_blocked_by_gate_for_complexity() {
+        // Stylistic complexity finding can't reach HIGH per the rubric gate.
+        // calibrator wants to bump but gate refuses.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Function `foo` has cyclomatic complexity 30")
+                .category("complexity")
+                .severity(Severity::Medium)
+                .description("Long branchy function.")
+                .build(),
+        ];
+        let feedback = vec![
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::Medium, "gate blocked the bump");
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_disputed_reason_when_fp_dominates() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Use of unwrap")
+                .category("error-handling")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let mut feedback = vec![];
+        for _ in 0..5 {
+            feedback.push(fb("Use of unwrap", "error-handling", Verdict::Fp));
+        }
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        // Strong FP fully suppresses the finding (continue path) —
+        // a Disputed trace is still emitted so the eval harness can count it.
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.findings.len(), 0);
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::Disputed)
+        );
+    }
+
+    #[test]
+    fn calibrate_with_index_records_severity_change_reasons() {
+        use crate::calibrator_trace::SeverityChangeReason;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Index built from a corpus that won't match the test finding.
+        store.record(&fb("Totally unrelated foo", "other", Verdict::Tp)).unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Race condition in shared map")
+                .category("concurrency")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(SeverityChangeReason::NoMatch)
+        );
+    }
+
+    #[test]
+    fn calibrate_with_index_disable_env_overrides_empty_index_traces() {
+        // Regression: Track B's empty-index NoMatch trace emission was placed
+        // BEFORE the QUORUM_DISABLE_CALIBRATOR check, partially defeating the
+        // ablation knob. Self-review (2026-05-01) caught this.
+        // Disable must always short-circuit before any trace emission.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Empty index — nothing recorded.
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let findings = vec![
+            FindingBuilder::new()
+                .title("X")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        // Use the config override instead of std::env::set_var to avoid the
+        // cross-test race documented in docs/TEST_STRATEGY.md (CR review on
+        // PR #189). Production still honors QUORUM_DISABLE_CALIBRATOR.
+        let config = CalibratorConfig {
+            disable_calibrator: Some(true),
+            ..CalibratorConfig::default()
+        };
+        let result = calibrate_with_index(findings, &mut index, &config);
+        assert!(
+            result.traces.is_empty(),
+            "Disabled calibrator must short-circuit before NoMatch trace emission, \
+             even when the index is empty (got {} traces)",
+            result.traces.len()
+        );
+        assert_eq!(result.boosted, 0);
+        assert_eq!(result.suppressed, 0);
+    }
+
+    #[test]
+    fn calibrate_records_weight_too_low_reason_for_mixed_signal() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Some marginal finding")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        // 1 TP + 1 FP — below the 1.5 boost threshold and 1.5x confirm threshold.
+        let feedback = vec![
+            fb("Some marginal finding", "security", Verdict::Tp),
+            fb("Some marginal finding", "security", Verdict::Fp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::Medium);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow)
         );
     }
 }
