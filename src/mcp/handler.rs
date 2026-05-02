@@ -370,7 +370,7 @@ impl QuorumHandler {
 // now lives in the `quorum` library crate (bin/lib hybrid split) and Rust's
 // orphan rules forbid inherent impl blocks on out-of-crate types.
 fn verdict_label(entry: &FeedbackEntry) -> &'static str {
-    match entry.verdict {
+    match &entry.verdict {
         Verdict::Tp => "true positive",
         Verdict::Fp => "false positive",
         Verdict::Partial => "partial",

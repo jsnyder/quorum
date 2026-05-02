@@ -25,8 +25,6 @@
 //! lists, plus `Finding`/`CalibratorTraceEntry` snapshot assertions, work
 //! against this scope without modification.
 
-#![allow(dead_code)]
-
 // Core finding/severity/source types — leaf module, no internal deps.
 pub mod finding;
 
