@@ -170,11 +170,32 @@ pub fn calibrate(
         .collect();
 
     if filtered.is_empty() {
+        // Track B: emit NoMatch traces so the eval harness sees per-finding
+        // calibration outcomes even when the corpus is empty / fully filtered.
+        let traces = findings
+            .iter()
+            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
+                finding_title: f.title.clone(),
+                finding_category: f.category.clone(),
+                tp_weight: 0.0,
+                fp_weight: 0.0,
+                wontfix_weight: 0.0,
+                full_suppress_weight: 0.0,
+                soft_fp_weight: 0.0,
+                matched_precedents: vec![],
+                action: None,
+                input_severity: f.severity.clone(),
+                output_severity: f.severity.clone(),
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
+            })
+            .collect();
         return CalibrationResult {
             findings,
             suppressed: 0,
             boosted: 0,
-            traces: vec![],
+            traces,
         };
     }
 
@@ -208,7 +229,9 @@ pub fn calibrate(
                 action: None,
                 input_severity: input_severity.clone(),
                 output_severity: finding.severity.clone(),
-                severity_change_reason: None,
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
+                ),
             });
             output.push(finding);
             continue;
@@ -272,6 +295,9 @@ pub fn calibrate(
             ));
         }
 
+        // Track B: track WHY this finding's severity did or did not change.
+        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
+
         // Full suppress: FP weight only. Wontfix no longer contributes.
         let full_suppress_weight = fp_weight;
         if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
@@ -288,7 +314,9 @@ pub fn calibrate(
                 action: finding.calibrator_action.clone(),
                 input_severity,
                 output_severity: finding.severity.clone(),
-                severity_change_reason: None,
+                severity_change_reason: Some(
+                    crate::calibrator_trace::SeverityChangeReason::Disputed,
+                ),
             });
             suppressed += 1;
             continue; // don't add to output
@@ -302,6 +330,7 @@ pub fn calibrate(
         {
             finding.severity = Severity::Info;
             finding.calibrator_action = Some(CalibratorAction::Disputed);
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
             // Don't increment suppressed — finding stays in output at reduced severity
         }
 
@@ -319,13 +348,27 @@ pub fn calibrate(
             if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
                 finding.severity = proposed;
                 boosted += 1;
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+            } else {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
+                );
             }
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
         } else if tp_weight > fp_weight * 1.5 {
             // Confirm only when TP meaningfully outweighs FP
             finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            if reason.is_none() {
+                reason = Some(
+                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
+                );
+            }
         }
         // Mixed signal (TP ~ FP): leave calibrator_action as None
+        // Track B: still classify mixed signal as "weight too low to act on".
+        if reason.is_none() {
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+        }
 
         traces.push(crate::calibrator_trace::CalibratorTraceEntry {
             finding_title: finding.title.clone(),
@@ -339,7 +382,7 @@ pub fn calibrate(
             action: finding.calibrator_action.clone(),
             input_severity,
             output_severity: finding.severity.clone(),
-            severity_change_reason: None,
+            severity_change_reason: reason,
         });
 
         output.push(finding);
@@ -3026,6 +3069,119 @@ mod tests {
             "calibrate_with_index must also cap External; got tp_weight={} (cap={})",
             trace.tp_weight,
             EXTERNAL_WEIGHT_CAP
+        );
+    }
+
+    // --- Track B severity_change_reason tests ---
+
+    #[test]
+    fn calibrate_records_no_match_reason_when_corpus_empty() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Some finding never seen before")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let result = calibrate(findings, &[], &CalibratorConfig::default());
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::NoMatch)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_boosted_reason_when_bump_succeeds() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Race condition in shared HashMap")
+                .category("concurrency")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let feedback = vec![
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+            fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::High);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::Boosted)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_boost_blocked_by_gate_for_complexity() {
+        // Stylistic complexity finding can't reach HIGH per the rubric gate.
+        // calibrator wants to bump but gate refuses.
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Function `foo` has cyclomatic complexity 30")
+                .category("complexity")
+                .severity(Severity::Medium)
+                .description("Long branchy function.")
+                .build(),
+        ];
+        let feedback = vec![
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+            fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::Medium, "gate blocked the bump");
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_disputed_reason_when_fp_dominates() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Use of unwrap")
+                .category("error-handling")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let mut feedback = vec![];
+        for _ in 0..5 {
+            feedback.push(fb("Use of unwrap", "error-handling", Verdict::Fp));
+        }
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        // Strong FP fully suppresses the finding (continue path) —
+        // a Disputed trace is still emitted so the eval harness can count it.
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.findings.len(), 0);
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::Disputed)
+        );
+    }
+
+    #[test]
+    fn calibrate_records_weight_too_low_reason_for_mixed_signal() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Some marginal finding")
+                .category("security")
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        // 1 TP + 1 FP — below the 1.5 boost threshold and 1.5x confirm threshold.
+        let feedback = vec![
+            fb("Some marginal finding", "security", Verdict::Tp),
+            fb("Some marginal finding", "security", Verdict::Fp),
+        ];
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        assert_eq!(result.findings[0].severity, Severity::Medium);
+        assert_eq!(
+            result.traces[0].severity_change_reason,
+            Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow)
         );
     }
 }
