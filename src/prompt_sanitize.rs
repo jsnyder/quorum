@@ -8,7 +8,7 @@
 /// Sandbox-tag names emitted by the prompt builder and context renderer.
 /// Untrusted text containing a literal `</tag>` for any of these is defanged
 /// via [`defang_sandbox_tags`] before interpolation.
-pub(crate) const SANDBOX_TAGS: &[&str] = &[
+pub const SANDBOX_TAGS: &[&str] = &[
     "framework_docs",
     "hydration_context",
     "historical_findings",
@@ -31,7 +31,7 @@ pub(crate) const SANDBOX_TAGS: &[&str] = &[
 ///   `</tag\t>`, `</  tag  >`)
 ///
 /// Non-sandbox tags (e.g. `</div>`) pass through unchanged.
-pub(crate) fn defang_sandbox_tags(s: &str) -> String {
+pub fn defang_sandbox_tags(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
@@ -99,7 +99,7 @@ fn next_char_end(s: &str, i: usize) -> usize {
 
 /// Pick a Markdown fence length longer than any consecutive run of backticks
 /// in `body`. Floors at 3 to keep the common case unchanged.
-pub(crate) fn pick_fence_for(body: &str) -> String {
+pub fn pick_fence_for(body: &str) -> String {
     let mut max_run = 0usize;
     let mut current = 0usize;
     for c in body.chars() {
@@ -121,7 +121,7 @@ pub(crate) fn pick_fence_for(body: &str) -> String {
 /// brackets, and other control chars are stripped, so an adversarial
 /// language value cannot terminate the fence or sandbox tag early. Empty
 /// result is allowed (renders as a language-less fence).
-pub(crate) fn sanitize_fence_lang(language: &str) -> String {
+pub fn sanitize_fence_lang(language: &str) -> String {
     language
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '#'))
@@ -138,7 +138,7 @@ pub(crate) fn sanitize_fence_lang(language: &str) -> String {
 /// - Pipes (so the value can't split a markdown table cell)
 ///
 /// then defangs sandbox closing tags.
-pub(crate) fn sanitize_inline_metadata(s: &str) -> String {
+pub fn sanitize_inline_metadata(s: &str) -> String {
     let stripped: String = s
         .chars()
         .filter(|c| {

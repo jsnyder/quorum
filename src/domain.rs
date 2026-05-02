@@ -529,6 +529,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn detect_multi_language_project() {
         let dir = create_project(&[
             ("Cargo.toml", "[package]\n"),
