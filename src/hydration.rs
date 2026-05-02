@@ -72,8 +72,8 @@ pub fn hydrate(
     // Caller blast radius: if changed lines contain a function definition,
     // find all callers of that function in the file
     for &(start, end) in changed_lines {
-        for (name, _, fstart, fend) in &all_funcs {
-            if *fstart <= end && *fend >= start {
+        for (name, _, fstart, _fend) in &all_funcs {
+            if *fstart >= start && *fstart <= end {
                 // This function's signature is in the changed region
                 find_callers_of(&root, source, lang, &call_kinds, name, &all_funcs, &mut ctx.callers);
             }
@@ -235,10 +235,19 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
         }
     } else if text.starts_with("from ") {
-        // Python: from X import a, b, c
-        if let Some(after_import) = text.split("import").nth(1) {
-            for part in after_import.split(',') {
-                let name = part.trim().split(" as ").next().unwrap_or("").trim();
+        // Python: from X import a, b, c  /  from X import (a, b as c)
+        if let Some(after_import) = text.split(" import ").nth(1) {
+            let cleaned = after_import.trim().trim_start_matches('(').trim_end_matches(')');
+            for part in cleaned.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                    after_as.trim()
+                } else {
+                    part
+                };
                 if !name.is_empty() {
                     names.push(name.to_string());
                 }
@@ -309,11 +318,21 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             }
             return names;
         }
-        // Python: import sys
-        let module = text.trim_start_matches("import ").trim();
-        let name = module.split('.').last().unwrap_or(module).trim();
-        if !name.is_empty() {
-            names.push(name.to_string());
+        // Python: import sys / import os, sys / import foo.bar as baz
+        let modules = text.trim_start_matches("import ").trim();
+        for part in modules.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let name = if let Some(after_as) = part.split(" as ").nth(1) {
+                after_as.trim()
+            } else {
+                part.split('.').last().unwrap_or(part).trim()
+            };
+            if !name.is_empty() {
+                names.push(name.to_string());
+            }
         }
     }
     names
@@ -1176,5 +1195,97 @@ fn uses_map() {
             "expected bare 'HashMap' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- Caller blast radius scope tests (#178) --
+
+    #[test]
+    fn caller_blast_radius_ignores_body_only_edits() {
+        let source = "fn helper() -> i32 {\n    42\n}\n\nfn caller() {\n    helper();\n}\n";
+        // Line 1 = `fn helper()...`, line 2 = `    42`, line 3 = `}`
+        // Only line 2 (body) is changed -- should NOT trigger caller search
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]);
+        assert!(ctx.callers.is_empty(), "body-only edit should not trigger caller blast radius");
+    }
+
+    #[test]
+    fn caller_blast_radius_triggers_on_signature_edit() {
+        let source = "fn helper() -> i32 {\n    42\n}\n\nfn caller() {\n    helper();\n}\n";
+        // Line 1 = signature of `helper` -- SHOULD trigger caller search
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
+        assert!(!ctx.callers.is_empty(), "signature edit should trigger caller blast radius");
+    }
+
+    #[test]
+    fn caller_blast_radius_wide_body_edit_no_trigger() {
+        let source = "fn big_fn(x: i32) -> i32 {\n    let a = x + 1;\n    let b = a * 2;\n    let c = b - 3;\n    c\n}\n\nfn user() {\n    big_fn(5);\n}\n";
+        // Lines 2-5 are body only, signature is line 1
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 5)]);
+        assert!(ctx.callers.is_empty(), "wide body edit should not trigger caller blast radius");
+    }
+
+    // -- #179: Python import parsing returns correct local names --
+
+    #[test]
+    fn python_from_import_as_returns_local_binding() {
+        let names = extract_imported_names("from os.path import join as pjoin, exists");
+        assert_eq!(names, vec!["pjoin", "exists"]);
+    }
+
+    #[test]
+    fn python_from_import_parenthesized() {
+        let names = extract_imported_names("from os import (path, getcwd, listdir)");
+        assert_eq!(names, vec!["path", "getcwd", "listdir"]);
+    }
+
+    #[test]
+    fn python_from_import_parenthesized_with_alias_and_trailing_comma() {
+        let names = extract_imported_names("from os import (path as p, getcwd,)");
+        assert_eq!(names, vec!["p", "getcwd"]);
+    }
+
+    #[test]
+    fn python_from_import_mixed_alias_and_plain() {
+        let names = extract_imported_names("from x import foo, bar as b");
+        assert_eq!(names, vec!["foo", "b"]);
+    }
+
+    #[test]
+    fn python_import_as_returns_alias() {
+        let names = extract_imported_names("import foo.bar as baz");
+        assert_eq!(names, vec!["baz"]);
+    }
+
+    #[test]
+    fn python_import_dotted_no_alias() {
+        let names = extract_imported_names("import os.path");
+        assert_eq!(names, vec!["path"]);
+    }
+
+    #[test]
+    fn python_import_simple_no_alias() {
+        let names = extract_imported_names("import sys");
+        assert_eq!(names, vec!["sys"]);
+    }
+
+    #[test]
+    fn python_from_importlib_not_split_on_module_name() {
+        let names = extract_imported_names("from importlib import abc");
+        assert_eq!(names, vec!["abc"]);
+    }
+
+    #[test]
+    fn python_import_comma_separated_modules() {
+        let names = extract_imported_names("import os, sys, json");
+        assert_eq!(names, vec!["os", "sys", "json"]);
+    }
+
+    #[test]
+    fn python_import_comma_separated_dotted_with_alias() {
+        let names = extract_imported_names("import os.path, foo.bar as baz");
+        assert_eq!(names, vec!["path", "baz"]);
     }
 }
