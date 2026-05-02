@@ -72,11 +72,12 @@ impl ToolRegistry {
         max_output_bytes: usize,
     ) -> anyhow::Result<String> {
         let result = match tool_name {
-            "read_file" => self.exec_read_file(args)?,
-            "grep" => self.exec_grep(args)?,
-            "list_files" => self.exec_list_files(args)?,
+            "read_file" => self.exec_read_file(args, max_output_bytes)?,
+            "grep" => self.exec_grep(args, max_output_bytes)?,
+            "list_files" => self.exec_list_files(args, max_output_bytes)?,
             _ => anyhow::bail!("Unknown tool: {}", tool_name),
         };
+        // Safety net: truncate in case a tool overshoots its internal budget.
         Ok(truncate(&result, max_output_bytes))
     }
 
@@ -96,15 +97,22 @@ impl ToolRegistry {
         Ok(resolved)
     }
 
-    fn exec_read_file(&self, args: &serde_json::Value) -> anyhow::Result<String> {
+    fn exec_read_file(&self, args: &serde_json::Value, max_output_bytes: usize) -> anyhow::Result<String> {
         let path_str = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("path required"))?;
         let resolved = self.resolve_path(path_str)?;
-        let content = std::fs::read_to_string(&resolved)?;
+
+        // Read only up to budget + 1 byte to detect truncation without
+        // allocating the full file.
+        let file = std::fs::File::open(&resolved)?;
+        let read_limit = (max_output_bytes as u64).saturating_add(1);
+        let mut limited = String::new();
+        use std::io::Read;
+        file.take(read_limit).read_to_string(&mut limited)?;
 
         let start = args["start_line"].as_u64().map(|n| n as usize).unwrap_or(1);
         let end = args["end_line"].as_u64().map(|n| n as usize);
 
-        let lines: Vec<&str> = content.lines().collect();
+        let lines: Vec<&str> = limited.lines().collect();
         let start_idx = start.saturating_sub(1).min(lines.len());
         let end_idx = end.unwrap_or(lines.len()).min(lines.len()).max(start_idx);
 
@@ -115,21 +123,22 @@ impl ToolRegistry {
             .collect::<Vec<_>>()
             .join("\n");
 
-        Ok(truncate(&selected, MAX_OUTPUT_CHARS))
+        Ok(truncate(&selected, max_output_bytes))
     }
 
-    fn exec_grep(&self, args: &serde_json::Value) -> anyhow::Result<String> {
+    fn exec_grep(&self, args: &serde_json::Value, max_output_bytes: usize) -> anyhow::Result<String> {
         let pattern = args["pattern"].as_str().ok_or_else(|| anyhow::anyhow!("pattern required"))?;
         let max = args["max_results"].as_u64().unwrap_or(MAX_GREP_RESULTS as u64) as usize;
         let path_glob = args["path_glob"].as_str();
 
         let mut results = Vec::new();
-        self.grep_recursive(&self.root, pattern, path_glob, &mut results, max)?;
+        let mut total_bytes = 0usize;
+        self.grep_recursive(&self.root, pattern, path_glob, &mut results, max, &mut total_bytes, max_output_bytes)?;
 
         if results.is_empty() {
             Ok("No matches found.".into())
         } else {
-            Ok(truncate(&results.join("\n"), MAX_OUTPUT_CHARS))
+            Ok(truncate(&results.join("\n"), max_output_bytes))
         }
     }
 
@@ -140,11 +149,13 @@ impl ToolRegistry {
         glob: Option<&str>,
         results: &mut Vec<String>,
         max: usize,
+        total_bytes: &mut usize,
+        byte_budget: usize,
     ) -> anyhow::Result<()> {
-        if results.len() >= max { return Ok(()); }
+        if results.len() >= max || *total_bytes >= byte_budget { return Ok(()); }
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
-            if results.len() >= max { break; }
+            if results.len() >= max || *total_bytes >= byte_budget { break; }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             // Skip hidden dirs and common non-source dirs
@@ -161,7 +172,7 @@ impl ToolRegistry {
                 continue;
             }
             if path.is_dir() {
-                self.grep_recursive(&path, pattern, glob, results, max)?;
+                self.grep_recursive(&path, pattern, glob, results, max, total_bytes, byte_budget)?;
             } else if path.is_file() {
                 if let Some(g) = glob {
                     if g != "*" {
@@ -176,9 +187,12 @@ impl ToolRegistry {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                     for (i, line) in content.lines().enumerate() {
-                        if results.len() >= max { break; }
+                        if results.len() >= max || *total_bytes >= byte_budget { break; }
                         if line.contains(pattern) {
-                            results.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
+                            let entry = format!("{}:{}: {}", rel.display(), i + 1, line.trim());
+                            // +1 accounts for the newline when results are joined
+                            *total_bytes += entry.len() + 1;
+                            results.push(entry);
                         }
                     }
                 }
@@ -187,18 +201,19 @@ impl ToolRegistry {
         Ok(())
     }
 
-    fn exec_list_files(&self, args: &serde_json::Value) -> anyhow::Result<String> {
+    fn exec_list_files(&self, args: &serde_json::Value, max_output_bytes: usize) -> anyhow::Result<String> {
         let subdir = args["path"].as_str().unwrap_or("");
         let pattern = args["pattern"].as_str();
         let dir = if subdir.is_empty() { self.root.clone() } else { self.resolve_path(subdir)? };
 
         let mut files = Vec::new();
-        self.list_recursive(&dir, pattern, &mut files, 200)?;
+        let mut total_bytes = 0usize;
+        self.list_recursive(&dir, pattern, &mut files, 200, &mut total_bytes, max_output_bytes)?;
 
         if files.is_empty() {
             Ok("No files found.".into())
         } else {
-            Ok(truncate(&files.join("\n"), MAX_OUTPUT_CHARS))
+            Ok(truncate(&files.join("\n"), max_output_bytes))
         }
     }
 
@@ -208,11 +223,13 @@ impl ToolRegistry {
         glob: Option<&str>,
         files: &mut Vec<String>,
         max: usize,
+        total_bytes: &mut usize,
+        byte_budget: usize,
     ) -> anyhow::Result<()> {
-        if files.len() >= max { return Ok(()); }
+        if files.len() >= max || *total_bytes >= byte_budget { return Ok(()); }
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
-            if files.len() >= max { break; }
+            if files.len() >= max || *total_bytes >= byte_budget { break; }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.')
@@ -228,7 +245,7 @@ impl ToolRegistry {
                 continue;
             }
             if path.is_dir() {
-                self.list_recursive(&path, glob, files, max)?;
+                self.list_recursive(&path, glob, files, max, total_bytes, byte_budget)?;
             } else {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                 if let Some(g) = glob {
@@ -241,7 +258,10 @@ impl ToolRegistry {
                         }
                     }
                 }
-                files.push(rel.display().to_string());
+                let entry_str = rel.display().to_string();
+                // +1 accounts for the newline when files are joined
+                *total_bytes += entry_str.len() + 1;
+                files.push(entry_str);
             }
         }
         Ok(())
@@ -359,10 +379,11 @@ mod tests {
         let big = "x\n".repeat(10000);
         std::fs::write(dir.path().join("big.txt"), &big).unwrap();
         let reg = ToolRegistry::new(dir.path());
+        // Use a concrete budget — with usize::MAX there is no truncation.
         let result = reg
-            .execute("read_file", &serde_json::json!({"path": "big.txt"}), usize::MAX)
+            .execute("read_file", &serde_json::json!({"path": "big.txt"}), MAX_OUTPUT_CHARS)
             .unwrap();
-        assert!(result.len() < 20000, "Should truncate large files");
+        assert!(result.len() <= MAX_OUTPUT_CHARS, "Should truncate large files");
     }
 
     #[test]
@@ -480,5 +501,41 @@ mod tests {
             .execute("read_file", &serde_json::json!({"path": "main.py"}), usize::MAX)
             .unwrap();
         assert!(result.contains("print"), "full output should include file content");
+    }
+
+    #[test]
+    fn read_file_does_not_allocate_beyond_budget() {
+        let dir = setup_repo();
+        std::fs::write(dir.path().join("huge.txt"), "y".repeat(1_000_000)).unwrap();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("read_file", &serde_json::json!({"path": "huge.txt"}), 500)
+            .unwrap();
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn grep_stops_accumulating_at_byte_budget() {
+        let dir = setup_repo();
+        let content: String = (0..10_000).map(|i| format!("pattern {}\n", i)).collect();
+        std::fs::write(dir.path().join("huge.txt"), &content).unwrap();
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("grep", &serde_json::json!({"pattern": "pattern"}), 500)
+            .unwrap();
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn list_files_stops_accumulating_at_byte_budget() {
+        let dir = setup_repo();
+        for i in 0..200 {
+            std::fs::write(dir.path().join(format!("file_{:04}.txt", i)), "x").unwrap();
+        }
+        let reg = ToolRegistry::new(dir.path());
+        let result = reg
+            .execute("list_files", &serde_json::json!({}), 300)
+            .unwrap();
+        assert!(result.len() <= 300);
     }
 }
