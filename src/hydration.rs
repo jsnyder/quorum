@@ -73,7 +73,7 @@ pub fn hydrate(
     // find all callers of that function in the file
     for &(start, end) in changed_lines {
         for (name, _, fstart, fend) in &all_funcs {
-            if *fstart <= end && *fend >= start {
+            if *fstart >= start && *fstart <= end {
                 // This function's signature is in the changed region
                 find_callers_of(&root, source, lang, &call_kinds, name, &all_funcs, &mut ctx.callers);
             }
@@ -1176,5 +1176,35 @@ fn uses_map() {
             "expected bare 'HashMap' in qualified_names, got {:?}",
             ctx.qualified_names
         );
+    }
+
+    // -- Caller blast radius scope tests (#178) --
+
+    #[test]
+    fn caller_blast_radius_ignores_body_only_edits() {
+        let source = "fn helper() -> i32 {\n    42\n}\n\nfn caller() {\n    helper();\n}\n";
+        // Line 1 = `fn helper()...`, line 2 = `    42`, line 3 = `}`
+        // Only line 2 (body) is changed -- should NOT trigger caller search
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]);
+        assert!(ctx.callers.is_empty(), "body-only edit should not trigger caller blast radius");
+    }
+
+    #[test]
+    fn caller_blast_radius_triggers_on_signature_edit() {
+        let source = "fn helper() -> i32 {\n    42\n}\n\nfn caller() {\n    helper();\n}\n";
+        // Line 1 = signature of `helper` -- SHOULD trigger caller search
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
+        assert!(!ctx.callers.is_empty(), "signature edit should trigger caller blast radius");
+    }
+
+    #[test]
+    fn caller_blast_radius_wide_body_edit_no_trigger() {
+        let source = "fn big_fn(x: i32) -> i32 {\n    let a = x + 1;\n    let b = a * 2;\n    let c = b - 3;\n    c\n}\n\nfn user() {\n    big_fn(5);\n}\n";
+        // Lines 2-5 are body only, signature is line 1
+        let tree = parse(source, Language::Rust).unwrap();
+        let ctx = hydrate(&tree, source, Language::Rust, &[(2, 5)]);
+        assert!(ctx.callers.is_empty(), "wide body edit should not trigger caller blast radius");
     }
 }
