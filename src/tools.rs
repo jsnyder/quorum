@@ -7,6 +7,24 @@ use serde::Serialize;
 const MAX_OUTPUT_CHARS: usize = 8000;
 const MAX_GREP_RESULTS: usize = 20;
 
+struct AccumulatorState<'a> {
+    results: &'a mut Vec<String>,
+    max_results: usize,
+    total_bytes: &'a mut usize,
+    byte_budget: usize,
+}
+
+impl AccumulatorState<'_> {
+    fn is_full(&self) -> bool {
+        self.results.len() >= self.max_results || *self.total_bytes >= self.byte_budget
+    }
+
+    fn push(&mut self, entry: String) {
+        *self.total_bytes += entry.len() + 1;
+        self.results.push(entry);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -133,7 +151,13 @@ impl ToolRegistry {
 
         let mut results = Vec::new();
         let mut total_bytes = 0usize;
-        self.grep_recursive(&self.root, pattern, path_glob, &mut results, max, &mut total_bytes, max_output_bytes)?;
+        let mut acc = AccumulatorState {
+            results: &mut results,
+            max_results: max,
+            total_bytes: &mut total_bytes,
+            byte_budget: max_output_bytes,
+        };
+        self.grep_recursive(&self.root, pattern, path_glob, &mut acc)?;
 
         if results.is_empty() {
             Ok("No matches found.".into())
@@ -147,18 +171,14 @@ impl ToolRegistry {
         dir: &Path,
         pattern: &str,
         glob: Option<&str>,
-        results: &mut Vec<String>,
-        max: usize,
-        total_bytes: &mut usize,
-        byte_budget: usize,
+        acc: &mut AccumulatorState<'_>,
     ) -> anyhow::Result<()> {
-        if results.len() >= max || *total_bytes >= byte_budget { return Ok(()); }
+        if acc.is_full() { return Ok(()); }
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
-            if results.len() >= max || *total_bytes >= byte_budget { break; }
+            if acc.is_full() { break; }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            // Skip hidden dirs and common non-source dirs
             if name.starts_with('.')
                 || name == "node_modules"
                 || name == "target"
@@ -167,12 +187,11 @@ impl ToolRegistry {
             {
                 continue;
             }
-            // Skip symlinks to prevent escaping repo root
             if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
                 continue;
             }
             if path.is_dir() {
-                self.grep_recursive(&path, pattern, glob, results, max, total_bytes, byte_budget)?;
+                self.grep_recursive(&path, pattern, glob, acc)?;
             } else if path.is_file() {
                 if let Some(g) = glob {
                     if g != "*" {
@@ -187,12 +206,9 @@ impl ToolRegistry {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                     for (i, line) in content.lines().enumerate() {
-                        if results.len() >= max || *total_bytes >= byte_budget { break; }
+                        if acc.is_full() { break; }
                         if line.contains(pattern) {
-                            let entry = format!("{}:{}: {}", rel.display(), i + 1, line.trim());
-                            // +1 accounts for the newline when results are joined
-                            *total_bytes += entry.len() + 1;
-                            results.push(entry);
+                            acc.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
                         }
                     }
                 }
@@ -208,7 +224,13 @@ impl ToolRegistry {
 
         let mut files = Vec::new();
         let mut total_bytes = 0usize;
-        self.list_recursive(&dir, pattern, &mut files, 200, &mut total_bytes, max_output_bytes)?;
+        let mut acc = AccumulatorState {
+            results: &mut files,
+            max_results: 200,
+            total_bytes: &mut total_bytes,
+            byte_budget: max_output_bytes,
+        };
+        self.list_recursive(&dir, pattern, &mut acc)?;
 
         if files.is_empty() {
             Ok("No files found.".into())
@@ -221,15 +243,12 @@ impl ToolRegistry {
         &self,
         dir: &Path,
         glob: Option<&str>,
-        files: &mut Vec<String>,
-        max: usize,
-        total_bytes: &mut usize,
-        byte_budget: usize,
+        acc: &mut AccumulatorState<'_>,
     ) -> anyhow::Result<()> {
-        if files.len() >= max || *total_bytes >= byte_budget { return Ok(()); }
+        if acc.is_full() { return Ok(()); }
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
-            if files.len() >= max || *total_bytes >= byte_budget { break; }
+            if acc.is_full() { break; }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.')
@@ -240,12 +259,11 @@ impl ToolRegistry {
             {
                 continue;
             }
-            // Skip symlinks to prevent escaping repo root
             if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
                 continue;
             }
             if path.is_dir() {
-                self.list_recursive(&path, glob, files, max, total_bytes, byte_budget)?;
+                self.list_recursive(&path, glob, acc)?;
             } else {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                 if let Some(g) = glob {
@@ -258,10 +276,7 @@ impl ToolRegistry {
                         }
                     }
                 }
-                let entry_str = rel.display().to_string();
-                // +1 accounts for the newline when files are joined
-                *total_bytes += entry_str.len() + 1;
-                files.push(entry_str);
+                acc.push(rel.display().to_string());
             }
         }
         Ok(())
