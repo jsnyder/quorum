@@ -112,7 +112,7 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
     }
 
     if let Some(ref excerpt) = f.based_on_excerpt {
-        let safe_excerpt = strip_control_chars(excerpt);
+        let safe_excerpt = strip_control_chars(excerpt).replace(['\n', '\t'], " ");
         output.push_str(&format!(
             "    {dim}[partial view: {safe_excerpt}]{reset}\n",
             dim = style.dim,
@@ -963,5 +963,17 @@ mod tests {
         let output = format_finding(&f, &style);
         assert!(!output.contains("\x1b[0m"), "ANSI escape leaked through based_on_excerpt");
         assert!(output.contains("lines 1-50"));
+    }
+
+    #[test]
+    fn format_finding_excerpt_newlines_collapsed() {
+        let f = FindingBuilder::new()
+            .title("Bug")
+            .description("D")
+            .based_on_excerpt("lines 1-50\nof 100")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(output.contains("[partial view: lines 1-50 of 100]"));
     }
 }
