@@ -58,6 +58,180 @@ fn calibrator_disabled(config: &CalibratorConfig) -> bool {
         .unwrap_or_else(|| std::env::var("QUORUM_DISABLE_CALIBRATOR").is_ok())
 }
 
+// ---------------------------------------------------------------------------
+// CalibratorTraceEntry factory helpers
+// ---------------------------------------------------------------------------
+
+/// Build a `CalibratorTraceEntry` for a finding with no matching precedents
+/// (empty feedback corpus, empty index, or all entries filtered out). All
+/// weight fields are zero and the reason is `NoMatch`.
+fn make_no_match_trace(finding: &Finding) -> crate::calibrator_trace::CalibratorTraceEntry {
+    crate::calibrator_trace::CalibratorTraceEntry {
+        finding_title: finding.title.clone(),
+        finding_category: finding.category.to_string(),
+        tp_weight: 0.0,
+        fp_weight: 0.0,
+        wontfix_weight: 0.0,
+        full_suppress_weight: 0.0,
+        soft_fp_weight: 0.0,
+        matched_precedents: vec![],
+        action: None,
+        input_severity: finding.severity.clone(),
+        output_severity: finding.severity.clone(),
+        severity_change_reason: Some(
+            crate::calibrator_trace::SeverityChangeReason::NoMatch,
+        ),
+    }
+}
+
+/// Build a `CalibratorTraceEntry` with fully specified weights and decision
+/// fields. Used at every calibration decision point (full suppress, soft
+/// suppress, boost, confirm, mixed signal) where weights have been computed.
+#[allow(clippy::too_many_arguments)]
+fn make_trace_entry(
+    finding: &Finding,
+    tp_weight: f64,
+    fp_weight: f64,
+    wontfix_weight: f64,
+    full_suppress_weight: f64,
+    soft_fp_weight: f64,
+    matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace>,
+    action: Option<CalibratorAction>,
+    input_severity: Severity,
+    severity_change_reason: Option<crate::calibrator_trace::SeverityChangeReason>,
+) -> crate::calibrator_trace::CalibratorTraceEntry {
+    crate::calibrator_trace::CalibratorTraceEntry {
+        finding_title: finding.title.clone(),
+        finding_category: finding.category.to_string(),
+        tp_weight,
+        fp_weight,
+        wontfix_weight,
+        full_suppress_weight,
+        soft_fp_weight,
+        matched_precedents,
+        action,
+        input_severity,
+        output_severity: finding.severity.clone(),
+        severity_change_reason,
+    }
+}
+
+/// Outcome of [`calibrate_core_decision`]: whether the finding was fully
+/// suppressed (excluded from output), and whether severity was boosted.
+struct CoreDecision {
+    /// True when FP precedent is strong enough to exclude the finding entirely.
+    suppressed: bool,
+    /// True when TP precedent boosted the finding's severity (rubric gate passed).
+    boosted: bool,
+    /// The trace entry recording weights, precedents, and the decision reason.
+    trace: crate::calibrator_trace::CalibratorTraceEntry,
+}
+
+/// Shared decision logic for `calibrate` and `calibrate_with_index`.
+///
+/// Given a finding and its accumulated precedent weights, decides whether to
+/// full-suppress, soft-suppress, boost, confirm, or pass through unchanged.
+/// Mutates `finding.severity` and `finding.calibrator_action` as needed.
+///
+/// Returns a [`CoreDecision`] that the caller uses to update counters and
+/// decide whether to keep the finding in the output vec.
+#[allow(clippy::too_many_arguments)]
+fn calibrate_core_decision(
+    finding: &mut Finding,
+    config: &CalibratorConfig,
+    tp_weight: f64,
+    fp_weight: f64,
+    wontfix_weight: f64,
+    soft_fp_weight: f64,
+    matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace>,
+    input_severity: Severity,
+) -> CoreDecision {
+    let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
+    let mut suppressed = false;
+    let mut boosted = false;
+
+    // Full suppress: FP weight only. Wontfix no longer contributes.
+    let full_suppress_weight = fp_weight;
+    if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
+        finding.calibrator_action = Some(CalibratorAction::Disputed);
+        suppressed = true;
+        let trace = make_trace_entry(
+            finding,
+            tp_weight,
+            fp_weight,
+            wontfix_weight,
+            full_suppress_weight,
+            soft_fp_weight,
+            matched_precedents,
+            finding.calibrator_action.clone(),
+            input_severity,
+            Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+        );
+        return CoreDecision { suppressed, boosted, trace };
+    }
+
+    // Soft suppress: FP weight only (wontfix is inert), or auto-only FP.
+    // This preserves the finding for human review while reducing noise.
+    // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
+    if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
+        || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
+    {
+        finding.severity = Severity::Info;
+        finding.calibrator_action = Some(CalibratorAction::Disputed);
+        reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
+        // Don't mark as suppressed -- finding stays in output at reduced severity.
+    }
+
+    // Boost: TP clearly dominates FP.
+    if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
+        // Track A rubric gate: refuse calibrator severity bumps that the
+        // finding's own text doesn't justify under the rubric. Default ON;
+        // set `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
+        let proposed = boost_severity(&finding.severity);
+        let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
+            .map(|v| v != "off" && v != "0")
+            .unwrap_or(true);
+        if !gate_on || rubric_supports_severity_bump(&proposed, finding) {
+            finding.severity = proposed;
+            boosted = true;
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+        } else {
+            reason = Some(
+                crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
+            );
+        }
+        finding.calibrator_action = Some(CalibratorAction::Confirmed);
+    } else if tp_weight > fp_weight * 1.5 {
+        // Confirm only when TP meaningfully outweighs FP.
+        finding.calibrator_action = Some(CalibratorAction::Confirmed);
+        if reason.is_none() {
+            reason = Some(
+                crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
+            );
+        }
+    }
+    // Mixed signal (TP ~ FP): leave calibrator_action as None.
+    // Track B: still classify mixed signal as "weight too low to act on".
+    if reason.is_none() {
+        reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+    }
+
+    let trace = make_trace_entry(
+        finding,
+        tp_weight,
+        fp_weight,
+        wontfix_weight,
+        full_suppress_weight,
+        soft_fp_weight,
+        matched_precedents,
+        finding.calibrator_action.clone(),
+        input_severity,
+        reason,
+    );
+
+    CoreDecision { suppressed, boosted, trace }
+}
+
 // Issue #97: cap on the global External-provenance contribution to any single
 // finding's TP or FP weight accumulator. Prevents a misbehaving or compromised
 // agent from flooding verdicts and dominating calibration.
@@ -194,25 +368,7 @@ pub fn calibrate(
     if filtered.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the corpus is empty / fully filtered.
-        let traces = findings
-            .iter()
-            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: f.title.clone(),
-                finding_category: f.category.to_string(),
-                tp_weight: 0.0,
-                fp_weight: 0.0,
-                wontfix_weight: 0.0,
-                full_suppress_weight: 0.0,
-                soft_fp_weight: 0.0,
-                matched_precedents: vec![],
-                action: None,
-                input_severity: f.severity.clone(),
-                output_severity: f.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
-                ),
-            })
-            .collect();
+        let traces = findings.iter().map(make_no_match_trace).collect();
         return CalibrationResult {
             findings,
             suppressed: 0,
@@ -239,22 +395,7 @@ pub fn calibrate(
             .collect();
 
         if similar.is_empty() {
-            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: finding.title.clone(),
-                finding_category: finding.category.to_string(),
-                tp_weight: 0.0,
-                fp_weight: 0.0,
-                wontfix_weight: 0.0,
-                full_suppress_weight: 0.0,
-                soft_fp_weight: 0.0,
-                matched_precedents: vec![],
-                action: None,
-                input_severity: input_severity.clone(),
-                output_severity: finding.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
-                ),
-            });
+            traces.push(make_no_match_trace(&finding));
             output.push(finding);
             continue;
         }
@@ -317,95 +458,24 @@ pub fn calibrate(
             ));
         }
 
-        // Track B: track WHY this finding's severity did or did not change.
-        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
-
-        // Full suppress: FP weight only. Wontfix no longer contributes.
-        let full_suppress_weight = fp_weight;
-        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
-            finding.calibrator_action = Some(CalibratorAction::Disputed);
-            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: finding.title.clone(),
-                finding_category: finding.category.to_string(),
-                tp_weight,
-                fp_weight,
-                wontfix_weight,
-                full_suppress_weight,
-                soft_fp_weight,
-                matched_precedents,
-                action: finding.calibrator_action.clone(),
-                input_severity,
-                output_severity: finding.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::Disputed,
-                ),
-            });
-            suppressed += 1;
-            continue; // don't add to output
-        }
-
-        // Soft suppress: FP weight only (wontfix is inert), or auto-only FP
-        // This preserves the finding for human review while reducing noise
-        // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
-        if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
-            || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
-        {
-            finding.severity = Severity::Info;
-            finding.calibrator_action = Some(CalibratorAction::Disputed);
-            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
-            // Don't increment suppressed — finding stays in output at reduced severity
-        }
-
-        // Boost: TP clearly dominates FP
-        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
-            // Track A rubric gate: refuse calibrator severity bumps that the
-            // finding's own text doesn't justify under the rubric (CLAUDE.md
-            // severity_rubric). Bump-suppression preserves the original
-            // severity but still records the confirmation. Default ON; set
-            // `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
-            let proposed = boost_severity(&finding.severity);
-            let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
-                .map(|v| v != "off" && v != "0")
-                .unwrap_or(true);
-            if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
-                finding.severity = proposed;
-                boosted += 1;
-                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
-            } else {
-                reason = Some(
-                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
-                );
-            }
-            finding.calibrator_action = Some(CalibratorAction::Confirmed);
-        } else if tp_weight > fp_weight * 1.5 {
-            // Confirm only when TP meaningfully outweighs FP
-            finding.calibrator_action = Some(CalibratorAction::Confirmed);
-            if reason.is_none() {
-                reason = Some(
-                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
-                );
-            }
-        }
-        // Mixed signal (TP ~ FP): leave calibrator_action as None
-        // Track B: still classify mixed signal as "weight too low to act on".
-        if reason.is_none() {
-            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
-        }
-
-        traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-            finding_title: finding.title.clone(),
-            finding_category: finding.category.to_string(),
+        let decision = calibrate_core_decision(
+            &mut finding,
+            config,
             tp_weight,
             fp_weight,
             wontfix_weight,
-            full_suppress_weight,
             soft_fp_weight,
             matched_precedents,
-            action: finding.calibrator_action.clone(),
             input_severity,
-            output_severity: finding.severity.clone(),
-            severity_change_reason: reason,
-        });
+        );
+        traces.push(decision.trace);
+        if decision.suppressed {
+            suppressed += 1;
+            continue;
+        }
+        if decision.boosted {
+            boosted += 1;
+        }
 
         output.push(finding);
     }
@@ -471,25 +541,7 @@ pub fn calibrate_with_index(
     if index.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the index is empty.
-        let traces = findings
-            .iter()
-            .map(|f| crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: f.title.clone(),
-                finding_category: f.category.to_string(),
-                tp_weight: 0.0,
-                fp_weight: 0.0,
-                wontfix_weight: 0.0,
-                full_suppress_weight: 0.0,
-                soft_fp_weight: 0.0,
-                matched_precedents: vec![],
-                action: None,
-                input_severity: f.severity.clone(),
-                output_severity: f.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
-                ),
-            })
-            .collect();
+        let traces = findings.iter().map(make_no_match_trace).collect();
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
     }
 
@@ -547,22 +599,7 @@ pub fn calibrate_with_index(
             .collect();
 
         if similar.is_empty() {
-            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: finding.title.clone(),
-                finding_category: finding.category.to_string(),
-                tp_weight: 0.0,
-                fp_weight: 0.0,
-                wontfix_weight: 0.0,
-                full_suppress_weight: 0.0,
-                soft_fp_weight: 0.0,
-                matched_precedents: vec![],
-                action: None,
-                input_severity: input_severity.clone(),
-                output_severity: finding.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::NoMatch,
-                ),
-            });
+            traces.push(make_no_match_trace(&finding));
             output.push(finding);
             continue;
         }
@@ -622,95 +659,24 @@ pub fn calibrate_with_index(
             ));
         }
 
-        // Track B: track WHY this finding's severity did or did not change.
-        let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
-
-        // Full suppress: FP weight only. Wontfix no longer contributes.
-        let full_suppress_weight = fp_weight;
-        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
-            finding.calibrator_action = Some(CalibratorAction::Disputed);
-            traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-                finding_title: finding.title.clone(),
-                finding_category: finding.category.to_string(),
-                tp_weight,
-                fp_weight,
-                wontfix_weight,
-                full_suppress_weight,
-                soft_fp_weight,
-                matched_precedents,
-                action: finding.calibrator_action.clone(),
-                input_severity,
-                output_severity: finding.severity.clone(),
-                severity_change_reason: Some(
-                    crate::calibrator_trace::SeverityChangeReason::Disputed,
-                ),
-            });
-            suppressed += 1;
-            continue;
-        }
-
-        // Soft suppress: FP weight only (wontfix is inert), or auto-only FP
-        // This preserves the finding for human review while reducing noise
-        // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
-        if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
-            || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
-        {
-            finding.severity = Severity::Info;
-            finding.calibrator_action = Some(CalibratorAction::Disputed);
-            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
-            // Don't increment suppressed — finding stays in output at reduced severity
-        }
-
-        // Boost: TP clearly dominates FP
-        if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
-            // Track A rubric gate: refuse calibrator severity bumps that the
-            // finding's own text doesn't justify under the rubric (CLAUDE.md
-            // severity_rubric). Bump-suppression preserves the original
-            // severity but still records the confirmation. Default ON; set
-            // `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
-            let proposed = boost_severity(&finding.severity);
-            let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
-                .map(|v| v != "off" && v != "0")
-                .unwrap_or(true);
-            if !gate_on || rubric_supports_severity_bump(&proposed, &finding) {
-                finding.severity = proposed;
-                boosted += 1;
-                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
-            } else {
-                reason = Some(
-                    crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate,
-                );
-            }
-            finding.calibrator_action = Some(CalibratorAction::Confirmed);
-        } else if tp_weight > fp_weight * 1.5 {
-            // Confirm only when TP meaningfully outweighs FP
-            finding.calibrator_action = Some(CalibratorAction::Confirmed);
-            if reason.is_none() {
-                reason = Some(
-                    crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow,
-                );
-            }
-        }
-        // Mixed signal (TP ~ FP): leave calibrator_action as None
-        // Track B: still classify mixed signal as "weight too low to act on".
-        if reason.is_none() {
-            reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
-        }
-
-        traces.push(crate::calibrator_trace::CalibratorTraceEntry {
-            finding_title: finding.title.clone(),
-            finding_category: finding.category.to_string(),
+        let decision = calibrate_core_decision(
+            &mut finding,
+            config,
             tp_weight,
             fp_weight,
             wontfix_weight,
-            full_suppress_weight,
             soft_fp_weight,
             matched_precedents,
-            action: finding.calibrator_action.clone(),
             input_severity,
-            output_severity: finding.severity.clone(),
-            severity_change_reason: reason,
-        });
+        );
+        traces.push(decision.trace);
+        if decision.suppressed {
+            suppressed += 1;
+            continue;
+        }
+        if decision.boosted {
+            boosted += 1;
+        }
 
         output.push(finding);
     }
