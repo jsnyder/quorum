@@ -94,6 +94,16 @@ where
         fn visit_bool<E: de::Error>(self, _v: bool) -> Result<Self::Value, E> {
             Ok(None)
         }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
     }
 
     deserializer.deserialize_any(ConfidenceVisitor)
@@ -1812,6 +1822,20 @@ mod tests {
     fn llm_finding_confidence_nan_handled() {
         // NaN in JSON becomes null, which should parse as None
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":null}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert!(findings[0].confidence.is_none());
+    }
+
+    #[test]
+    fn llm_finding_confidence_array_discarded() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":[0.5, 0.8]}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert!(findings[0].confidence.is_none());
+    }
+
+    #[test]
+    fn llm_finding_confidence_object_discarded() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":{"value":0.5}}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
         assert!(findings[0].confidence.is_none());
     }

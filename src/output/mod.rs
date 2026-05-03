@@ -101,7 +101,8 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
     );
 
     if let Some(ref fix) = f.suggested_fix {
-        let indented = fix.replace('\n', "\n      ");
+        let safe_fix = strip_control_chars(fix);
+        let indented = safe_fix.replace('\n', "\n      ");
         output.push_str(&format!(
             "    {dim}Suggested fix:{reset} {indented}\n",
             dim = style.dim,
@@ -111,11 +112,11 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
     }
 
     if let Some(ref excerpt) = f.based_on_excerpt {
+        let safe_excerpt = strip_control_chars(excerpt);
         output.push_str(&format!(
-            "    {dim}[partial view: {excerpt}]{reset}\n",
+            "    {dim}[partial view: {safe_excerpt}]{reset}\n",
             dim = style.dim,
             reset = style.reset,
-            excerpt = excerpt
         ));
     }
 
@@ -936,5 +937,31 @@ mod tests {
         assert!(output.contains("Suggested fix:"));
         // Multiline fix should be indented
         assert!(output.contains("      if input.is_empty()"));
+    }
+
+    #[test]
+    fn format_finding_strips_control_chars_from_suggested_fix() {
+        let f = FindingBuilder::new()
+            .title("Bug")
+            .description("D")
+            .suggested_fix("Use \x1b[31mparameterized\x1b[0m queries")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(!output.contains("\x1b[31m"), "ANSI escape leaked through suggested_fix");
+        assert!(output.contains("parameterized"));
+    }
+
+    #[test]
+    fn format_finding_strips_control_chars_from_excerpt() {
+        let f = FindingBuilder::new()
+            .title("Bug")
+            .description("D")
+            .based_on_excerpt("lines 1-50\x1b[0m of 100")
+            .build();
+        let style = Style::plain();
+        let output = format_finding(&f, &style);
+        assert!(!output.contains("\x1b[0m"), "ANSI escape leaked through based_on_excerpt");
+        assert!(output.contains("lines 1-50"));
     }
 }
