@@ -49,6 +49,9 @@ pub mod calibrator_trace;
 // refactor parity testing (PR1 Phase 0).
 pub mod calibrator_fingerprint;
 
+// Strict Category enum (PR1a) — replaces Finding.category: String.
+pub mod category;
+
 // Project domain detection (HA, ESPHome, etc.) — leaf module.
 pub mod domain;
 
