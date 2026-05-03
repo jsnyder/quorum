@@ -204,6 +204,8 @@ pub fn apply_grounding(mut findings: Vec<Finding>, source: &str, disabled: bool)
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn extracts_backtick_identifiers_from_title() {
         let ids = extract_identifiers("Function `parse_unified_diff` panics on single-line hunks");
@@ -574,6 +576,7 @@ mod tests {
 
     #[test]
     fn apply_grounding_env_var_true_also_disables() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let source = "fn foo() {}\n";
         let findings = vec![
             FindingBuilder::new()
@@ -583,10 +586,7 @@ mod tests {
                 .severity(Severity::High)
                 .build(),
         ];
-        // Test the parsing logic that will be used in the pipeline
         for val in ["1", "true", "TRUE", "True"] {
-            // SAFETY: test-only; cargo test runs each test in its own thread
-            // but we are not racing on this specific env var.
             unsafe { std::env::set_var("QUORUM_DISABLE_AST_GROUNDING", val) };
             let disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -596,7 +596,6 @@ mod tests {
             assert!(result[0].grounding_status.is_none());
             assert_eq!(result[0].severity, Severity::High);
         }
-        // SAFETY: test-only cleanup
         unsafe { std::env::remove_var("QUORUM_DISABLE_AST_GROUNDING") };
     }
 
