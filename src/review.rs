@@ -38,6 +38,65 @@ pub struct LlmFinding {
     pub line_end: u32,
     #[serde(default)]
     pub suggested_fix: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_confidence")]
+    pub confidence: Option<f32>,
+}
+
+/// Deserialize `confidence` leniently: accept a JSON number as `Some(f32)`,
+/// `null` / missing as `None`, and any other type (e.g. the LLM emitting
+/// `"confidence": "high"`) as `None` rather than a hard parse error.
+fn deserialize_confidence<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct ConfidenceVisitor;
+
+    impl<'de> Visitor<'de> for ConfidenceVisitor {
+        type Value = Option<f32>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a number or null")
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(Some(v as f32))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(Some(v as f32))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(Some(v as f32))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        // LLM emitted a string like "high" — not a number, silently discard.
+        fn visit_str<E: de::Error>(self, _v: &str) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_bool<E: de::Error>(self, _v: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(ConfidenceVisitor)
 }
 
 impl LlmFinding {
@@ -72,8 +131,8 @@ impl LlmFinding {
             canonical_pattern: None,
             suggested_fix: self.suggested_fix,
             based_on_excerpt: None,
-            reasoning: None,
-            confidence: None,
+            reasoning: self.reasoning,
+            confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
             cited_lines: None,
             grounding_status: None,
         }
@@ -469,6 +528,8 @@ mod tests {
             line_start: 42,
             line_end: 50,
             suggested_fix: None,
+            reasoning: None,
+            confidence: None,
         };
         let f = lf.into_finding("gpt-5.4");
         assert_eq!(f.severity, Severity::Critical);
@@ -493,6 +554,8 @@ mod tests {
             line_start: 1,
             line_end: 1,
             suggested_fix: None,
+            reasoning: None,
+            confidence: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::Medium);
     }
@@ -507,6 +570,8 @@ mod tests {
             line_start: 1,
             line_end: 1,
             suggested_fix: None,
+            reasoning: None,
+            confidence: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::High);
     }
@@ -525,6 +590,8 @@ mod tests {
             line_start: 1,
             line_end: 1,
             suggested_fix: None,
+            reasoning: None,
+            confidence: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::Medium);
     }
@@ -539,6 +606,8 @@ mod tests {
             line_start: 1,
             line_end: 1,
             suggested_fix: None,
+            reasoning: None,
+            confidence: None,
         };
         assert_eq!(lf.into_finding("m").severity, Severity::Medium);
     }
@@ -1705,5 +1774,45 @@ mod tests {
                     || sys.contains("Do NOT")),
             "system prompt must instruct the model not to re-flag FP precedents"
         );
+    }
+
+    // -- reasoning & confidence wiring --
+
+    #[test]
+    fn llm_finding_with_reasoning_and_confidence_parses() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"reasoning":"The function lacks bounds checking","confidence":0.85}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert_eq!(findings[0].reasoning.as_deref(), Some("The function lacks bounds checking"));
+        assert_eq!(findings[0].confidence, Some(0.85));
+    }
+
+    #[test]
+    fn llm_finding_without_new_fields_still_parses() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert!(findings[0].reasoning.is_none());
+        assert!(findings[0].confidence.is_none());
+    }
+
+    #[test]
+    fn llm_finding_confidence_clamped_to_0_1() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":1.5}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert_eq!(findings[0].confidence, Some(1.0));
+    }
+
+    #[test]
+    fn llm_finding_confidence_negative_clamped() {
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":-0.5}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert_eq!(findings[0].confidence, Some(0.0));
+    }
+
+    #[test]
+    fn llm_finding_confidence_nan_handled() {
+        // NaN in JSON becomes null, which should parse as None
+        let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":null}]"#;
+        let findings = parse_llm_response(json, "gpt-5.4").unwrap();
+        assert!(findings[0].confidence.is_none());
     }
 }
