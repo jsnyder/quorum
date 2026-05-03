@@ -2939,7 +2939,7 @@ mod tests {
         let findings = analyze_complexity(&tree, source, Language::Rust, 5);
         assert!(!findings.is_empty(), "complex function should produce a finding");
         assert_eq!(findings[0].source, Source::LocalAst);
-        assert_eq!(findings[0].category, "complexity");
+        assert_eq!(findings[0].category, "performance");
         // Complexity findings are now capped at Medium per the system-prompt
         // severity rubric; they should never crowd into the high/critical band.
         assert!(findings[0].severity >= Severity::Low);

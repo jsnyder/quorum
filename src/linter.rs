@@ -846,7 +846,7 @@ mod tests {
         ]"#;
         let findings = normalize_ruff_output(json).unwrap();
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].category, "import");
+        assert_eq!(findings[0].category, "maintainability");
         assert!(findings[0].title.contains("F401"));
         assert_eq!(findings[0].line_start, 1);
         assert_eq!(findings[0].source, Source::Linter("ruff".into()));

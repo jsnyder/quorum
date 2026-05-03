@@ -2,6 +2,7 @@
 /// For each finding, searches for similar past findings and their TP/FP verdicts.
 /// FP precedent suppresses findings; TP precedent boosts confidence.
 
+use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::finding::{CalibratorAction, Finding, Severity};
 
@@ -869,8 +870,10 @@ fn finding_feedback_similarity(finding: &Finding, entry: &FeedbackEntry) -> f64 
     let title_sim = word_jaccard(&finding.title, &entry.finding_title);
     score += title_sim * 3.0;
 
-    // Category exact match — weight 2
-    if !entry.finding_category.is_empty() && finding.category.as_str() == entry.finding_category {
+    // Category match — weight 2 (normalize legacy strings through Category enum)
+    if !entry.finding_category.is_empty()
+        && finding.category == Category::from(entry.finding_category.as_str())
+    {
         score += 2.0;
     }
 

@@ -649,7 +649,7 @@ mod tests {
             .lines(10, 25)
             .build();
         let out = format_compact_finding(&f);
-        assert_eq!(out, "~|complexity|L10-25|Complex function");
+        assert_eq!(out, "~|performance|L10-25|Complex function");
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
         let out = format_compact_review("src/main.rs", &findings);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "!|security|L42|Bug A");
-        assert_eq!(lines[1], "~|style|L10|Bug B");
+        assert_eq!(lines[1], "~|maintainability|L10|Bug B");
         assert!(lines[2].contains("2 findings"));
     }
 

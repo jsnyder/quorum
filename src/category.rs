@@ -28,9 +28,19 @@ pub enum Category {
 }
 
 impl Category {
-    /// Returns every variant. Phase 1: empty — Phase 2 returns all 10.
     pub fn all() -> Vec<Category> {
-        Vec::new()
+        vec![
+            Category::Security,
+            Category::Correctness,
+            Category::Logic,
+            Category::Concurrency,
+            Category::Reliability,
+            Category::Robustness,
+            Category::ErrorHandling,
+            Category::Validation,
+            Category::Performance,
+            Category::Maintainability,
+        ]
     }
 
     /// Kebab-case string for this variant (matches serde rename).
@@ -63,9 +73,19 @@ impl PartialEq<&str> for Category {
 }
 
 impl From<String> for Category {
-    fn from(_s: String) -> Self {
-        // Phase 1: wrong default so the from-string mapping tests fail RED.
-        Category::Security
+    fn from(s: String) -> Self {
+        match s.to_lowercase().trim().replace(' ', "-").replace('_', "-").as_str() {
+            "security" | "safety" => Category::Security,
+            "correctness" | "functional-bug" => Category::Correctness,
+            "logic" | "logic-error" => Category::Logic,
+            "concurrency" => Category::Concurrency,
+            "reliability" | "resource-lifecycle" | "resource-management" => Category::Reliability,
+            "robustness" | "compatibility" | "hardware" => Category::Robustness,
+            "error-handling" => Category::ErrorHandling,
+            "validation" | "schema-evolution" | "data-quality" => Category::Validation,
+            "performance" | "complexity" => Category::Performance,
+            _ => Category::Maintainability,
+        }
     }
 }
 

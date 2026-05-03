@@ -492,7 +492,7 @@ rule:
         let f = &findings[0];
         assert!(f.title.contains("as-any-cast"));
         assert_eq!(f.source, Source::Linter("ast-grep".into()));
-        assert_eq!(f.category, "ast-pattern");
+        assert_eq!(f.category, "maintainability");
     }
 
     #[test]
