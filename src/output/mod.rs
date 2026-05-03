@@ -112,7 +112,11 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
     }
 
     if let Some(ref excerpt) = f.based_on_excerpt {
-        let safe_excerpt = strip_control_chars(excerpt).replace(['\n', '\t'], " ");
+        let safe_excerpt = strip_control_chars(excerpt)
+            .replace(['\n', '\t'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         output.push_str(&format!(
             "    {dim}[partial view: {safe_excerpt}]{reset}\n",
             dim = style.dim,
@@ -298,16 +302,18 @@ pub fn format_compact_finding(f: &Finding) -> String {
     } else {
         format!("L{}-{}", f.line_start, f.line_end)
     };
-    let title = if f.title.chars().count() > 80 {
-        let truncated: String = f.title.chars().take(80).collect();
+    let safe_title = strip_control_chars(&f.title).replace(['\n', '\t'], " ");
+    let safe_category = strip_control_chars(f.category.as_str()).replace(['\n', '\t'], " ");
+    let title = if safe_title.chars().count() > 80 {
+        let truncated: String = safe_title.chars().take(80).collect();
         format!("{}...", truncated)
     } else {
-        f.title.clone()
+        safe_title
     };
     let mut result = format!(
         "{icon}|{cat}|{line}|{title}",
         icon = icon,
-        cat = f.category,
+        cat = safe_category,
         line = line_label,
         title = title,
     );
@@ -731,6 +737,21 @@ mod tests {
         let out = format_compact_finding(&f);
         assert!(out.len() < 120);
         assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_finding_strips_control_chars_from_title() {
+        let f = FindingBuilder::new()
+            .title("Evil\x1b[31m injection\nnewline")
+            .severity(Severity::High)
+            .category("security".into())
+            .lines(1, 1)
+            .build();
+        let out = format_compact_finding(&f);
+        assert!(!out.contains('\x1b'), "control char in output: {out}");
+        assert!(!out.contains('\n'), "newline in compact output: {out}");
+        assert!(out.contains("Evil"), "title content missing: {out}");
+        assert!(out.contains("injection"), "title content missing: {out}");
     }
 
     // -- format_compact_review --
