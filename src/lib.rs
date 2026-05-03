@@ -78,3 +78,6 @@ pub mod patterns;
 
 // Prompt sanitization helpers (sandbox tags, fence picking).
 pub mod prompt_sanitize;
+
+// AST grounding: identifier extraction from LLM findings.
+pub mod grounding;
