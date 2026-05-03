@@ -87,8 +87,13 @@ pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
     let source_lines: Vec<&str> = source.lines().collect();
     let line_count = source_lines.len() as u32;
 
-    // Check line range validity.
-    if finding.line_start > line_count || finding.line_end > line_count {
+    // Check line range validity (1-indexed, ordered).
+    if finding.line_start == 0
+        || finding.line_end == 0
+        || finding.line_start > finding.line_end
+        || finding.line_start > line_count
+        || finding.line_end > line_count
+    {
         return GroundingResult {
             status: GroundingStatus::LineOutOfRange,
             severity_change: demote_severity(&finding.severity),
@@ -539,5 +544,31 @@ mod tests {
         }
         // SAFETY: test-only cleanup
         unsafe { std::env::remove_var("QUORUM_DISABLE_AST_GROUNDING") };
+    }
+
+    #[test]
+    fn grounding_line_start_zero_treated_as_out_of_range() {
+        let f = FindingBuilder::new()
+            .title("Function `parse_unified_diff` issue")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(0, 5)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, sample_source());
+        assert_eq!(result.status, GroundingStatus::LineOutOfRange);
+        assert_eq!(result.severity_change, Some(Severity::Medium));
+    }
+
+    #[test]
+    fn grounding_inverted_range_treated_as_out_of_range() {
+        let f = FindingBuilder::new()
+            .title("Function `parse_unified_diff` issue")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(10, 1)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, sample_source());
+        assert_eq!(result.status, GroundingStatus::LineOutOfRange);
+        assert_eq!(result.severity_change, Some(Severity::Medium));
     }
 }
