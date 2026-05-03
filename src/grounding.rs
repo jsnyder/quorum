@@ -112,7 +112,7 @@ pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
     // Check all identifiers exist with word boundaries.
     let all_found = identifiers.iter().all(|id| {
         let pattern = format!(r"\b{}\b", regex::escape(id));
-        Regex::new(&pattern).map_or(false, |re| re.is_match(&window))
+        Regex::new(&pattern).is_ok_and(|re| re.is_match(&window))
     });
 
     if all_found {
