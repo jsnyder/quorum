@@ -8,7 +8,7 @@
 //! Keep minimal: one test, no logic — just type construction to prove the
 //! `pub mod` exports compile and link from an integration-test build.
 
-use quorum::calibrator::{calibrate, CalibratorConfig};
+use quorum::calibrator::{CalibratorConfig, calibrate};
 use quorum::calibrator_trace::CalibratorTraceEntry;
 use quorum::finding::{Finding, Severity, Source};
 
@@ -36,6 +36,7 @@ fn lib_exports_are_reachable_from_integration_tests() {
         reasoning: None,
         confidence: None,
         cited_lines: None,
+        grounding_status: None,
     };
 
     // calibrate(...) must be callable with no precedents — exercises the

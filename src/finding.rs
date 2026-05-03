@@ -46,6 +46,15 @@ impl Source {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroundingStatus {
+    Verified,
+    SymbolNotFound,
+    LineOutOfRange,
+    NotChecked,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub title: String,
@@ -70,6 +79,8 @@ pub struct Finding {
     pub confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_lines: Option<(u32, u32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grounding_status: Option<GroundingStatus>,
 }
 
 impl Finding {
@@ -121,6 +132,7 @@ impl FindingBuilder {
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             },
         }
     }
@@ -193,6 +205,11 @@ impl FindingBuilder {
 
     pub fn based_on_excerpt(mut self, s: &str) -> Self {
         self.inner.based_on_excerpt = Some(s.to_string());
+        self
+    }
+
+    pub fn grounding_status(mut self, s: GroundingStatus) -> Self {
+        self.inner.grounding_status = Some(s);
         self
     }
 
@@ -281,6 +298,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -313,6 +331,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -338,6 +357,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -365,6 +385,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         assert!(f.is_valid());
     }
@@ -388,6 +409,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         assert!(f.is_valid());
     }
@@ -411,6 +433,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         assert!(!f.is_valid());
     }
@@ -434,6 +457,7 @@ mod tests {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         };
         assert!(!f.is_valid());
     }
@@ -458,7 +482,10 @@ mod tests {
 
     #[test]
     fn severity_serializes_as_lowercase() {
-        assert_eq!(serde_json::to_value(Severity::Critical).unwrap(), "critical");
+        assert_eq!(
+            serde_json::to_value(Severity::Critical).unwrap(),
+            "critical"
+        );
         assert_eq!(serde_json::to_value(Severity::High).unwrap(), "high");
         assert_eq!(serde_json::to_value(Severity::Medium).unwrap(), "medium");
         assert_eq!(serde_json::to_value(Severity::Low).unwrap(), "low");
