@@ -102,13 +102,32 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
 
     if let Some(ref fix) = f.suggested_fix {
         let indented = fix.replace('\n', "\n      ");
-        output.push_str(&format!("    {dim}Suggested fix:{reset} {indented}\n",
-            dim = style.dim, reset = style.reset, indented = indented));
+        output.push_str(&format!(
+            "    {dim}Suggested fix:{reset} {indented}\n",
+            dim = style.dim,
+            reset = style.reset,
+            indented = indented
+        ));
     }
 
     if let Some(ref excerpt) = f.based_on_excerpt {
-        output.push_str(&format!("    {dim}[partial view: {excerpt}]{reset}\n",
-            dim = style.dim, reset = style.reset, excerpt = excerpt));
+        output.push_str(&format!(
+            "    {dim}[partial view: {excerpt}]{reset}\n",
+            dim = style.dim,
+            reset = style.reset,
+            excerpt = excerpt
+        ));
+    }
+
+    if let Some(ref status) = f.grounding_status {
+        use crate::finding::GroundingStatus;
+        if matches!(status, GroundingStatus::SymbolNotFound | GroundingStatus::LineOutOfRange) {
+            output.push_str(&format!(
+                "    {dim}[ungrounded] cited symbol not verified in source{reset}\n",
+                dim = style.dim,
+                reset = style.reset,
+            ));
+        }
     }
 
     output
@@ -218,7 +237,7 @@ pub fn format_json_grouped_with_meta(
     enabled: &[crate::linter::LinterKind],
     hints: &[crate::linter::LinterHint],
 ) -> anyhow::Result<String> {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     let mut out: Vec<Value> = Vec::new();
     if !enabled.is_empty() || !hints.is_empty() {
         let enabled_names: Vec<&str> = enabled.iter().map(|k| k.name()).collect();
@@ -252,7 +271,9 @@ pub fn format_json_grouped_with_meta(
 }
 
 /// JSON output grouped by file -- includes file_path so findings can be traced back.
-pub fn format_json_grouped(results: &[crate::pipeline::FileReviewResult]) -> anyhow::Result<String> {
+pub fn format_json_grouped(
+    results: &[crate::pipeline::FileReviewResult],
+) -> anyhow::Result<String> {
     #[derive(serde::Serialize)]
     struct FileFindings<'a> {
         file: &'a str,
@@ -282,7 +303,8 @@ pub fn format_compact_finding(f: &Finding) -> String {
     } else {
         f.title.clone()
     };
-    let mut result = format!("{icon}|{cat}|{line}|{title}",
+    let mut result = format!(
+        "{icon}|{cat}|{line}|{title}",
         icon = icon,
         cat = f.category,
         line = line_label,
@@ -299,26 +321,34 @@ pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
         return format!("{}: clean", file_path);
     }
 
-    let mut lines: Vec<String> = findings.iter()
-        .map(format_compact_finding)
-        .collect();
+    let mut lines: Vec<String> = findings.iter().map(format_compact_finding).collect();
 
-    let critical = findings.iter()
+    let critical = findings
+        .iter()
         .filter(|f| matches!(f.severity, Severity::Critical | Severity::High))
         .count();
-    let warning = findings.iter()
+    let warning = findings
+        .iter()
         .filter(|f| f.severity == Severity::Medium)
         .count();
     let info = findings.len() - critical - warning;
 
-    lines.push(format!("{} findings ({}C {}W {}I)",
-        findings.len(), critical, warning, info));
+    lines.push(format!(
+        "{} findings ({}C {}W {}I)",
+        findings.len(),
+        critical,
+        warning,
+        info
+    ));
 
     lines.join("\n")
 }
 
 pub fn compute_exit_code(findings: &[Finding]) -> i32 {
-    if findings.iter().any(|f| matches!(f.severity, Severity::Critical | Severity::High)) {
+    if findings
+        .iter()
+        .any(|f| matches!(f.severity, Severity::Critical | Severity::High))
+    {
         2
     } else if findings.iter().any(|f| f.severity == Severity::Medium) {
         1
@@ -381,7 +411,12 @@ mod tests {
 
     #[test]
     fn human_hint_includes_file_count_linter_and_instruction() {
-        let hints = vec![hint(LinterKind::Ruff, "Python", 3, "add [tool.ruff] to pyproject.toml")];
+        let hints = vec![hint(
+            LinterKind::Ruff,
+            "Python",
+            3,
+            "add [tool.ruff] to pyproject.toml",
+        )];
         let lines = format_hints_human(&hints);
         assert_eq!(lines.len(), 1);
         let line = &lines[0];
@@ -410,12 +445,23 @@ mod tests {
     #[test]
     fn compact_header_lists_enabled_and_unconfigured() {
         let enabled = vec![LinterKind::Clippy];
-        let hints = vec![hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml")];
+        let hints = vec![hint(
+            LinterKind::Ruff,
+            "Python",
+            1,
+            "add [tool.ruff] to pyproject.toml",
+        )];
         let header = format_compact_linter_header(&enabled, &hints).unwrap();
         assert!(header.starts_with('#'), "no comment prefix: {header}");
         assert!(header.contains("clippy=on"), "enabled missing: {header}");
-        assert!(header.contains("ruff=off"), "unconfigured missing: {header}");
-        assert!(header.contains("[tool.ruff]"), "instruction missing: {header}");
+        assert!(
+            header.contains("ruff=off"),
+            "unconfigured missing: {header}"
+        );
+        assert!(
+            header.contains("[tool.ruff]"),
+            "instruction missing: {header}"
+        );
     }
 
     #[test]
@@ -427,7 +473,12 @@ mod tests {
     fn compact_header_single_line_no_newlines() {
         let enabled = vec![LinterKind::Clippy, LinterKind::Eslint];
         let hints = vec![
-            hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml"),
+            hint(
+                LinterKind::Ruff,
+                "Python",
+                1,
+                "add [tool.ruff] to pyproject.toml",
+            ),
             hint(LinterKind::Yamllint, "YAML", 2, "add .yamllint"),
         ];
         let header = format_compact_linter_header(&enabled, &hints).unwrap();
@@ -441,7 +492,12 @@ mod tests {
         use crate::pipeline::FileReviewResult;
         let results: Vec<FileReviewResult> = vec![];
         let enabled = vec![LinterKind::Clippy];
-        let hints = vec![hint(LinterKind::Ruff, "Python", 1, "add [tool.ruff] to pyproject.toml")];
+        let hints = vec![hint(
+            LinterKind::Ruff,
+            "Python",
+            1,
+            "add [tool.ruff] to pyproject.toml",
+        )];
         let out = format_json_grouped_with_meta(&results, &enabled, &hints).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let arr = parsed.as_array().expect("top-level array");
@@ -449,7 +505,12 @@ mod tests {
         let meta = &arr[0]["_meta"]["linters"];
         assert_eq!(meta["enabled"][0], "clippy");
         assert_eq!(meta["available_unconfigured"][0]["name"], "ruff");
-        assert!(meta["available_unconfigured"][0]["hint"].as_str().unwrap().contains("[tool.ruff]"));
+        assert!(
+            meta["available_unconfigured"][0]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("[tool.ruff]")
+        );
     }
 
     #[test]
@@ -458,7 +519,13 @@ mod tests {
         let results: Vec<FileReviewResult> = vec![];
         let out = format_json_grouped_with_meta(&results, &[], &[]).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(parsed.as_array().unwrap().iter().all(|e| e.get("_meta").is_none()));
+        assert!(
+            parsed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e.get("_meta").is_none())
+        );
     }
 
     // -- format_legend --
@@ -786,12 +853,83 @@ mod tests {
         assert!(output.contains("[excerpt]"));
     }
 
+    // -- grounding status annotation --
+
+    use crate::finding::GroundingStatus;
+
+    #[test]
+    fn format_finding_shows_ungrounded_tag() {
+        let f = FindingBuilder::new()
+            .title("Function `nonexistent` has bug")
+            .severity(Severity::Medium)
+            .grounding_status(GroundingStatus::SymbolNotFound)
+            .build();
+        let output = format_finding(&f, &Style::plain());
+        assert!(output.contains("[ungrounded]"), "Expected [ungrounded] in output: {output}");
+    }
+
+    #[test]
+    fn format_finding_shows_ungrounded_for_line_out_of_range() {
+        let f = FindingBuilder::new()
+            .title("Function `foo_bar` has bug")
+            .severity(Severity::Medium)
+            .grounding_status(GroundingStatus::LineOutOfRange)
+            .build();
+        let output = format_finding(&f, &Style::plain());
+        assert!(output.contains("[ungrounded]"), "Expected [ungrounded] in output: {output}");
+    }
+
+    #[test]
+    fn format_finding_no_tag_for_verified() {
+        let f = FindingBuilder::new()
+            .title("Function `real_func` has bug")
+            .severity(Severity::Medium)
+            .grounding_status(GroundingStatus::Verified)
+            .build();
+        let output = format_finding(&f, &Style::plain());
+        assert!(!output.contains("[ungrounded]"), "Verified should NOT show [ungrounded]: {output}");
+    }
+
+    #[test]
+    fn format_finding_no_tag_for_not_checked() {
+        let f = FindingBuilder::new()
+            .title("Some finding")
+            .severity(Severity::Medium)
+            .grounding_status(GroundingStatus::NotChecked)
+            .build();
+        let output = format_finding(&f, &Style::plain());
+        assert!(!output.contains("[ungrounded]"), "NotChecked should NOT show [ungrounded]: {output}");
+    }
+
+    #[test]
+    fn format_finding_no_tag_when_grounding_none() {
+        let f = FindingBuilder::new()
+            .title("Some finding")
+            .severity(Severity::Medium)
+            .build();
+        let output = format_finding(&f, &Style::plain());
+        assert!(!output.contains("[ungrounded]"), "None grounding should NOT show [ungrounded]: {output}");
+    }
+
+    #[test]
+    fn grounding_status_in_json_output() {
+        let f = FindingBuilder::new()
+            .title("Function `nonexistent` has bug")
+            .grounding_status(GroundingStatus::SymbolNotFound)
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("grounding_status"), "JSON should contain grounding_status: {json}");
+        assert!(json.contains("symbol-not-found"), "JSON should contain kebab-case status: {json}");
+    }
+
     #[test]
     fn format_finding_multiline_suggested_fix() {
         let f = FindingBuilder::new()
             .title("Missing validation")
             .description("No input validation")
-            .suggested_fix("Add validation:\n  if input.is_empty() {\n    return Err(\"empty\");\n  }")
+            .suggested_fix(
+                "Add validation:\n  if input.is_empty() {\n    return Err(\"empty\");\n  }",
+            )
             .build();
         let style = Style::plain();
         let output = format_finding(&f, &style);
