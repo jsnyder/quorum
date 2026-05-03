@@ -32,6 +32,34 @@ impl Category {
     pub fn all() -> Vec<Category> {
         Vec::new()
     }
+
+    /// Kebab-case string for this variant (matches serde rename).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Category::Security => "security",
+            Category::Correctness => "correctness",
+            Category::Logic => "logic",
+            Category::Concurrency => "concurrency",
+            Category::Reliability => "reliability",
+            Category::Robustness => "robustness",
+            Category::ErrorHandling => "error-handling",
+            Category::Validation => "validation",
+            Category::Performance => "performance",
+            Category::Maintainability => "maintainability",
+        }
+    }
+}
+
+impl std::fmt::Display for Category {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for Category {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
 }
 
 impl From<String> for Category {

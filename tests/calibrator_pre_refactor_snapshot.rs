@@ -87,7 +87,7 @@ fn external_fb(title: &str, category: &str, verdict: Verdict, agent: &str) -> Fe
 fn finding(title: &str, category: &str, severity: Severity) -> Finding {
     FindingBuilder::new()
         .title(title)
-        .category(category)
+        .category(category.into())
         .severity(severity)
         .description("snapshot scenario finding")
         .build()

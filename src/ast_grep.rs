@@ -290,6 +290,9 @@ pub fn scan_file(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }

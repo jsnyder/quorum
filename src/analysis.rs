@@ -60,6 +60,9 @@ pub fn analyze_complexity(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -252,6 +255,9 @@ fn scan_insecure_rust(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -277,6 +283,9 @@ fn scan_insecure_rust(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -315,6 +324,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -337,6 +349,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -354,6 +369,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -384,6 +402,9 @@ fn scan_insecure_python(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
@@ -400,6 +421,9 @@ fn scan_insecure_python(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         }
                     }
@@ -436,6 +460,9 @@ fn scan_insecure_python(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -491,6 +518,9 @@ fn scan_insecure_python(
                         canonical_pattern: None,
                         suggested_fix: None,
                         based_on_excerpt: None,
+                        reasoning: None,
+                        confidence: None,
+                        cited_lines: None,
                     });
                 }
             }
@@ -549,6 +579,9 @@ fn scan_insecure_python(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -580,6 +613,9 @@ fn scan_insecure_python(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -631,6 +667,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -658,6 +697,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -686,6 +728,9 @@ fn scan_insecure_python(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -1033,6 +1078,9 @@ fn scan_insecure_yaml(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         } else {
                             seen_keys.push((key_text, key_line));
@@ -1062,6 +1110,9 @@ fn scan_insecure_yaml(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
 
@@ -1081,6 +1132,9 @@ fn scan_insecure_yaml(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
 
@@ -1109,6 +1163,9 @@ fn scan_insecure_yaml(
                         canonical_pattern: None,
                         suggested_fix: None,
                         based_on_excerpt: None,
+                        reasoning: None,
+                        confidence: None,
+                        cited_lines: None,
                     });
                 }
             }
@@ -1137,6 +1194,9 @@ fn scan_insecure_yaml(
                                     canonical_pattern: None,
                                     suggested_fix: None,
                                     based_on_excerpt: None,
+                                    reasoning: None,
+                                    confidence: None,
+                                    cited_lines: None,
                                 });
                             }
                         }
@@ -1173,6 +1233,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1200,6 +1263,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1259,6 +1325,9 @@ fn scan_insecure_yaml(
                                             canonical_pattern: None,
                                             suggested_fix: Some(format!("Add `security_opt: [no-new-privileges:true]` to the `{}` service.", svc_name)),
                                             based_on_excerpt: None,
+                                            reasoning: None,
+                                            confidence: None,
+                                            cited_lines: None,
                                         });
                                     }
 
@@ -1278,6 +1347,9 @@ fn scan_insecure_yaml(
                                             canonical_pattern: None,
                                             suggested_fix: Some(format!("Add `read_only: true` to the `{}` service and use tmpfs mounts for writable paths.", svc_name)),
                                             based_on_excerpt: None,
+                                            reasoning: None,
+                                            confidence: None,
+                                            cited_lines: None,
                                         });
                                     }
                                 }
@@ -1313,6 +1385,9 @@ fn scan_insecure_yaml(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         }
                     }
@@ -1350,6 +1425,9 @@ fn scan_insecure_yaml(
                                                     canonical_pattern: None,
                                                     suggested_fix: None,
                                                     based_on_excerpt: None,
+                                                    reasoning: None,
+                                                    confidence: None,
+                                                    cited_lines: None,
                                                 });
                                             }
                                         }
@@ -1377,6 +1455,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1404,6 +1485,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1428,6 +1512,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1452,6 +1539,9 @@ fn scan_insecure_yaml(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -1483,6 +1573,9 @@ fn scan_insecure_yaml(
                         canonical_pattern: None,
                         suggested_fix: None,
                         based_on_excerpt: None,
+                        reasoning: None,
+                        confidence: None,
+                        cited_lines: None,
                     });
                 }
             }
@@ -1515,6 +1608,9 @@ fn scan_insecure_yaml(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -1548,6 +1644,9 @@ fn scan_insecure_typescript(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
 
@@ -1567,6 +1666,9 @@ fn scan_insecure_typescript(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
 
@@ -1586,6 +1688,9 @@ fn scan_insecure_typescript(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -1628,6 +1733,9 @@ fn scan_insecure_typescript(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         }
                     }
@@ -1656,6 +1764,9 @@ fn scan_insecure_typescript(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -1679,6 +1790,9 @@ fn scan_insecure_typescript(
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -1706,6 +1820,9 @@ fn scan_insecure_typescript(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -1740,6 +1857,9 @@ fn scan_insecure_typescript(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                         break;
                     }
@@ -1775,6 +1895,9 @@ fn scan_insecure_typescript(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         }
                     }
@@ -1799,6 +1922,9 @@ fn scan_insecure_typescript(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 }
@@ -1829,6 +1955,9 @@ fn scan_insecure_bash(
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -1863,6 +1992,9 @@ fn scan_insecure_bash(
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -1886,6 +2018,9 @@ fn scan_insecure_bash(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
 
@@ -1909,6 +2044,9 @@ fn scan_insecure_bash(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                             break;
                         }
@@ -1943,6 +2081,9 @@ fn scan_insecure_bash(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                             break;
                         }
@@ -1985,6 +2126,9 @@ fn scan_insecure_bash(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                         }
                     }
@@ -2020,6 +2164,9 @@ fn scan_insecure_dockerfile(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -2054,6 +2201,9 @@ fn scan_insecure_dockerfile(
                                 canonical_pattern: None,
                                 suggested_fix: None,
                                 based_on_excerpt: None,
+                                reasoning: None,
+                                confidence: None,
+                                cited_lines: None,
                             });
                             break;
                         }
@@ -2083,6 +2233,9 @@ fn scan_insecure_dockerfile(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -2178,6 +2331,9 @@ fn scan_insecure_terraform(
                                     canonical_pattern: None,
                                     suggested_fix: None,
                                     based_on_excerpt: None,
+                                    reasoning: None,
+                                    confidence: None,
+                                    cited_lines: None,
                                 });
                             }
                         }
@@ -2215,6 +2371,9 @@ fn scan_insecure_terraform(
                                     canonical_pattern: None,
                                     suggested_fix: None,
                                     based_on_excerpt: None,
+                                    reasoning: None,
+                                    confidence: None,
+                                    cited_lines: None,
                                 });
                             }
                         }
@@ -2280,6 +2439,9 @@ fn scan_insecure_terraform(
                         canonical_pattern: None,
                         suggested_fix: None,
                         based_on_excerpt: None,
+                        reasoning: None,
+                        confidence: None,
+                        cited_lines: None,
                     });
                 }
             }
@@ -2365,6 +2527,9 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -2447,6 +2612,9 @@ fn check_required_providers(
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -2545,6 +2713,9 @@ fn analyze_dockerfile_structure(
                             canonical_pattern: None,
                             suggested_fix: None,
                             based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
                         });
                     }
                 }
@@ -2574,6 +2745,9 @@ fn analyze_dockerfile_structure(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -2593,6 +2767,9 @@ fn analyze_dockerfile_structure(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -2612,6 +2789,9 @@ fn analyze_dockerfile_structure(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
     if entrypoint_count > 1 {
@@ -2629,6 +2809,9 @@ fn analyze_dockerfile_structure(
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 

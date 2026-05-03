@@ -504,7 +504,7 @@ mod tests {
         let f = FindingBuilder::new()
             .title("SQL injection")
             .description("User input flows to db")
-            .category("security")
+            .category("security".into())
             .severity(Severity::Critical)
             .lines(42, 42)
             .build();
@@ -633,7 +633,7 @@ mod tests {
         let f = FindingBuilder::new()
             .title("SQL injection risk")
             .severity(Severity::Critical)
-            .category("security")
+            .category("security".into())
             .lines(42, 42)
             .build();
         let out = format_compact_finding(&f);
@@ -645,7 +645,7 @@ mod tests {
         let f = FindingBuilder::new()
             .title("Complex function")
             .severity(Severity::Medium)
-            .category("complexity")
+            .category("complexity".into())
             .lines(10, 25)
             .build();
         let out = format_compact_finding(&f);
@@ -673,13 +673,13 @@ mod tests {
             FindingBuilder::new()
                 .title("Bug A")
                 .severity(Severity::Critical)
-                .category("security")
+                .category("security".into())
                 .lines(42, 42)
                 .build(),
             FindingBuilder::new()
                 .title("Bug B")
                 .severity(Severity::Medium)
-                .category("style")
+                .category("style".into())
                 .lines(10, 10)
                 .build(),
         ];

@@ -125,13 +125,13 @@ mod tests {
     fn merge_identical_findings_deduped() {
         let f1 = FindingBuilder::new()
             .title("SQL injection")
-            .category("security")
+            .category("security".into())
             .lines(42, 50)
             .source(Source::Llm("gpt-5.4".into()))
             .build();
         let f2 = FindingBuilder::new()
             .title("SQL injection")
-            .category("security")
+            .category("security".into())
             .lines(42, 50)
             .source(Source::Llm("claude".into()))
             .build();
@@ -143,12 +143,12 @@ mod tests {
     fn merge_different_findings_preserved() {
         let f1 = FindingBuilder::new()
             .title("SQL injection")
-            .category("security")
+            .category("security".into())
             .lines(42, 50)
             .build();
         let f2 = FindingBuilder::new()
             .title("Unused import")
-            .category("style")
+            .category("style".into())
             .lines(1, 1)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
@@ -190,12 +190,12 @@ mod tests {
     fn merge_overlapping_line_ranges() {
         let f1 = FindingBuilder::new()
             .title("Insecure pattern")
-            .category("security")
+            .category("security".into())
             .lines(42, 50)
             .build();
         let f2 = FindingBuilder::new()
             .title("Insecure pattern")
-            .category("security")
+            .category("security".into())
             .lines(45, 55)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
@@ -206,17 +206,17 @@ mod tests {
     fn merge_non_overlapping_exact_title_and_category_collapses() {
         let f1 = FindingBuilder::new()
             .title("Catch-all except: pass")
-            .category("error-handling")
+            .category("error-handling".into())
             .lines(10, 10)
             .build();
         let f2 = FindingBuilder::new()
             .title("Catch-all except: pass")
-            .category("error-handling")
+            .category("error-handling".into())
             .lines(100, 100)
             .build();
         let f3 = FindingBuilder::new()
             .title("Catch-all except: pass")
-            .category("error-handling")
+            .category("error-handling".into())
             .lines(150, 150)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2], vec![f3]], 0.8);
@@ -235,12 +235,12 @@ mod tests {
     fn merge_different_titles_not_collapsed() {
         let f1 = FindingBuilder::new()
             .title("SQL injection in query builder")
-            .category("security")
+            .category("security".into())
             .lines(10, 10)
             .build();
         let f2 = FindingBuilder::new()
             .title("XSS in html renderer")
-            .category("security")
+            .category("security".into())
             .lines(100, 100)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
@@ -308,7 +308,7 @@ mod tests {
     fn similarity_identical_findings_is_one() {
         let f = FindingBuilder::new()
             .title("Bug")
-            .category("security")
+            .category("security".into())
             .lines(10, 20)
             .build();
         assert!((similarity(&f, &f) - 1.0).abs() < f64::EPSILON);
@@ -318,12 +318,12 @@ mod tests {
     fn similarity_completely_different_is_low() {
         let f1 = FindingBuilder::new()
             .title("SQL injection in auth module")
-            .category("security")
+            .category("security".into())
             .lines(10, 20)
             .build();
         let f2 = FindingBuilder::new()
             .title("Unused import os")
-            .category("style")
+            .category("style".into())
             .lines(200, 200)
             .build();
         assert!(similarity(&f1, &f2) < 0.3);
