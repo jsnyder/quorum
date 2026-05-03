@@ -7,13 +7,14 @@
 pub use quorum::analysis;
 pub use quorum::ast_grep;
 pub use quorum::calibrator;
-pub use quorum::category;
 pub use quorum::calibrator_trace;
+pub use quorum::category;
 pub use quorum::domain;
 pub use quorum::embeddings;
 pub use quorum::feedback;
 pub use quorum::feedback_index;
 pub use quorum::finding;
+pub use quorum::grounding;
 pub use quorum::hydration;
 pub use quorum::merge;
 pub use quorum::parser;
@@ -24,8 +25,6 @@ pub use quorum::redact;
 mod agent;
 mod analytics;
 mod cache;
-mod pipeline;
-mod review;
 mod cli;
 mod cli_io;
 mod config;
@@ -34,25 +33,28 @@ mod context_enrichment;
 mod daemon;
 mod dep_manifest;
 mod dimensions;
+mod formatting;
 mod glyphs;
 mod http_server;
-mod formatting;
 mod linter;
 mod llm_client;
 mod mcp;
 mod output;
+mod pipeline;
 mod progress;
+mod review;
 mod review_log;
 mod stats;
 mod suppress;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 mod tools;
 mod trace_subscriber;
-#[cfg(test)] mod test_support;
 
 use clap::Parser;
 use config::{Config, EnvConfigSource};
-use pipeline::{PipelineConfig, LlmReviewer};
+use pipeline::{LlmReviewer, PipelineConfig};
 
 /// Resolve the quorum state directory, honoring the `QUORUM_HOME` env
 /// override so integration tests can be hermetic. Falls back to
@@ -73,7 +75,9 @@ fn quorum_dir() -> Option<std::path::PathBuf> {
 /// `Review` and `Stats` command arms. Pipeline + stats modules stay IO-pure;
 /// this is the application-boundary hook. See issue #32.
 fn drain_agent_inbox() {
-    let Some(home) = quorum_dir() else { return; };
+    let Some(home) = quorum_dir() else {
+        return;
+    };
     let inbox = home.join("inbox");
     let processed = inbox.join("processed");
     let feedback_path = home.join("feedback.jsonl");
@@ -138,8 +142,8 @@ async fn main() -> anyhow::Result<()> {
             // Context dims compose with --rolling by restricting aggregation to
             // the chronologically-last N records.
             let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
-            let want_classic_dim = !want_context_dim
-                && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
+            let want_classic_dim =
+                !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
 
             if want_context_dim {
                 let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
@@ -163,7 +167,10 @@ async fn main() -> anyhow::Result<()> {
                 let (mode, slices) = if opts.by_source {
                     ("by-source", dimensions::aggregate_by_source(&records))
                 } else if opts.by_reviewed_repo {
-                    ("by-reviewed-repo", dimensions::aggregate_by_reviewed_repo(&records))
+                    (
+                        "by-reviewed-repo",
+                        dimensions::aggregate_by_reviewed_repo(&records),
+                    )
                 } else {
                     ("misleading", dimensions::aggregate_misleading(&records))
                 };
@@ -190,7 +197,10 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     let style = output::Style::detect(false);
                     let unicode = unicode_ok();
-                    print!("{}", stats::format_context_dimension_table(mode, &slices, &style, unicode));
+                    print!(
+                        "{}",
+                        stats::format_context_dimension_table(mode, &slices, &style, unicode)
+                    );
                 }
                 std::process::exit(0);
             }
@@ -236,13 +246,17 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     let style = output::Style::detect(false);
                     let unicode = unicode_ok();
-                    print!("{}", stats::format_dimension_table(mode, &slices, &style, unicode));
+                    print!(
+                        "{}",
+                        stats::format_dimension_table(mode, &slices, &style, unicode)
+                    );
                 }
                 std::process::exit(0);
             }
 
             let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
-            let telemetry_store = telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
+            let telemetry_store =
+                telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
             let review_log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
@@ -293,9 +307,9 @@ async fn main() -> anyhow::Result<()> {
 /// check, in which case 1), 1 on handler error.
 fn run_context(opts: cli::ContextOpts) -> i32 {
     use context::cli::{
-        run_context_cmd, AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat,
-        IndexArgs, ListArgs, ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat,
-        RefreshArgs, SourceSelector,
+        AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat, IndexArgs, ListArgs,
+        ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat, RefreshArgs, SourceSelector,
+        run_context_cmd,
     };
 
     // Map `--source X` / `--all` / neither into a SourceSelector. The default
@@ -344,12 +358,12 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             };
             ContextCmd::List(ListArgs { format })
         }
-        cli::ContextCommand::Index(i) => {
-            ContextCmd::Index(IndexArgs { selector: selector(i.source, i.all) })
-        }
-        cli::ContextCommand::Refresh(r) => {
-            ContextCmd::Refresh(RefreshArgs { selector: selector(r.source, r.all) })
-        }
+        cli::ContextCommand::Index(i) => ContextCmd::Index(IndexArgs {
+            selector: selector(i.source, i.all),
+        }),
+        cli::ContextCommand::Refresh(r) => ContextCmd::Refresh(RefreshArgs {
+            selector: selector(r.source, r.all),
+        }),
         cli::ContextCommand::Query(q) => {
             let format = if q.json {
                 QueryFormat::Json
@@ -375,7 +389,10 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             } else {
                 DoctorFormat::Table
             };
-            ContextCmd::Doctor(DoctorArgs { format, repair: d.repair })
+            ContextCmd::Doctor(DoctorArgs {
+                format,
+                repair: d.repair,
+            })
         }
     };
 
@@ -418,11 +435,11 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
 }
 
 async fn run_mcp_server() -> anyhow::Result<()> {
+    use rust_mcp_sdk::mcp_server::{McpServerOptions, server_runtime};
     use rust_mcp_sdk::schema::{
         Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
         ServerCapabilitiesTools,
     };
-    use rust_mcp_sdk::mcp_server::{server_runtime, McpServerOptions};
     use rust_mcp_sdk::{McpServer, StdioTransport, ToMcpServerHandler, TransportOptions};
 
     let server_details = InitializeResult {
@@ -469,7 +486,9 @@ async fn run_mcp_server() -> anyhow::Result<()> {
         message_observer: None,
     });
 
-    server.start().await
+    server
+        .start()
+        .await
         .map_err(|e| anyhow::anyhow!("MCP server error: {}", e))?;
     Ok(())
 }
@@ -506,7 +525,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // (issue #89). The redundant handler-level guard was removed.
 
     // Initialize structured tracing if --trace flag or QUORUM_TRACE=1 env var
-    let trace_enabled = opts.trace || std::env::var("QUORUM_TRACE").map(|v| v == "1").unwrap_or(false);
+    let trace_enabled = opts.trace
+        || std::env::var("QUORUM_TRACE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
     let _trace_guard = if trace_enabled {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         let trace_path = std::path::PathBuf::from(&home).join(".quorum/trace.jsonl");
@@ -532,32 +554,39 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // Build LLM client if API key is available (implements both LlmReviewer and AgentReviewer)
     // Arc-wrapped for sharing across parallel file reviews
-    let llm_client: Option<std::sync::Arc<llm_client::OpenAiClient>> = if let Ok(api_key) = cfg.require_api_key() {
-        let effort = opts.reasoning_effort.clone()
-            .or_else(|| std::env::var("QUORUM_REASONING_EFFORT").ok().filter(|s| !s.is_empty()))
-            .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
-        // Opt-in: tell the upstream proxy (e.g. LiteLLM) to skip its response
-        // cache so each call reaches the underlying provider. Useful when
-        // benchmarking, A/B comparing, or measuring upstream prompt-cache
-        // hit rate. Default off — production reviews keep the proxy's fast
-        // replay behavior.
-        let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
-            .ok()
-            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
-        match llm_client::OpenAiClient::new(&cfg.base_url, api_key) {
-            Ok(c) => Some(std::sync::Arc::new(
-                c.with_reasoning_effort(effort)
-                    .with_bypass_proxy_cache(bypass_proxy_cache),
-            )),
-            Err(e) => {
-                eprintln!("error: cannot construct LLM client: {e}");
-                return 3;
+    let llm_client: Option<std::sync::Arc<llm_client::OpenAiClient>> =
+        if let Ok(api_key) = cfg.require_api_key() {
+            let effort = opts
+                .reasoning_effort
+                .clone()
+                .or_else(|| {
+                    std::env::var("QUORUM_REASONING_EFFORT")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| Some("low".into())); // Default: low reasoning is optimal for code review
+            // Opt-in: tell the upstream proxy (e.g. LiteLLM) to skip its response
+            // cache so each call reaches the underlying provider. Useful when
+            // benchmarking, A/B comparing, or measuring upstream prompt-cache
+            // hit rate. Default off — production reviews keep the proxy's fast
+            // replay behavior.
+            let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+            match llm_client::OpenAiClient::new(&cfg.base_url, api_key) {
+                Ok(c) => Some(std::sync::Arc::new(
+                    c.with_reasoning_effort(effort)
+                        .with_bypass_proxy_cache(bypass_proxy_cache),
+                )),
+                Err(e) => {
+                    eprintln!("error: cannot construct LLM client: {e}");
+                    return 3;
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     let llm_reviewer: Option<&dyn LlmReviewer> = llm_client.as_deref().map(|c| c as _);
 
     // Build pipeline config
@@ -591,14 +620,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             Ok(diff_content) => {
                 let ranges = hydration::parse_unified_diff(&diff_content);
                 if !ranges.is_empty() {
-                    eprintln!("Diff-aware: scoping hydration to {} changed file(s)", ranges.len());
+                    eprintln!(
+                        "Diff-aware: scoping hydration to {} changed file(s)",
+                        ranges.len()
+                    );
                     Some(ranges)
                 } else {
                     None
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Could not read diff file {}: {}", diff_path.display(), e);
+                eprintln!(
+                    "Warning: Could not read diff file {}: {}",
+                    diff_path.display(),
+                    e
+                );
                 None
             }
         }
@@ -608,7 +644,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // Create semaphore for parallel LLM concurrency control
     let semaphore = if opts.parallel > 1 {
-        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(opts.parallel)))
+        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
+            opts.parallel,
+        )))
     } else if opts.parallel == 0 {
         Some(std::sync::Arc::new(tokio::sync::Semaphore::new(32)))
     } else {
@@ -628,7 +666,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             };
             match build_result {
                 Ok(idx) => {
-                    tracing::debug!(fast_mode = opts.fast, "FeedbackIndex: pre-built for parallel calibration");
+                    tracing::debug!(
+                        fast_mode = opts.fast,
+                        "FeedbackIndex: pre-built for parallel calibration"
+                    );
                     Some(std::sync::Arc::new(std::sync::Mutex::new(idx)))
                 }
                 Err(e) => {
@@ -647,8 +688,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // as before. Honors QUORUM_HOME via the same `qhome` used for
     // feedback/telemetry/reviews — without this, hermetic runs would
     // calibrate against one dir and source `sources.toml` from another.
-    let context_injector =
-        context::bootstrap::build_production_injector(&qhome, &feedback_entries);
+    let context_injector = context::bootstrap::build_production_injector(&qhome, &feedback_entries);
     if context_injector.is_some() {
         tracing::info!(
             "context injector wired from ~/.quorum/sources.toml — auto-inject is active"
@@ -687,7 +727,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let cached = crate::context_enrichment::CachedContextFetcher::new(leaked, 32);
                 (
                     Some(std::sync::Arc::new(cached)
-                        as std::sync::Arc<dyn crate::context_enrichment::ContextFetcher>),
+                        as std::sync::Arc<
+                            dyn crate::context_enrichment::ContextFetcher,
+                        >),
                     false,
                 )
             }
@@ -738,7 +780,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     let style = output::Style::detect(opts.no_color);
     let use_compact = output::should_use_compact(opts.compact);
-    let use_json = !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    let use_json =
+        !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let mut all_findings = Vec::new();
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
@@ -751,14 +794,20 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         .files
         .first()
         .map(|p| pipeline::find_project_root(p))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
     let review_file_refs: Vec<&std::path::Path> = opts.files.iter().map(|p| p.as_path()).collect();
     let linter_hints = linter::detect_unconfigured_linters(&project_root, &review_file_refs);
     let enabled_linters: Vec<linter::LinterKind> = {
         let all_enabled = linter::detect_linters(&project_root);
         let exts: std::collections::HashSet<String> = review_file_refs
             .iter()
-            .filter_map(|p| p.extension().and_then(|e| e.to_str()).map(str::to_lowercase))
+            .filter_map(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_lowercase)
+            })
             .collect();
         all_enabled
             .into_iter()
@@ -767,7 +816,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     };
 
     if use_compact {
-        if let Some(header) = output::format_compact_linter_header(&enabled_linters, &linter_hints) {
+        if let Some(header) = output::format_compact_linter_header(&enabled_linters, &linter_hints)
+        {
             println!("{}", header);
         }
     } else if !use_json {
@@ -814,7 +864,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     let project_root = deep_tool_root(file_path);
                     let tool_reg = tools::ToolRegistry::new(&project_root);
                     let agent_cfg = agent::AgentConfig::default();
-                    let model = pipeline_cfg.models.first()
+                    let model = pipeline_cfg
+                        .models
+                        .first()
                         .map(|s| s.as_str())
                         .unwrap_or("gpt-5.4");
                     match agent::agent_loop(
@@ -827,7 +879,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     ) {
                         Ok(findings) => {
                             // Apply project-level suppressions
-                            let sup_result = suppress::apply_suppressions(findings, &suppress_rules, &file_display);
+                            let sup_result = suppress::apply_suppressions(
+                                findings,
+                                &suppress_rules,
+                                &file_display,
+                            );
                             if !sup_result.suppressed.is_empty() {
                                 tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
                             }
@@ -839,18 +895,28 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             let findings = sup_result.kept;
                             progress.finish_file(findings.len());
                             if use_compact {
-                                println!("{}", output::format_compact_review(&file_display, &findings));
+                                println!(
+                                    "{}",
+                                    output::format_compact_review(&file_display, &findings)
+                                );
                             } else if use_json {
                                 // collected below
                             } else {
-                                print!("{}", output::format_review(&file_display, &findings, &style));
+                                print!(
+                                    "{}",
+                                    output::format_review(&file_display, &findings, &style)
+                                );
                             }
                             all_findings.extend(findings);
                             continue;
                         }
                         Err(e) => {
                             progress.clear_line();
-                            eprintln!("Warning: Deep review failed for {}: {}. Falling back to standard review.", file_path.display(), e);
+                            eprintln!(
+                                "Warning: Deep review failed for {}: {}. Falling back to standard review.",
+                                file_path.display(),
+                                e
+                            );
                         }
                     }
                 }
@@ -868,20 +934,22 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 )
                 .await
             } else {
-                eprintln!("Note: No AST support for {}, using LLM-only review", file_path.display());
-                pipeline::review_file_llm_only(
-                    file_path,
-                    &source,
-                    llm_reviewer,
-                    &pipeline_cfg,
-                )
-                .await
+                eprintln!(
+                    "Note: No AST support for {}, using LLM-only review",
+                    file_path.display()
+                );
+                pipeline::review_file_llm_only(file_path, &source, llm_reviewer, &pipeline_cfg)
+                    .await
             };
             match review_result {
                 Ok(mut result) => {
                     // Apply project-level suppressions
                     let file_display = result.file_path.clone();
-                    let sup_result = suppress::apply_suppressions(result.findings, &suppress_rules, &file_display);
+                    let sup_result = suppress::apply_suppressions(
+                        result.findings,
+                        &suppress_rules,
+                        &file_display,
+                    );
                     if !sup_result.suppressed.is_empty() {
                         tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
                     }
@@ -893,9 +961,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     result.findings = sup_result.kept;
                     progress.finish_file(result.findings.len());
                     if use_compact {
-                        println!("{}", output::format_compact_review(&result.file_path, &result.findings));
+                        println!(
+                            "{}",
+                            output::format_compact_review(&result.file_path, &result.findings)
+                        );
                     } else if !use_json {
-                        print!("{}", output::format_review(&result.file_path, &result.findings, &style));
+                        print!(
+                            "{}",
+                            output::format_review(&result.file_path, &result.findings, &style)
+                        );
                     }
                     all_findings.extend(result.findings.clone());
                     file_results.push(result);
@@ -922,11 +996,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
-                    return (idx, Err(anyhow::anyhow!("File not found: {}", file_path.display())));
+                    return (
+                        idx,
+                        Err(anyhow::anyhow!("File not found: {}", file_path.display())),
+                    );
                 }
                 let source = match std::fs::read_to_string(&file_path) {
                     Ok(s) => s,
-                    Err(e) => return (idx, Err(anyhow::anyhow!("Could not read {}: {}", file_path.display(), e))),
+                    Err(e) => {
+                        return (
+                            idx,
+                            Err(anyhow::anyhow!(
+                                "Could not read {}: {}",
+                                file_path.display(),
+                                e
+                            )),
+                        );
+                    }
                 };
                 let lang = parser::Language::from_path(&file_path);
                 let file_display = file_path.to_string_lossy().to_string();
@@ -937,16 +1023,25 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         let project_root = deep_tool_root(&file_path);
                         let tool_reg = tools::ToolRegistry::new(&project_root);
                         let agent_cfg = agent::AgentConfig::default();
-                        let model = pipeline_cfg.models.first()
-                            .map(|s| s.as_str()).unwrap_or("gpt-5.4");
+                        let model = pipeline_cfg
+                            .models
+                            .first()
+                            .map(|s| s.as_str())
+                            .unwrap_or("gpt-5.4");
                         match agent::agent_loop(
-                            &source, &file_display,
+                            &source,
+                            &file_display,
                             &**client as &dyn agent::AgentReviewer,
-                            model, &tool_reg, &agent_cfg,
+                            model,
+                            &tool_reg,
+                            &agent_cfg,
                         ) {
                             Ok(findings) => {
                                 let sup_result = suppress::apply_suppressions(
-                                    findings, &suppress_rules, &file_display);
+                                    findings,
+                                    &suppress_rules,
+                                    &file_display,
+                                );
                                 let result = pipeline::FileReviewResult {
                                     file_path: file_display,
                                     findings: sup_result.kept,
@@ -958,14 +1053,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 return (idx, Ok((result, sup_result.suppressed)));
                             }
                             Err(e) => {
-                                eprintln!("[{}] Warning: Deep review failed: {}. Falling back.", file_path.display(), e);
+                                eprintln!(
+                                    "[{}] Warning: Deep review failed: {}. Falling back.",
+                                    file_path.display(),
+                                    e
+                                );
                             }
                         }
                     }
                 }
 
                 // Standard review path
-                let llm_reviewer: Option<&dyn pipeline::LlmReviewer> = llm_client.as_deref().map(|c| c as _);
+                let llm_reviewer: Option<&dyn pipeline::LlmReviewer> =
+                    llm_client.as_deref().map(|c| c as _);
                 let parse_cache = cache::ParseCache::new(128);
                 // `spawn_blocking` runs on Tokio's blocking pool (separate from
                 // runtime workers), so `Handle::block_on` here is sound per
@@ -976,19 +1076,32 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let review_result = handle.block_on(async {
                     if let Some(l) = lang {
                         pipeline::review_source(
-                            &file_path, &source, l, llm_reviewer, &pipeline_cfg, Some(&parse_cache))
-                            .await
+                            &file_path,
+                            &source,
+                            l,
+                            llm_reviewer,
+                            &pipeline_cfg,
+                            Some(&parse_cache),
+                        )
+                        .await
                     } else {
                         pipeline::review_file_llm_only(
-                            &file_path, &source, llm_reviewer, &pipeline_cfg)
-                            .await
+                            &file_path,
+                            &source,
+                            llm_reviewer,
+                            &pipeline_cfg,
+                        )
+                        .await
                     }
                 });
 
                 match review_result {
                     Ok(mut result) => {
                         let sup_result = suppress::apply_suppressions(
-                            result.findings, &suppress_rules, &file_display);
+                            result.findings,
+                            &suppress_rules,
+                            &file_display,
+                        );
                         result.findings = sup_result.kept;
                         result.suppressed = sup_result.suppressed.len();
                         (idx, Ok((result, sup_result.suppressed)))
@@ -1000,13 +1113,22 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
 
         // Collect results in file order
-        type ParResult = (pipeline::FileReviewResult, Vec<(crate::finding::Finding, suppress::SuppressionRule)>);
+        type ParResult = (
+            pipeline::FileReviewResult,
+            Vec<(crate::finding::Finding, suppress::SuppressionRule)>,
+        );
         let mut indexed_results: Vec<Option<ParResult>> = vec![None; opts.files.len()];
         for handle in handles {
             match handle.await {
-                Ok((idx, Ok(result))) => { indexed_results[idx] = Some(result); }
+                Ok((idx, Ok(result))) => {
+                    indexed_results[idx] = Some(result);
+                }
                 Ok((idx, Err(e))) => {
-                    eprintln!("Error: Review failed for {}: {}", opts.files[idx].display(), e);
+                    eprintln!(
+                        "Error: Review failed for {}: {}",
+                        opts.files[idx].display(),
+                        e
+                    );
                     had_errors = true;
                 }
                 Err(e) => {
@@ -1020,7 +1142,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         for result_opt in indexed_results.into_iter() {
             if let Some((result, suppressed_findings)) = result_opt {
                 if !suppressed_findings.is_empty() {
-                    eprintln!("Suppressed {} finding(s) in {}", suppressed_findings.len(), result.file_path);
+                    eprintln!(
+                        "Suppressed {} finding(s) in {}",
+                        suppressed_findings.len(),
+                        result.file_path
+                    );
                 }
                 if opts.show_suppressed {
                     for (f, rule) in &suppressed_findings {
@@ -1028,9 +1154,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     }
                 }
                 if use_compact {
-                    println!("{}", output::format_compact_review(&result.file_path, &result.findings));
+                    println!(
+                        "{}",
+                        output::format_compact_review(&result.file_path, &result.findings)
+                    );
                 } else if !use_json {
-                    print!("{}", output::format_review(&result.file_path, &result.findings, &style));
+                    print!(
+                        "{}",
+                        output::format_review(&result.file_path, &result.findings, &style)
+                    );
                 }
                 all_findings.extend(result.findings.clone());
                 file_results.push(result);
@@ -1038,7 +1170,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
 
         if opts.parallel > 1 && file_results.len() > 1 {
-            tracing::debug!(files = file_results.len(), parallel = opts.parallel, "parallel review complete");
+            tracing::debug!(
+                files = file_results.len(),
+                parallel = opts.parallel,
+                "parallel review complete"
+            );
         }
     }
 
@@ -1077,16 +1213,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let total_tokens_cache_read: u64 = file_results.iter().map(|r| r.usage.cached_tokens).sum();
         let telem_entry = telemetry::TelemetryEntry {
             ts: chrono::Utc::now(),
-            files: opts.files.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+            files: opts
+                .files
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
             findings: finding_counts,
             model: pipeline_cfg.models.first().cloned().unwrap_or_default(),
             tokens_in: total_tokens_in,
             tokens_out: total_tokens_out,
             duration_ms: review_duration.as_millis() as u64,
             suppressed: file_results.iter().map(|r| r.suppressed).sum(),
-            context7_resolved: file_results.iter().map(|r| r.enrichment_metrics.context7_resolved).sum(),
-            context7_resolve_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_resolve_failed).sum(),
-            context7_query_failed: file_results.iter().map(|r| r.enrichment_metrics.context7_query_failed).sum(),
+            context7_resolved: file_results
+                .iter()
+                .map(|r| r.enrichment_metrics.context7_resolved)
+                .sum(),
+            context7_resolve_failed: file_results
+                .iter()
+                .map(|r| r.enrichment_metrics.context7_resolve_failed)
+                .sum(),
+            context7_query_failed: file_results
+                .iter()
+                .map(|r| r.enrichment_metrics.context7_query_failed)
+                .sum(),
             // #123 Layer 1 (Task 10): adoption telemetry for the FpKind
             // taxonomy. Computed over the loaded feedback store (same one
             // pipeline_cfg.feedback was built from). None when no FP
@@ -1117,14 +1266,18 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 any_telem = true;
                 context_telem.auto_inject_enabled = t.auto_inject_enabled;
                 context_telem.injector_available = t.injector_available;
-                context_telem.retrieved_chunk_count =
-                    context_telem.retrieved_chunk_count.saturating_add(t.retrieved_chunk_count);
-                context_telem.injected_chunk_count =
-                    context_telem.injected_chunk_count.saturating_add(t.injected_chunk_count);
-                context_telem.injected_tokens =
-                    context_telem.injected_tokens.saturating_add(t.injected_tokens);
-                context_telem.below_threshold_count =
-                    context_telem.below_threshold_count.saturating_add(t.below_threshold_count);
+                context_telem.retrieved_chunk_count = context_telem
+                    .retrieved_chunk_count
+                    .saturating_add(t.retrieved_chunk_count);
+                context_telem.injected_chunk_count = context_telem
+                    .injected_chunk_count
+                    .saturating_add(t.injected_chunk_count);
+                context_telem.injected_tokens = context_telem
+                    .injected_tokens
+                    .saturating_add(t.injected_tokens);
+                context_telem.below_threshold_count = context_telem
+                    .below_threshold_count
+                    .saturating_add(t.below_threshold_count);
                 context_telem.adaptive_threshold_applied =
                     context_telem.adaptive_threshold_applied || t.adaptive_threshold_applied;
                 context_telem.effective_prose_threshold = t.effective_prose_threshold;
@@ -1136,12 +1289,18 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         context_telem.injected_sources.push(s.clone());
                     }
                 }
-                context_telem.precedence_entries =
-                    context_telem.precedence_entries.saturating_add(t.precedence_entries);
-                context_telem.render_duration_ms =
-                    context_telem.render_duration_ms.saturating_add(t.render_duration_ms);
-                context_telem.retrieved_by_leg.saturating_add(&t.retrieved_by_leg);
-                context_telem.injected_by_leg.saturating_add(&t.injected_by_leg);
+                context_telem.precedence_entries = context_telem
+                    .precedence_entries
+                    .saturating_add(t.precedence_entries);
+                context_telem.render_duration_ms = context_telem
+                    .render_duration_ms
+                    .saturating_add(t.render_duration_ms);
+                context_telem
+                    .retrieved_by_leg
+                    .saturating_add(&t.retrieved_by_leg);
+                context_telem
+                    .injected_by_leg
+                    .saturating_add(&t.injected_by_leg);
                 context_telem.nan_scores_dropped = context_telem
                     .nan_scores_dropped
                     .saturating_add(t.nan_scores_dropped);
@@ -1167,7 +1326,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 // block, we have a representative hash. When multiple
                 // files inject, they're distinct blocks — we expose the
                 // first one as a sample.
-                if context_telem.rendered_prompt_hash.is_none() && t.rendered_prompt_hash.is_some() {
+                if context_telem.rendered_prompt_hash.is_none() && t.rendered_prompt_hash.is_some()
+                {
                     context_telem.rendered_prompt_hash = t.rendered_prompt_hash.clone();
                 }
             }
@@ -1184,7 +1344,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             invoked_from,
             model: pipeline_cfg.models.first().cloned().unwrap_or_default(),
             files_reviewed: opts.files.len() as u32,
-            lines_added: None,     // diff instrumentation: future work
+            lines_added: None, // diff instrumentation: future work
             lines_removed: None,
             findings_by_severity: review_log::SeverityCounts::from_severities(sev_iter),
             suppressed_by_rule: std::collections::HashMap::new(), // per-rule breakdown: future work
@@ -1213,7 +1373,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     if use_json {
-        match output::format_json_grouped_with_meta(&file_results, &enabled_linters, &linter_hints) {
+        match output::format_json_grouped_with_meta(&file_results, &enabled_linters, &linter_hints)
+        {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error: JSON serialization failed: {}", e);
@@ -1241,9 +1402,13 @@ fn linter_kind_is_relevant(
     match kind {
         Ruff => exts.contains("py"),
         Clippy => exts.contains("rs"),
-        Eslint => ["ts", "tsx", "js", "jsx", "mjs", "cjs"].iter().any(|e| exts.contains(*e)),
+        Eslint => ["ts", "tsx", "js", "jsx", "mjs", "cjs"]
+            .iter()
+            .any(|e| exts.contains(*e)),
         Yamllint => exts.contains("yaml") || exts.contains("yml"),
-        Shellcheck => ["sh", "bash", "zsh", "bats"].iter().any(|e| exts.contains(*e)),
+        Shellcheck => ["sh", "bash", "zsh", "bats"]
+            .iter()
+            .any(|e| exts.contains(*e)),
         Hadolint => exts.iter().any(|e| e == "dockerfile") || exts.contains(""),
         Tflint => exts.contains("tf") || exts.contains("tfvars"),
     }
@@ -1252,7 +1417,8 @@ fn linter_kind_is_relevant(
 async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
     use tokio::sync::mpsc;
 
-    let watch_dir = opts.watch_dir
+    let watch_dir = opts
+        .watch_dir
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
     eprintln!("quorum daemon starting");
@@ -1287,7 +1453,9 @@ async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
     let stats = state.parse_cache.stats();
     eprintln!(
         "Daemon stopped. Cache: {} hits, {} misses, {:.0}% hit rate",
-        stats.hits, stats.misses, stats.hit_rate() * 100.0
+        stats.hits,
+        stats.misses,
+        stats.hit_rate() * 100.0
     );
     Ok(())
 }
@@ -1300,7 +1468,10 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
     match client.get(format!("{}/health", base)).send() {
         Ok(resp) if resp.status().is_success() => {}
         _ => {
-            eprintln!("Error: Daemon not running on port {}. Start with: quorum daemon", opts.daemon_port);
+            eprintln!(
+                "Error: Daemon not running on port {}. Start with: quorum daemon",
+                opts.daemon_port
+            );
             eprintln!("Falling back to local review.");
             // Fall through to local review by calling run_review without --daemon
             // For simplicity, just return 3 to indicate tool error
@@ -1334,7 +1505,10 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
                         let file_str = file_path.to_string_lossy();
                         eprint!("{}{}", file_str, cache_note);
                         eprintln!();
-                        print!("{}", output::format_review(&file_str, &review.findings, &style));
+                        print!(
+                            "{}",
+                            output::format_review(&file_str, &review.findings, &style)
+                        );
                     }
                     all_findings.extend(review.findings);
                 }
@@ -1433,8 +1607,7 @@ fn run_feedback_inner(
     // detection; otherwise we only fall into JSON when stdout is a pipe
     // and compact mode hasn't been requested.
     let use_compact = output::should_use_compact(false);
-    let use_json = json
-        || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    let use_json = json || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
     let output = if use_json {
         let json_obj = serde_json::json!({
@@ -1445,7 +1618,10 @@ fn run_feedback_inner(
         });
         serde_json::to_string(&json_obj).unwrap_or_default()
     } else if use_compact {
-        format!("feedback:{}|{}|{}", verdict_label, entry.file_path, entry.finding_title)
+        format!(
+            "feedback:{}|{}|{}",
+            verdict_label, entry.file_path, entry.finding_title
+        )
     } else {
         format!(
             "Recorded: {} for \"{}\" in {} ({} entries)",
@@ -1497,8 +1673,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                 // Honor explicit --json even on a TTY, matching the CLI
                 // contract; fall back to TTY detection when the flag is off.
                 let use_json = opts.json
-                    || (!use_compact
-                        && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+                    || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
                 let verdict_lower = opts.verdict.to_lowercase();
                 let verdict_label: &str = match verdict_lower.as_str() {
                     "tp" => "tp",
@@ -1559,9 +1734,16 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             }
         };
         let (exit_code, output) = run_feedback_inner(
-            &opts.file, &opts.finding, &opts.verdict, &opts.reason,
-            opts.model.as_deref(), opts.blamed_chunks.as_deref(),
-            opts.category.as_deref(), fp_kind, opts.json, &feedback_path,
+            &opts.file,
+            &opts.finding,
+            &opts.verdict,
+            &opts.reason,
+            opts.model.as_deref(),
+            opts.blamed_chunks.as_deref(),
+            opts.category.as_deref(),
+            fp_kind,
+            opts.json,
+            &feedback_path,
         );
         if exit_code != 0 {
             eprintln!("{}", output);
@@ -1604,7 +1786,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed with params", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "SQL injection",
+            "tp",
+            "Fixed with params",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1618,7 +1809,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "maybe", "Not sure", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "SQL injection",
+            "maybe",
+            "Not sure",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -1629,7 +1829,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Real issue", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "SQL injection",
+            "tp",
+            "Real issue",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1641,7 +1850,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "fp", "Not real", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "Test finding",
+            "fp",
+            "Not real",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1653,7 +1871,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (_, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "tp", "Fixed", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "SQL injection",
+            "tp",
+            "Fixed",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -1665,7 +1892,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, output) = run_feedback_inner(
-            "src/auth.rs", "SQL injection", "fp", "Not a real issue", None, None, None, None, false, &path,
+            "src/auth.rs",
+            "SQL injection",
+            "fp",
+            "Not a real issue",
+            None,
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -1683,7 +1919,16 @@ mod feedback_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
-            "src/auth.rs", "Test finding", "tp", "Real", Some("gpt-5.4"), None, None, None, false, &path,
+            "src/auth.rs",
+            "Test finding",
+            "tp",
+            "Real",
+            Some("gpt-5.4"),
+            None,
+            None,
+            None,
+            false,
+            &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1709,10 +1954,21 @@ mod feedback_tests {
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
         // Serialized struct variant: {"context_misleading":{"blamed_chunk_ids":[...]}}
-        assert!(contents.contains("context_misleading"),
-            "verdict tag missing; got: {}", contents);
-        assert!(contents.contains("chunk-abc"), "first chunk id missing; got: {}", contents);
-        assert!(contents.contains("chunk-def"), "second chunk id missing; got: {}", contents);
+        assert!(
+            contents.contains("context_misleading"),
+            "verdict tag missing; got: {}",
+            contents
+        );
+        assert!(
+            contents.contains("chunk-abc"),
+            "first chunk id missing; got: {}",
+            contents
+        );
+        assert!(
+            contents.contains("chunk-def"),
+            "second chunk id missing; got: {}",
+            contents
+        );
 
         // Round-trip through the store to assert exact structure.
         let store = feedback::FeedbackStore::new(path);
@@ -1720,8 +1976,10 @@ mod feedback_tests {
         assert_eq!(all.len(), 1);
         match &all[0].verdict {
             feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
-                assert_eq!(blamed_chunk_ids,
-                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+                assert_eq!(
+                    blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]
+                );
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
@@ -1744,8 +2002,11 @@ mod feedback_tests {
             &path,
         );
         assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
-        assert!(output.to_lowercase().contains("empty"),
-            "error must mention empty entry; got: {}", output);
+        assert!(
+            output.to_lowercase().contains("empty"),
+            "error must mention empty entry; got: {}",
+            output
+        );
         // Nothing should have been written.
         assert!(!path.exists() || std::fs::read_to_string(&path).unwrap().is_empty());
     }
@@ -1766,16 +2027,20 @@ mod feedback_tests {
             false,
             &path,
         );
-        assert_eq!(exit_code, 0,
-            "omitted --blamed-chunks must succeed with an empty default");
+        assert_eq!(
+            exit_code, 0,
+            "omitted --blamed-chunks must succeed with an empty default"
+        );
 
         let store = feedback::FeedbackStore::new(path);
         let all = store.load_all().unwrap();
         assert_eq!(all.len(), 1);
         match &all[0].verdict {
             feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
-                assert!(blamed_chunk_ids.is_empty(),
-                    "absent flag must produce empty Vec, not populate with a placeholder");
+                assert!(
+                    blamed_chunk_ids.is_empty(),
+                    "absent flag must produce empty Vec, not populate with a placeholder"
+                );
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
