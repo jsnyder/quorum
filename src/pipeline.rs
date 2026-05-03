@@ -715,6 +715,19 @@ pub async fn review_file(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let merged = grounding::apply_grounding(merged, source, grounding_disabled);
+    {
+        let gc = grounding::count_grounding_outcomes(&merged);
+        if gc.verified + gc.symbol_not_found + gc.line_out_of_range > 0 {
+            tracing::info!(
+                phase = "grounding",
+                verified = gc.verified,
+                symbol_not_found = gc.symbol_not_found,
+                line_out_of_range = gc.line_out_of_range,
+                not_checked = gc.not_checked,
+                "grounding pass complete"
+            );
+        }
+    }
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback =
@@ -1086,6 +1099,19 @@ pub async fn review_file_llm_only(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let merged = grounding::apply_grounding(merged, source, grounding_disabled);
+    {
+        let gc = grounding::count_grounding_outcomes(&merged);
+        if gc.verified + gc.symbol_not_found + gc.line_out_of_range > 0 {
+            tracing::info!(
+                phase = "grounding",
+                verified = gc.verified,
+                symbol_not_found = gc.symbol_not_found,
+                line_out_of_range = gc.line_out_of_range,
+                not_checked = gc.not_checked,
+                "grounding pass complete"
+            );
+        }
+    }
 
     // Calibrate
     let has_feedback =

@@ -128,6 +128,29 @@ pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
     }
 }
 
+/// Aggregated counts of grounding outcomes for telemetry.
+#[derive(Debug, Default)]
+pub struct GroundingCounters {
+    pub verified: u32,
+    pub symbol_not_found: u32,
+    pub line_out_of_range: u32,
+    pub not_checked: u32,
+}
+
+/// Count grounding outcomes across a batch of findings for telemetry reporting.
+pub fn count_grounding_outcomes(findings: &[Finding]) -> GroundingCounters {
+    let mut c = GroundingCounters::default();
+    for f in findings {
+        match &f.grounding_status {
+            Some(GroundingStatus::Verified) => c.verified += 1,
+            Some(GroundingStatus::SymbolNotFound) => c.symbol_not_found += 1,
+            Some(GroundingStatus::LineOutOfRange) => c.line_out_of_range += 1,
+            Some(GroundingStatus::NotChecked) | None => c.not_checked += 1,
+        }
+    }
+    c
+}
+
 /// Apply grounding verification to a batch of findings, mutating severity
 /// in place for ungrounded LLM findings. When `disabled` is true, returns
 /// findings unchanged.
@@ -431,6 +454,47 @@ mod tests {
         assert_eq!(result[1].severity, Severity::Medium); // demoted
         assert!(result[2].grounding_status.is_none()); // LocalAst untouched
         assert_eq!(result[2].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn grounding_counters_correct() {
+        let source = "fn parse_unified_diff() {}\nfn other() {}\n";
+        let findings = vec![
+            // Verified
+            FindingBuilder::new()
+                .title("Function `parse_unified_diff` has bug")
+                .source(Source::Llm("gpt-5.4".into()))
+                .lines(1, 1)
+                .severity(Severity::High)
+                .build(),
+            // SymbolNotFound
+            FindingBuilder::new()
+                .title("Function `nonexistent` has bug")
+                .source(Source::Llm("gpt-5.4".into()))
+                .lines(1, 1)
+                .severity(Severity::High)
+                .build(),
+            // NotChecked (LocalAst)
+            FindingBuilder::new()
+                .title("AST finding")
+                .source(Source::LocalAst)
+                .lines(1, 1)
+                .severity(Severity::Medium)
+                .build(),
+            // LineOutOfRange
+            FindingBuilder::new()
+                .title("Function `parse_unified_diff` issue")
+                .source(Source::Llm("gpt-5.4".into()))
+                .lines(50, 60)
+                .severity(Severity::High)
+                .build(),
+        ];
+        let result = apply_grounding(findings, source, false);
+        let counters = count_grounding_outcomes(&result);
+        assert_eq!(counters.verified, 1);
+        assert_eq!(counters.symbol_not_found, 1);
+        assert_eq!(counters.line_out_of_range, 1);
+        assert_eq!(counters.not_checked, 1); // the LocalAst finding has no grounding_status
     }
 
     #[test]
