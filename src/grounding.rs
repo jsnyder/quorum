@@ -99,7 +99,11 @@ fn contains_symbol(text: &str, id: &str) -> bool {
 /// no extractable identifiers return `NotChecked`. A +/- 2 line window around
 /// the cited range accommodates off-by-one LLM citations.
 pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
-    // Only check LLM findings.
+    let source_lines: Vec<&str> = source.lines().collect();
+    verify_grounding_with_lines(finding, &source_lines)
+}
+
+fn verify_grounding_with_lines(finding: &Finding, source_lines: &[&str]) -> GroundingResult {
     if !matches!(finding.source, Source::Llm(_)) {
         return GroundingResult {
             status: GroundingStatus::NotChecked,
@@ -107,7 +111,6 @@ pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
         };
     }
 
-    let source_lines: Vec<&str> = source.lines().collect();
     let line_count = source_lines.len() as u32;
 
     // Check line range validity (1-indexed, ordered).
@@ -183,11 +186,12 @@ pub fn apply_grounding(mut findings: Vec<Finding>, source: &str, disabled: bool)
     if disabled {
         return findings;
     }
+    let source_lines: Vec<&str> = source.lines().collect();
     for finding in &mut findings {
         if !matches!(finding.source, Source::Llm(_)) {
             continue;
         }
-        let result = verify_grounding(finding, source);
+        let result = verify_grounding_with_lines(finding, &source_lines);
         finding.grounding_status = Some(result.status);
         if let Some(new_severity) = result.severity_change {
             finding.severity = new_severity;
