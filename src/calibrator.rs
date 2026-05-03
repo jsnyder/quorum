@@ -778,7 +778,7 @@ fn rubric_supports_severity_bump(target: &Severity, finding: &Finding) -> bool {
         }
         Severity::High => {
             // Allowlist of categories that may freely promote medium → high.
-            // Anything else (quality, lint, ast-pattern, unknown, bug,
+            // Anything else (quality, lint, ast-pattern, unknown,
             // best-practices, etc.) requires explicit bug-evidence keywords.
             // Inversion (was: blocklist of 5 stylistic categories) per
             // 2026-05-01 gpt-5.5 review: a blocklist silently lets every
@@ -1032,7 +1032,7 @@ mod tests {
     fn rubric_gate_blocks_quality_and_unknown_categories_to_high() {
         for (title, cat, desc) in [
             ("Unused variable", "quality", "Cosmetic only."),
-            ("Some bug", "bug", "Probably wrong."),
+            ("Missing docs", "documentation", "Add module docs."),
             ("Magic constant 100 reused", "best-practices", "Pull into constant."),
             ("Logging missing", "observability", "Add structured logging."),
             ("Some thing", "unknown", "Unclassified."),

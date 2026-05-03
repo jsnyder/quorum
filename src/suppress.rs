@@ -50,9 +50,10 @@ pub fn rule_matches(rule: &SuppressionRule, finding: &Finding, file_path: &str) 
         return false;
     }
 
-    // Category: exact match (case-insensitive) if specified
+    // Category: normalize rule's legacy string through Category mapping
     if let Some(ref cat) = rule.category {
-        if finding.category.as_str().to_lowercase() != cat.to_lowercase() {
+        let rule_category: crate::category::Category = cat.as_str().into();
+        if finding.category != rule_category {
             return false;
         }
     }

@@ -37,8 +37,8 @@ fn serde_uses_kebab_case() {
 }
 
 #[test]
-fn from_string_maps_legacy_bug_to_maintainability() {
-    assert_eq!(Category::from("bug"), Category::Maintainability);
+fn from_string_maps_legacy_bug_to_correctness() {
+    assert_eq!(Category::from("bug"), Category::Correctness);
 }
 
 #[test]

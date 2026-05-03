@@ -76,7 +76,7 @@ impl From<String> for Category {
     fn from(s: String) -> Self {
         match s.to_lowercase().trim().replace(' ', "-").replace('_', "-").as_str() {
             "security" | "safety" => Category::Security,
-            "correctness" | "functional-bug" => Category::Correctness,
+            "correctness" | "functional-bug" | "bug" => Category::Correctness,
             "logic" | "logic-error" => Category::Logic,
             "concurrency" => Category::Concurrency,
             "reliability" | "resource-lifecycle" | "resource-management" => Category::Reliability,

@@ -7,6 +7,7 @@
 pub use quorum::analysis;
 pub use quorum::ast_grep;
 pub use quorum::calibrator;
+pub use quorum::category;
 pub use quorum::calibrator_trace;
 pub use quorum::domain;
 pub use quorum::embeddings;
