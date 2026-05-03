@@ -63,6 +63,7 @@ pub fn analyze_complexity(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -99,22 +100,13 @@ fn collect_nodes_by_kind(
     }
 }
 
-pub fn cyclomatic_complexity(
-    node: &tree_sitter::Node,
-    source: &str,
-    lang: Language,
-) -> u32 {
+pub fn cyclomatic_complexity(node: &tree_sitter::Node, source: &str, lang: Language) -> u32 {
     let mut complexity = 1u32; // baseline path
     count_decisions(node, source, lang, &mut complexity);
     complexity
 }
 
-fn count_decisions(
-    node: &tree_sitter::Node,
-    source: &str,
-    lang: Language,
-    complexity: &mut u32,
-) {
+fn count_decisions(node: &tree_sitter::Node, source: &str, lang: Language, complexity: &mut u32) {
     let kind = node.kind();
 
     match kind {
@@ -234,11 +226,7 @@ fn has_attribute(node: &tree_sitter::Node, source: &str, attr_name: &str) -> boo
     false
 }
 
-fn scan_insecure_rust(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     // unsafe blocks
     if node.kind() == "unsafe_block" {
         findings.push(Finding {
@@ -258,6 +246,7 @@ fn scan_insecure_rust(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+                    grounding_status: None,
         });
     }
 
@@ -286,6 +275,7 @@ fn scan_insecure_rust(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -294,11 +284,7 @@ fn scan_insecure_rust(
     }
 }
 
-fn scan_insecure_python(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
 
@@ -327,6 +313,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -352,6 +339,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -372,6 +360,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -405,6 +394,7 @@ fn scan_insecure_python(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
@@ -424,6 +414,7 @@ fn scan_insecure_python(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         }
                     }
@@ -439,12 +430,13 @@ fn scan_insecure_python(
                     let args_text = &source[args.byte_range()];
                     let binary_modes = [
                         "'rb'", "\"rb\"", "'wb'", "\"wb\"", "'ab'", "\"ab\"", "'xb'", "\"xb\"",
-                        "'r+b'", "\"r+b\"", "'w+b'", "\"w+b\"", "'a+b'", "\"a+b\"", "'x+b'", "\"x+b\"",
-                        "'rb+'", "\"rb+\"", "'wb+'", "\"wb+\"", "'ab+'", "\"ab+\"", "'xb+'", "\"xb+\"",
+                        "'r+b'", "\"r+b\"", "'w+b'", "\"w+b\"", "'a+b'", "\"a+b\"", "'x+b'",
+                        "\"x+b\"", "'rb+'", "\"rb+\"", "'wb+'", "\"wb+\"", "'ab+'", "\"ab+\"",
+                        "'xb+'", "\"xb+\"",
                     ];
                     let is_binary = binary_modes.iter().any(|m| args_text.contains(m));
-                    let has_encoding = args_text.contains("encoding=")
-                        || args_text.contains("encoding =");
+                    let has_encoding =
+                        args_text.contains("encoding=") || args_text.contains("encoding =");
                     if !is_binary && !has_encoding {
                         findings.push(Finding {
                             title: "`open()` without explicit `encoding` parameter".into(),
@@ -463,6 +455,7 @@ fn scan_insecure_python(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -521,6 +514,7 @@ fn scan_insecure_python(
                         reasoning: None,
                         confidence: None,
                         cited_lines: None,
+                    grounding_status: None,
                     });
                 }
             }
@@ -532,8 +526,15 @@ fn scan_insecure_python(
         if let Some(left) = node.child_by_field_name("left") {
             let var_name = source[left.byte_range()].to_uppercase();
             let secret_names = [
-                "SECRET_KEY", "SECRET", "PASSWORD", "PASSWD", "API_KEY",
-                "APIKEY", "AUTH_TOKEN", "TOKEN", "PRIVATE_KEY",
+                "SECRET_KEY",
+                "SECRET",
+                "PASSWORD",
+                "PASSWD",
+                "API_KEY",
+                "APIKEY",
+                "AUTH_TOKEN",
+                "TOKEN",
+                "PRIVATE_KEY",
             ];
             if secret_names.iter().any(|s| var_name.contains(s)) {
                 if let Some(right) = node.child_by_field_name("right") {
@@ -544,7 +545,11 @@ fn scan_insecure_python(
                     // - Longer than a typical key name (> 10 chars inside quotes)
                     // - Contains mixed case, numbers, or special chars (not just lowercase words)
                     // Guard: only slice into string content if it's actually a quoted string
-                    let inner_len = if right_text.len() > 2 { right_text.len() - 2 } else { 0 };
+                    let inner_len = if right_text.len() > 2 {
+                        right_text.len() - 2
+                    } else {
+                        0
+                    };
                     let inner = if right_text.len() > 2 {
                         &right_text[1..right_text.len() - 1]
                     } else {
@@ -555,8 +560,8 @@ fn scan_insecure_python(
                     let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
                     // Real secrets have mixed character classes (upper+lower, digits, special chars)
                     // Plain lowercase_words or dotted.names are key names, not secrets
-                    let looks_like_secret = (has_upper || has_digit || has_special)
-                        && inner_len > 8;
+                    let looks_like_secret =
+                        (has_upper || has_digit || has_special) && inner_len > 8;
                     if (right_kind == "string" || right_kind == "concatenated_string")
                         && inner_len > 3
                         && looks_like_secret
@@ -582,6 +587,7 @@ fn scan_insecure_python(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -616,6 +622,7 @@ fn scan_insecure_python(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -670,6 +677,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -700,6 +708,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -731,6 +740,7 @@ fn scan_insecure_python(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -776,7 +786,10 @@ fn has_exception_in_return(node: &tree_sitter::Node, source: &str, var_name: &st
         let repr_pattern = format!("repr({})", var_name);
         // Also check for f-string interpolation like {e} or {e!r}
         let fstring_pattern = format!("{{{}}}", var_name);
-        if text.contains(&str_pattern) || text.contains(&repr_pattern) || text.contains(&fstring_pattern) {
+        if text.contains(&str_pattern)
+            || text.contains(&repr_pattern)
+            || text.contains(&fstring_pattern)
+        {
             return true;
         }
     }
@@ -821,7 +834,11 @@ fn is_in_async_function(node: &tree_sitter::Node, _source: &str) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "function_declaration" | "function_expression" | "method_definition" | "function" | "arrow_function" => {
+            "function_declaration"
+            | "function_expression"
+            | "method_definition"
+            | "function"
+            | "arrow_function" => {
                 let mut cursor = parent.walk();
                 for child in parent.children(&mut cursor) {
                     if child.kind() == "async" {
@@ -843,8 +860,16 @@ fn is_in_async_function(node: &tree_sitter::Node, _source: &str) -> bool {
 
 /// Secret-like key name patterns for YAML hardcoded secret detection.
 const YAML_SECRET_KEY_PATTERNS: &[&str] = &[
-    "password", "passwd", "secret", "api_key", "apikey", "auth_token",
-    "token", "private_key", "access_key", "secret_key",
+    "password",
+    "passwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "token",
+    "private_key",
+    "access_key",
+    "secret_key",
 ];
 
 /// Check whether the value side of a block_mapping_pair uses a safe tag
@@ -859,7 +884,10 @@ fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool
         if let Some(child) = value_node.child(i as u32) {
             if child.kind() == "tag" {
                 let tag_text = &source[child.byte_range()];
-                if tag_text.starts_with("!secret") || tag_text.starts_with("!include") || tag_text.starts_with("!env_var") {
+                if tag_text.starts_with("!secret")
+                    || tag_text.starts_with("!include")
+                    || tag_text.starts_with("!env_var")
+                {
                     return true;
                 }
             }
@@ -868,7 +896,10 @@ fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool
                 if let Some(gc) = child.child(j as u32) {
                     if gc.kind() == "tag" {
                         let tag_text = &source[gc.byte_range()];
-                        if tag_text.starts_with("!secret") || tag_text.starts_with("!include") || tag_text.starts_with("!env_var") {
+                        if tag_text.starts_with("!secret")
+                            || tag_text.starts_with("!include")
+                            || tag_text.starts_with("!env_var")
+                        {
                             return true;
                         }
                     }
@@ -991,7 +1022,10 @@ fn is_root_mapping(node: &tree_sitter::Node) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "block_node" => { current = parent.parent(); continue; }
+            "block_node" => {
+                current = parent.parent();
+                continue;
+            }
             "document" | "stream" => return true,
             _ => return false,
         }
@@ -1043,11 +1077,7 @@ fn find_block_mapping_in<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter
     None
 }
 
-fn scan_insecure_yaml(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
 
@@ -1060,7 +1090,9 @@ fn scan_insecure_yaml(
                     if let Some(key) = child.child_by_field_name("key") {
                         let key_text = source[key.byte_range()].trim();
                         let key_line = key.start_position().row as u32 + 1;
-                        if let Some((_, first_line)) = seen_keys.iter().find(|(k, _)| *k == key_text) {
+                        if let Some((_, first_line)) =
+                            seen_keys.iter().find(|(k, _)| *k == key_text)
+                        {
                             findings.push(Finding {
                                 title: format!("Duplicate key `{}` in mapping", key_text),
                                 description: format!(
@@ -1081,6 +1113,7 @@ fn scan_insecure_yaml(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         } else {
                             seen_keys.push((key_text, key_line));
@@ -1097,8 +1130,11 @@ fn scan_insecure_yaml(
             // 3. Missing id
             if !keys.contains(&"id") {
                 findings.push(Finding {
-                    title: "Automation missing `id` -- UI management and debug traces are disabled".into(),
-                    description: "Automation missing `id` -- UI management and debug traces are disabled".into(),
+                    title: "Automation missing `id` -- UI management and debug traces are disabled"
+                        .into(),
+                    description:
+                        "Automation missing `id` -- UI management and debug traces are disabled"
+                            .into(),
                     severity: Severity::Medium,
                     category: "quality".into(),
                     source: Source::LocalAst,
@@ -1113,6 +1149,7 @@ fn scan_insecure_yaml(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
 
@@ -1135,6 +1172,7 @@ fn scan_insecure_yaml(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
 
@@ -1166,6 +1204,7 @@ fn scan_insecure_yaml(
                         reasoning: None,
                         confidence: None,
                         cited_lines: None,
+                    grounding_status: None,
                     });
                 }
             }
@@ -1176,7 +1215,9 @@ fn scan_insecure_yaml(
                     if child.kind() == "block_mapping_pair" {
                         if let Some(key) = child.child_by_field_name("key") {
                             let key_text = source[key.byte_range()].trim();
-                            if (key_text == "triggers" || key_text == "actions") && yaml_value_is_empty(&child, source) {
+                            if (key_text == "triggers" || key_text == "actions")
+                                && yaml_value_is_empty(&child, source)
+                            {
                                 findings.push(Finding {
                                     title: format!("Empty `{}:` in automation", key_text),
                                     description: format!(
@@ -1197,6 +1238,7 @@ fn scan_insecure_yaml(
                                     reasoning: None,
                                     confidence: None,
                                     cited_lines: None,
+                    grounding_status: None,
                                 });
                             }
                         }
@@ -1212,12 +1254,13 @@ fn scan_insecure_yaml(
             if keys.contains(&"esphome") {
                 // Pattern 17: ESPHome OTA without password
                 if keys.contains(&"ota") {
-                    let has_password = if let Some(ota_mapping) = find_value_mapping(node, source, "ota") {
-                        let ota_keys = collect_mapping_keys(&ota_mapping, source);
-                        ota_keys.contains(&"password")
-                    } else {
-                        false
-                    };
+                    let has_password =
+                        if let Some(ota_mapping) = find_value_mapping(node, source, "ota") {
+                            let ota_keys = collect_mapping_keys(&ota_mapping, source);
+                            ota_keys.contains(&"password")
+                        } else {
+                            false
+                        };
                     if !has_password {
                         findings.push(Finding {
                             title: "ESPHome OTA section has no password -- firmware updates are unprotected".into(),
@@ -1236,18 +1279,20 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
 
                 // Pattern 19: ESPHome API without encryption
                 if keys.contains(&"api") {
-                    let has_encryption = if let Some(api_mapping) = find_value_mapping(node, source, "api") {
-                        let api_keys = collect_mapping_keys(&api_mapping, source);
-                        api_keys.contains(&"encryption")
-                    } else {
-                        false
-                    };
+                    let has_encryption =
+                        if let Some(api_mapping) = find_value_mapping(node, source, "api") {
+                            let api_keys = collect_mapping_keys(&api_mapping, source);
+                            api_keys.contains(&"encryption")
+                        } else {
+                            false
+                        };
                     if !has_encryption {
                         findings.push(Finding {
                             title: "ESPHome API has no encryption configured".into(),
@@ -1266,6 +1311,7 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -1289,11 +1335,12 @@ fn scan_insecure_yaml(
                                 };
 
                                 // Get the service's block_mapping (its config keys)
-                                let svc_mapping = if let Some(value) = child.child_by_field_name("value") {
-                                    find_block_mapping_in(&value)
-                                } else {
-                                    None
-                                };
+                                let svc_mapping =
+                                    if let Some(value) = child.child_by_field_name("value") {
+                                        find_block_mapping_in(&value)
+                                    } else {
+                                        None
+                                    };
 
                                 if let Some(ref svc_map) = svc_mapping {
                                     let svc_keys = collect_mapping_keys(svc_map, source);
@@ -1328,6 +1375,7 @@ fn scan_insecure_yaml(
                                             reasoning: None,
                                             confidence: None,
                                             cited_lines: None,
+                    grounding_status: None,
                                         });
                                     }
 
@@ -1350,6 +1398,7 @@ fn scan_insecure_yaml(
                                             reasoning: None,
                                             confidence: None,
                                             cited_lines: None,
+                    grounding_status: None,
                                         });
                                     }
                                 }
@@ -1366,20 +1415,31 @@ fn scan_insecure_yaml(
         if let Some(key) = node.child_by_field_name("key") {
             let key_text = source[key.byte_range()].trim().to_lowercase();
 
-            if YAML_SECRET_KEY_PATTERNS.iter().any(|p| key_text.contains(p)) {
+            if YAML_SECRET_KEY_PATTERNS
+                .iter()
+                .any(|p| key_text.contains(p))
+            {
                 if let Some(value) = node.child_by_field_name("value") {
                     if !yaml_value_has_safe_tag(&value, source) {
                         let val_text = source[value.byte_range()].trim();
                         if !val_text.is_empty() {
                             findings.push(Finding {
-                                title: format!("Hardcoded secret in `{}`", source[key.byte_range()].trim()),
-                                description: "Secrets should use `!secret` references, not hardcoded values.".into(),
+                                title: format!(
+                                    "Hardcoded secret in `{}`",
+                                    source[key.byte_range()].trim()
+                                ),
+                                description:
+                                    "Secrets should use `!secret` references, not hardcoded values."
+                                        .into(),
                                 severity: Severity::High,
                                 category: "security".into(),
                                 source: Source::LocalAst,
                                 line_start: line,
                                 line_end: end_line,
-                                evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
+                                evidence: vec![format!(
+                                    "{}: [REDACTED]",
+                                    source[key.byte_range()].trim()
+                                )],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
@@ -1388,6 +1448,7 @@ fn scan_insecure_yaml(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                                grounding_status: None,
                             });
                         }
                     }
@@ -1406,7 +1467,10 @@ fn scan_insecure_yaml(
                                 for j in 0..child.child_count() {
                                     if let Some(item) = child.child(j as u32) {
                                         if item.kind() == "block_sequence_item" {
-                                            let item_text = source[item.byte_range()].trim().trim_start_matches("- ").trim();
+                                            let item_text = source[item.byte_range()]
+                                                .trim()
+                                                .trim_start_matches("- ")
+                                                .trim();
                                             if !item_text.is_empty() && !item_text.contains('.') {
                                                 findings.push(Finding {
                                                     title: "entity_id without domain prefix".into(),
@@ -1428,6 +1492,7 @@ fn scan_insecure_yaml(
                                                     reasoning: None,
                                                     confidence: None,
                                                     cited_lines: None,
+                    grounding_status: None,
                                                 });
                                             }
                                         }
@@ -1458,6 +1523,7 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                            grounding_status: None,
                         });
                     }
                 }
@@ -1488,6 +1554,7 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                            grounding_status: None,
                         });
                     }
                 }
@@ -1515,6 +1582,7 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -1542,6 +1610,7 @@ fn scan_insecure_yaml(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -1550,14 +1619,18 @@ fn scan_insecure_yaml(
     }
 
     // --- Tier 6: Jinja2 template patterns (on scalar values) ---
-    if node.kind() == "plain_scalar" || node.kind() == "double_quote_scalar" || node.kind() == "single_quote_scalar" {
+    if node.kind() == "plain_scalar"
+        || node.kind() == "double_quote_scalar"
+        || node.kind() == "single_quote_scalar"
+    {
         let val_text = &source[node.byte_range()];
 
         // Only check values that contain Jinja2 templates
         if val_text.contains("{{") {
             // Pattern 20: states() without availability check
             if val_text.contains("states(") {
-                let has_availability = val_text.contains("unavailable") || val_text.contains("unknown");
+                let has_availability =
+                    val_text.contains("unavailable") || val_text.contains("unknown");
                 if !has_availability {
                     findings.push(Finding {
                         title: "Template uses `states()` without availability check".into(),
@@ -1576,27 +1649,49 @@ fn scan_insecure_yaml(
                         reasoning: None,
                         confidence: None,
                         cited_lines: None,
+                    grounding_status: None,
                     });
                 }
             }
 
             // Pattern 21: Deprecated dot-notation state access
             let dot_domains = [
-                "states.sensor.", "states.binary_sensor.", "states.switch.",
-                "states.light.", "states.climate.", "states.cover.",
-                "states.fan.", "states.lock.", "states.media_player.",
-                "states.automation.", "states.input_boolean.", "states.input_number.",
-                "states.input_select.", "states.input_text.", "states.person.",
-                "states.device_tracker.", "states.weather.", "states.zone.",
-                "states.script.", "states.scene.", "states.group.",
-                "states.timer.", "states.counter.", "states.number.",
-                "states.select.", "states.button.", "states.vacuum.",
-                "states.water_heater.", "states.humidifier.", "states.alarm_control_panel.",
+                "states.sensor.",
+                "states.binary_sensor.",
+                "states.switch.",
+                "states.light.",
+                "states.climate.",
+                "states.cover.",
+                "states.fan.",
+                "states.lock.",
+                "states.media_player.",
+                "states.automation.",
+                "states.input_boolean.",
+                "states.input_number.",
+                "states.input_select.",
+                "states.input_text.",
+                "states.person.",
+                "states.device_tracker.",
+                "states.weather.",
+                "states.zone.",
+                "states.script.",
+                "states.scene.",
+                "states.group.",
+                "states.timer.",
+                "states.counter.",
+                "states.number.",
+                "states.select.",
+                "states.button.",
+                "states.vacuum.",
+                "states.water_heater.",
+                "states.humidifier.",
+                "states.alarm_control_panel.",
             ];
             if dot_domains.iter().any(|d| val_text.contains(d)) {
                 findings.push(Finding {
                     title: "Deprecated dot-notation state access".into(),
-                    description: "Use states('sensor.xxx') instead of states.sensor.xxx.state".into(),
+                    description: "Use states('sensor.xxx') instead of states.sensor.xxx.state"
+                        .into(),
                     severity: Severity::Medium,
                     category: "quality".into(),
                     source: Source::LocalAst,
@@ -1611,17 +1706,14 @@ fn scan_insecure_yaml(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
     }
 }
 
-fn scan_insecure_typescript(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
 
@@ -1632,7 +1724,9 @@ fn scan_insecure_typescript(
             if func_name == "eval" {
                 findings.push(Finding {
                     title: "Use of `eval()` is a code injection risk".into(),
-                    description: "`eval()` executes arbitrary code. Avoid using it with untrusted input.".into(),
+                    description:
+                        "`eval()` executes arbitrary code. Avoid using it with untrusted input."
+                            .into(),
                     severity: Severity::Critical,
                     category: "security".into(),
                     source: Source::LocalAst,
@@ -1647,6 +1741,7 @@ fn scan_insecure_typescript(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
 
@@ -1669,6 +1764,7 @@ fn scan_insecure_typescript(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
 
@@ -1691,6 +1787,7 @@ fn scan_insecure_typescript(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -1701,8 +1798,15 @@ fn scan_insecure_typescript(
         if let Some(name_node) = node.child_by_field_name("name") {
             let var_name = source[name_node.byte_range()].to_uppercase();
             let secret_names = [
-                "SECRET_KEY", "SECRET", "PASSWORD", "PASSWD", "API_KEY",
-                "APIKEY", "AUTH_TOKEN", "TOKEN", "PRIVATE_KEY",
+                "SECRET_KEY",
+                "SECRET",
+                "PASSWORD",
+                "PASSWD",
+                "API_KEY",
+                "APIKEY",
+                "AUTH_TOKEN",
+                "TOKEN",
+                "PRIVATE_KEY",
             ];
             if secret_names.iter().any(|s| var_name.contains(s)) {
                 if let Some(value) = node.child_by_field_name("value") {
@@ -1715,10 +1819,9 @@ fn scan_insecure_typescript(
                         let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
                         let has_digit = inner.chars().any(|c| c.is_ascii_digit());
                         let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
-                        let looks_like_secret = (has_upper || has_digit || has_special) && inner_len > 8;
-                        if looks_like_secret
-                            && !val_text.contains("process.env")
-                        {
+                        let looks_like_secret =
+                            (has_upper || has_digit || has_special) && inner_len > 8;
+                        if looks_like_secret && !val_text.contains("process.env") {
                             findings.push(Finding {
                                 title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
                                 description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
@@ -1736,6 +1839,7 @@ fn scan_insecure_typescript(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         }
                     }
@@ -1749,7 +1853,11 @@ fn scan_insecure_typescript(
         if let Some(left) = node.child_by_field_name("left") {
             let left_text = &source[left.byte_range()];
             if left_text.ends_with(".innerHTML") || left_text.ends_with(".outerHTML") {
-                let prop = if left_text.ends_with(".innerHTML") { "innerHTML" } else { "outerHTML" };
+                let prop = if left_text.ends_with(".innerHTML") {
+                    "innerHTML"
+                } else {
+                    "outerHTML"
+                };
                 findings.push(Finding {
                     title: format!("Direct `{}` assignment is an XSS risk", prop),
                     description: format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop),
@@ -1767,6 +1875,7 @@ fn scan_insecure_typescript(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -1778,7 +1887,8 @@ fn scan_insecure_typescript(
         if text.contains(": any") {
             findings.push(Finding {
                 title: "Use of `any` type defeats TypeScript's type safety".into(),
-                description: "Prefer `unknown`, generics, or a specific type instead of `any`.".into(),
+                description: "Prefer `unknown`, generics, or a specific type instead of `any`."
+                    .into(),
                 severity: Severity::Info,
                 category: "quality".into(),
                 source: Source::LocalAst,
@@ -1793,6 +1903,7 @@ fn scan_insecure_typescript(
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -1808,7 +1919,9 @@ fn scan_insecure_typescript(
             if !has_statements {
                 findings.push(Finding {
                     title: "Empty `catch` block silently swallows errors".into(),
-                    description: "An empty catch block hides failures. Log the error, handle it, or rethrow.".into(),
+                    description:
+                        "An empty catch block hides failures. Log the error, handle it, or rethrow."
+                            .into(),
                     severity: Severity::Medium,
                     category: "reliability".into(),
                     source: Source::LocalAst,
@@ -1823,6 +1936,7 @@ fn scan_insecure_typescript(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -1833,9 +1947,17 @@ fn scan_insecure_typescript(
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             let sync_apis = [
-                "readFileSync", "writeFileSync", "mkdirSync", "existsSync",
-                "readdirSync", "unlinkSync", "appendFileSync", "copyFileSync",
-                "renameSync", "statSync", "accessSync",
+                "readFileSync",
+                "writeFileSync",
+                "mkdirSync",
+                "existsSync",
+                "readdirSync",
+                "unlinkSync",
+                "appendFileSync",
+                "copyFileSync",
+                "renameSync",
+                "statSync",
+                "accessSync",
             ];
             for api in &sync_apis {
                 if func_name.ends_with(api) {
@@ -1860,6 +1982,7 @@ fn scan_insecure_typescript(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                         break;
                     }
@@ -1877,7 +2000,8 @@ fn scan_insecure_typescript(
                     if let Some(right) = node.child_by_field_name("right") {
                         let right_text = &source[right.byte_range()];
                         let is_length_access = left.kind() == "member_expression"
-                            && left.child_by_field_name("property")
+                            && left
+                                .child_by_field_name("property")
                                 .map(|p| &source[p.byte_range()] == "length")
                                 .unwrap_or(false);
                         if is_length_access && right_text.trim() == "0" {
@@ -1898,6 +2022,7 @@ fn scan_insecure_typescript(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         }
                     }
@@ -1925,15 +2050,12 @@ fn scan_insecure_typescript(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+                    grounding_status: None,
         });
     }
 }
 
-fn scan_insecure_bash(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let kind = node.kind();
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
@@ -1958,6 +2080,7 @@ fn scan_insecure_bash(
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                    grounding_status: None,
             });
         }
     }
@@ -1980,7 +2103,8 @@ fn scan_insecure_bash(
         if !found_set_e {
             findings.push(Finding {
                 title: "Script has no `set -e` -- errors will be silently ignored".into(),
-                description: "Add `set -euo pipefail` near the top of the script to fail on errors.".into(),
+                description:
+                    "Add `set -euo pipefail` near the top of the script to fail on errors.".into(),
                 severity: Severity::Medium,
                 category: "reliability".into(),
                 source: Source::LocalAst,
@@ -1995,6 +2119,7 @@ fn scan_insecure_bash(
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -2021,6 +2146,7 @@ fn scan_insecure_bash(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
 
@@ -2032,13 +2158,16 @@ fn scan_insecure_bash(
                         if text == "777" {
                             findings.push(Finding {
                                 title: "`chmod 777` grants world-writable permissions".into(),
-                                description: "Use more restrictive permissions (e.g. 755 or 700).".into(),
+                                description: "Use more restrictive permissions (e.g. 755 or 700)."
+                                    .into(),
                                 severity: Severity::Medium,
                                 category: "security".into(),
                                 source: Source::LocalAst,
                                 line_start: line,
                                 line_end: end_line,
-                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                evidence: vec![
+                                    source[node.byte_range()].chars().take(200).collect(),
+                                ],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
@@ -2047,6 +2176,7 @@ fn scan_insecure_bash(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                                grounding_status: None,
                             });
                             break;
                         }
@@ -2068,14 +2198,18 @@ fn scan_insecure_bash(
                             saw_curl = true;
                         } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
                             findings.push(Finding {
-                                title: "Piping curl/wget to shell executes untrusted remote code".into(),
-                                description: "Download to a file first, inspect it, then execute.".into(),
+                                title: "Piping curl/wget to shell executes untrusted remote code"
+                                    .into(),
+                                description: "Download to a file first, inspect it, then execute."
+                                    .into(),
                                 severity: Severity::Critical,
                                 category: "security".into(),
                                 source: Source::LocalAst,
                                 line_start: line,
                                 line_end: end_line,
-                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                                evidence: vec![
+                                    source[node.byte_range()].chars().take(200).collect(),
+                                ],
                                 calibrator_action: None,
                                 similar_precedent: vec![],
                                 canonical_pattern: None,
@@ -2084,6 +2218,7 @@ fn scan_insecure_bash(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                                grounding_status: None,
                             });
                             break;
                         }
@@ -2108,7 +2243,10 @@ fn scan_insecure_bash(
                 if let Some(value_node) = node.child_by_field_name("value") {
                     let vkind = value_node.kind();
                     // Skip command substitutions and expansions
-                    if vkind != "command_substitution" && vkind != "simple_expansion" && vkind != "expansion" {
+                    if vkind != "command_substitution"
+                        && vkind != "simple_expansion"
+                        && vkind != "expansion"
+                    {
                         let val_text = &source[value_node.byte_range()];
                         // Skip if value contains $ (env var reference)
                         if !val_text.contains('$') {
@@ -2129,6 +2267,7 @@ fn scan_insecure_bash(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                         }
                     }
@@ -2138,11 +2277,7 @@ fn scan_insecure_bash(
     }
 }
 
-fn scan_insecure_dockerfile(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let kind = node.kind();
 
     match kind {
@@ -2167,6 +2302,7 @@ fn scan_insecure_dockerfile(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -2175,8 +2311,14 @@ fn scan_insecure_dockerfile(
         "env_instruction" | "arg_instruction" => {
             let text = &source[node.byte_range()];
             let secret_patterns = [
-                "PASSWORD", "API_KEY", "SECRET", "TOKEN", "PRIVATE_KEY",
-                "ACCESS_KEY", "CREDENTIAL", "AUTH_KEY",
+                "PASSWORD",
+                "API_KEY",
+                "SECRET",
+                "TOKEN",
+                "PRIVATE_KEY",
+                "ACCESS_KEY",
+                "CREDENTIAL",
+                "AUTH_KEY",
             ];
             // Check if any key name matches a secret pattern and has a hardcoded value
             for line in text.lines() {
@@ -2204,6 +2346,7 @@ fn scan_insecure_dockerfile(
                                 reasoning: None,
                                 confidence: None,
                                 cited_lines: None,
+                    grounding_status: None,
                             });
                             break;
                         }
@@ -2236,6 +2379,7 @@ fn scan_insecure_dockerfile(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -2250,8 +2394,15 @@ fn scan_insecure_dockerfile(
 
 /// Secret-like attribute name patterns for Terraform hardcoded secret detection.
 const TF_SECRET_PATTERNS: &[&str] = &[
-    "PASSWORD", "API_KEY", "SECRET", "TOKEN", "PRIVATE_KEY",
-    "ACCESS_KEY", "CREDENTIAL", "AUTH_KEY", "SECRET_KEY",
+    "PASSWORD",
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PRIVATE_KEY",
+    "ACCESS_KEY",
+    "CREDENTIAL",
+    "AUTH_KEY",
+    "SECRET_KEY",
 ];
 
 /// Check if a Terraform attribute's expression (third child) contains a variable
@@ -2294,11 +2445,7 @@ fn tf_expr_numeric(attr_node: &tree_sitter::Node, source: &str) -> Option<u16> {
     None
 }
 
-fn scan_insecure_terraform(
-    node: &tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     let kind = node.kind();
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
@@ -2334,6 +2481,7 @@ fn scan_insecure_terraform(
                                     reasoning: None,
                                     confidence: None,
                                     cited_lines: None,
+                    grounding_status: None,
                                 });
                             }
                         }
@@ -2374,6 +2522,7 @@ fn scan_insecure_terraform(
                                     reasoning: None,
                                     confidence: None,
                                     cited_lines: None,
+                    grounding_status: None,
                                 });
                             }
                         }
@@ -2387,7 +2536,8 @@ fn scan_insecure_terraform(
     // AST: block > identifier("ingress"), block_start, body > attribute(from_port), attribute(cidr_blocks), block_end
     if kind == "block" {
         if let Some(first_child) = node.child(0) {
-            if first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress" {
+            if first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress"
+            {
                 let mut has_open_cidr = false;
                 let mut port_is_sensitive = true;
                 let mut found_port = false;
@@ -2403,12 +2553,16 @@ fn scan_insecure_terraform(
                                                 let name = &source[attr_name.byte_range()];
                                                 if name == "cidr_blocks" {
                                                     let attr_text = &source[attr.byte_range()];
-                                                    if attr_text.contains("0.0.0.0/0") || attr_text.contains("::/0") {
+                                                    if attr_text.contains("0.0.0.0/0")
+                                                        || attr_text.contains("::/0")
+                                                    {
                                                         has_open_cidr = true;
                                                     }
                                                 }
                                                 if name == "from_port" {
-                                                    if let Some(port) = tf_expr_numeric(&attr, source) {
+                                                    if let Some(port) =
+                                                        tf_expr_numeric(&attr, source)
+                                                    {
                                                         found_port = true;
                                                         if port == 80 || port == 443 {
                                                             port_is_sensitive = false;
@@ -2442,6 +2596,7 @@ fn scan_insecure_terraform(
                         reasoning: None,
                         confidence: None,
                         cited_lines: None,
+                    grounding_status: None,
                     });
                 }
             }
@@ -2472,11 +2627,15 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
     let mut has_resource_or_data = false;
 
     for i in 0..top_body.child_count() {
-        let Some(child) = top_body.child(i as u32) else { continue };
+        let Some(child) = top_body.child(i as u32) else {
+            continue;
+        };
         if child.kind() != "block" {
             continue;
         }
-        let Some(btype) = hcl_block_type(child, source) else { continue };
+        let Some(btype) = hcl_block_type(child, source) else {
+            continue;
+        };
 
         match btype {
             "resource" | "data" => {
@@ -2487,10 +2646,14 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
                 // Check for required_version attribute in terraform block body
                 if let Some(tbody) = hcl_block_body(child) {
                     for j in 0..tbody.child_count() {
-                        let Some(attr_or_block) = tbody.child(j as u32) else { continue };
+                        let Some(attr_or_block) = tbody.child(j as u32) else {
+                            continue;
+                        };
                         if attr_or_block.kind() == "attribute" {
                             if let Some(id) = attr_or_block.child(0) {
-                                if id.kind() == "identifier" && &source[id.byte_range()] == "required_version" {
+                                if id.kind() == "identifier"
+                                    && &source[id.byte_range()] == "required_version"
+                                {
                                     has_required_version = true;
                                 }
                             }
@@ -2530,6 +2693,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
             reasoning: None,
             confidence: None,
             cited_lines: None,
+                    grounding_status: None,
         });
     }
 
@@ -2561,16 +2725,14 @@ fn hcl_block_body(block: tree_sitter::Node) -> Option<tree_sitter::Node> {
 }
 
 /// S2: Check each provider entry in required_providers for missing version constraint.
-fn check_required_providers(
-    rp_body: tree_sitter::Node,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
+fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     // required_providers body contains attributes like:
     //   aws = { source = "hashicorp/aws", version = "~> 5.0" }
     // Each entry is an attribute node whose value is an object expression.
     for i in 0..rp_body.child_count() {
-        let Some(attr) = rp_body.child(i as u32) else { continue };
+        let Some(attr) = rp_body.child(i as u32) else {
+            continue;
+        };
         if attr.kind() != "attribute" {
             continue;
         }
@@ -2578,13 +2740,21 @@ fn check_required_providers(
         // Get provider name (first identifier child)
         let provider_name = (0..attr.child_count()).find_map(|j| {
             let c = attr.child(j as u32)?;
-            if c.kind() == "identifier" { Some(&source[c.byte_range()]) } else { None }
+            if c.kind() == "identifier" {
+                Some(&source[c.byte_range()])
+            } else {
+                None
+            }
         });
 
         // Find the expression child (the value after =)
         let expr = (0..attr.child_count()).find_map(|j| {
             let c = attr.child(j as u32)?;
-            if c.kind() == "expression" { Some(c) } else { None }
+            if c.kind() == "expression" {
+                Some(c)
+            } else {
+                None
+            }
         });
 
         let Some(expr) = expr else { continue };
@@ -2600,7 +2770,8 @@ fn check_required_providers(
                     "Provider `{}` in required_providers has no version constraint",
                     provider_name.unwrap_or("unknown")
                 ),
-                description: "Add a `version` constraint to prevent unexpected provider upgrades.".into(),
+                description: "Add a `version` constraint to prevent unexpected provider upgrades."
+                    .into(),
                 severity: Severity::Medium,
                 category: "reliability".into(),
                 source: Source::LocalAst,
@@ -2615,6 +2786,7 @@ fn check_required_providers(
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -2666,10 +2838,7 @@ fn extract_identifier_from_expr<'a>(node: tree_sitter::Node, source: &'a str) ->
     None
 }
 
-fn analyze_dockerfile_structure(
-    tree: &tree_sitter::Tree,
-    source: &str,
-) -> Vec<Finding> {
+fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let root = tree.root_node();
 
@@ -2679,7 +2848,9 @@ fn analyze_dockerfile_structure(
     let mut entrypoint_count = 0u32;
 
     for i in 0..root.child_count() {
-        let Some(child) = root.child(i as u32) else { continue };
+        let Some(child) = root.child(i as u32) else {
+            continue;
+        };
         match child.kind() {
             // D1: FROM with latest or no tag
             "from_instruction" => {
@@ -2691,10 +2862,7 @@ fn analyze_dockerfile_structure(
                     .unwrap_or(text)
                     .trim();
                 // Handle "FROM image AS alias" -- take only the image part
-                let image_ref = image_part
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or(image_part);
+                let image_ref = image_part.split_whitespace().next().unwrap_or(image_part);
                 if image_ref != "scratch" {
                     let has_tag = image_ref.contains(':');
                     let uses_latest = image_ref.ends_with(":latest");
@@ -2716,6 +2884,7 @@ fn analyze_dockerfile_structure(
                             reasoning: None,
                             confidence: None,
                             cited_lines: None,
+                    grounding_status: None,
                         });
                     }
                 }
@@ -2748,6 +2917,7 @@ fn analyze_dockerfile_structure(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
 
@@ -2770,6 +2940,7 @@ fn analyze_dockerfile_structure(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+                    grounding_status: None,
         });
     }
 
@@ -2777,7 +2948,10 @@ fn analyze_dockerfile_structure(
     if cmd_count > 1 {
         findings.push(Finding {
             title: "Multiple CMD instructions -- only the last one takes effect".into(),
-            description: format!("Found {} CMD instructions; only the last one will be used.", cmd_count),
+            description: format!(
+                "Found {} CMD instructions; only the last one will be used.",
+                cmd_count
+            ),
             severity: Severity::Medium,
             category: "bug".into(),
             source: Source::LocalAst,
@@ -2792,12 +2966,16 @@ fn analyze_dockerfile_structure(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
     if entrypoint_count > 1 {
         findings.push(Finding {
             title: "Multiple ENTRYPOINT instructions -- only the last one takes effect".into(),
-            description: format!("Found {} ENTRYPOINT instructions; only the last one will be used.", entrypoint_count),
+            description: format!(
+                "Found {} ENTRYPOINT instructions; only the last one will be used.",
+                entrypoint_count
+            ),
             severity: Severity::Medium,
             category: "bug".into(),
             source: Source::LocalAst,
@@ -2812,6 +2990,7 @@ fn analyze_dockerfile_structure(
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
 
@@ -2919,7 +3098,10 @@ mod tests {
         let source = "function simple() { return 42; }";
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::TypeScript), 1);
+        assert_eq!(
+            cyclomatic_complexity(&func, source, Language::TypeScript),
+            1
+        );
     }
 
     #[test]
@@ -2927,7 +3109,10 @@ mod tests {
         let source = "function check(x: boolean) { return x ? 1 : 0; }";
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::TypeScript), 2);
+        assert_eq!(
+            cyclomatic_complexity(&func, source, Language::TypeScript),
+            2
+        );
     }
 
     // -- analyze_complexity integration --
@@ -2937,7 +3122,10 @@ mod tests {
         let source = "fn complex(a: bool, b: bool, c: bool, d: bool) {\n    if a {\n        if b {\n            if c {\n                if d {\n                    return;\n                }\n            }\n        }\n    }\n    if a && b {\n        return;\n    }\n    for x in 0..10 {\n        if x > 5 {\n            break;\n        }\n    }\n}\n";
         let tree = parse(source, Language::Rust).unwrap();
         let findings = analyze_complexity(&tree, source, Language::Rust, 5);
-        assert!(!findings.is_empty(), "complex function should produce a finding");
+        assert!(
+            !findings.is_empty(),
+            "complex function should produce a finding"
+        );
         assert_eq!(findings[0].source, Source::LocalAst);
         assert_eq!(findings[0].category, "performance");
         // Complexity findings are now capped at Medium per the system-prompt
@@ -2951,7 +3139,10 @@ mod tests {
         let source = "fn simple() -> i32 { 42 }\nfn also_simple(x: bool) { if x { return; } }";
         let tree = parse(source, Language::Rust).unwrap();
         let findings = analyze_complexity(&tree, source, Language::Rust, 5);
-        assert!(findings.is_empty(), "simple functions should not produce findings");
+        assert!(
+            findings.is_empty(),
+            "simple functions should not produce findings"
+        );
     }
 
     #[test]
@@ -3118,7 +3309,9 @@ PASSWORD = "hunter2"
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(
-            findings.iter().any(|f| f.title.contains("Hardcoded secret")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("Hardcoded secret")),
             "Should flag hardcoded secrets. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3134,7 +3327,9 @@ PASSWORD = os.environ.get("PASSWORD")
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(
-            !findings.iter().any(|f| f.title.contains("Hardcoded secret")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Hardcoded secret")),
             "Empty/None/env-loaded values should not be flagged"
         );
     }
@@ -3177,7 +3372,9 @@ def get_user(username):
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
         assert!(
-            findings.iter().any(|f| f.title.contains("SQL") || f.title.contains("sql")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("SQL") || f.title.contains("sql")),
             "Should flag f-string in SQL execute. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3236,11 +3433,17 @@ def process(items=None):
 
     #[test]
     fn typescript_hardcoded_secret() {
-        let source = "const API_KEY = \"sk-proj-abc123def456\";\nconst SECRET = \"my-secret-key-2024\";";
+        let source =
+            "const API_KEY = \"sk-proj-abc123def456\";\nconst SECRET = \"my-secret-key-2024\";";
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
-        assert!(findings.iter().any(|f| f.title.contains("Hardcoded secret")),
-            "Should flag hardcoded secrets in TS. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("Hardcoded secret")),
+            "Should flag hardcoded secrets in TS. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3248,7 +3451,11 @@ def process(items=None):
         let source = "const API_KEY = process.env.API_KEY;\nconst SECRET = \"\";";
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
-        assert!(!findings.iter().any(|f| f.title.contains("Hardcoded secret")));
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Hardcoded secret"))
+        );
     }
 
     #[test]
@@ -3296,8 +3503,13 @@ def process(items=None):
         let source = "const value = getData()!;\nconst name = user!.name;";
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
-        assert!(findings.iter().any(|f| f.title.contains("non-null assertion")),
-            "Should flag non-null assertions. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("non-null assertion")),
+            "Should flag non-null assertions. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     // -- New Python patterns --
@@ -3307,8 +3519,13 @@ def process(items=None):
         let source = "for item in items:\n    if item.bad:\n        items.remove(item)\n";
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
-        assert!(findings.iter().any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
-            "Should flag mutating while iterating. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
+            "Should flag mutating while iterating. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3316,8 +3533,12 @@ def process(items=None):
         let source = "for item in list(items):\n    items.remove(item)\n";
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
-        assert!(!findings.iter().any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
-            "Iterating over a copy should NOT be flagged");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Mutating") || f.title.contains("mutating")),
+            "Iterating over a copy should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3325,8 +3546,13 @@ def process(items=None):
         let source = "try:\n    process()\nexcept Exception as e:\n    return jsonify({\"error\": str(e)}), 500\n";
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
-        assert!(findings.iter().any(|f| f.title.contains("exception") || f.title.contains("Exception")),
-            "Should flag exception disclosure. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("exception") || f.title.contains("Exception")),
+            "Should flag exception disclosure. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3334,8 +3560,12 @@ def process(items=None):
         let source = "try:\n    process()\nexcept Exception as e:\n    logger.error(str(e))\n    return jsonify({\"error\": \"Internal error\"}), 500\n";
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
-        assert!(!findings.iter().any(|f| f.title.contains("exception") || f.title.contains("Exception")),
-            "Logging exception without returning it should NOT be flagged");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("exception") || f.title.contains("Exception")),
+            "Logging exception without returning it should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3343,8 +3573,13 @@ def process(items=None):
         let source = "async def process():\n    future = executor.submit(work)\n    return future.result()\n";
         let tree = parse(source, Language::Python).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Python);
-        assert!(findings.iter().any(|f| f.title.contains("result()") || f.title.contains("blocking")),
-            "Should flag blocking .result() in async. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("result()") || f.title.contains("blocking")),
+            "Should flag blocking .result() in async. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     // -- YAML patterns --
@@ -3355,7 +3590,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("Duplicate") || f.title.contains("duplicate")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("Duplicate") || f.title.contains("duplicate")),
             "Should flag duplicate top-level keys. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3402,7 +3639,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("missing") && f.title.contains("id")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("missing") && f.title.contains("id")),
             "Should flag automation missing id. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3414,7 +3653,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("missing") && f.title.contains("id")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("missing") && f.title.contains("id")),
             "Automation with id should NOT be flagged for missing id"
         );
     }
@@ -3436,11 +3677,17 @@ def process(items=None):
         let source = "automation:\n  - id: auto_001\n    alias: Test\n    mode: single\n    trigger:\n      - trigger: state\n        entity_id: binary_sensor.motion\n    action:\n      - service: light.turn_on\n    condition:\n      - condition: state\n        entity_id: binary_sensor.home\n        state: 'on'\n";
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
-        let deprecated_findings: Vec<_> = findings.iter().filter(|f| f.title.contains("Deprecated") || f.title.contains("deprecated")).collect();
+        let deprecated_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.title.contains("Deprecated") || f.title.contains("deprecated"))
+            .collect();
         assert!(
             deprecated_findings.len() >= 3,
             "Should flag trigger, action, and condition as deprecated. Got: {:?}",
-            deprecated_findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+            deprecated_findings
+                .iter()
+                .map(|f| &f.title)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3450,7 +3697,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("Deprecated") || f.title.contains("deprecated")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Deprecated") || f.title.contains("deprecated")),
             "Plural forms should NOT be flagged as deprecated"
         );
     }
@@ -3461,7 +3710,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
             "Should flag entity_id without domain prefix. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3473,7 +3724,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("entity_id") && f.title.contains("domain")),
             "entity_id with domain should NOT be flagged"
         );
     }
@@ -3484,7 +3737,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("service") && f.title.contains("domain")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("service") && f.title.contains("domain")),
             "Should flag service without domain. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3496,7 +3751,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("service") && f.title.contains("domain")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("service") && f.title.contains("domain")),
             "service with domain should NOT be flagged"
         );
     }
@@ -3507,7 +3764,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("empty") || f.title.contains("Empty")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("empty") || f.title.contains("Empty")),
             "Should flag empty actions. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3533,7 +3792,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
             "Should flag URL with embedded credentials. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3545,7 +3806,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("credentials") || f.title.contains("Credentials")),
             "URL without credentials should NOT be flagged"
         );
     }
@@ -3572,7 +3835,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("OTA") || f.title.contains("ota")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("OTA") || f.title.contains("ota")),
             "Should flag ESPHome OTA without password. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3584,7 +3849,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("OTA") || f.title.contains("ota")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("OTA") || f.title.contains("ota")),
             "ESPHome OTA with password should NOT be flagged"
         );
     }
@@ -3597,7 +3864,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("API") || f.title.contains("encryption")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("API") || f.title.contains("encryption")),
             "Should flag ESPHome API without encryption. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3609,7 +3878,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("API") || f.title.contains("encryption")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("API") || f.title.contains("encryption")),
             "ESPHome API with encryption should NOT be flagged"
         );
     }
@@ -3622,7 +3893,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("no-new-privileges")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("no-new-privileges")),
             "Should flag docker-compose service without no-new-privileges. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3634,7 +3907,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("no-new-privileges")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("no-new-privileges")),
             "Service with no-new-privileges should NOT be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3646,7 +3921,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("writable root filesystem")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("writable root filesystem")),
             "Should flag docker-compose service without read_only. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3658,7 +3935,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("writable root filesystem")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("writable root filesystem")),
             "Service with read_only should NOT be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3670,11 +3949,18 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         // web is fully secured, db is not
-        let no_new_priv_findings: Vec<_> = findings.iter().filter(|f| f.title.contains("no-new-privileges")).collect();
+        let no_new_priv_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.title.contains("no-new-privileges"))
+            .collect();
         assert_eq!(
-            no_new_priv_findings.len(), 1,
+            no_new_priv_findings.len(),
+            1,
             "Only db should be flagged for no-new-privileges. Got: {:?}",
-            no_new_priv_findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+            no_new_priv_findings
+                .iter()
+                .map(|f| &f.title)
+                .collect::<Vec<_>>()
         );
         assert!(no_new_priv_findings[0].title.contains("db"));
     }
@@ -3711,7 +3997,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("states()") || f.title.contains("availability")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("states()") || f.title.contains("availability")),
             "Should flag states() without availability check. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3723,7 +4011,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            !findings.iter().any(|f| f.title.contains("states()") && f.title.contains("availability")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("states()") && f.title.contains("availability")),
             "states() with availability check should NOT be flagged"
         );
     }
@@ -3734,7 +4024,9 @@ def process(items=None):
         let tree = parse(source, Language::Yaml).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Yaml);
         assert!(
-            findings.iter().any(|f| f.title.contains("dot-notation") || f.title.contains("Deprecated")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("dot-notation") || f.title.contains("Deprecated")),
             "Should flag deprecated dot-notation. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3758,8 +4050,11 @@ def process(items=None):
         let source = "#!/bin/bash\neval \"$user_input\"\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.title.contains("eval")),
-            "Should flag eval usage. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.title.contains("eval")),
+            "Should flag eval usage. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3767,8 +4062,11 @@ def process(items=None):
         let source = "#!/bin/bash\ncurl -sL https://example.com/install.sh | bash\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
-            "Should flag curl|bash as critical. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag curl|bash as critical. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3776,8 +4074,11 @@ def process(items=None):
         let source = "#!/bin/bash\nwget -qO- https://example.com/setup | sh\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
-            "Should flag wget|sh as critical. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag wget|sh as critical. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3785,8 +4086,11 @@ def process(items=None):
         let source = "#!/bin/bash\necho hello\nrm -rf /tmp/stuff\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.title.contains("set -e")),
-            "Should flag missing set -e. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.title.contains("set -e")),
+            "Should flag missing set -e. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3794,8 +4098,10 @@ def process(items=None):
         let source = "#!/bin/bash\nset -euo pipefail\necho hello\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(!findings.iter().any(|f| f.title.contains("set -e")),
-            "Script with set -e should NOT be flagged");
+        assert!(
+            !findings.iter().any(|f| f.title.contains("set -e")),
+            "Script with set -e should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3803,8 +4109,13 @@ def process(items=None):
         let source = "#!/bin/bash\nset -e\nAPI_KEY=\"sk-proj-abc123def456\"\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.category == "security" && f.title.contains("secret")),
-            "Should flag hardcoded secrets. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "security" && f.title.contains("secret")),
+            "Should flag hardcoded secrets. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3812,8 +4123,10 @@ def process(items=None):
         let source = "#!/bin/bash\nset -e\nAPI_KEY=$(vault get api-key)\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(!findings.iter().any(|f| f.title.contains("secret")),
-            "Secrets from command substitution should NOT be flagged");
+        assert!(
+            !findings.iter().any(|f| f.title.contains("secret")),
+            "Secrets from command substitution should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3821,8 +4134,13 @@ def process(items=None):
         let source = "#!/bin/bash\nset -e\nchmod 777 /var/www/app\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.title.contains("chmod") && f.title.contains("777")),
-            "Should flag chmod 777. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("chmod") && f.title.contains("777")),
+            "Should flag chmod 777. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3830,8 +4148,11 @@ def process(items=None):
         let source = "echo hello\nrm -rf /tmp/stuff\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(findings.iter().any(|f| f.title.contains("shebang")),
-            "Should flag missing shebang. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.title.contains("shebang")),
+            "Should flag missing shebang. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3839,8 +4160,10 @@ def process(items=None):
         let source = "#!/usr/bin/env bash\nset -e\necho hello\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        assert!(!findings.iter().any(|f| f.title.contains("shebang")),
-            "Script with shebang should NOT be flagged");
+        assert!(
+            !findings.iter().any(|f| f.title.contains("shebang")),
+            "Script with shebang should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3848,9 +4171,19 @@ def process(items=None):
         let source = "#!/usr/bin/env bash\nset -euo pipefail\n\nmain() {\n  echo \"deploying\"\n}\n\nmain \"$@\"\n";
         let tree = parse(source, Language::Bash).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Bash);
-        let serious = findings.iter().filter(|f| f.severity >= Severity::Medium).count();
-        assert_eq!(serious, 0, "Clean script should have no serious findings. Got: {:?}",
-            findings.iter().map(|f| (&f.severity, &f.title)).collect::<Vec<_>>());
+        let serious = findings
+            .iter()
+            .filter(|f| f.severity >= Severity::Medium)
+            .count();
+        assert_eq!(
+            serious,
+            0,
+            "Clean script should have no serious findings. Got: {:?}",
+            findings
+                .iter()
+                .map(|f| (&f.severity, &f.title))
+                .collect::<Vec<_>>()
+        );
     }
 
     // -- Dockerfile patterns --
@@ -3860,8 +4193,11 @@ def process(items=None):
         let source = "FROM node:latest\nRUN npm install\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("latest")),
-            "Should flag FROM :latest. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.title.contains("latest")),
+            "Should flag FROM :latest. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3869,8 +4205,13 @@ def process(items=None):
         let source = "FROM node\nRUN npm install\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("latest") || f.title.contains("untagged")),
-            "Should flag untagged FROM. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("latest") || f.title.contains("untagged")),
+            "Should flag untagged FROM. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3878,8 +4219,12 @@ def process(items=None):
         let source = "FROM node:18-alpine\nRUN npm install\nUSER node\nHEALTHCHECK CMD curl -f http://localhost:3000/ || exit 1\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(!findings.iter().any(|f| f.title.contains("latest") || f.title.contains("untagged")),
-            "Pinned image should NOT be flagged");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("latest") || f.title.contains("untagged")),
+            "Pinned image should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3887,8 +4232,13 @@ def process(items=None):
         let source = "FROM node:18\nRUN npm install\nCOPY . /app\nCMD [\"node\", \"app.js\"]\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("USER") || f.title.contains("root")),
-            "Should flag missing USER. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("USER") || f.title.contains("root")),
+            "Should flag missing USER. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3896,8 +4246,12 @@ def process(items=None):
         let source = "FROM node:18\nRUN npm install\nUSER node\nHEALTHCHECK CMD curl -f http://localhost/ || exit 1\nCMD [\"node\", \"app.js\"]\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(!findings.iter().any(|f| f.title.contains("USER") && f.title.contains("missing")),
-            "Dockerfile with USER should NOT be flagged");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("USER") && f.title.contains("missing")),
+            "Dockerfile with USER should NOT be flagged"
+        );
     }
 
     #[test]
@@ -3905,8 +4259,13 @@ def process(items=None):
         let source = "FROM node:18\nADD . /app\nUSER node\nHEALTHCHECK CMD true\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("ADD") || f.title.contains("COPY")),
-            "Should flag ADD for local files. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("ADD") || f.title.contains("COPY")),
+            "Should flag ADD for local files. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3914,8 +4273,12 @@ def process(items=None):
         let source = "FROM node:18\nADD https://example.com/file.tar.gz /tmp/\nUSER node\nHEALTHCHECK CMD true\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(!findings.iter().any(|f| f.title.contains("ADD") && f.title.contains("COPY")),
-            "ADD with URL should NOT suggest COPY");
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("ADD") && f.title.contains("COPY")),
+            "ADD with URL should NOT suggest COPY"
+        );
     }
 
     #[test]
@@ -3923,17 +4286,25 @@ def process(items=None):
         let source = "FROM node:18\nRUN npm install\nUSER node\nCMD [\"node\", \"app.js\"]\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("HEALTHCHECK")),
-            "Should flag missing HEALTHCHECK. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.title.contains("HEALTHCHECK")),
+            "Should flag missing HEALTHCHECK. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn dockerfile_secrets_in_env() {
-        let source = "FROM node:18\nENV API_KEY=sk-proj-abc123def456\nUSER node\nHEALTHCHECK CMD true\n";
+        let source =
+            "FROM node:18\nENV API_KEY=sk-proj-abc123def456\nUSER node\nHEALTHCHECK CMD true\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.category == "security" && (f.title.contains("secret") || f.title.contains("Secret"))),
-            "Should flag secrets in ENV. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.category == "security"
+                && (f.title.contains("secret") || f.title.contains("Secret"))),
+            "Should flag secrets in ENV. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3941,8 +4312,11 @@ def process(items=None):
         let source = "FROM ubuntu:22.04\nRUN curl -sL https://deb.nodesource.com/setup | bash -\nUSER node\nHEALTHCHECK CMD true\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.severity == Severity::Critical),
-            "Should flag curl|bash in RUN. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Critical),
+            "Should flag curl|bash in RUN. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3950,8 +4324,13 @@ def process(items=None):
         let source = "FROM node:18\nCMD [\"echo\", \"first\"]\nCMD [\"echo\", \"second\"]\nUSER node\nHEALTHCHECK CMD true\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        assert!(findings.iter().any(|f| f.title.contains("Multiple CMD") || f.title.contains("multiple")),
-            "Should flag multiple CMD. Got: {:?}", findings.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("Multiple CMD") || f.title.contains("multiple")),
+            "Should flag multiple CMD. Got: {:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     // -- Empty catch block detection (TypeScript) --
@@ -3962,7 +4341,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("Empty `catch` block")),
             "Should flag empty catch. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3974,7 +4355,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("Empty `catch` block")),
             "Catch with only comments should be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -3986,7 +4369,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            !findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Empty `catch` block")),
             "Catch with real statements should not be flagged"
         );
     }
@@ -3997,7 +4382,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            !findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("Empty `catch` block")),
             "Catch that rethrows should not be flagged"
         );
     }
@@ -4008,7 +4395,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            findings.iter().any(|f| f.title.contains("Empty `catch` block")),
+            findings
+                .iter()
+                .any(|f| f.title.contains("Empty `catch` block")),
             "Catch with only empty statement should be flagged. Got: {:?}",
             findings.iter().map(|f| &f.title).collect::<Vec<_>>()
         );
@@ -4248,7 +4637,9 @@ def process(items=None):
         let tree = parse(source, Language::TypeScript).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::TypeScript);
         assert!(
-            !findings.iter().any(|f| f.title.contains("tautological") || f.title.contains(".length")),
+            !findings
+                .iter()
+                .any(|f| f.title.contains("tautological") || f.title.contains(".length")),
             "length > 0 is valid and should not be flagged"
         );
     }
@@ -4276,8 +4667,13 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.category == "security" && f.title.to_lowercase().contains("secret")),
-            "Should detect hardcoded password in resource: {:?}", findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "security" && f.title.to_lowercase().contains("secret")),
+            "Should detect hardcoded password in resource: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4289,8 +4685,13 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.to_lowercase().contains("secret")),
-            "Password from variable ref should not flag: {:?}", findings);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.to_lowercase().contains("secret")),
+            "Password from variable ref should not flag: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4301,8 +4702,11 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.category == "security"),
-            "Should detect hardcoded API key: {:?}", findings);
+        assert!(
+            findings.iter().any(|f| f.category == "security"),
+            "Should detect hardcoded API key: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4321,8 +4725,13 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.category == "security" && f.title.to_lowercase().contains("wildcard")),
-            "Should detect wildcard IAM action: {:?}", findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "security" && f.title.to_lowercase().contains("wildcard")),
+            "Should detect wildcard IAM action: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4338,8 +4747,13 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.category == "security" && f.title.contains("0.0.0.0/0")),
-            "Should detect open security group on port 22: {:?}", findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "security" && f.title.contains("0.0.0.0/0")),
+            "Should detect open security group on port 22: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4355,8 +4769,11 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
-            "Port 443 open to public is normal for web servers: {:?}", findings);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
+            "Port 443 open to public is normal for web servers: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4372,8 +4789,11 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
-            "Port 80 open to public is normal for web servers: {:?}", findings);
+        assert!(
+            !findings.iter().any(|f| f.title.contains("0.0.0.0/0")),
+            "Port 80 open to public is normal for web servers: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4384,8 +4804,13 @@ def process(items=None):
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.to_lowercase().contains("secret")),
-            "Empty string should not flag as secret: {:?}", findings);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.to_lowercase().contains("secret")),
+            "Empty string should not flag as secret: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4393,9 +4818,20 @@ def process(items=None):
         let source = "FROM node:18-alpine AS build\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\nCOPY . .\nFROM node:18-alpine\nWORKDIR /app\nCOPY --from=build /app .\nUSER node\nHEALTHCHECK CMD curl -f http://localhost:3000/ || exit 1\nCMD [\"node\", \"server.js\"]\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Dockerfile);
-        let serious = findings.iter().filter(|f| f.severity >= Severity::Medium).count();
-        assert_eq!(serious, 0, "Clean Dockerfile should have no serious findings. Got: {:?}",
-            findings.iter().filter(|f| f.severity >= Severity::Medium).map(|f| (&f.severity, &f.title)).collect::<Vec<_>>());
+        let serious = findings
+            .iter()
+            .filter(|f| f.severity >= Severity::Medium)
+            .count();
+        assert_eq!(
+            serious,
+            0,
+            "Clean Dockerfile should have no serious findings. Got: {:?}",
+            findings
+                .iter()
+                .filter(|f| f.severity >= Severity::Medium)
+                .map(|f| (&f.severity, &f.title))
+                .collect::<Vec<_>>()
+        );
     }
 
     // -- Terraform structural analysis --
@@ -4412,8 +4848,13 @@ resource "aws_instance" "web" {
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.title.contains("required_version")),
-            "Should warn about missing terraform required_version: {:?}", findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("required_version")),
+            "Should warn about missing terraform required_version: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4428,8 +4869,13 @@ resource "aws_instance" "web" {
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.contains("required_version")),
-            "Should not warn when required_version is present: {:?}", findings);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("required_version")),
+            "Should not warn when required_version is present: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4440,8 +4886,13 @@ resource "aws_instance" "web" {
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.contains("required_version")),
-            "Files without resources should not warn about required_version: {:?}", findings);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("required_version")),
+            "Files without resources should not warn about required_version: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4462,8 +4913,13 @@ resource "aws_instance" "web" {
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(findings.iter().any(|f| f.title.contains("version constraint")),
-            "Should warn about provider without version constraint: {:?}", findings);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.title.contains("version constraint")),
+            "Should warn about provider without version constraint: {:?}",
+            findings
+        );
     }
 
     #[test]
@@ -4485,8 +4941,12 @@ resource "aws_instance" "web" {
 "#;
         let tree = parse(source, Language::Terraform).unwrap();
         let findings = analyze_insecure_patterns(&tree, source, Language::Terraform);
-        assert!(!findings.iter().any(|f| f.title.contains("version constraint")),
-            "Should not warn when provider has version constraint: {:?}", findings);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.title.contains("version constraint")),
+            "Should not warn when provider has version constraint: {:?}",
+            findings
+        );
     }
-
 }

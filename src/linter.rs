@@ -55,10 +55,17 @@ pub struct LinterHint {
 pub fn detect_unconfigured_linters(project_dir: &Path, files: &[&Path]) -> Vec<LinterHint> {
     let mut hints = Vec::new();
 
-    let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+    let ext_of = |p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+    };
 
     let count_by = |matches: fn(&str) -> bool| -> usize {
-        files.iter().filter(|p| ext_of(p).as_deref().map_or(false, matches)).count()
+        files
+            .iter()
+            .filter(|p| ext_of(p).as_deref().map_or(false, matches))
+            .count()
     };
 
     let py_count = count_by(|e| e == "py");
@@ -170,9 +177,9 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
     if std::fs::read_dir(project_dir)
         .ok()
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.path().extension().and_then(|ext| ext.to_str()) == Some("sh")
-            })
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("sh"))
         })
         .unwrap_or(false)
     {
@@ -181,7 +188,9 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
 
     // Hadolint: .hadolint.yaml/.hadolint.yml or Dockerfile exists
     let hadolint_configs = [".hadolint.yaml", ".hadolint.yml"];
-    let has_hadolint_config = hadolint_configs.iter().any(|c| project_dir.join(c).exists());
+    let has_hadolint_config = hadolint_configs
+        .iter()
+        .any(|c| project_dir.join(c).exists());
     let has_dockerfile = project_dir.join("Dockerfile").exists();
     if has_hadolint_config || has_dockerfile {
         linters.push(LinterKind::Hadolint);
@@ -192,9 +201,9 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
     let has_tf_files = std::fs::read_dir(project_dir)
         .ok()
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.path().extension().and_then(|ext| ext.to_str()) == Some("tf")
-            })
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("tf"))
         })
         .unwrap_or(false);
     if has_tflint_config || has_tf_files {
@@ -212,7 +221,9 @@ pub fn run_linter(
 ) -> anyhow::Result<Vec<Finding>> {
     let file_str = file.to_string_lossy();
     let output = match kind {
-        LinterKind::Ruff => runner.run("ruff", &["check", "--output-format=json", &file_str], cwd)?,
+        LinterKind::Ruff => {
+            runner.run("ruff", &["check", "--output-format=json", &file_str], cwd)?
+        }
         LinterKind::Clippy => runner.run(
             "cargo",
             &["clippy", "--message-format=json", "--", "-W", "clippy::all"],
@@ -222,7 +233,9 @@ pub fn run_linter(
         LinterKind::Yamllint => runner.run("yamllint", &["-f", "parsable", &file_str], cwd)?,
         LinterKind::Shellcheck => runner.run("shellcheck", &["--format=json1", &file_str], cwd)?,
         LinterKind::Hadolint => runner.run("hadolint", &["--format", "tty", &file_str], cwd)?,
-        LinterKind::Tflint => runner.run("tflint", &["--format=json", "--force", &file_str], cwd)?,
+        LinterKind::Tflint => {
+            runner.run("tflint", &["--format=json", "--force", &file_str], cwd)?
+        }
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
@@ -277,6 +290,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
 
@@ -335,6 +349,7 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
 
@@ -381,6 +396,7 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -393,8 +409,7 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
     // yamllint parsable format: file:line:col: [level] message (rule)
     // Find the level marker to reliably split, then extract line number
     for line in output.lines() {
-        let level_idx = line.find(" [error]")
-            .or_else(|| line.find(" [warning]"));
+        let level_idx = line.find(" [error]").or_else(|| line.find(" [warning]"));
         let (line_num, rest) = if let Some(idx) = level_idx {
             // Everything before marker is "file:line:col"
             let prefix = &line[..idx];
@@ -402,7 +417,10 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             let colon_parts: Vec<&str> = prefix.split(':').collect();
             // Parts: [file, line, col] -- line is second-to-last before col
             let line_n = if colon_parts.len() >= 3 {
-                colon_parts[colon_parts.len() - 3].trim().parse::<u32>().unwrap_or(1)
+                colon_parts[colon_parts.len() - 3]
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or(1)
             } else {
                 1
             };
@@ -414,7 +432,10 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
         let (severity, message) = if rest.starts_with("[error]") {
             (Severity::High, rest.trim_start_matches("[error]").trim())
         } else if rest.starts_with("[warning]") {
-            (Severity::Medium, rest.trim_start_matches("[warning]").trim())
+            (
+                Severity::Medium,
+                rest.trim_start_matches("[warning]").trim(),
+            )
         } else {
             (Severity::Low, rest)
         };
@@ -436,6 +457,7 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
     Ok(findings)
@@ -479,6 +501,7 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -539,6 +562,7 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             reasoning: None,
             confidence: None,
             cited_lines: None,
+            grounding_status: None,
         });
     }
     Ok(findings)
@@ -555,7 +579,9 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             let severity_str = item["rule"]["severity"].as_str().unwrap_or("warning");
             let message = item["message"].as_str().unwrap_or("");
             let line_start = item["range"]["start"]["line"].as_u64().unwrap_or(1) as u32;
-            let line_end = item["range"]["end"]["line"].as_u64().unwrap_or(line_start as u64) as u32;
+            let line_end = item["range"]["end"]["line"]
+                .as_u64()
+                .unwrap_or(line_start as u64) as u32;
 
             let severity = match severity_str {
                 "error" => Severity::High,
@@ -581,6 +607,7 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 reasoning: None,
                 confidence: None,
                 cited_lines: None,
+                grounding_status: None,
             });
         }
     }
@@ -726,7 +753,10 @@ mod tests {
         let files = pbuf(&["a.js", "b.tsx", "c.jsx", "d.mjs"]);
         let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
         let hints = detect_unconfigured_linters(dir.path(), &refs);
-        let eslint = hints.iter().find(|h| h.linter == LinterKind::Eslint).unwrap();
+        let eslint = hints
+            .iter()
+            .find(|h| h.linter == LinterKind::Eslint)
+            .unwrap();
         assert_eq!(eslint.file_count, 4);
     }
 
@@ -746,7 +776,10 @@ mod tests {
         let files = pbuf(&["ci.yaml", "x.yml"]);
         let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
         let hints = detect_unconfigured_linters(dir.path(), &refs);
-        let yh = hints.iter().find(|h| h.linter == LinterKind::Yamllint).unwrap();
+        let yh = hints
+            .iter()
+            .find(|h| h.linter == LinterKind::Yamllint)
+            .unwrap();
         assert_eq!(yh.file_count, 2);
     }
 
@@ -1057,7 +1090,11 @@ mod tests {
     #[test]
     fn detect_tflint_from_config() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".tflint.hcl"), "plugin \"terraform\" {\n  enabled = true\n}\n").unwrap();
+        std::fs::write(
+            dir.path().join(".tflint.hcl"),
+            "plugin \"terraform\" {\n  enabled = true\n}\n",
+        )
+        .unwrap();
         let linters = detect_linters(dir.path());
         assert!(linters.contains(&LinterKind::Tflint));
     }
@@ -1065,7 +1102,11 @@ mod tests {
     #[test]
     fn detect_tflint_from_tf_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("main.tf"), "resource \"aws_instance\" \"web\" {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("main.tf"),
+            "resource \"aws_instance\" \"web\" {}\n",
+        )
+        .unwrap();
         let linters = detect_linters(dir.path());
         assert!(linters.contains(&LinterKind::Tflint));
     }
@@ -1121,5 +1162,4 @@ mod tests {
         let findings = run_linter(&LinterKind::Tflint, &file, &cwd, &runner).unwrap();
         assert_eq!(findings.len(), 1);
     }
-
 }

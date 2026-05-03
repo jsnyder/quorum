@@ -1,5 +1,5 @@
 use quorum::category::Category;
-use quorum::finding::{Finding, Severity, Source};
+use quorum::finding::{Finding, FindingBuilder, GroundingStatus, Severity, Source};
 
 #[test]
 fn finding_with_new_fields_roundtrips() {
@@ -20,6 +20,7 @@ fn finding_with_new_fields_roundtrips() {
         reasoning: Some("Direct string interpolation in SQL".into()),
         confidence: Some(0.92),
         cited_lines: Some((10, 12)),
+        grounding_status: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -69,6 +70,7 @@ fn new_fields_omitted_from_json_when_none() {
         reasoning: None,
         confidence: None,
         cited_lines: None,
+        grounding_status: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -96,10 +98,14 @@ fn category_serializes_as_kebab_case_in_finding() {
         reasoning: None,
         confidence: None,
         cited_lines: None,
+        grounding_status: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
-    assert!(json.contains("\"error-handling\""), "expected kebab-case in JSON: {json}");
+    assert!(
+        json.contains("\"error-handling\""),
+        "expected kebab-case in JSON: {json}"
+    );
 }
 
 #[test]
@@ -140,4 +146,28 @@ fn cited_lines_tuple_roundtrips() {
 
     let finding: Finding = serde_json::from_str(json).unwrap();
     assert_eq!(finding.cited_lines, Some((10, 25)));
+}
+
+#[test]
+fn grounding_status_serde_roundtrip() {
+    for status in [
+        GroundingStatus::Verified,
+        GroundingStatus::SymbolNotFound,
+        GroundingStatus::LineOutOfRange,
+        GroundingStatus::NotChecked,
+    ] {
+        let f = FindingBuilder::new()
+            .grounding_status(status.clone())
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        let back: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(f.grounding_status, back.grounding_status);
+    }
+}
+
+#[test]
+fn grounding_status_absent_deserializes_as_none() {
+    let json = r#"{"title":"T","description":"D","severity":"info","category":"security","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"calibrator_action":null,"similar_precedent":[]}"#;
+    let f: Finding = serde_json::from_str(json).unwrap();
+    assert!(f.grounding_status.is_none());
 }

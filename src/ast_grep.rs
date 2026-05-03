@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 
-use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig, Severity as AstSeverity};
+use ast_grep_config::{GlobalRules, RuleConfig, Severity as AstSeverity, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use crate::finding::{Finding, Severity, Source};
@@ -73,7 +73,8 @@ fn read_rule_file(path: &Path) -> std::io::Result<String> {
     // (proc, sysfs, network FS); this guarantees we never allocate more
     // than the cap regardless.
     let mut yaml = String::new();
-    file.take(MAX_RULE_FILE_BYTES + 1).read_to_string(&mut yaml)?;
+    file.take(MAX_RULE_FILE_BYTES + 1)
+        .read_to_string(&mut yaml)?;
     Ok(yaml)
 }
 
@@ -95,10 +96,7 @@ pub fn ext_to_language(ext: &str) -> Option<SupportLang> {
 
 /// Load ast-grep rules from bundled `rules/<lang>/` and user `~/.quorum/rules/<lang>/` directories.
 /// Skips malformed rules with a warning. Returns sorted rule list for deterministic ordering.
-pub fn load_rules(
-    project_dir: &Path,
-    home_dir: &Path,
-) -> Vec<RuleConfig<SupportLang>> {
+pub fn load_rules(project_dir: &Path, home_dir: &Path) -> Vec<RuleConfig<SupportLang>> {
     let mut rules = Vec::new();
     // Dedup key is `(language, id)` — bundled rules legitimately reuse ids
     // across grammars (e.g. `bind-all-interfaces` in both python and
@@ -208,7 +206,11 @@ pub fn load_rules(
                         }
                     }
                     Err(e) => {
-                        eprintln!("ast-grep: skipping malformed rule {}: {}", rule_path.display(), e);
+                        eprintln!(
+                            "ast-grep: skipping malformed rule {}: {}",
+                            rule_path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -237,11 +239,7 @@ fn compatible_languages(ext: &str) -> Vec<SupportLang> {
 
 /// Scan source code with the given rules. Per-rule isolation: one bad rule doesn't block others.
 /// Returns findings with normalized line numbers (1-indexed) and Source::Linter("ast-grep").
-pub fn scan_file(
-    source: &str,
-    ext: &str,
-    rules: &[RuleConfig<SupportLang>],
-) -> Vec<Finding> {
+pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> Vec<Finding> {
     if source.is_empty() {
         return Vec::new();
     }
@@ -293,6 +291,7 @@ pub fn scan_file(
                     reasoning: None,
                     confidence: None,
                     cited_lines: None,
+                    grounding_status: None,
                 });
             }
         }
@@ -309,9 +308,10 @@ mod tests {
 
     #[test]
     fn smoke_load_bundled_rule_from_yaml() {
-        let yaml = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/as-any-cast.yml"),
-        )
+        let yaml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/as-any-cast.yml"
+        ))
         .unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
@@ -329,30 +329,38 @@ mod tests {
 
     #[test]
     fn smoke_rule_matches_source() {
-        let yaml = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/as-any-cast.yml"),
-        )
+        let yaml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/as-any-cast.yml"
+        ))
         .unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
         let lang: SupportLang = "typescript".parse().unwrap();
         let root = lang.ast_grep("const x = 1 as any;");
         let matches: Vec<_> = root.root().find_all(&rules[0].matcher).collect();
-        assert!(!matches.is_empty(), "as-any-cast rule should match `1 as any`");
+        assert!(
+            !matches.is_empty(),
+            "as-any-cast rule should match `1 as any`"
+        );
     }
 
     #[test]
     fn smoke_rule_no_match() {
-        let yaml = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/as-any-cast.yml"),
-        )
+        let yaml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/as-any-cast.yml"
+        ))
         .unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
         let lang: SupportLang = "typescript".parse().unwrap();
         let root = lang.ast_grep("const x: number = 1;");
         let matches: Vec<_> = root.root().find_all(&rules[0].matcher).collect();
-        assert!(matches.is_empty(), "as-any-cast should NOT match clean code");
+        assert!(
+            matches.is_empty(),
+            "as-any-cast should NOT match clean code"
+        );
     }
 
     // ── ext_to_language tests (ported from linter.rs) ──
@@ -538,7 +546,10 @@ rule:
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
         let source = "const a = 1;\nconst b = 2;\neval('code');\n";
         let findings = scan_file(source, "ts", &rules);
-        assert_eq!(findings[0].line_start, 3, "line numbers should be 1-indexed");
+        assert_eq!(
+            findings[0].line_start, 3,
+            "line numbers should be 1-indexed"
+        );
     }
 
     #[test]
@@ -564,7 +575,10 @@ rule:
         let rules = load_rules(&project_dir, fake_home.path());
         let findings = scan_file("const x = 1 as any;", "ts", &rules);
         assert!(!findings.is_empty());
-        assert!(!findings[0].evidence.is_empty(), "findings should include evidence text");
+        assert!(
+            !findings[0].evidence.is_empty(),
+            "findings should include evidence text"
+        );
     }
 
     #[test]
@@ -582,13 +596,13 @@ rule:
 
     #[test]
     fn sync_in_async_rule_loads_and_matches() {
-        let yaml = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/sync-in-async.yml"),
-        )
+        let yaml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/sync-in-async.yml"
+        ))
         .unwrap();
-        let rules: Vec<RuleConfig<SupportLang>> =
-            from_yaml_string(&yaml, &GlobalRules::default())
-                .expect("sync-in-async rule should parse without errors");
+        let rules: Vec<RuleConfig<SupportLang>> = from_yaml_string(&yaml, &GlobalRules::default())
+            .expect("sync-in-async rule should parse without errors");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "sync-in-async");
 
@@ -625,7 +639,10 @@ rule:
 
     #[test]
     fn block_on_in_async_rule_parses_cleanly() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/rust/block-on-in-async.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let parsed: Result<Vec<RuleConfig<SupportLang>>, _> =
             from_yaml_string(&yaml, &GlobalRules::default());
@@ -634,7 +651,10 @@ rule:
 
     #[test]
     fn block_on_in_async_matches_block_on_inside_async_fn() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/rust/block-on-in-async.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
@@ -648,15 +668,14 @@ rule:
 
     #[test]
     fn block_on_in_async_does_not_match_in_sync_fn() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/rust/block-on-in-async.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/rust/block-on-in-async.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file(
-            "fn run() { runtime.block_on(async { 1 }); }",
-            "rs",
-            &rules,
-        );
+        let findings = scan_file("fn run() { runtime.block_on(async { 1 }); }", "rs", &rules);
         assert!(findings.is_empty(), "must NOT flag in sync fn");
     }
 
@@ -680,14 +699,22 @@ rule:
     fn ha_template_none_fallback_matches_percent_unit() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo_battery') }}%\"\n";
-        assert_eq!(yaml_matches(src, &rules), 1, "percent suffix w/o default should match");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            1,
+            "percent suffix w/o default should match"
+        );
     }
 
     #[test]
     fn ha_template_none_fallback_matches_kelvin_unit() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo_temperature') }} K\"\n";
-        assert_eq!(yaml_matches(src, &rules), 1, "K suffix w/o default should match");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            1,
+            "K suffix w/o default should match"
+        );
     }
 
     #[test]
@@ -701,21 +728,33 @@ rule:
     fn ha_template_none_fallback_negative_has_default() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo') | float(0) | default(0) }}%\"\n";
-        assert_eq!(yaml_matches(src, &rules), 0, "default() filter must suppress");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            0,
+            "default() filter must suppress"
+        );
     }
 
     #[test]
     fn ha_template_none_fallback_negative_default_after_other_filter() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo') | round(1) | default(0) }}%\"\n";
-        assert_eq!(yaml_matches(src, &rules), 0, "default after round should still suppress");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            0,
+            "default after round should still suppress"
+        );
     }
 
     #[test]
     fn ha_template_none_fallback_negative_no_unit_suffix() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo') }}\"\n";
-        assert_eq!(yaml_matches(src, &rules), 0, "no unit suffix is not the risk pattern");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            0,
+            "no unit suffix is not the risk pattern"
+        );
     }
 
     #[test]
@@ -731,14 +770,22 @@ rule:
         // only the real `| default(...)` filter should. Anchor to pipe.
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo') | my_default(0) }}%\"\n";
-        assert_eq!(yaml_matches(src, &rules), 1, "my_default() is not the Jinja default filter");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            1,
+            "my_default() is not the Jinja default filter"
+        );
     }
 
     #[test]
     fn ha_template_none_fallback_negative_default_with_spaces() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.foo') |  default (0) }}%\"\n";
-        assert_eq!(yaml_matches(src, &rules), 0, "spaced `| default (` is still the default filter");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            0,
+            "spaced `| default (` is still the default filter"
+        );
     }
 
     #[test]
@@ -752,7 +799,11 @@ rule:
     fn ha_template_none_fallback_matches_degree_c() {
         let rules = load_yaml_rule("ha-template-none-fallback");
         let src = "state: \"{{ states('sensor.temp') }}°C\"\n";
-        assert_eq!(yaml_matches(src, &rules), 1, "°C suffix is a common HA unit");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            1,
+            "°C suffix is a common HA unit"
+        );
     }
 
     #[test]
@@ -774,7 +825,11 @@ rule:
         let rules = load_yaml_rule("ha-template-none-fallback");
         // Multi-line block scalar: common in HA for templates.
         let src = "state: |\n  {{ states('sensor.foo') }}%\n";
-        assert_eq!(yaml_matches(src, &rules), 1, "block scalar template must match");
+        assert_eq!(
+            yaml_matches(src, &rules),
+            1,
+            "block scalar template must match"
+        );
     }
 
     // ── Parity: all bundled rules match their test fixtures ──
@@ -835,7 +890,10 @@ rule:
 
     #[test]
     fn cors_wildcard_origin_rule_parses() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/cors-wildcard-origin.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let parsed: Result<Vec<RuleConfig<SupportLang>>, _> =
             from_yaml_string(&yaml, &GlobalRules::default());
@@ -844,42 +902,57 @@ rule:
 
     #[test]
     fn cors_wildcard_origin_flags_wildcard_acao() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/cors-wildcard-origin.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let setheader = "res.setHeader('Access-Control-Allow-Origin', '*');";
         let findings = scan_file(setheader, "ts", &rules);
-        assert!(!findings.is_empty(),
-            "should flag setHeader('Access-Control-Allow-Origin', '*')");
+        assert!(
+            !findings.is_empty(),
+            "should flag setHeader('Access-Control-Allow-Origin', '*')"
+        );
 
         let header_fn = "res.header('Access-Control-Allow-Origin', '*');";
         let findings2 = scan_file(header_fn, "ts", &rules);
-        assert!(!findings2.is_empty(),
-            "should flag res.header('Access-Control-Allow-Origin', '*')");
+        assert!(
+            !findings2.is_empty(),
+            "should flag res.header('Access-Control-Allow-Origin', '*')"
+        );
     }
 
     #[test]
     fn cors_wildcard_origin_ignores_unrelated() {
         // Dynamic/echoed origin is a different vulnerability (still reviewable by LLM),
         // but this rule targets only the unambiguous literal '*' case.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/cors-wildcard-origin.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let unrelated = "res.setHeader('X-Custom-Flag', '*');";
         let findings = scan_file(unrelated, "ts", &rules);
-        assert!(findings.is_empty(),
-            "should NOT flag unrelated header with '*' value");
+        assert!(
+            findings.is_empty(),
+            "should NOT flag unrelated header with '*' value"
+        );
     }
 
     #[test]
     fn cors_wildcard_origin_matches_case_insensitively() {
         // HTTP header names are case-insensitive. setHeader('access-control-allow-origin', '*')
         // and setHeader('Access-Control-Allow-Origin', '*') are equivalent on the wire.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/cors-wildcard-origin.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
@@ -890,8 +963,11 @@ rule:
             "res.setHeader('Access-control-allow-Origin', '*');",
         ] {
             let findings = scan_file(lowered, "ts", &rules);
-            assert!(!findings.is_empty(),
-                "should flag case variant: {}", lowered);
+            assert!(
+                !findings.is_empty(),
+                "should flag case variant: {}",
+                lowered
+            );
         }
     }
 
@@ -899,15 +975,20 @@ rule:
     fn cors_wildcard_origin_covers_writehead_and_next_style() {
         // Node's response.writeHead(code, {headers}) and Next.js-style
         // headers.set(...) are just as common as setHeader/header.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/rules/typescript/cors-wildcard-origin.yml");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/typescript/cors-wildcard-origin.yml"
+        );
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let next_style = "response.headers.set('Access-Control-Allow-Origin', '*');";
         let findings = scan_file(next_style, "ts", &rules);
-        assert!(!findings.is_empty(),
-            "should flag Next.js/Fetch-style headers.set(..., '*')");
+        assert!(
+            !findings.is_empty(),
+            "should flag Next.js/Fetch-style headers.set(..., '*')"
+        );
     }
 
     /// Test harness for new rules added in 2026-04 mining push.
@@ -921,26 +1002,121 @@ rule:
         let rules = load_rules(&project_dir, fake_home.path());
 
         let cases: &[(&str, &str, &str, usize)] = &[
-            ("rules/python/tests/bind-all-interfaces.py",            "py",   "bind-all-interfaces", 2),
-            ("rules/python/tests/eval-exec-non-literal.py",          "py",   "eval-exec-non-literal", 3),
-            ("rules/python/tests/flask-debug-true.py",               "py",   "flask-debug-true", 2),
-            ("rules/python/tests/blocking-call-in-async.py",         "py",   "blocking-call-in-async", 3),
-            ("rules/python/tests/fastapi-unbounded-pagination.py",   "py",   "fastapi-unbounded-pagination", 2),
-            ("rules/typescript/tests/sql-template-injection.ts",     "ts",   "sql-template-injection", 2),
-            ("rules/typescript/tests/tls-reject-unauthorized-false.ts","ts", "tls-reject-unauthorized-false", 2),
-            ("rules/typescript/tests/eval-non-literal.ts",           "ts",   "eval-non-literal", 3),
-            ("rules/typescript/tests/json-parse-as-type.ts",         "ts",   "json-parse-as-type", 1),
-            ("rules/typescript/tests/unsafe-url-concat.ts",          "ts",   "unsafe-url-concat", 2),
-            ("rules/javascript/tests/bind-all-interfaces.js",        "js",   "bind-all-interfaces", 2),
-            ("rules/yaml/tests/ha-jinja-loop-scoped-reassignment.yaml","yaml","ha-jinja-loop-scoped-reassignment", 1),
-            ("rules/bash/tests/unsafe-grep-variable.sh",             "sh",   "unsafe-grep-variable", 2),
-            ("rules/bash/tests/toctou-lock-touch.sh",                "sh",   "toctou-lock-touch", 1),
-            ("rules/rust/tests/ignored-io-result.rs",                "rs",   "ignored-io-result", 2),
-            ("rules/rust/tests/silent-error-conversion.rs",          "rs",   "silent-error-conversion", 2),
-            ("rules/hcl/tests/iam-wildcard-action.tf",               "tf",   "iam-wildcard-action", 1),
-            ("rules/hcl/tests/iam-wildcard-resource.tf",             "tf",   "iam-wildcard-resource", 1),
+            (
+                "rules/python/tests/bind-all-interfaces.py",
+                "py",
+                "bind-all-interfaces",
+                2,
+            ),
+            (
+                "rules/python/tests/eval-exec-non-literal.py",
+                "py",
+                "eval-exec-non-literal",
+                3,
+            ),
+            (
+                "rules/python/tests/flask-debug-true.py",
+                "py",
+                "flask-debug-true",
+                2,
+            ),
+            (
+                "rules/python/tests/blocking-call-in-async.py",
+                "py",
+                "blocking-call-in-async",
+                3,
+            ),
+            (
+                "rules/python/tests/fastapi-unbounded-pagination.py",
+                "py",
+                "fastapi-unbounded-pagination",
+                2,
+            ),
+            (
+                "rules/typescript/tests/sql-template-injection.ts",
+                "ts",
+                "sql-template-injection",
+                2,
+            ),
+            (
+                "rules/typescript/tests/tls-reject-unauthorized-false.ts",
+                "ts",
+                "tls-reject-unauthorized-false",
+                2,
+            ),
+            (
+                "rules/typescript/tests/eval-non-literal.ts",
+                "ts",
+                "eval-non-literal",
+                3,
+            ),
+            (
+                "rules/typescript/tests/json-parse-as-type.ts",
+                "ts",
+                "json-parse-as-type",
+                1,
+            ),
+            (
+                "rules/typescript/tests/unsafe-url-concat.ts",
+                "ts",
+                "unsafe-url-concat",
+                2,
+            ),
+            (
+                "rules/javascript/tests/bind-all-interfaces.js",
+                "js",
+                "bind-all-interfaces",
+                2,
+            ),
+            (
+                "rules/yaml/tests/ha-jinja-loop-scoped-reassignment.yaml",
+                "yaml",
+                "ha-jinja-loop-scoped-reassignment",
+                1,
+            ),
+            (
+                "rules/bash/tests/unsafe-grep-variable.sh",
+                "sh",
+                "unsafe-grep-variable",
+                2,
+            ),
+            (
+                "rules/bash/tests/toctou-lock-touch.sh",
+                "sh",
+                "toctou-lock-touch",
+                1,
+            ),
+            (
+                "rules/rust/tests/ignored-io-result.rs",
+                "rs",
+                "ignored-io-result",
+                2,
+            ),
+            (
+                "rules/rust/tests/silent-error-conversion.rs",
+                "rs",
+                "silent-error-conversion",
+                2,
+            ),
+            (
+                "rules/hcl/tests/iam-wildcard-action.tf",
+                "tf",
+                "iam-wildcard-action",
+                1,
+            ),
+            (
+                "rules/hcl/tests/iam-wildcard-resource.tf",
+                "tf",
+                "iam-wildcard-resource",
+                1,
+            ),
             // merged rule: bind-in-event-listener replaces bind-in-add-event-listener
-            ("rules/javascript/tests/bind-in-event-listener.js",     "js",   "bind-in-event-listener", 2),
+            (
+                "rules/javascript/tests/bind-in-event-listener.js",
+                "js",
+                "bind-in-event-listener",
+                2,
+            ),
         ];
 
         let mut failures = Vec::new();
@@ -949,17 +1125,22 @@ rule:
             let source = std::fs::read_to_string(&src_path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", src_path.display()));
             let findings = scan_file(&source, ext, &rules);
-            let matches = findings.iter().filter(|f| f.title.contains(rule_id)).count();
+            let matches = findings
+                .iter()
+                .filter(|f| f.title.contains(rule_id))
+                .count();
             if matches != *expected {
                 failures.push(format!(
                     "{rule_id} [{path}]: expected {expected} matches, got {matches}"
                 ));
             }
         }
-        assert!(failures.is_empty(),
+        assert!(
+            failures.is_empty(),
             "{} rule(s) failed expected-match assertion:\n  {}",
             failures.len(),
-            failures.join("\n  "));
+            failures.join("\n  ")
+        );
     }
 
     // ── Issue #120 hardening: user rules trust boundary ──
@@ -1017,7 +1198,10 @@ rule:
 
         let rules = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
-        assert!(ids.contains(&"safe-rule".to_string()), "bundled rule should still load");
+        assert!(
+            ids.contains(&"safe-rule".to_string()),
+            "bundled rule should still load"
+        );
         assert!(
             !ids.contains(&"evil-langlink".to_string()),
             "rule loaded from symlinked lang directory must be rejected; ids={ids:?}"
@@ -1055,7 +1239,10 @@ rule:
 
         let rules = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
-        assert!(ids.contains(&"real-rule".to_string()), "real rule should load; ids={ids:?}");
+        assert!(
+            ids.contains(&"real-rule".to_string()),
+            "real rule should load; ids={ids:?}"
+        );
         assert!(
             !ids.contains(&"smuggled-rule".to_string()),
             "symlinked rule file must be rejected (O_NOFOLLOW); ids={ids:?}"
@@ -1099,7 +1286,10 @@ rule:
         // rule from the socket file.
         let rules = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
-        assert!(ids.contains(&"real-rule".to_string()), "real rule should still load");
+        assert!(
+            ids.contains(&"real-rule".to_string()),
+            "real rule should still load"
+        );
         // No assertion on rule count — the socket has no rule id to check
         // against by name. The PRIMARY assertion is that load_rules
         // RETURNS within the test timeout, demonstrating no FIFO-class
@@ -1137,7 +1327,10 @@ rule:
 
         let rules = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
-        assert!(ids.contains(&"small-rule".to_string()), "small rule should load; ids={ids:?}");
+        assert!(
+            ids.contains(&"small-rule".to_string()),
+            "small rule should load; ids={ids:?}"
+        );
         assert!(
             !ids.contains(&"oversized-rule".to_string()),
             "rule file >1 MiB must be skipped; ids={ids:?}"
@@ -1181,7 +1374,8 @@ rule:
         let rules = load_rules(project.path(), home.path());
         let count = rules.iter().filter(|r| r.id == "shared-id").count();
         assert_eq!(
-            count, 1,
+            count,
+            1,
             "duplicate rule id `shared-id` must be deduplicated; found {count} copies in {:?}",
             rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
         );
@@ -1256,8 +1450,10 @@ rule:
 
         let rules = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
-        assert!(ids.contains(&"safe-rule".to_string()),
-            "bundled rule should still load; ids={ids:?}");
+        assert!(
+            ids.contains(&"safe-rule".to_string()),
+            "bundled rule should still load; ids={ids:?}"
+        );
         assert!(
             !ids.contains(&"evil-toplevel".to_string()),
             "rule loaded via symlinked top-level ~/.quorum/rules must be rejected; ids={ids:?}"
