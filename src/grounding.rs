@@ -31,7 +31,10 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
     BACKTICK_RE
         .captures_iter(text)
         .filter_map(|cap| {
-            let id = cap.get(1).unwrap().as_str().trim();
+            let mut id = cap.get(1).unwrap().as_str().trim();
+            if id.ends_with("()") {
+                id = &id[..id.len() - 2];
+            }
             if id.len() >= MIN_IDENTIFIER_LEN && !STOPWORDS.contains(id) {
                 Some(id)
             } else {
@@ -67,6 +70,26 @@ fn demote_severity(s: &Severity) -> Option<Severity> {
         Severity::Low => Some(Severity::Info),
         Severity::Info => None,
     }
+}
+
+fn is_word_char(c: char) -> bool {
+    c == '_' || c.is_alphanumeric()
+}
+
+/// Check if `id` appears in `text` with word boundaries only where the
+/// identifier itself starts/ends with a word character. This handles
+/// punctuated symbols like `foo()`, `std::io`, and `obj.method` that
+/// would fail with `\b...\b` regex anchors.
+fn contains_symbol(text: &str, id: &str) -> bool {
+    let needs_leading_boundary = id.starts_with(is_word_char);
+    let needs_trailing_boundary = id.ends_with(is_word_char);
+    text.match_indices(id).any(|(idx, _)| {
+        let before_ok = !needs_leading_boundary
+            || text[..idx].chars().next_back().is_none_or(|c| !is_word_char(c));
+        let after_ok = !needs_trailing_boundary
+            || text[idx + id.len()..].chars().next().is_none_or(|c| !is_word_char(c));
+        before_ok && after_ok
+    })
 }
 
 /// Verify that backtick-wrapped identifiers in an LLM finding's title actually
@@ -114,11 +137,8 @@ pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
     let end = ((finding.line_end as usize) + 2).min(source_lines.len());
     let window: String = source_lines[start..end].join("\n");
 
-    // Check all identifiers exist with word boundaries.
-    let all_found = identifiers.iter().all(|id| {
-        let pattern = format!(r"\b{}\b", regex::escape(id));
-        Regex::new(&pattern).is_ok_and(|re| re.is_match(&window))
-    });
+    // Check all identifiers exist with context-aware boundary matching.
+    let all_found = identifiers.iter().all(|id| contains_symbol(&window, id));
 
     if all_found {
         GroundingResult {
@@ -399,6 +419,36 @@ mod tests {
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::SymbolNotFound);
         assert_eq!(result.severity_change, Some(Severity::Medium));
+    }
+
+    #[test]
+    fn grounding_symbol_with_trailing_parens_verified() {
+        // LLMs often backtick function calls: `parse_unified_diff()`.
+        // The trailing parens must NOT prevent matching the source.
+        let f = FindingBuilder::new()
+            .title("Function `parse_unified_diff()` panics")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(3, 9)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, sample_source());
+        assert_eq!(result.status, GroundingStatus::Verified);
+        assert_eq!(result.severity_change, None);
+    }
+
+    #[test]
+    fn grounding_symbol_with_colons_verified() {
+        // Rust paths like `std::io` should match when present in source.
+        let source = "use std::io;\nfn main() {}\n";
+        let f = FindingBuilder::new()
+            .title("Unused import `std::io`")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 1)
+            .severity(Severity::Medium)
+            .build();
+        let result = verify_grounding(&f, source);
+        assert_eq!(result.status, GroundingStatus::Verified);
+        assert_eq!(result.severity_change, None);
     }
 
     #[test]
