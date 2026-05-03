@@ -1375,7 +1375,7 @@ mod tests {
         let source = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
         let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         assert!(!result.findings.is_empty());
-        assert!(result.findings.iter().any(|f| f.category == "complexity"));
+        assert!(result.findings.iter().any(|f| f.category == "performance"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -1455,7 +1455,7 @@ mod tests {
         assert!(!result.findings.is_empty());
         // Should be merged (not duplicated)
         let style_findings: Vec<_> = result.findings.iter()
-            .filter(|f| f.category == "style")
+            .filter(|f| f.category == "maintainability")
             .collect();
         assert_eq!(style_findings.len(), 1, "Duplicate findings should be merged");
     }

@@ -63,7 +63,7 @@ impl LlmFinding {
             title: self.title,
             description: self.description,
             severity,
-            category: self.category,
+            category: self.category.into(),
             source: Source::Llm(model_name.to_string()),
             line_start: self.line_start.max(1),
             line_end: self.line_end.max(self.line_start.max(1)),
@@ -73,6 +73,9 @@ impl LlmFinding {
             canonical_pattern: None,
             suggested_fix: self.suggested_fix,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         }
     }
 }

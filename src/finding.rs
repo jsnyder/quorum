@@ -1,3 +1,4 @@
+use crate::category::Category;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -45,12 +46,12 @@ impl Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub title: String,
     pub description: String,
     pub severity: Severity,
-    pub category: String,
+    pub category: Category,
     pub source: Source,
     pub line_start: u32,
     pub line_end: u32,
@@ -63,6 +64,12 @@ pub struct Finding {
     pub suggested_fix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cited_lines: Option<(u32, u32)>,
 }
 
 impl Finding {
@@ -101,7 +108,7 @@ impl FindingBuilder {
                 title: "Test finding".into(),
                 description: "Test description".into(),
                 severity: Severity::Info,
-                category: "test".into(),
+                category: Category::Maintainability,
                 source: Source::LocalAst,
                 line_start: 1,
                 line_end: 1,
@@ -111,6 +118,9 @@ impl FindingBuilder {
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             },
         }
     }
@@ -130,8 +140,23 @@ impl FindingBuilder {
         self
     }
 
-    pub fn category(mut self, c: &str) -> Self {
-        self.inner.category = c.into();
+    pub fn category(mut self, c: Category) -> Self {
+        self.inner.category = c;
+        self
+    }
+
+    pub fn reasoning(mut self, r: &str) -> Self {
+        self.inner.reasoning = Some(r.into());
+        self
+    }
+
+    pub fn confidence(mut self, c: f32) -> Self {
+        self.inner.confidence = Some(c);
+        self
+    }
+
+    pub fn cited_lines(mut self, start: u32, end: u32) -> Self {
+        self.inner.cited_lines = Some((start, end));
         self
     }
 
@@ -253,6 +278,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -282,6 +310,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -304,6 +335,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -328,6 +362,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         assert!(f.is_valid());
     }
@@ -348,6 +385,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         assert!(f.is_valid());
     }
@@ -368,6 +408,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         assert!(!f.is_valid());
     }
@@ -388,6 +431,9 @@ mod tests {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         };
         assert!(!f.is_valid());
     }
@@ -435,7 +481,7 @@ mod tests {
             .title("Custom title")
             .description("Custom desc")
             .severity(Severity::Critical)
-            .category("security")
+            .category(Category::Security)
             .source(Source::Llm("gpt-5.4".into()))
             .lines(10, 20)
             .evidence("some evidence")
@@ -446,7 +492,7 @@ mod tests {
         assert_eq!(f.title, "Custom title");
         assert_eq!(f.description, "Custom desc");
         assert_eq!(f.severity, Severity::Critical);
-        assert_eq!(f.category, "security");
+        assert_eq!(f.category, Category::Security);
         assert_eq!(f.source, Source::Llm("gpt-5.4".into()));
         assert_eq!(f.line_start, 10);
         assert_eq!(f.line_end, 20);

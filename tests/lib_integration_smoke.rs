@@ -33,6 +33,9 @@ fn lib_exports_are_reachable_from_integration_tests() {
         canonical_pattern: None,
         suggested_fix: None,
         based_on_excerpt: None,
+        reasoning: None,
+        confidence: None,
+        cited_lines: None,
     };
 
     // calibrate(...) must be callable with no precedents — exercises the

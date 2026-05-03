@@ -50,9 +50,10 @@ pub fn rule_matches(rule: &SuppressionRule, finding: &Finding, file_path: &str) 
         return false;
     }
 
-    // Category: exact match (case-insensitive) if specified
+    // Category: normalize rule's legacy string through Category mapping
     if let Some(ref cat) = rule.category {
-        if finding.category.to_lowercase() != cat.to_lowercase() {
+        let rule_category: crate::category::Category = cat.as_str().into();
+        if finding.category != rule_category {
             return false;
         }
     }
@@ -136,7 +137,7 @@ pub fn load_project_suppressions(path: &std::path::Path) -> Vec<SuppressionRule>
 pub fn format_suppressed_finding(finding: &Finding, rule: &SuppressionRule) -> String {
     let reason = rule.reason.as_deref().unwrap_or("no reason given");
     let safe_title: String = finding.title.chars().filter(|c| !c.is_control()).collect();
-    let safe_category: String = finding.category.chars().filter(|c| !c.is_control()).collect();
+    let safe_category: String = finding.category.as_str().chars().filter(|c| !c.is_control()).collect();
     format!(
         "  [SUPPRESSED] {}  [{}]\n    Reason: {}\n",
         safe_title, safe_category, reason
@@ -256,7 +257,7 @@ category = "security"
         };
         let finding = FindingBuilder::new()
             .title("TLS certificate verification disabled")
-            .category("security")
+            .category("security".into())
             .build();
         assert!(rule_matches(&rule, &finding, "any.rs"));
     }
@@ -271,7 +272,7 @@ category = "security"
         };
         let finding = FindingBuilder::new()
             .title("TLS certificate verification disabled")
-            .category("security")
+            .category("security".into())
             .build();
         assert!(!rule_matches(&rule, &finding, "any.rs"));
     }
@@ -316,7 +317,7 @@ category = "security"
         };
         let finding = FindingBuilder::new()
             .title("TLS certificate verification disabled")
-            .category("security")
+            .category("security".into())
             .build();
         // All match
         assert!(rule_matches(&rule, &finding, "src/url_resolver.py"));
@@ -325,7 +326,7 @@ category = "security"
         // Wrong category
         let finding_perf = FindingBuilder::new()
             .title("TLS certificate verification disabled")
-            .category("performance")
+            .category("performance".into())
             .build();
         assert!(!rule_matches(&rule, &finding_perf, "src/url_resolver.py"));
     }
@@ -358,11 +359,11 @@ category = "security"
         let findings = vec![
             FindingBuilder::new()
                 .title("TLS certificate verification disabled")
-                .category("security")
+                .category("security".into())
                 .build(),
             FindingBuilder::new()
                 .title("SQL injection risk")
-                .category("security")
+                .category("security".into())
                 .build(),
         ];
         let result = apply_suppressions(findings, &rules, "src/main.py");
@@ -449,7 +450,7 @@ category = "security"
     fn format_suppressed_finding_shows_rule_reason() {
         let finding = FindingBuilder::new()
             .title("TLS certificate verification disabled")
-            .category("security")
+            .category("security".into())
             .build();
         let rule = SuppressionRule {
             pattern: "TLS certificate".into(),
@@ -467,7 +468,7 @@ category = "security"
     fn format_suppressed_finding_no_reason() {
         let finding = FindingBuilder::new()
             .title("Some finding")
-            .category("test")
+            .category("test".into())
             .build();
         let rule = SuppressionRule {
             pattern: "Some finding".into(),

@@ -264,7 +264,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             title: format!("{}: {}", code, message),
             description: message.to_string(),
             severity,
-            category,
+            category: category.into(),
             source: Source::Linter("ruff".into()),
             line_start: row,
             line_end: end_row,
@@ -274,6 +274,9 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -329,6 +332,9 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
 
@@ -372,6 +378,9 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -424,6 +433,9 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
     Ok(findings)
@@ -464,6 +476,9 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -521,6 +536,9 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             canonical_pattern: None,
             suggested_fix: None,
             based_on_excerpt: None,
+            reasoning: None,
+            confidence: None,
+            cited_lines: None,
         });
     }
     Ok(findings)
@@ -560,6 +578,9 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 canonical_pattern: None,
                 suggested_fix: None,
                 based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
             });
         }
     }
@@ -825,7 +846,7 @@ mod tests {
         ]"#;
         let findings = normalize_ruff_output(json).unwrap();
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].category, "import");
+        assert_eq!(findings[0].category, "maintainability");
         assert!(findings[0].title.contains("F401"));
         assert_eq!(findings[0].line_start, 1);
         assert_eq!(findings[0].source, Source::Linter("ruff".into()));

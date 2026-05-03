@@ -290,6 +290,9 @@ pub fn scan_file(
                     canonical_pattern: None,
                     suggested_fix: None,
                     based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                 });
             }
         }
@@ -489,7 +492,7 @@ rule:
         let f = &findings[0];
         assert!(f.title.contains("as-any-cast"));
         assert_eq!(f.source, Source::Linter("ast-grep".into()));
-        assert_eq!(f.category, "ast-pattern");
+        assert_eq!(f.category, "maintainability");
     }
 
     #[test]
