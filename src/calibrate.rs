@@ -146,9 +146,10 @@ pub fn join_feedback_and_traces(
                 }
             }
             if !norm.is_empty() {
+                let norm_for_ambiguous = norm.clone();
                 match norm_title_only.entry(norm) {
                     std::collections::hash_map::Entry::Occupied(_) => {
-                        norm_title_only_ambiguous.insert(normalize_title(&title));
+                        norm_title_only_ambiguous.insert(norm_for_ambiguous);
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((tp_w, fp_w));
