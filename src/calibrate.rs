@@ -29,22 +29,38 @@ pub fn join_feedback_and_traces(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],
 ) -> Vec<(f64, bool)> {
-    // Build lookup: (finding_title, file_path) -> (tp_weight, fp_weight)
+    // Primary lookup: (finding_title, file_path) -> (tp_weight, fp_weight)
     let mut trace_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
     let mut ambiguous: HashSet<(String, String)> = HashSet::new();
+    // Fallback: title-only lookup for pre-file_path trace entries
+    let mut title_only_map: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut title_only_ambiguous: HashSet<String> = HashSet::new();
 
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
         let fp = t["file_path"].as_str().unwrap_or("").to_string();
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0);
-        let key = (title, fp);
-        match trace_map.entry(key.clone()) {
-            std::collections::hash_map::Entry::Occupied(_) => {
-                ambiguous.insert(key);
+
+        if fp.is_empty() {
+            // Pre-file_path trace entry: title-only index
+            match title_only_map.entry(title.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    title_only_ambiguous.insert(title);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((tp_w, fp_w));
+                }
             }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((tp_w, fp_w));
+        } else {
+            let key = (title, fp);
+            match trace_map.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    ambiguous.insert(key);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((tp_w, fp_w));
+                }
             }
         }
     }
@@ -55,6 +71,9 @@ pub fn join_feedback_and_traces(
             file_path = %key.1,
             "duplicate trace key -- skipping ambiguous entry"
         );
+    }
+    for key in &title_only_ambiguous {
+        title_only_map.remove(key);
     }
 
     let mut samples = Vec::new();
@@ -67,7 +86,11 @@ pub fn join_feedback_and_traces(
         };
         let title = f["finding_title"].as_str().unwrap_or("").to_string();
         let fp = f["file_path"].as_str().unwrap_or("").to_string();
-        if let Some((tp_w, fp_w)) = trace_map.get(&(title, fp)) {
+        // Try primary (title+file_path) join first, fall back to title-only
+        let weights = trace_map
+            .get(&(title.clone(), fp))
+            .or_else(|| title_only_map.get(&title));
+        if let Some((tp_w, fp_w)) = weights {
             let total = tp_w + fp_w;
             if total > 0.0 {
                 samples.push((tp_w / total, is_positive));
@@ -263,6 +286,49 @@ mod tests {
         let result = compute_thresholds(&[], 0.95, 0.85);
         assert!(result.suppress.is_none());
         assert!(result.boost.is_none());
+    }
+
+    #[test]
+    fn title_only_fallback_for_old_traces() {
+        // Old trace entries without file_path should still join on title alone.
+        let feedback = vec![
+            make_feedback("SQL injection", "tp", "src/db.rs"),
+            make_feedback("Unused var", "fp", "src/main.rs"),
+        ];
+        let traces = vec![
+            make_trace("SQL injection", 2.5, 0.3, None), // no file_path
+            make_trace("Unused var", 0.1, 1.8, None),    // no file_path
+        ];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 2, "title-only fallback should match");
+    }
+
+    #[test]
+    fn title_only_ambiguous_skipped() {
+        // Two old traces with the same title but no file_path are ambiguous.
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace("Bug", 2.5, 0.3, None),
+            make_trace("Bug", 0.1, 1.8, None), // duplicate title-only
+        ];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "ambiguous title-only keys should be skipped");
+    }
+
+    #[test]
+    fn primary_key_preferred_over_title_only() {
+        // When both a title+file_path match and a title-only match exist,
+        // the primary (more specific) match wins.
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace("Bug", 2.5, 0.3, Some("src/a.rs")), // primary match
+            make_trace("Bug", 0.1, 1.8, None),              // title-only fallback
+        ];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        let (score, _) = samples[0];
+        // Should use the primary match: 2.5/(2.5+0.3) ~ 0.893
+        assert!((score - 0.893).abs() < 0.01, "should use primary key match, got {score}");
     }
 
     #[test]
