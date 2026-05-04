@@ -74,27 +74,56 @@ const MIN_TOTAL_SAMPLES: usize = 20;
 /// Minimum minority-class count per path (FP for suppress, TP for boost).
 const MIN_MINORITY_CLASS: usize = 10;
 
+#[derive(Debug, Default)]
+pub struct JoinStats {
+    pub exact_raw: usize,
+    pub exact_normalized: usize,
+    pub fuzzy_same_file: usize,
+    pub raw_title_only: usize,
+    pub normalized_title_only: usize,
+    pub ambiguous_skipped: usize,
+    pub below_threshold: usize,
+    pub unmatched: usize,
+}
+
 /// Join feedback verdicts with calibrator trace entries to produce labeled
 /// score samples for PR curve analysis.
 ///
-/// Join key: `(finding_title, file_path)`. Ambiguous keys (duplicate trace
-/// entries for the same key) are removed entirely with a warning. Wontfix
-/// verdicts are filtered out. `tp`/`partial` map to positive labels; `fp`
-/// maps to negative.
+/// Matching tiers (in priority order, first match wins):
+/// 1. Raw exact `(finding_title, file_path)`
+/// 2. Normalized exact `(normalize_title(finding_title), file_path)`
+/// 3. Fuzzy same-file: token Jaccard >= 0.5 with margin >= 0.1
+/// 4. Normalized exact title-only (legacy fallback for pre-file_path traces)
 ///
-/// Score: `tp_weight / (tp_weight + fp_weight)`. Entries where the total is
-/// zero are skipped (no signal).
+/// Ambiguous keys (duplicate trace entries for the same key) are removed.
+/// Wontfix verdicts are filtered out. `tp`/`partial` -> positive; `fp` -> negative.
+/// Score: `tp_weight / (tp_weight + fp_weight)`.
 pub fn join_feedback_and_traces(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],
-) -> Vec<(f64, bool)> {
-    // Primary lookup: (finding_title, file_path) -> (tp_weight, fp_weight)
-    let mut trace_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
-    let mut ambiguous: HashSet<(String, String)> = HashSet::new();
-    // Fallback: title-only lookup for pre-file_path trace entries
-    let mut title_only_map: HashMap<String, (f64, f64)> = HashMap::new();
-    let mut title_only_ambiguous: HashSet<String> = HashSet::new();
-    let mut titles_with_file_scoped: HashSet<String> = HashSet::new();
+) -> (Vec<(f64, bool)>, JoinStats) {
+    // Tier 1: raw exact (title, file_path)
+    let mut raw_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
+
+    // Tier 2: normalized exact (norm_title, file_path)
+    let mut norm_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
+
+    // Tier 3: fuzzy same-file: file_path -> Vec<(norm_title, weights)>
+    let mut file_traces: HashMap<String, Vec<(String, (f64, f64))>> = HashMap::new();
+
+    // Tier 4: normalized title-only (for traces without file_path)
+    let mut norm_title_only: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
+
+    // Raw title-only (existing behavior preserved)
+    let mut raw_title_only: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut raw_title_only_ambiguous: HashSet<String> = HashSet::new();
+
+    // Track which normalized titles have file-scoped traces
+    let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
+    let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
 
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
@@ -104,72 +133,205 @@ pub fn join_feedback_and_traces(
         let fp = t["file_path"].as_str().unwrap_or("").to_string();
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let norm = normalize_title(&title);
 
         if fp.is_empty() {
-            // Pre-file_path trace entry: title-only index
-            match title_only_map.entry(title.clone()) {
+            // Title-only trace (legacy, no file_path)
+            match raw_title_only.entry(title.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    title_only_ambiguous.insert(title);
+                    raw_title_only_ambiguous.insert(title.clone());
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert((tp_w, fp_w));
+                }
+            }
+            if !norm.is_empty() {
+                match norm_title_only.entry(norm) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_title_only_ambiguous.insert(normalize_title(&title));
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((tp_w, fp_w));
+                    }
                 }
             }
         } else {
-            titles_with_file_scoped.insert(title.clone());
-            let key = (title, fp);
-            match trace_map.entry(key.clone()) {
+            raw_titles_with_file_scoped.insert(title.clone());
+            if !norm.is_empty() {
+                norm_titles_with_file_scoped.insert(norm.clone());
+            }
+
+            // Tier 1: raw exact
+            let raw_key = (title, fp.clone());
+            match raw_map.entry(raw_key.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    ambiguous.insert(key);
+                    raw_ambiguous.insert(raw_key);
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert((tp_w, fp_w));
                 }
             }
+
+            // Tier 2: normalized exact
+            if !norm.is_empty() {
+                let norm_key = (norm.clone(), fp.clone());
+                match norm_map.entry(norm_key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_ambiguous.insert(norm_key);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((tp_w, fp_w));
+                    }
+                }
+            }
+
+            // Tier 3: file -> normalized traces for fuzzy
+            if !norm.is_empty() {
+                file_traces.entry(fp).or_default().push((norm, (tp_w, fp_w)));
+            }
         }
     }
-    for key in &ambiguous {
-        trace_map.remove(key);
+
+    // Clean up ambiguous entries
+    for key in &raw_ambiguous {
+        raw_map.remove(key);
         tracing::warn!(
             title = %key.0,
             file_path = %key.1,
             "duplicate trace key -- skipping ambiguous entry"
         );
     }
-    for key in &title_only_ambiguous {
-        title_only_map.remove(key);
+    for key in &norm_ambiguous {
+        norm_map.remove(key);
     }
-    for title in &titles_with_file_scoped {
-        title_only_map.remove(title);
+    for key in &raw_title_only_ambiguous {
+        raw_title_only.remove(key);
+    }
+    for key in &norm_title_only_ambiguous {
+        norm_title_only.remove(key);
+    }
+
+    // Block title-only fallback when file-scoped traces exist for that title
+    for title in &raw_titles_with_file_scoped {
+        raw_title_only.remove(title);
+    }
+    for norm in &norm_titles_with_file_scoped {
+        norm_title_only.remove(norm);
     }
 
     let mut samples = Vec::new();
+    let mut stats = JoinStats::default();
+
     for f in feedback {
         let verdict = f["verdict"].as_str().unwrap_or("");
         let is_positive = match verdict {
             "tp" | "partial" => true,
             "fp" => false,
-            _ => continue, // skip wontfix, unknown, context_misleading
+            _ => continue,
         };
         let title = f["finding_title"].as_str().unwrap_or("").to_string();
         if title.is_empty() {
             continue;
         }
         let fp = f["file_path"].as_str().unwrap_or("").to_string();
-        let weights = trace_map
-            .get(&(title.clone(), fp))
-            .or_else(|| title_only_map.get(&title));
-        if let Some((tp_w, fp_w)) = weights {
-            let total = tp_w + fp_w;
-            if total > 0.0 {
-                let score = tp_w / total;
-                if score.is_finite() {
-                    samples.push((score, is_positive));
+        let norm = normalize_title(&title);
+
+        // Tier 1: raw exact (title, file_path)
+        if let Some(weights) = raw_map.get(&(title.clone(), fp.clone())) {
+            if push_sample(&mut samples, weights, is_positive) {
+                stats.exact_raw += 1;
+                continue;
+            }
+        }
+
+        // Tier 2: normalized exact (norm_title, file_path)
+        if !norm.is_empty() {
+            if let Some(weights) = norm_map.get(&(norm.clone(), fp.clone())) {
+                if push_sample(&mut samples, weights, is_positive) {
+                    stats.exact_normalized += 1;
+                    continue;
                 }
             }
         }
+
+        // Tier 3: fuzzy same-file
+        if !norm.is_empty() && !fp.is_empty() {
+            if let Some(candidates) = file_traces.get(&fp) {
+                let mut best_score = 0.0_f64;
+                let mut second_best = 0.0_f64;
+                let mut best_weights: Option<&(f64, f64)> = None;
+
+                for (cand_norm, weights) in candidates {
+                    let j = token_jaccard(&norm, cand_norm);
+                    if j > best_score {
+                        second_best = best_score;
+                        best_score = j;
+                        best_weights = Some(weights);
+                    } else if j > second_best {
+                        second_best = j;
+                    }
+                }
+
+                if best_score >= FUZZY_THRESHOLD {
+                    let margin = best_score - second_best;
+                    if margin >= FUZZY_AMBIGUITY_MARGIN {
+                        if let Some(weights) = best_weights {
+                            if push_sample(&mut samples, weights, is_positive) {
+                                stats.fuzzy_same_file += 1;
+                                continue;
+                            }
+                        }
+                    } else {
+                        stats.ambiguous_skipped += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Tier 4: title-only fallback (raw first, then normalized)
+        if let Some(weights) = raw_title_only.get(&title) {
+            if push_sample(&mut samples, weights, is_positive) {
+                stats.raw_title_only += 1;
+                continue;
+            }
+        }
+        if !norm.is_empty() {
+            if let Some(weights) = norm_title_only.get(&norm) {
+                if push_sample(&mut samples, weights, is_positive) {
+                    stats.normalized_title_only += 1;
+                    continue;
+                }
+            }
+        }
+
+        stats.unmatched += 1;
     }
-    samples
+
+    tracing::info!(
+        exact_raw = stats.exact_raw,
+        exact_normalized = stats.exact_normalized,
+        fuzzy_same_file = stats.fuzzy_same_file,
+        raw_title_only = stats.raw_title_only,
+        normalized_title_only = stats.normalized_title_only,
+        ambiguous_skipped = stats.ambiguous_skipped,
+        unmatched = stats.unmatched,
+        "join strategy breakdown"
+    );
+
+    (samples, stats)
+}
+
+fn push_sample(samples: &mut Vec<(f64, bool)>, weights: &(f64, f64), is_positive: bool) -> bool {
+    let total = weights.0 + weights.1;
+    if total > 0.0 {
+        let score = weights.0 / total;
+        if score.is_finite() {
+            samples.push((score, is_positive));
+            return true;
+        }
+    }
+    false
 }
 
 /// Compute suppress and boost thresholds from labeled score samples.
@@ -287,11 +449,9 @@ mod tests {
             make_trace("SQL injection", 2.5, 0.3, Some("src/db.rs")),
             make_trace("Unused var", 0.1, 1.8, Some("src/main.rs")),
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert_eq!(samples.len(), 2);
-        // SQL injection: score = 2.5/(2.5+0.3) ~ 0.893, label = true
         assert!(samples.iter().any(|(s, l)| *l && (*s - 0.893).abs() < 0.01));
-        // Unused var: score = 0.1/(0.1+1.8) ~ 0.053, label = false
         assert!(samples.iter().any(|(s, l)| !*l && (*s - 0.053).abs() < 0.01));
     }
 
@@ -299,7 +459,7 @@ mod tests {
     fn wontfix_entries_are_skipped() {
         let feedback = vec![make_feedback("Style issue", "wontfix", "src/x.rs")];
         let traces = vec![make_trace("Style issue", 0.5, 0.5, Some("src/x.rs"))];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert!(samples.is_empty(), "wontfix should be excluded");
     }
 
@@ -371,7 +531,7 @@ mod tests {
             make_trace("SQL injection", 2.5, 0.3, None), // no file_path
             make_trace("Unused var", 0.1, 1.8, None),    // no file_path
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert_eq!(samples.len(), 2, "title-only fallback should match");
     }
 
@@ -383,7 +543,7 @@ mod tests {
             make_trace("Bug", 2.5, 0.3, None),
             make_trace("Bug", 0.1, 1.8, None), // duplicate title-only
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert!(samples.is_empty(), "ambiguous title-only keys should be skipped");
     }
 
@@ -396,10 +556,9 @@ mod tests {
             make_trace("Bug", 2.5, 0.3, Some("src/a.rs")), // primary match
             make_trace("Bug", 0.1, 1.8, None),              // title-only fallback
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert_eq!(samples.len(), 1);
         let (score, _) = samples[0];
-        // Should use the primary match: 2.5/(2.5+0.3) ~ 0.893
         assert!((score - 0.893).abs() < 0.01, "should use primary key match, got {score}");
     }
 
@@ -412,7 +571,7 @@ mod tests {
             make_trace("Bug", 2.5, 0.3, Some("src/a.rs")), // file-scoped for different file
             make_trace("Bug", 0.1, 1.8, None),              // title-only
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert!(
             samples.is_empty(),
             "title-only fallback should be blocked when file-scoped traces exist for same title"
@@ -426,7 +585,7 @@ mod tests {
             make_trace("SQL injection", 2.5, 0.3, Some("src/db.rs")),
             make_trace("SQL injection", 0.1, 1.8, Some("src/db.rs")), // duplicate key
         ];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert!(samples.is_empty(), "ambiguous join keys should be skipped");
     }
 
@@ -434,14 +593,306 @@ mod tests {
     fn negative_weights_clamped_to_zero() {
         let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
         let traces = vec![make_trace("Bug", -1.0, 2.0, Some("src/a.rs"))];
-        let samples = join_feedback_and_traces(&feedback, &traces);
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert_eq!(samples.len(), 1);
         let (score, _) = samples[0];
-        // tp_weight clamped to 0.0, so score = 0.0/2.0 = 0.0
         assert!(
             (0.0..=1.0).contains(&score),
             "negative weights should be clamped, got score {score}"
         );
+    }
+
+    // --- tier 2: normalized exact ---
+
+    #[test]
+    fn normalized_exact_matches_backtick_difference() {
+        let feedback = vec![make_feedback("uses a fixed .tmp filename", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "uses a fixed `.tmp` filename",
+            2.0, 0.3, Some("src/a.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "normalized exact should match backtick variants");
+        assert_eq!(stats.exact_normalized, 1);
+    }
+
+    #[test]
+    fn normalized_exact_matches_rule_prefix() {
+        let feedback = vec![make_feedback("Empty .expect() message", "fp", "src/b.rs")];
+        let traces = vec![make_trace(
+            "expect-empty-message: Empty `.expect()` message",
+            0.2, 1.5, Some("src/b.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "normalized exact should match rule-prefix variants");
+        assert_eq!(stats.exact_normalized, 1);
+    }
+
+    #[test]
+    fn normalized_exact_does_not_override_raw_exact() {
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![make_trace("Bug", 2.0, 0.3, Some("src/a.rs"))];
+        let (_samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(stats.exact_raw, 1);
+        assert_eq!(stats.exact_normalized, 0);
+    }
+
+    #[test]
+    fn normalized_exact_different_file_no_match() {
+        let feedback = vec![make_feedback("uses a fixed .tmp filename", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "uses a fixed `.tmp` filename",
+            2.0, 0.3, Some("src/b.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "different file should not match");
+        assert_eq!(stats.unmatched, 1);
+    }
+
+    // --- tier 3: fuzzy same-file ---
+
+    #[test]
+    fn fuzzy_same_file_matches_extended_title() {
+        let feedback = vec![make_feedback(
+            "Reset can race with visit processing",
+            "tp", "src/visit.rs",
+        )];
+        let traces = vec![make_trace(
+            "Reset can race with visit processing and lose the cleaned state",
+            2.0, 0.5, Some("src/visit.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "fuzzy same-file should match extended title");
+        assert_eq!(stats.fuzzy_same_file, 1);
+    }
+
+    #[test]
+    fn fuzzy_same_file_rejects_below_threshold() {
+        let feedback = vec![make_feedback("API key leak", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "Database connection pool exhaustion under load",
+            2.0, 0.5, Some("src/a.rs"),
+        )];
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "below-threshold fuzzy should not match");
+    }
+
+    #[test]
+    fn fuzzy_same_file_rejects_ambiguous() {
+        let feedback = vec![make_feedback(
+            "error handling is missing",
+            "tp", "src/a.rs",
+        )];
+        let traces = vec![
+            make_trace("error handling is missing for IO", 2.0, 0.5, Some("src/a.rs")),
+            make_trace("error handling is missing for parse", 1.0, 0.8, Some("src/a.rs")),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "ambiguous fuzzy matches should be skipped");
+        assert!(stats.ambiguous_skipped >= 1);
+    }
+
+    #[test]
+    fn fuzzy_same_file_accepts_clear_winner() {
+        let feedback = vec![make_feedback(
+            "error handling is missing",
+            "tp", "src/a.rs",
+        )];
+        let traces = vec![
+            make_trace("error handling is missing for IO operations", 2.0, 0.5, Some("src/a.rs")),
+            make_trace("something completely different xyz abc", 1.0, 0.8, Some("src/a.rs")),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "clear winner should match");
+        assert_eq!(stats.fuzzy_same_file, 1);
+    }
+
+    #[test]
+    fn fuzzy_same_file_different_file_no_match() {
+        let feedback = vec![make_feedback(
+            "Reset can race with visit processing",
+            "tp", "src/a.rs",
+        )];
+        let traces = vec![make_trace(
+            "Reset can race with visit processing and lose state",
+            2.0, 0.5, Some("src/b.rs"),
+        )];
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "fuzzy is file-scoped");
+    }
+
+    #[test]
+    fn fuzzy_exactly_at_threshold() {
+        // 3 shared tokens, 3 unique = 3/6 = 0.5 exactly
+        let feedback = vec![make_feedback("alpha beta gamma", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "alpha beta gamma delta epsilon zeta",
+            2.0, 0.5, Some("src/a.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, ">= 0.5 is inclusive");
+        assert_eq!(stats.fuzzy_same_file, 1);
+    }
+
+    #[test]
+    fn fuzzy_just_below_threshold() {
+        // 2 shared, 3 unique = 2/5 = 0.4
+        let feedback = vec![make_feedback("alpha beta", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "alpha beta gamma delta epsilon",
+            2.0, 0.5, Some("src/a.rs"),
+        )];
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "0.4 < 0.5 should be rejected");
+    }
+
+    #[test]
+    fn fuzzy_margin_exactly_at_boundary() {
+        // best=0.6, second=0.5, margin=0.1 exactly
+        // "a b c" vs "a b c d e": 3/5=0.6
+        // "a b c" vs "a b d e f": 2/6=0.33 — need to pick values carefully
+        // Let's use: fb="a b c d e f", trace1="a b c d e f g h i j" (6/10=0.6),
+        //            trace2="a b c d e k l m n o" (5/10=0.5)
+        let feedback = vec![make_feedback("a b c d e f", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace("a b c d e f g h i j", 2.0, 0.5, Some("src/a.rs")),
+            make_trace("a b c d e k l m n o", 1.0, 0.8, Some("src/a.rs")),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, ">= 0.1 margin is inclusive");
+        assert_eq!(stats.fuzzy_same_file, 1);
+    }
+
+    #[test]
+    fn fuzzy_margin_just_below_boundary() {
+        // Need margin < 0.1. e.g. best=0.55, second=0.50 -> margin=0.05
+        // fb="a b c d e f g h i j k" (11 tokens)
+        // trace1: share 6 of 11 => add 5 unique = 6/16 ≈ 0.375 — too low
+        // Simpler: pick exact Jaccard values
+        // fb="a b c d e", trace1="a b c d e f g" (5/7≈0.71),
+        //                 trace2="a b c d e f h" (5/7≈0.71) — too close
+        // fb="a b c d e f", trace1="a b c d e f g h" (6/8=0.75),
+        //                   trace2="a b c d e f g i" (6/8=0.75) — same
+        // The trick: make second-best close. Let me try:
+        // fb="a b c", trace1="a b c d" (3/4=0.75), trace2="a b c d e" (3/5=0.6)
+        // margin = 0.15 — too much. Need them closer.
+        // fb="a b c d", trace1="a b c d e" (4/5=0.8), trace2="a b c d e f" (4/6≈0.67)
+        // margin = 0.13 — still > 0.1
+        // fb="a b c d e f g", trace1="a b c d e f g h i" (7/9≈0.78),
+        //                     trace2="a b c d e f g h j" (7/9≈0.78) — same
+        // Simpler approach: just use pre-normalized strings that give exact values
+        // fb = "a b", trace1 = "a b c" (2/3=0.67), trace2 = "a b d" (2/3=0.67) margin=0
+        let feedback = vec![make_feedback("a b", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace("a b c", 2.0, 0.5, Some("src/a.rs")),
+            make_trace("a b d", 1.0, 0.8, Some("src/a.rs")),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "margin 0.0 < 0.1 should be rejected");
+        assert!(stats.ambiguous_skipped >= 1);
+    }
+
+    #[test]
+    fn fuzzy_single_trace_in_file_no_margin_needed() {
+        // Only one trace in file, Jaccard >= 0.5
+        let feedback = vec![make_feedback(
+            "error handling is missing",
+            "tp", "src/a.rs",
+        )];
+        let traces = vec![make_trace(
+            "error handling is missing for IO operations",
+            2.0, 0.5, Some("src/a.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "single trace, margin trivially satisfied");
+        assert_eq!(stats.fuzzy_same_file, 1);
+    }
+
+    // --- tier 4: normalized title-only ---
+
+    #[test]
+    fn normalized_title_only_fallback_matches() {
+        let feedback = vec![make_feedback("fixed .tmp filename", "tp", "src/a.rs")];
+        let traces = vec![make_trace("fixed `.tmp` filename", 1.5, 0.5, None)];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "normalized title-only fallback should match");
+        assert_eq!(stats.normalized_title_only, 1);
+    }
+
+    #[test]
+    fn normalized_title_only_blocked_when_file_scoped_exists() {
+        let feedback = vec![make_feedback("fixed .tmp filename", "tp", "src/b.rs")];
+        let traces = vec![
+            make_trace("fixed `.tmp` filename", 2.5, 0.3, Some("src/a.rs")),
+            make_trace("fixed `.tmp` filename", 0.1, 1.8, None),
+        ];
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(),
+            "normalized title-only fallback blocked when file-scoped traces exist");
+    }
+
+    #[test]
+    fn title_only_not_attempted_after_fuzzy_match() {
+        let feedback = vec![make_feedback(
+            "error handling is missing",
+            "tp", "src/a.rs",
+        )];
+        let traces = vec![
+            make_trace("error handling is missing for IO operations", 2.0, 0.5, Some("src/a.rs")),
+            make_trace("error handling is missing", 1.0, 0.8, None),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(stats.fuzzy_same_file, 1);
+        assert_eq!(stats.normalized_title_only, 0);
+    }
+
+    // --- cross-tier + JoinStats ---
+
+    #[test]
+    fn all_four_tiers_exercised() {
+        let feedback = vec![
+            make_feedback("SQL injection", "tp", "src/db.rs"),
+            make_feedback("fixed .tmp filename", "fp", "src/a.rs"),
+            make_feedback("reset can race with processing", "tp", "src/v.rs"),
+            make_feedback("missing error context", "fp", "src/z.rs"),
+            make_feedback("completely unrelated xyz", "tp", "src/q.rs"),
+        ];
+        let traces = vec![
+            make_trace("SQL injection", 2.0, 0.3, Some("src/db.rs")),
+            make_trace("fixed `.tmp` filename", 0.2, 1.5, Some("src/a.rs")),
+            make_trace("reset can race with processing and lose state", 1.5, 0.5, Some("src/v.rs")),
+            make_trace("missing error context", 0.8, 1.0, None),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 4, "4 of 5 should match");
+        assert_eq!(stats.exact_raw, 1);
+        assert_eq!(stats.exact_normalized, 1);
+        assert_eq!(stats.fuzzy_same_file, 1);
+        assert_eq!(stats.raw_title_only, 1);
+        assert_eq!(stats.unmatched, 1);
+    }
+
+    #[test]
+    fn stats_sum_equals_eligible_feedback_count() {
+        let feedback = vec![
+            make_feedback("SQL injection", "tp", "src/db.rs"),
+            make_feedback("fixed .tmp filename", "fp", "src/a.rs"),
+            make_feedback("no match xyz", "tp", "src/q.rs"),
+            make_feedback("wontfix item", "wontfix", "src/w.rs"),
+        ];
+        let traces = vec![
+            make_trace("SQL injection", 2.0, 0.3, Some("src/db.rs")),
+            make_trace("fixed `.tmp` filename", 0.2, 1.5, Some("src/a.rs")),
+        ];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        let total_classified = stats.exact_raw + stats.exact_normalized
+            + stats.fuzzy_same_file + stats.raw_title_only
+            + stats.normalized_title_only
+            + stats.ambiguous_skipped + stats.unmatched;
+        // 3 eligible (tp, fp, tp) — wontfix filtered before classification
+        assert_eq!(total_classified, 3, "every eligible entry must be classified");
+        assert_eq!(samples.len(), 2);
     }
 
     // --- token_jaccard tests ---
@@ -578,9 +1029,7 @@ mod tests {
         // Verify the join handles this gracefully without panicking.
         let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
         let traces = vec![make_trace("Bug", f64::INFINITY, 0.1, Some("src/a.rs"))];
-        let samples = join_feedback_and_traces(&feedback, &traces);
-        // tp_weight becomes 0.0 (JSON null), fp_weight is 0.1.
-        // total = 0.1 > 0.0, so score = 0.0 / 0.1 = 0.0.
+        let (samples, _stats) = join_feedback_and_traces(&feedback, &traces);
         assert_eq!(samples.len(), 1);
         let (score, label) = samples[0];
         assert!(
