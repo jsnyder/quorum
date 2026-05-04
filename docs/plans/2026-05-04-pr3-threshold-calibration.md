@@ -72,6 +72,28 @@ mod tests {
             assert!((p - 1.0).abs() < 1e-9);
         }
     }
+
+    #[test]
+    fn pr_curve_all_negative_returns_empty() {
+        let samples = vec![(0.9, false), (0.5, false)];
+        let curve = precision_recall_curve(&samples);
+        assert!(curve.is_empty(), "no positives → empty curve");
+    }
+
+    #[test]
+    fn pr_curve_filters_nan_scores() {
+        let samples = vec![
+            (f64::NAN, true),
+            (0.9, true),
+            (0.5, false),
+        ];
+        let curve = precision_recall_curve(&samples);
+        // NaN entry should be filtered; remaining 2 samples yield curve
+        assert!(!curve.is_empty());
+        for (_, _, t) in &curve {
+            assert!(!t.is_nan(), "no NaN thresholds in output");
+        }
+    }
 }
 ```
 
@@ -93,7 +115,11 @@ pub fn precision_recall_curve(samples: &[(f64, bool)]) -> Vec<(f64, f64, f64)> {
         return vec![];
     }
 
-    let mut sorted: Vec<(f64, bool)> = samples.to_vec();
+    let mut sorted: Vec<(f64, bool)> = samples
+        .iter()
+        .filter(|(s, _)| s.is_finite())
+        .copied()
+        .collect();
     sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let total_positives = sorted.iter().filter(|(_, p)| *p).count() as f64;
@@ -447,17 +473,12 @@ Add to calibrator tests:
 ```rust
     #[test]
     fn data_driven_suppress_threshold_overrides_legacy() {
-        // Legacy: needs fp_weight >= 1.5 && fp > tp*2. With fp=1.2, tp=0.1
-        // this would NOT suppress under legacy rules (1.2 < 1.5).
-        // But with suppress_threshold=0.95, score = 0.1/(0.1+1.2)=0.077,
-        // which is < (1-0.95)=0.05 ... wait, 0.077 > 0.05, so still not suppressed.
-        // Let's use fp=2.0, tp=0.05 → score=0.024 < 0.05 → suppress.
-        // Legacy would also suppress (fp=2.0 >= 1.5, 2.0 > 0.05*2). 
-        // Better test: fp=1.0, tp=0.01 → score=0.0099 < 0.05 → suppress.
+        // fp=1.0, tp=0.01 → score = 0.01/1.01 ≈ 0.0099
         // Legacy: fp=1.0 < 1.5 → NOT suppress.
+        // Data-driven: suppress_threshold=0.05, score < 0.05 → suppress.
         let mut finding = make_test_finding("test finding", Severity::High);
         let mut config = CalibratorConfig::default();
-        config.suppress_threshold = Some(0.95);
+        config.suppress_threshold = Some(0.05);
         let decision = calibrate_core_decision(
             &mut finding, &config,
             0.01, // tp_weight
@@ -466,7 +487,24 @@ Add to calibrator tests:
             1.0,  // soft_fp_weight
             vec![], Severity::High,
         );
-        assert!(decision.suppressed, "data-driven threshold should suppress when score < (1-0.95)");
+        assert!(decision.suppressed, "data-driven threshold should suppress when score < threshold");
+    }
+
+    #[test]
+    fn data_driven_boost_threshold_overrides_legacy() {
+        // tp=2.0, fp=0.1 → score = 2.0/2.1 ≈ 0.952
+        // Legacy: tp=2.0 >= 1.5 && 2.0 > 0.1*2 → boost (also passes).
+        // Data-driven: boost_threshold=0.90, score >= 0.90 → boost.
+        // Use tp=1.2, fp=0.1 → score = 0.923, legacy: 1.2 < 1.5 → NOT boost.
+        let mut finding = make_test_finding("test finding", Severity::Medium);
+        let mut config = CalibratorConfig::default();
+        config.boost_threshold = Some(0.90);
+        let decision = calibrate_core_decision(
+            &mut finding, &config,
+            1.2, 0.1, 0.0, 0.1,
+            vec![], Severity::Medium,
+        );
+        assert!(decision.boosted, "data-driven threshold should boost when score >= threshold");
     }
 
     #[test]
@@ -484,11 +522,11 @@ Add to calibrator tests:
 
     #[test]
     fn force_threshold_env_overrides_config() {
-        // With QUORUM_FORCE_THRESHOLD=0.99, score must be < 0.01 to suppress.
-        // fp=1.0, tp=0.01 → score=0.0099 < 0.01 → suppress.
+        // force_threshold=0.05: suppress when score < 0.05.
+        // fp=1.0, tp=0.01 → score=0.0099 < 0.05 → suppress.
         let mut finding = make_test_finding("test finding", Severity::High);
         let mut config = CalibratorConfig::default();
-        config.force_threshold = Some(0.99); // injectable, no env mutation
+        config.force_threshold = Some(0.05); // injectable, no env mutation
         let decision = calibrate_core_decision(
             &mut finding, &config,
             0.01, 1.0, 0.0, 1.0,
@@ -513,19 +551,19 @@ Add to `CalibratorConfig`:
     pub force_threshold: Option<f64>,
 ```
 
-In `calibrate_core_decision`, replace the suppress block:
+In `calibrate_core_decision`, replace the suppress and boost blocks. Score is computed once; thresholds are score cutoffs stored in the TOML (not precision targets):
 
 ```rust
-    let effective_suppress = config.force_threshold.or(config.suppress_threshold);
-    if let Some(target_precision) = effective_suppress {
-        let total = tp_weight + fp_weight;
-        if total > 0.0 {
-            let score = tp_weight / total;
-            if score <= (1.0 - target_precision) && fp_weight > 0.0 {
-                finding.calibrator_action = Some(CalibratorAction::Disputed);
-                suppressed = true;
-                // ... trace + return
-            }
+    let total = tp_weight + fp_weight;
+    let score = if total > 0.0 { tp_weight / total } else { 0.5 };
+
+    // --- Full suppress (PR3 scope; soft suppress stays on legacy) ---
+    let suppress_thresh = config.force_threshold.or(config.suppress_threshold);
+    if let Some(thresh) = suppress_thresh {
+        if score < thresh && fp_weight > 0.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            // ... trace + return
         }
     } else {
         // Legacy fallback
@@ -533,9 +571,22 @@ In `calibrate_core_decision`, replace the suppress block:
             // ... existing code
         }
     }
+
+    // --- Boost ---
+    let boost_thresh = config.force_threshold.or(config.boost_threshold);
+    if let Some(thresh) = boost_thresh {
+        if score >= thresh && tp_weight > 0.0 {
+            // ... boost logic
+        }
+    } else {
+        // Legacy fallback
+        if tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
+            // ... existing code
+        }
+    }
 ```
 
-Same pattern for boost. Update `Default` to have `None` for all three.
+Update `Default` to have `None` for all three. Soft-suppress continues to use legacy magic numbers (out of PR3 scope).
 
 **Step 4: Run test to verify it passes**
 
@@ -643,6 +694,50 @@ mod tests {
         assert!(result.suppress.is_none());
         assert!(result.boost.is_none());
     }
+
+    #[test]
+    fn suppress_threshold_is_low_score_cutoff() {
+        // With well-separated data, suppress_threshold should be a LOW value
+        // (findings scoring below it are likely FP)
+        let mut samples: Vec<(f64, bool)> = Vec::new();
+        // 15 TPs with high scores
+        for i in 0..15 {
+            samples.push((0.7 + i as f64 * 0.02, true));
+        }
+        // 15 FPs with low scores
+        for i in 0..15 {
+            samples.push((0.05 + i as f64 * 0.02, false));
+        }
+        let result = compute_thresholds(&samples, 0.95, 0.85);
+        if let Some(ref s) = result.suppress {
+            assert!(s.threshold < 0.5, "suppress_threshold should be a low score cutoff, got {}", s.threshold);
+        }
+        if let Some(ref b) = result.boost {
+            assert!(b.threshold > 0.3, "boost_threshold should be a high score cutoff, got {}", b.threshold);
+        }
+    }
+
+    #[test]
+    fn threshold_ordering_enforced() {
+        // If suppress >= boost (degenerate data), lower-confidence path skipped
+        let result = compute_thresholds(&[], 0.95, 0.85);
+        // Can't violate ordering on empty input (both None)
+        assert!(result.suppress.is_none());
+        assert!(result.boost.is_none());
+    }
+
+    #[test]
+    fn duplicate_join_keys_skipped() {
+        let feedback = vec![
+            make_feedback("SQL injection", "tp", "src/db.rs"),
+        ];
+        let traces = vec![
+            make_trace("SQL injection", 2.5, 0.3, Some("src/db.rs")),
+            make_trace("SQL injection", 0.1, 1.8, Some("src/db.rs")), // duplicate key
+        ];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert!(samples.is_empty(), "ambiguous join keys should be skipped");
+    }
 }
 ```
 
@@ -667,12 +762,26 @@ pub fn join_feedback_and_traces(
     // Build lookup: (finding_title, file_path) → (tp_weight, fp_weight)
     let mut trace_map: std::collections::HashMap<(String, String), (f64, f64)> =
         std::collections::HashMap::new();
+    let mut ambiguous: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
         let fp = t["file_path"].as_str().unwrap_or("").to_string();
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0);
-        trace_map.entry((title, fp)).or_insert((tp_w, fp_w));
+        let key = (title, fp);
+        if trace_map.contains_key(&key) {
+            ambiguous.insert(key);
+        } else {
+            trace_map.insert(key, (tp_w, fp_w));
+        }
+    }
+    for key in &ambiguous {
+        trace_map.remove(key);
+        tracing::warn!(
+            title = %key.0, file_path = %key.1,
+            "duplicate trace key — skipping ambiguous entry"
+        );
     }
 
     let mut samples = Vec::new();
@@ -710,22 +819,21 @@ pub fn compute_thresholds(
         return config;
     }
 
-    // Suppress path: need enough FPs (negatives in the labeled set)
+    // Suppress path: invert labels+scores so PR curve identifies FPs.
+    // suppress_threshold is a LOW score cutoff: suppress when score < threshold.
     if negatives >= MIN_MINORITY_CLASS {
-        let curve = metrics::precision_recall_curve(samples);
-        if let Some(t) = metrics::threshold_at_precision(&curve, suppress_precision) {
+        let inverted: Vec<(f64, bool)> = samples.iter().map(|(s, l)| (1.0 - s, !l)).collect();
+        let inv_curve = metrics::precision_recall_curve(&inverted);
+        if let Some(inv_t) = metrics::threshold_at_precision(&inv_curve, suppress_precision) {
             config.suppress = Some(PathThreshold {
                 precision_target: suppress_precision,
-                threshold: t,
+                threshold: 1.0 - inv_t,
             });
         }
     }
 
-    // Boost path: need enough TPs — invert labels, run curve on inverted
-    // Actually: boost uses tp_weight dominance. For the boost threshold,
-    // we want to find when the score is HIGH enough that the finding is
-    // likely a real TP. The PR curve already captures this: high score =
-    // high precision among positives. We just need a different target.
+    // Boost path: standard PR curve where positive=TP, high score=likely TP.
+    // boost_threshold is a HIGH score cutoff: boost when score >= threshold.
     if positives >= MIN_MINORITY_CLASS {
         let curve = metrics::precision_recall_curve(samples);
         if let Some(t) = metrics::threshold_at_precision(&curve, boost_precision) {
@@ -733,6 +841,22 @@ pub fn compute_thresholds(
                 precision_target: boost_precision,
                 threshold: t,
             });
+        }
+    }
+
+    // Validate ordering: suppress_threshold must be < boost_threshold.
+    // If violated, drop the lower-confidence path.
+    if let (Some(ref s), Some(ref b)) = (&config.suppress, &config.boost) {
+        if s.threshold >= b.threshold {
+            tracing::warn!(
+                suppress = s.threshold, boost = b.threshold,
+                "suppress_threshold >= boost_threshold — insufficient class separation"
+            );
+            if negatives < positives {
+                config.suppress = None;
+            } else {
+                config.boost = None;
+            }
         }
     }
 

@@ -22,9 +22,10 @@
 Pipeline:
 1. Join `feedback.jsonl` (ground-truth: tp/partial → positive, fp → negative, skip wontfix) with `calibrator_traces.jsonl` (scores: `tp_weight`, `fp_weight`) on `finding_title + file_path`.
 2. Score = `tp_weight / (tp_weight + fp_weight)`. Filter NaN (zero-weight entries).
-3. Run PR curve on `(score, label)` pairs.
-4. Pick `suppress_threshold` at precision 0.95, `boost_threshold` at precision 0.85.
-5. Write `~/.quorum/calibrator_thresholds.toml`.
+3. For **boost**: run PR curve on `(score, label)` pairs where `label = is_TP`. `boost_threshold` = `threshold_at_precision(curve, 0.85)`. At runtime: boost when `score >= boost_threshold`.
+4. For **suppress**: invert labels and scores — run PR curve on `(1−score, !label)` pairs. `suppress_threshold` = `1 − threshold_at_precision(inverted_curve, 0.95)`. At runtime: suppress when `score < suppress_threshold`.
+5. Validate `suppress_threshold < boost_threshold`. If violated, skip the lower-confidence path.
+6. Write `~/.quorum/calibrator_thresholds.toml`.
 
 **Data quality gates:**
 - Minimum 20 total labeled samples.
@@ -57,19 +58,28 @@ pub boost_threshold: Option<f64>,
 
 Read from `~/.quorum/calibrator_thresholds.toml` at init. If absent/malformed, `None` (legacy fallback).
 
-Decision logic changes from magic-number ratios to:
+Decision logic changes from magic-number ratios to direct score comparison against computed thresholds:
 ```rust
 let score = tp_weight / (tp_weight + fp_weight);
+// Suppress: score below threshold → likely FP
 if let Some(thresh) = config.suppress_threshold {
-    if score <= (1.0 - thresh) && fp_weight > 0.0 { suppress }
+    if score < thresh && fp_weight > 0.0 { suppress }
 } else {
     // Legacy: fp_weight >= 1.5 && fp_weight > tp_weight * 2.0
 }
+// Boost: score above threshold → likely TP
+if let Some(thresh) = config.boost_threshold {
+    if score >= thresh && tp_weight > 0.0 { boost }
+} else {
+    // Legacy: tp_weight >= 1.5 && tp_weight > fp_weight * 2.0
+}
 ```
 
-Same pattern for boost. Legacy fallback = zero behavior change for users without thresholds file.
+PR3 calibrates **full-suppress and boost** paths only. Soft-suppress remains on legacy magic numbers.
 
-`QUORUM_FORCE_THRESHOLD=<float>` env var overrides both (ablation/sweeps).
+Legacy fallback = zero behavior change for users without thresholds file.
+
+`QUORUM_FORCE_THRESHOLD=<float>` env var overrides both: suppress when `score < force_threshold`, boost when `score >= force_threshold` (ablation/sweeps).
 
 ### 4. Edge cases
 
@@ -79,6 +89,9 @@ Same pattern for boost. Legacy fallback = zero behavior change for users without
 - **No calibrator traces:** print "run a review with tracing first."
 - **Malformed TOML:** `tracing::warn`, fall back to legacy. Never crash.
 - **NaN scores (zero weight):** filter before curve computation.
+- **Join ambiguity:** duplicate `(finding_title, file_path)` keys in traces → skip ambiguous entries, warn.
+- **Threshold ordering:** if computed `suppress_threshold >= boost_threshold`, skip the lower-confidence path (indicates insufficient class separation).
+- **All-positive or all-negative corpus:** PR curve returns empty → corresponding path skipped.
 
 ---
 
@@ -88,12 +101,18 @@ Same pattern for boost. Legacy fallback = zero behavior change for users without
 2. PR curve with tied scores — one point per distinct threshold.
 3. `threshold_at_precision(0.95)` on known curve — correct threshold.
 4. `threshold_at_precision(1.0)` when unachievable — returns `None`.
-5. TOML round-trip: write thresholds, read back, values match.
-6. `CalibratorConfig` with `suppress_threshold = Some(0.78)` changes behavior vs `None`.
-7. `QUORUM_FORCE_THRESHOLD` overrides config file.
-8. Legacy behavior unchanged when no TOML exists (regression guard).
-9. Class balance gate: 25 TP + 2 FP → suppress path skipped.
-10. Per-path independence: enough TPs but not FPs → only boost written.
+5. PR curve on all-negative samples (no TPs) — returns empty.
+6. NaN/zero-weight entries filtered before curve computation.
+7. TOML round-trip: write thresholds, read back, values match.
+8. `CalibratorConfig` with `suppress_threshold = Some(0.05)` suppresses when `score < 0.05` vs `None` (legacy).
+9. `CalibratorConfig` with `boost_threshold = Some(0.90)` boosts when `score >= 0.90` vs `None` (legacy).
+10. `QUORUM_FORCE_THRESHOLD` overrides config file.
+11. Legacy behavior unchanged when no TOML exists (regression guard).
+12. Class balance gate: 25 TP + 2 FP → suppress path skipped.
+13. Per-path independence: enough TPs but not FPs → only boost written.
+14. Inverted PR curve for suppress: computed threshold is a low score cutoff.
+15. Threshold ordering: suppress_threshold < boost_threshold enforced.
+16. Join ambiguity: duplicate `(title, file_path)` entries skipped.
 
 ## Ablation knobs
 
