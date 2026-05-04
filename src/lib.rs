@@ -87,3 +87,6 @@ pub mod metrics;
 
 // Threshold config: TOML read/write for data-driven calibrator thresholds.
 pub mod threshold_config;
+
+// Calibrate: corpus join + threshold computation from feedback + traces.
+pub mod calibrate;
