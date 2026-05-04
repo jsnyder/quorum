@@ -81,3 +81,6 @@ pub mod prompt_sanitize;
 
 // AST grounding: identifier extraction from LLM findings.
 pub mod grounding;
+
+// Precision-recall curve and threshold selection for calibrator tuning.
+pub mod metrics;
