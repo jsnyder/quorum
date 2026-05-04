@@ -17,16 +17,14 @@ const FUZZY_AMBIGUITY_MARGIN: f64 = 0.1;
 
 fn normalize_title(raw: &str) -> String {
     let after_prefix = strip_rule_prefix(raw);
-    let normalized: String = after_prefix
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c.to_lowercase().next().unwrap_or(c)
-            } else {
-                ' '
-            }
-        })
-        .collect();
+    let normalized: String = after_prefix.chars().fold(String::new(), |mut acc, c| {
+        if c.is_alphanumeric() || c == '_' {
+            acc.extend(c.to_lowercase());
+        } else {
+            acc.push(' ');
+        }
+        acc
+    });
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -256,6 +254,7 @@ pub fn join_feedback_and_traces(
         }
 
         // Tier 3: fuzzy same-file
+        let mut fuzzy_below_threshold = false;
         if !norm.is_empty() && !fp.is_empty() {
             if let Some(candidates) = file_traces.get(&fp) {
                 let mut best_score = 0.0_f64;
@@ -287,7 +286,7 @@ pub fn join_feedback_and_traces(
                         continue;
                     }
                 } else if !candidates.is_empty() {
-                    stats.below_threshold += 1;
+                    fuzzy_below_threshold = true;
                 }
             }
         }
@@ -308,7 +307,11 @@ pub fn join_feedback_and_traces(
             }
         }
 
-        stats.unmatched += 1;
+        if fuzzy_below_threshold {
+            stats.below_threshold += 1;
+        } else {
+            stats.unmatched += 1;
+        }
     }
 
     tracing::info!(
