@@ -260,11 +260,11 @@ pub struct CalibrateOpts {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Target precision for suppress path (default: 0.95)
+    /// Target precision for suppress path (default: 0.95, range 0.0-1.0)
     #[arg(long, default_value = "0.95")]
     pub suppress_precision: f64,
 
-    /// Target precision for boost path (default: 0.85)
+    /// Target precision for boost path (default: 0.85, range 0.0-1.0)
     #[arg(long, default_value = "0.85")]
     pub boost_precision: f64,
 }

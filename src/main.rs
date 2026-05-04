@@ -759,7 +759,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
         if let Ok(t) = v.parse::<f64>() {
             calibrator_config.force_threshold = Some(t);
-            tracing::info!(threshold = t, "QUORUM_FORCE_THRESHOLD override active");
+            tracing::warn!(
+                threshold = t,
+                "QUORUM_FORCE_THRESHOLD active -- collapses neutral zone \
+                 (suppress when score < {t}, boost when score >= {t})"
+            );
         }
     }
 
@@ -1783,11 +1787,25 @@ fn load_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .collect()
+    let mut entries = Vec::new();
+    let mut skipped = 0usize;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => entries.push(v),
+            Err(_) => skipped += 1,
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            skipped,
+            "skipped malformed JSONL lines"
+        );
+    }
+    entries
 }
 
 /// CLI entry point for `quorum calibrate`.
