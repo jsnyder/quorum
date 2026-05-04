@@ -44,14 +44,8 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Extract identifiers from finding title first; fall back to description
-/// if the title yields nothing.
-pub fn extract_identifiers_from_finding_text<'a>(title: &'a str, description: &'a str) -> Vec<&'a str> {
-    let mut ids = extract_identifiers(title);
-    if ids.is_empty() {
-        ids = extract_identifiers(description);
-    }
-    ids
+pub fn extract_identifiers_from_finding_text<'a>(title: &'a str, _description: &'a str) -> Vec<&'a str> {
+    extract_identifiers(title)
 }
 
 /// Result of grounding verification for a single finding.
@@ -256,12 +250,12 @@ mod tests {
     }
 
     #[test]
-    fn extracts_from_description_too() {
+    fn no_title_ids_returns_empty_even_with_description_ids() {
         let ids = extract_identifiers_from_finding_text(
             "Missing error handling",
             "The function `process_data` at line 42 swallows the error",
         );
-        assert_eq!(ids, vec!["process_data"]);
+        assert!(ids.is_empty(), "description identifiers should not be used as fallback");
     }
 
     #[test]
@@ -623,5 +617,24 @@ mod tests {
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::LineOutOfRange);
         assert_eq!(result.severity_change, Some(Severity::Medium));
+    }
+
+    #[test]
+    fn no_backtick_in_title_returns_not_checked_even_with_description_ids() {
+        let source = "fn extract_imported_names(text: &str) -> Vec<String> {\n    vec![]\n}\n";
+        let f = FindingBuilder::new()
+            .title("Rust grouped import parsing breaks on nested braces")
+            .description("`extract_imported_names` parses `use a::{b::{C, D}, e::F};` incorrectly")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 3)
+            .severity(Severity::Medium)
+            .build();
+        let result = verify_grounding(&f, source);
+        assert_eq!(
+            result.status,
+            GroundingStatus::NotChecked,
+            "title has no backticked IDs; description fallback should not cause SymbolNotFound"
+        );
+        assert!(result.severity_change.is_none(), "severity should not change");
     }
 }
