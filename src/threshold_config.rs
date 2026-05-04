@@ -44,9 +44,16 @@ impl ThresholdConfig {
     /// Load from a file path. Returns `None` if the file does not exist or
     /// is malformed (logs a warning on malformed content).
     pub fn load_from(path: &str) -> Option<Self> {
-        let content = std::fs::read_to_string(path).ok()?;
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "failed to read calibrator_thresholds.toml");
+                return None;
+            }
+        };
         match Self::from_toml(&content) {
-            Ok(config) => Some(config),
+            Ok(config) => config.validate(),
             Err(e) => {
                 tracing::warn!(
                     path,
@@ -56,6 +63,32 @@ impl ThresholdConfig {
                 None
             }
         }
+    }
+
+    fn validate(self) -> Option<Self> {
+        let valid = |p: &PathThreshold| {
+            p.precision_target.is_finite()
+                && p.threshold.is_finite()
+                && (0.0..=1.0).contains(&p.precision_target)
+                && (0.0..=1.0).contains(&p.threshold)
+        };
+        if self.suppress.as_ref().is_some_and(|p| !valid(p))
+            || self.boost.as_ref().is_some_and(|p| !valid(p))
+        {
+            tracing::warn!("calibrator_thresholds.toml contains out-of-range values, using defaults");
+            return None;
+        }
+        if let (Some(s), Some(b)) = (&self.suppress, &self.boost)
+            && s.threshold >= b.threshold
+        {
+            tracing::warn!(
+                suppress = s.threshold,
+                boost = b.threshold,
+                "calibrator_thresholds.toml: suppress >= boost, using defaults"
+            );
+            return None;
+        }
+        Some(self)
     }
 }
 
@@ -99,5 +132,47 @@ mod tests {
     fn read_from_missing_file_returns_none() {
         let result = ThresholdConfig::load_from("/nonexistent/path/thresholds.toml");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_threshold() {
+        let config = ThresholdConfig {
+            suppress: Some(PathThreshold {
+                precision_target: 0.95,
+                threshold: 1.5, // out of range
+            }),
+            boost: None,
+        };
+        assert!(config.validate().is_none());
+    }
+
+    #[test]
+    fn validate_rejects_suppress_gte_boost() {
+        let config = ThresholdConfig {
+            suppress: Some(PathThreshold {
+                precision_target: 0.95,
+                threshold: 0.8,
+            }),
+            boost: Some(PathThreshold {
+                precision_target: 0.85,
+                threshold: 0.5, // suppress >= boost
+            }),
+        };
+        assert!(config.validate().is_none());
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        let config = ThresholdConfig {
+            suppress: Some(PathThreshold {
+                precision_target: 0.95,
+                threshold: 0.3,
+            }),
+            boost: Some(PathThreshold {
+                precision_target: 0.85,
+                threshold: 0.7,
+            }),
+        };
+        assert!(config.validate().is_some());
     }
 }

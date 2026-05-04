@@ -35,6 +35,7 @@ pub fn join_feedback_and_traces(
     // Fallback: title-only lookup for pre-file_path trace entries
     let mut title_only_map: HashMap<String, (f64, f64)> = HashMap::new();
     let mut title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut titles_with_file_scoped: HashSet<String> = HashSet::new();
 
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
@@ -53,6 +54,7 @@ pub fn join_feedback_and_traces(
                 }
             }
         } else {
+            titles_with_file_scoped.insert(title.clone());
             let key = (title, fp);
             match trace_map.entry(key.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -74,6 +76,9 @@ pub fn join_feedback_and_traces(
     }
     for key in &title_only_ambiguous {
         title_only_map.remove(key);
+    }
+    for title in &titles_with_file_scoped {
+        title_only_map.remove(title);
     }
 
     let mut samples = Vec::new();
@@ -332,6 +337,22 @@ mod tests {
         let (score, _) = samples[0];
         // Should use the primary match: 2.5/(2.5+0.3) ~ 0.893
         assert!((score - 0.893).abs() < 0.01, "should use primary key match, got {score}");
+    }
+
+    #[test]
+    fn title_only_blocked_when_file_scoped_exists() {
+        // If a title has file-scoped traces, the title-only fallback must not
+        // be used for unmatched feedback (prevents cross-file contamination).
+        let feedback = vec![make_feedback("Bug", "tp", "src/b.rs")]; // no file-scoped match
+        let traces = vec![
+            make_trace("Bug", 2.5, 0.3, Some("src/a.rs")), // file-scoped for different file
+            make_trace("Bug", 0.1, 1.8, None),              // title-only
+        ];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert!(
+            samples.is_empty(),
+            "title-only fallback should be blocked when file-scoped traces exist for same title"
+        );
     }
 
     #[test]

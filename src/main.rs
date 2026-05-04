@@ -757,13 +757,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
     // QUORUM_FORCE_THRESHOLD overrides both suppress and boost.
     if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
-        if let Ok(t) = v.parse::<f64>() {
-            calibrator_config.force_threshold = Some(t);
-            tracing::warn!(
-                threshold = t,
-                "QUORUM_FORCE_THRESHOLD active -- collapses neutral zone \
-                 (suppress when score < {t}, boost when score >= {t})"
-            );
+        match v.parse::<f64>() {
+            Ok(t) if t.is_finite() && (0.0..=1.0).contains(&t) => {
+                calibrator_config.force_threshold = Some(t);
+                tracing::warn!(
+                    threshold = t,
+                    "QUORUM_FORCE_THRESHOLD active -- collapses neutral zone \
+                     (suppress when score < {t}, boost when score >= {t})"
+                );
+            }
+            Ok(t) => {
+                tracing::warn!(
+                    raw = %v,
+                    parsed = t,
+                    "ignoring QUORUM_FORCE_THRESHOLD: expected finite value in [0.0, 1.0]"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    raw = %v,
+                    error = %e,
+                    "ignoring QUORUM_FORCE_THRESHOLD: parse failed"
+                );
+            }
         }
     }
 
@@ -1783,9 +1799,12 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
 }
 
 /// Load a JSONL file line-by-line, skipping unparseable lines.
-fn load_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
+/// Returns `Ok(vec![])` for missing files, propagates other I/O errors.
+fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
     };
     let mut entries = Vec::new();
     let mut skipped = 0usize;
@@ -1805,7 +1824,7 @@ fn load_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
             "skipped malformed JSONL lines"
         );
     }
-    entries
+    Ok(entries)
 }
 
 /// CLI entry point for `quorum calibrate`.
@@ -1825,8 +1844,20 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     let feedback_path = qhome.join("feedback.jsonl");
     let traces_path = qhome.join("calibrator_traces.jsonl");
 
-    let feedback = load_jsonl(&feedback_path);
-    let traces = load_jsonl(&traces_path);
+    let feedback = match load_jsonl(&feedback_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 3;
+        }
+    };
+    let traces = match load_jsonl(&traces_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 3;
+        }
+    };
 
     eprintln!(
         "Loaded {} feedback entries, {} trace entries",
@@ -1884,6 +1915,10 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     } else {
         let toml_path = qhome.join("calibrator_thresholds.toml");
         let toml_str = config.to_toml();
+        if let Err(e) = std::fs::create_dir_all(&qhome) {
+            eprintln!("\nerror: failed to create {}: {e}", qhome.display());
+            return 3;
+        }
         match std::fs::write(&toml_path, &toml_str) {
             Ok(()) => {
                 eprintln!("\nWrote {}", toml_path.display());
@@ -1909,7 +1944,7 @@ mod threshold_loading_tests {
         let path = dir.path().join("calibrator_thresholds.toml");
         std::fs::write(
             &path,
-            "[suppress]\nprecision_target = 0.95\nthreshold = 0.78\n\n[boost]\nprecision_target = 0.85\nthreshold = 0.42\n",
+            "[suppress]\nprecision_target = 0.95\nthreshold = 0.30\n\n[boost]\nprecision_target = 0.85\nthreshold = 0.78\n",
         )
         .unwrap();
         let tc = quorum::threshold_config::ThresholdConfig::load_from(path.to_str().unwrap());
@@ -1921,11 +1956,11 @@ mod threshold_loading_tests {
         calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
 
         assert!(
-            (calibrator_config.suppress_threshold.unwrap() - 0.78).abs() < 1e-9,
+            (calibrator_config.suppress_threshold.unwrap() - 0.30).abs() < 1e-9,
             "suppress_threshold should be loaded from TOML"
         );
         assert!(
-            (calibrator_config.boost_threshold.unwrap() - 0.42).abs() < 1e-9,
+            (calibrator_config.boost_threshold.unwrap() - 0.78).abs() < 1e-9,
             "boost_threshold should be loaded from TOML"
         );
     }
