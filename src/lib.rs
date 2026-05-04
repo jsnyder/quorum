@@ -84,3 +84,6 @@ pub mod grounding;
 
 // Precision-recall curve and threshold selection for calibrator tuning.
 pub mod metrics;
+
+// Threshold config: TOML read/write for data-driven calibrator thresholds.
+pub mod threshold_config;
