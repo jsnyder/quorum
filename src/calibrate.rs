@@ -39,8 +39,8 @@ pub fn join_feedback_and_traces(
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
         let fp = t["file_path"].as_str().unwrap_or("").to_string();
-        let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0);
-        let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0);
+        let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
 
         if fp.is_empty() {
             // Pre-file_path trace entry: title-only index
@@ -93,7 +93,10 @@ pub fn join_feedback_and_traces(
         if let Some((tp_w, fp_w)) = weights {
             let total = tp_w + fp_w;
             if total > 0.0 {
-                samples.push((tp_w / total, is_positive));
+                let score = tp_w / total;
+                if score.is_finite() {
+                    samples.push((score, is_positive));
+                }
             }
         }
     }
@@ -340,6 +343,20 @@ mod tests {
         ];
         let samples = join_feedback_and_traces(&feedback, &traces);
         assert!(samples.is_empty(), "ambiguous join keys should be skipped");
+    }
+
+    #[test]
+    fn negative_weights_clamped_to_zero() {
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![make_trace("Bug", -1.0, 2.0, Some("src/a.rs"))];
+        let samples = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        let (score, _) = samples[0];
+        // tp_weight clamped to 0.0, so score = 0.0/2.0 = 0.0
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "negative weights should be clamped, got score {score}"
+        );
     }
 
     #[test]
