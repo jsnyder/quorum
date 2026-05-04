@@ -1,6 +1,6 @@
-/// Calibrator: adjusts findings using feedback precedent.
-/// For each finding, searches for similar past findings and their TP/FP verdicts.
-/// FP precedent suppresses findings; TP precedent boosts confidence.
+//! Calibrator: adjusts findings using feedback precedent.
+//! For each finding, searches for similar past findings and their TP/FP verdicts.
+//! FP precedent suppresses findings; TP precedent boosts confidence.
 
 use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};

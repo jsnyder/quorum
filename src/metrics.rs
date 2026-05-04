@@ -52,10 +52,11 @@ pub fn precision_recall_curve(samples: &[(f64, bool)]) -> Vec<(f64, f64, f64)> {
 /// The curve is sorted by descending threshold, so the *last* qualifying
 /// entry has the lowest threshold (and therefore highest recall).
 pub fn threshold_at_precision(curve: &[(f64, f64, f64)], min_precision: f64) -> Option<f64> {
+    // Curve is sorted by descending threshold. rfind traverses from the end,
+    // returning the last qualifying entry (lowest threshold, highest recall).
     curve
         .iter()
-        .filter(|(p, _, _)| *p >= min_precision)
-        .last() // curve is descending by threshold -- last qualifying is lowest
+        .rfind(|(p, _, _)| *p >= min_precision)
         .map(|(_, _, t)| *t)
 }
 

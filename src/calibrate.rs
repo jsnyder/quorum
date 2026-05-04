@@ -39,10 +39,13 @@ pub fn join_feedback_and_traces(
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0);
         let key = (title, fp);
-        if trace_map.contains_key(&key) {
-            ambiguous.insert(key);
-        } else {
-            trace_map.insert(key, (tp_w, fp_w));
+        match trace_map.entry(key.clone()) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                ambiguous.insert(key);
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((tp_w, fp_w));
+            }
         }
     }
     for key in &ambiguous {
