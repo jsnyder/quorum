@@ -9,6 +9,65 @@ use std::collections::{HashMap, HashSet};
 use crate::metrics;
 use crate::threshold_config::{PathThreshold, ThresholdConfig};
 
+/// Minimum token Jaccard similarity for fuzzy title matching.
+const FUZZY_THRESHOLD: f64 = 0.5;
+
+/// Minimum margin between best and second-best Jaccard score.
+const FUZZY_AMBIGUITY_MARGIN: f64 = 0.1;
+
+fn normalize_title(raw: &str) -> String {
+    let after_prefix = strip_rule_prefix(raw);
+    let normalized: String = after_prefix
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_rule_prefix(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_lowercase() {
+        return s;
+    }
+    let mut colon_pos = None;
+    let mut has_hyphen = false;
+    for (i, &b) in bytes.iter().enumerate().skip(1) {
+        if b == b':' {
+            colon_pos = Some(i);
+            break;
+        }
+        if b == b'-' {
+            has_hyphen = true;
+        } else if !(b.is_ascii_lowercase() || b.is_ascii_digit()) {
+            return s;
+        }
+    }
+    match colon_pos {
+        Some(pos) if pos >= 2 && has_hyphen => {
+            let rest = &s[pos + 1..];
+            rest.trim_start()
+        }
+        _ => s,
+    }
+}
+
+fn token_jaccard(a: &str, b: &str) -> f64 {
+    let set_a: HashSet<&str> = a.split_whitespace().collect();
+    let set_b: HashSet<&str> = b.split_whitespace().collect();
+    let union_size = set_a.union(&set_b).count();
+    if union_size == 0 {
+        return 0.0;
+    }
+    let intersection_size = set_a.intersection(&set_b).count();
+    intersection_size as f64 / union_size as f64
+}
+
 /// Minimum total samples required before computing any threshold.
 const MIN_TOTAL_SAMPLES: usize = 20;
 
@@ -382,6 +441,86 @@ mod tests {
         assert!(
             (0.0..=1.0).contains(&score),
             "negative weights should be clamped, got score {score}"
+        );
+    }
+
+    // --- normalize_title tests ---
+
+    #[test]
+    fn normalize_strips_backticks() {
+        assert_eq!(
+            normalize_title("uses a fixed `.tmp` filename"),
+            "uses a fixed tmp filename"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_rule_prefix() {
+        assert_eq!(
+            normalize_title("expect-empty-message: Empty .expect() message"),
+            "empty expect message"
+        );
+    }
+
+    #[test]
+    fn normalize_lowercases_and_collapses_whitespace() {
+        assert_eq!(
+            normalize_title("  Missing  Error  Context  "),
+            "missing error context"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_underscores() {
+        assert_eq!(
+            normalize_title("unwrap_or_default() silently drops errors"),
+            "unwrap_or_default silently drops errors"
+        );
+    }
+
+    #[test]
+    fn normalize_handles_empty_and_prefix_only() {
+        assert_eq!(normalize_title(""), "");
+        assert_eq!(normalize_title("rule-name: "), "");
+    }
+
+    #[test]
+    fn normalize_no_prefix_when_uppercase_start() {
+        assert_eq!(normalize_title("SQL injection risk"), "sql injection risk");
+    }
+
+    #[test]
+    fn normalize_no_prefix_when_no_hyphen() {
+        assert_eq!(
+            normalize_title("http: connection refused"),
+            "http connection refused"
+        );
+    }
+
+    #[test]
+    fn normalize_no_prefix_when_short() {
+        assert_eq!(normalize_title("a-b: rest"), "rest");
+        assert_eq!(normalize_title("a: rest"), "a rest");
+    }
+
+    #[test]
+    fn normalize_multiple_backticks_and_parens() {
+        assert_eq!(
+            normalize_title("`foo()` calls `bar()` via `baz`"),
+            "foo calls bar via baz"
+        );
+    }
+
+    #[test]
+    fn normalize_numeric_rule_prefix() {
+        assert_eq!(normalize_title("rule-42: something"), "something");
+    }
+
+    #[test]
+    fn normalize_colon_mid_sentence_not_stripped() {
+        assert_eq!(
+            normalize_title("Warning: something bad"),
+            "warning something bad"
         );
     }
 
