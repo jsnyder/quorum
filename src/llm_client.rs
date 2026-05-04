@@ -2842,9 +2842,9 @@ mod tests {
     fn system_prompt_instructs_backticked_symbol_names_in_titles() {
         let prompt = OpenAiClient::system_prompt();
         assert!(
-            prompt.contains("backtick"),
-            "system prompt must instruct LLMs to include backticked symbol names in titles \
-             so AST grounding can verify cited identifiers exist in source"
+            prompt.contains("title (string, <=80 chars)")
+                && prompt.contains("backtick-quoted names"),
+            "system prompt must require backtick-quoted symbol names in finding titles"
         );
     }
 }
