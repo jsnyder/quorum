@@ -717,16 +717,14 @@ pub async fn review_file(
     let merged = grounding::apply_grounding(merged, source, grounding_disabled);
     {
         let gc = grounding::count_grounding_outcomes(&merged);
-        if gc.verified + gc.symbol_not_found + gc.line_out_of_range > 0 {
-            tracing::info!(
-                phase = "grounding",
-                verified = gc.verified,
-                symbol_not_found = gc.symbol_not_found,
-                line_out_of_range = gc.line_out_of_range,
-                not_checked = gc.not_checked,
-                "grounding pass complete"
-            );
-        }
+        tracing::info!(
+            phase = "grounding",
+            verified = gc.verified,
+            symbol_not_found = gc.symbol_not_found,
+            line_out_of_range = gc.line_out_of_range,
+            not_checked = gc.not_checked,
+            "grounding pass complete"
+        );
     }
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
@@ -1101,16 +1099,14 @@ pub async fn review_file_llm_only(
     let merged = grounding::apply_grounding(merged, source, grounding_disabled);
     {
         let gc = grounding::count_grounding_outcomes(&merged);
-        if gc.verified + gc.symbol_not_found + gc.line_out_of_range > 0 {
-            tracing::info!(
-                phase = "grounding",
-                verified = gc.verified,
-                symbol_not_found = gc.symbol_not_found,
-                line_out_of_range = gc.line_out_of_range,
-                not_checked = gc.not_checked,
-                "grounding pass complete"
-            );
-        }
+        tracing::info!(
+            phase = "grounding",
+            verified = gc.verified,
+            symbol_not_found = gc.symbol_not_found,
+            line_out_of_range = gc.line_out_of_range,
+            not_checked = gc.not_checked,
+            "grounding pass complete"
+        );
     }
 
     // Calibrate

@@ -1095,7 +1095,7 @@ impl OpenAiClient {
             "\n",
             "<response_format>\n",
             "Return a JSON array. Each element has these fields:\n",
-            "- title (string, <=80 chars): concise summary of the issue.\n",
+            "- title (string, <=80 chars): concise summary. Reference the specific function, variable, or type involved using backtick-quoted names (e.g. \"`process_data` swallows errors\"). This enables automated verification that cited symbols exist in the source.\n",
             "- description (string): what the defect is, why it matters, and the conditions under which it manifests.\n",
             "- severity (string): one of critical, high, medium, low, info.\n",
             "- category (string): one of the categories listed above.\n",
@@ -2835,6 +2835,16 @@ mod tests {
         assert!(
             !is_transient_transport_error(&decode_err),
             "decode errors must NOT be classified transient (#146)"
+        );
+    }
+
+    #[test]
+    fn system_prompt_instructs_backticked_symbol_names_in_titles() {
+        let prompt = OpenAiClient::system_prompt();
+        assert!(
+            prompt.contains("title (string, <=80 chars)")
+                && prompt.contains("backtick-quoted names"),
+            "system prompt must require backtick-quoted symbol names in finding titles"
         );
     }
 }
