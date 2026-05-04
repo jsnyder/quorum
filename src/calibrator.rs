@@ -34,6 +34,16 @@ pub struct CalibratorConfig {
     /// avoid the cross-test race documented in `docs/TEST_STRATEGY.md`
     /// ("Env var leakage between tests").
     pub disable_calibrator: Option<bool>,
+    /// Data-driven suppress threshold (PR3): full-suppress when
+    /// `tp / (tp + fp) < threshold`. `None` falls back to legacy magic numbers.
+    pub suppress_threshold: Option<f64>,
+    /// Data-driven boost threshold (PR3): boost severity when
+    /// `tp / (tp + fp) >= threshold`. `None` falls back to legacy magic numbers.
+    pub boost_threshold: Option<f64>,
+    /// Force threshold (PR3): overrides both suppress and boost thresholds.
+    /// Intended for `QUORUM_FORCE_THRESHOLD` env var injection. `None` means
+    /// use the individual suppress/boost thresholds.
+    pub force_threshold: Option<f64>,
 }
 
 impl Default for CalibratorConfig {
@@ -45,6 +55,9 @@ impl Default for CalibratorConfig {
             use_auto_feedback: true,
             inject_suppress_after: 3,
             disable_calibrator: None,
+            suppress_threshold: None,
+            boost_threshold: None,
+            force_threshold: None,
         }
     }
 }
@@ -154,30 +167,60 @@ fn calibrate_core_decision(
     let mut suppressed = false;
     let mut boosted = false;
 
+    // PR3: compute score once for data-driven threshold decisions.
+    let total = tp_weight + fp_weight;
+    let score = if total > 0.0 { tp_weight / total } else { 0.5 };
+
     // Full suppress: FP weight only. Wontfix no longer contributes.
     let full_suppress_weight = fp_weight;
-    if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
-        finding.calibrator_action = Some(CalibratorAction::Disputed);
-        suppressed = true;
-        let trace = make_trace_entry(
-            finding,
-            tp_weight,
-            fp_weight,
-            wontfix_weight,
-            full_suppress_weight,
-            soft_fp_weight,
-            matched_precedents,
-            finding.calibrator_action.clone(),
-            input_severity,
-            Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
-            file_path,
-        );
-        return CoreDecision { suppressed, boosted, trace };
+    let suppress_thresh = config.force_threshold.or(config.suppress_threshold);
+    if let Some(thresh) = suppress_thresh {
+        // Data-driven path: suppress when score is below the threshold and
+        // there is at least some FP evidence.
+        if score < thresh && fp_weight > 0.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            let trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+                file_path,
+            );
+            return CoreDecision { suppressed, boosted, trace };
+        }
+    } else {
+        // Legacy fallback: magic numbers.
+        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            let trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+                file_path,
+            );
+            return CoreDecision { suppressed, boosted, trace };
+        }
     }
 
     // Soft suppress: FP weight only (wontfix is inert), or auto-only FP.
     // This preserves the finding for human review while reducing noise.
     // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
+    // PR3: soft suppress stays on legacy magic numbers (out of scope).
     if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
         || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
     {
@@ -188,7 +231,17 @@ fn calibrate_core_decision(
     }
 
     // Boost: TP clearly dominates FP.
-    if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
+    let boost_thresh = config.force_threshold.or(config.boost_threshold);
+    let boost_triggered = if let Some(thresh) = boost_thresh {
+        // Data-driven path: boost when score is at or above the threshold
+        // and there is at least some TP evidence.
+        config.boost_tp && score >= thresh && tp_weight > 0.0
+    } else {
+        // Legacy fallback: magic numbers.
+        config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0
+    };
+
+    if boost_triggered {
         // Track A rubric gate: refuse calibrator severity bumps that the
         // finding's own text doesn't justify under the rubric. Default ON;
         // set `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
@@ -3360,6 +3413,209 @@ mod tests {
         assert_eq!(
             result.traces[0].severity_change_reason,
             Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow)
+        );
+    }
+
+    // --- Data-driven threshold tests (Task 5) ---
+
+    #[test]
+    fn data_driven_suppress_threshold_overrides_legacy() {
+        // fp=1.0, tp=0.01 -> score = 0.01/1.01 ~ 0.0099
+        // Legacy: fp=1.0 < 1.5 -> NOT suppress (full_suppress_weight < 1.5).
+        // Data-driven: suppress_threshold=0.05, score < 0.05 -> suppress.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.05);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            decision.suppressed,
+            "data-driven threshold should suppress when score < threshold"
+        );
+    }
+
+    #[test]
+    fn data_driven_boost_threshold_overrides_legacy() {
+        // tp=1.2, fp=0.1 -> score = 1.2/1.3 ~ 0.923
+        // Legacy: tp=1.2 < 1.5 -> NOT boost.
+        // Data-driven: boost_threshold=0.90, score >= 0.90 -> boost.
+        // Use "SQL injection" with security category to pass rubric gate.
+        let mut finding = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.boost_threshold = Some(0.90);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            1.2,  // tp_weight
+            0.1,  // fp_weight
+            0.0,  // wontfix_weight
+            0.1,  // soft_fp_weight
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            decision.boosted,
+            "data-driven threshold should boost when score >= threshold"
+        );
+    }
+
+    #[test]
+    fn legacy_suppress_unchanged_without_threshold() {
+        // fp=1.0, tp=0.01 -- NOT suppressed under legacy (fp < 1.5)
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let config = CalibratorConfig::default(); // no suppress_threshold
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "legacy rules should not suppress when fp < 1.5"
+        );
+    }
+
+    #[test]
+    fn force_threshold_overrides_config() {
+        // force_threshold=0.05: suppress when score < 0.05.
+        // fp=1.0, tp=0.01 -> score=0.0099 < 0.05 -> suppress.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.force_threshold = Some(0.05);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            decision.suppressed,
+            "force_threshold should override and suppress"
+        );
+    }
+
+    #[test]
+    fn score_at_exact_threshold_boundary() {
+        // Score exactly at suppress threshold: score = 0.5, threshold = 0.5.
+        // score < thresh is false when score == thresh -> NOT suppressed.
+        // score >= boost_thresh is true when score == thresh -> boosted.
+        let mut finding = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.5);
+        // tp=0.5, fp=0.5 -> score = 0.5
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.5,  // tp_weight
+            0.5,  // fp_weight
+            0.0,
+            0.5,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "score exactly at suppress threshold should NOT suppress (strict <)"
+        );
+
+        // Now test boost at boundary: score = 0.5, boost_threshold = 0.5.
+        let mut finding2 = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config2 = CalibratorConfig::default();
+        config2.boost_threshold = Some(0.5);
+        let decision2 = calibrate_core_decision(
+            &mut finding2,
+            &config2,
+            0.5,  // tp_weight
+            0.5,  // fp_weight
+            0.0,
+            0.5,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            decision2.boosted,
+            "score exactly at boost threshold should boost (inclusive >=)"
+        );
+    }
+
+    #[test]
+    fn zero_weight_score_fallback() {
+        // tp=0, fp=0 -> total=0 -> score=0.5 (neutral).
+        // With suppress_threshold=0.4, score=0.5 >= 0.4 -> NOT suppressed.
+        // With boost_threshold=0.6, score=0.5 < 0.6 -> NOT boosted.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.4);
+        config.boost_threshold = Some(0.6);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.0,  // tp_weight
+            0.0,  // fp_weight
+            0.0,
+            0.0,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "zero weights -> score=0.5, should not suppress with threshold=0.4"
+        );
+        assert!(
+            !decision.boosted,
+            "zero weights -> score=0.5, should not boost with threshold=0.6"
         );
     }
 }
