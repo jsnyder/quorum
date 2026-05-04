@@ -444,6 +444,51 @@ mod tests {
         );
     }
 
+    // --- token_jaccard tests ---
+
+    #[test]
+    fn jaccard_identical_titles() {
+        let j = token_jaccard("missing error context", "missing error context");
+        assert!((j - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jaccard_disjoint_titles() {
+        let j = token_jaccard("sql injection risk", "memory leak detected");
+        assert!(j < 0.01);
+    }
+
+    #[test]
+    fn jaccard_partial_overlap() {
+        let j = token_jaccard(
+            "empty expect message",
+            "empty expect message provide context",
+        );
+        assert!((j - 0.6).abs() < 0.01, "3/5 = 0.6, got {j}");
+    }
+
+    #[test]
+    fn jaccard_empty_returns_zero() {
+        assert!(token_jaccard("", "something").abs() < 1e-9);
+        assert!(token_jaccard("something", "").abs() < 1e-9);
+        assert!(token_jaccard("", "").abs() < 1e-9);
+    }
+
+    #[test]
+    fn jaccard_duplicate_tokens_ignored() {
+        assert!((token_jaccard("the the the", "the") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jaccard_single_token_match() {
+        assert!((token_jaccard("error", "error") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jaccard_single_token_no_match() {
+        assert!(token_jaccard("error", "warning") < 0.01);
+    }
+
     // --- normalize_title tests ---
 
     #[test]
