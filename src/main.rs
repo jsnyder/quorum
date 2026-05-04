@@ -741,6 +741,28 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
+    // Build calibrator config, loading data-driven thresholds if available.
+    let mut calibrator_config = calibrator::CalibratorConfig::default();
+    let thresholds_path = qhome.join("calibrator_thresholds.toml");
+    if let Some(tc) =
+        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
+    {
+        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+        tracing::info!(
+            suppress = ?calibrator_config.suppress_threshold,
+            boost = ?calibrator_config.boost_threshold,
+            "loaded data-driven calibrator thresholds"
+        );
+    }
+    // QUORUM_FORCE_THRESHOLD overrides both suppress and boost.
+    if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
+        if let Ok(t) = v.parse::<f64>() {
+            calibrator_config.force_threshold = Some(t);
+            tracing::info!(threshold = t, "QUORUM_FORCE_THRESHOLD override active");
+        }
+    }
+
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
@@ -754,6 +776,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         context_injector,
         context7_fetcher,
         context7_disabled,
+        calibrator_config,
         ..Default::default()
     };
 
@@ -1848,6 +1871,65 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     }
 
     0
+}
+
+#[cfg(test)]
+mod threshold_loading_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn config_loads_thresholds_from_toml_into_calibrator() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("calibrator_thresholds.toml");
+        std::fs::write(
+            &path,
+            "[suppress]\nprecision_target = 0.95\nthreshold = 0.78\n\n[boost]\nprecision_target = 0.85\nthreshold = 0.42\n",
+        )
+        .unwrap();
+        let tc = quorum::threshold_config::ThresholdConfig::load_from(path.to_str().unwrap());
+        assert!(tc.is_some(), "TOML should load successfully");
+        let tc = tc.unwrap();
+
+        let mut calibrator_config = calibrator::CalibratorConfig::default();
+        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+
+        assert!(
+            (calibrator_config.suppress_threshold.unwrap() - 0.78).abs() < 1e-9,
+            "suppress_threshold should be loaded from TOML"
+        );
+        assert!(
+            (calibrator_config.boost_threshold.unwrap() - 0.42).abs() < 1e-9,
+            "boost_threshold should be loaded from TOML"
+        );
+    }
+
+    #[test]
+    fn missing_toml_leaves_config_at_defaults() {
+        let tc =
+            quorum::threshold_config::ThresholdConfig::load_from("/nonexistent/thresholds.toml");
+        assert!(tc.is_none());
+
+        let config = calibrator::CalibratorConfig::default();
+        assert!(config.suppress_threshold.is_none());
+        assert!(config.boost_threshold.is_none());
+        assert!(config.force_threshold.is_none());
+    }
+
+    #[test]
+    fn force_threshold_env_override_applies() {
+        let mut config = calibrator::CalibratorConfig::default();
+        // Simulate QUORUM_FORCE_THRESHOLD env var parsing
+        let force_val = "0.65";
+        if let Ok(t) = force_val.parse::<f64>() {
+            config.force_threshold = Some(t);
+        }
+        assert!(
+            (config.force_threshold.unwrap() - 0.65).abs() < 1e-9,
+            "force_threshold should be set from parsed env value"
+        );
+    }
 }
 
 #[cfg(test)]

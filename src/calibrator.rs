@@ -14,6 +14,7 @@ pub struct CalibrationResult {
     pub traces: Vec<crate::calibrator_trace::CalibratorTraceEntry>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CalibratorConfig {
     /// Minimum similarity for Jaccard fallback (0.0 - 1.0)
     pub similarity_threshold: f64,

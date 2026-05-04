@@ -164,6 +164,10 @@ pub struct PipelineConfig {
     /// pre-#104 prompt layout. Set by `mcp::handler::QuorumHandler` from the
     /// MCP `ReviewTool.focus` field; the CLI does not currently expose it.
     pub focus: Option<String>,
+    /// Calibrator configuration with optional data-driven thresholds.
+    /// Loaded from `~/.quorum/calibrator_thresholds.toml` at startup.
+    /// When `None`, defaults are used (legacy behavior).
+    pub calibrator_config: CalibratorConfig,
 }
 
 impl Default for PipelineConfig {
@@ -186,6 +190,7 @@ impl Default for PipelineConfig {
             context7_fetcher: None,
             context7_disabled: false,
             focus: None,
+            calibrator_config: CalibratorConfig::default(),
         }
     }
 }
@@ -733,7 +738,7 @@ pub async fn review_file(
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
         let cal_t0 = std::time::Instant::now();
-        let config = CalibratorConfig::default();
+        let config = pipeline_config.calibrator_config.clone();
 
         // Use shared FeedbackIndex (parallel mode) or local index for calibration
         let cal_result = if let Some(ref shared) = shared_index {
@@ -1115,7 +1120,7 @@ pub async fn review_file_llm_only(
     let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
         let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
         let cal_t0 = std::time::Instant::now();
-        let config = CalibratorConfig::default();
+        let config = pipeline_config.calibrator_config.clone();
         // Use shared FeedbackIndex (parallel mode) or local index for calibration
         let cal_result = if let Some(ref shared) = shared_index {
             let mut idx = shared.lock().unwrap();
