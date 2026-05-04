@@ -46,6 +46,33 @@ pub fn precision_recall_curve(samples: &[(f64, bool)]) -> Vec<(f64, f64, f64)> {
     curve
 }
 
+/// Find the lowest threshold that achieves at least `min_precision`.
+/// Returns `None` if no threshold meets the target or the curve is empty.
+///
+/// The curve is sorted by descending threshold, so the *last* qualifying
+/// entry has the lowest threshold (and therefore highest recall).
+pub fn threshold_at_precision(curve: &[(f64, f64, f64)], min_precision: f64) -> Option<f64> {
+    curve
+        .iter()
+        .filter(|(p, _, _)| *p >= min_precision)
+        .last() // curve is descending by threshold -- last qualifying is lowest
+        .map(|(_, _, t)| *t)
+}
+
+/// Find the threshold that maximizes F1 score.
+/// Returns `None` if the curve is empty.
+pub fn f1_optimal_threshold(curve: &[(f64, f64, f64)]) -> Option<f64> {
+    curve
+        .iter()
+        .filter(|(p, r, _)| *p + *r > 0.0)
+        .max_by(|(p1, r1, _), (p2, r2, _)| {
+            let f1_a = 2.0 * p1 * r1 / (p1 + r1);
+            let f1_b = 2.0 * p2 * r2 / (p2 + r2);
+            f1_a.partial_cmp(&f1_b).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, _, t)| *t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +145,58 @@ mod tests {
         for (_, _, t) in &curve {
             assert!(!t.is_nan(), "no NaN thresholds in output");
         }
+    }
+
+    #[test]
+    fn threshold_at_precision_finds_lowest_meeting_target() {
+        let samples = vec![
+            (0.9, true),
+            (0.7, false),
+            (0.5, true),
+            (0.3, false),
+        ];
+        let curve = precision_recall_curve(&samples);
+        // Only threshold 0.9 achieves P>=0.95
+        let t = threshold_at_precision(&curve, 0.95);
+        assert_eq!(t, Some(0.9));
+    }
+
+    #[test]
+    fn threshold_at_precision_returns_none_when_unachievable() {
+        // All FP -- no threshold achieves any precision on positives
+        let samples = vec![(0.9, false), (0.5, false)];
+        let curve = precision_recall_curve(&samples);
+        let t = threshold_at_precision(&curve, 0.5);
+        assert_eq!(t, None);
+    }
+
+    #[test]
+    fn threshold_at_precision_picks_lowest_for_max_recall() {
+        // Multiple thresholds achieve target -- pick lowest (highest recall)
+        let samples = vec![
+            (0.9, true),
+            (0.8, true),
+            (0.7, true),
+            (0.3, false),
+        ];
+        let curve = precision_recall_curve(&samples);
+        // At 0.9: P=1.0, at 0.8: P=1.0, at 0.7: P=1.0, at 0.3: P=0.75
+        let t = threshold_at_precision(&curve, 0.95);
+        assert!((t.unwrap() - 0.7).abs() < 1e-9, "should pick lowest threshold achieving P>=0.95");
+    }
+
+    #[test]
+    fn f1_optimal_threshold_picks_best_f1() {
+        let samples = vec![
+            (0.9, true),
+            (0.7, false),
+            (0.5, true),
+            (0.3, false),
+        ];
+        let curve = precision_recall_curve(&samples);
+        let t = f1_optimal_threshold(&curve);
+        // At 0.9: F1=2*(1.0*0.5)/(1.0+0.5)=0.667
+        // At 0.5: F1=2*(0.667*1.0)/(0.667+1.0)=0.800
+        assert!((t.unwrap() - 0.5).abs() < 1e-9, "threshold 0.5 has best F1");
     }
 }
