@@ -1912,6 +1912,8 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
 
     if opts.dry_run {
         eprintln!("\n(dry run -- no file written)");
+    } else if config.suppress.is_none() && config.boost.is_none() {
+        eprintln!("\nNo thresholds computed (insufficient data). Existing config preserved.");
     } else {
         let toml_path = qhome.join("calibrator_thresholds.toml");
         let toml_str = config.to_toml();

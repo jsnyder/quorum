@@ -39,6 +39,9 @@ pub fn join_feedback_and_traces(
 
     for t in traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
         let fp = t["file_path"].as_str().unwrap_or("").to_string();
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
@@ -90,8 +93,10 @@ pub fn join_feedback_and_traces(
             _ => continue, // skip wontfix, unknown, context_misleading
         };
         let title = f["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
         let fp = f["file_path"].as_str().unwrap_or("").to_string();
-        // Try primary (title+file_path) join first, fall back to title-only
         let weights = trace_map
             .get(&(title.clone(), fp))
             .or_else(|| title_only_map.get(&title));
