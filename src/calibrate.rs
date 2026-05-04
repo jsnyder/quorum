@@ -128,18 +128,18 @@ pub fn compute_thresholds(
 
     // Validate ordering: suppress_threshold must be < boost_threshold.
     // If violated, drop the lower-confidence path (fewer minority samples).
-    if let (Some(s), Some(b)) = (&config.suppress, &config.boost) {
-        if s.threshold >= b.threshold {
-            tracing::warn!(
-                suppress = s.threshold,
-                boost = b.threshold,
-                "suppress_threshold >= boost_threshold -- insufficient class separation"
-            );
-            if negatives < positives {
-                config.suppress = None;
-            } else {
-                config.boost = None;
-            }
+    if let (Some(s), Some(b)) = (&config.suppress, &config.boost)
+        && s.threshold >= b.threshold
+    {
+        tracing::warn!(
+            suppress = s.threshold,
+            boost = b.threshold,
+            "suppress_threshold >= boost_threshold -- insufficient class separation"
+        );
+        if negatives < positives {
+            config.suppress = None;
+        } else {
+            config.boost = None;
         }
     }
 
