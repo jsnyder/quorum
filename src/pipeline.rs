@@ -739,18 +739,18 @@ pub async fn review_file(
         let cal_result = if let Some(ref shared) = shared_index {
             let mut idx = shared.lock().unwrap();
             if !idx.is_empty() {
-                calibrator::calibrate_with_index(merged, &mut idx, &config)
+                calibrator::calibrate_with_index(merged, &mut idx, &config, &file_str)
             } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
             }
         } else if let Some(ref mut index) = local_index {
             if !index.is_empty() {
-                calibrator::calibrate_with_index(merged, index, &config)
+                calibrator::calibrate_with_index(merged, index, &config, &file_str)
             } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
             }
         } else {
-            calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+            calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
         };
 
         if cal_result.suppressed > 0 || cal_result.boosted > 0 {
@@ -1120,18 +1120,18 @@ pub async fn review_file_llm_only(
         let cal_result = if let Some(ref shared) = shared_index {
             let mut idx = shared.lock().unwrap();
             if !idx.is_empty() {
-                calibrator::calibrate_with_index(merged, &mut idx, &config)
+                calibrator::calibrate_with_index(merged, &mut idx, &config, &file_str)
             } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
             }
         } else if let Some(ref mut index) = local_index {
             if !index.is_empty() {
-                calibrator::calibrate_with_index(merged, index, &config)
+                calibrator::calibrate_with_index(merged, index, &config, &file_str)
             } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
             }
         } else {
-            calibrator::calibrate(merged, &pipeline_config.feedback, &config)
+            calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
         };
         if cal_result.suppressed > 0 || cal_result.boosted > 0 {
             tracing::debug!(

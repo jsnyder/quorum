@@ -55,6 +55,10 @@ pub struct CalibratorTraceEntry {
     /// `None` only for backward-compat with pre-Track-B trace lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity_change_reason: Option<SeverityChangeReason>,
+    /// File path of the finding this trace belongs to (PR3: join support).
+    /// `None` for backward-compat with pre-PR3 trace lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 #[cfg(test)]
@@ -83,6 +87,7 @@ mod tests {
             input_severity: Severity::Medium,
             output_severity: Severity::High,
             severity_change_reason: None,
+            file_path: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -104,6 +109,7 @@ mod tests {
             input_severity: Severity::Low,
             output_severity: Severity::Low,
             severity_change_reason: None,
+            file_path: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -141,6 +147,7 @@ mod tests {
             input_severity: Severity::Low,
             output_severity: Severity::Low,
             severity_change_reason: None,
+            file_path: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(!json.contains("severity_change_reason"),
@@ -160,5 +167,35 @@ mod tests {
         }"#;
         let trace: CalibratorTraceEntry = serde_json::from_str(pre_track_b).unwrap();
         assert!(trace.severity_change_reason.is_none());
+    }
+
+    #[test]
+    fn trace_entry_with_file_path_round_trips() {
+        let trace = CalibratorTraceEntry {
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            tp_weight: 1.0,
+            fp_weight: 0.5,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.5,
+            soft_fp_weight: 0.5,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Medium,
+            output_severity: Severity::Medium,
+            severity_change_reason: None,
+            file_path: Some("src/main.rs".to_string()),
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(json.contains("\"file_path\":\"src/main.rs\""));
+        let back: CalibratorTraceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.file_path.as_deref(), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn old_trace_entry_without_file_path_deserializes() {
+        let json = r#"{"finding_title":"test","finding_category":"security","tp_weight":1.0,"fp_weight":0.5,"wontfix_weight":0.0,"full_suppress_weight":0.5,"soft_fp_weight":0.5,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
+        let trace: CalibratorTraceEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(trace.file_path, None, "old entries should parse with None file_path");
     }
 }
