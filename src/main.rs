@@ -294,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         }
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
         cli::Command::Context(opts) => std::process::exit(run_context(opts)),
+        cli::Command::Calibrate(opts) => std::process::exit(run_calibrate(opts)),
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
@@ -1752,6 +1753,101 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         }
         exit_code
     }
+}
+
+/// Load a JSONL file line-by-line, skipping unparseable lines.
+fn load_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect()
+}
+
+/// CLI entry point for `quorum calibrate`.
+fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
+    let Some(qhome) = quorum_dir() else {
+        eprintln!("error: cannot determine quorum home directory");
+        return 3;
+    };
+
+    let feedback_path = qhome.join("feedback.jsonl");
+    let traces_path = qhome.join("calibrator_traces.jsonl");
+
+    let feedback = load_jsonl(&feedback_path);
+    let traces = load_jsonl(&traces_path);
+
+    eprintln!(
+        "Loaded {} feedback entries, {} trace entries",
+        feedback.len(),
+        traces.len(),
+    );
+
+    let samples = quorum::calibrate::join_feedback_and_traces(&feedback, &traces);
+    let positives = samples.iter().filter(|(_, l)| *l).count();
+    let negatives = samples.len() - positives;
+
+    eprintln!(
+        "Joined corpus: {} samples ({} TP/partial, {} FP)",
+        samples.len(),
+        positives,
+        negatives,
+    );
+
+    let config = quorum::calibrate::compute_thresholds(
+        &samples,
+        opts.suppress_precision,
+        opts.boost_precision,
+    );
+
+    // Print summary
+    println!("--- Calibrator Threshold Report ---");
+    println!("Corpus size:    {}", samples.len());
+    println!("Class balance:  {} TP, {} FP", positives, negatives);
+    println!(
+        "Precision targets: suppress={:.2}, boost={:.2}",
+        opts.suppress_precision, opts.boost_precision
+    );
+    println!();
+
+    if let Some(ref s) = config.suppress {
+        println!(
+            "Suppress: threshold={:.4} (precision_target={:.2})",
+            s.threshold, s.precision_target
+        );
+    } else {
+        println!("Suppress: not computed (insufficient data or precision target unachievable)");
+    }
+
+    if let Some(ref b) = config.boost {
+        println!(
+            "Boost:    threshold={:.4} (precision_target={:.2})",
+            b.threshold, b.precision_target
+        );
+    } else {
+        println!("Boost:    not computed (insufficient data or precision target unachievable)");
+    }
+
+    if opts.dry_run {
+        eprintln!("\n(dry run -- no file written)");
+    } else {
+        let toml_path = qhome.join("calibrator_thresholds.toml");
+        let toml_str = config.to_toml();
+        match std::fs::write(&toml_path, &toml_str) {
+            Ok(()) => {
+                eprintln!("\nWrote {}", toml_path.display());
+            }
+            Err(e) => {
+                eprintln!("\nerror: failed to write {}: {}", toml_path.display(), e);
+                return 3;
+            }
+        }
+    }
+
+    0
 }
 
 #[cfg(test)]
