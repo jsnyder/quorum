@@ -1810,6 +1810,13 @@ fn load_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
 
 /// CLI entry point for `quorum calibrate`.
 fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
+    if !(0.0..=1.0).contains(&opts.suppress_precision)
+        || !(0.0..=1.0).contains(&opts.boost_precision)
+    {
+        eprintln!("error: precision values must be between 0.0 and 1.0");
+        return 3;
+    }
+
     let Some(qhome) = quorum_dir() else {
         eprintln!("error: cannot determine quorum home directory");
         return 3;
