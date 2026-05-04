@@ -22,6 +22,8 @@ pub enum Command {
     Daemon(DaemonOpts),
     /// Manage the review-context store (sources, index, retrieval)
     Context(ContextOpts),
+    /// Compute calibrator thresholds from feedback corpus
+    Calibrate(CalibrateOpts),
     /// Print version
     Version,
 }
@@ -250,6 +252,21 @@ pub struct ContextDoctorOpts {
     /// Apply best-effort fixes for any fixable failures.
     #[arg(long)]
     pub repair: bool,
+}
+
+#[derive(Parser)]
+pub struct CalibrateOpts {
+    /// Compute and print thresholds without writing the config file
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Target precision for suppress path (default: 0.95, range 0.0-1.0)
+    #[arg(long, default_value = "0.95")]
+    pub suppress_precision: f64,
+
+    /// Target precision for boost path (default: 0.85, range 0.0-1.0)
+    #[arg(long, default_value = "0.85")]
+    pub boost_precision: f64,
 }
 
 #[derive(Parser)]
@@ -1334,5 +1351,52 @@ mod tests {
             "quorum", "context", "query", "hello", "--k", "100",
         ]);
         assert!(r.is_ok(), "--k 100 must parse (upper bound)");
+    }
+
+    // --- PR3: calibrate subcommand -------------------------------------------
+
+    #[test]
+    fn calibrate_subcommand_parses() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["quorum", "calibrate"]);
+        assert!(args.is_ok(), "calibrate subcommand should parse");
+    }
+
+    #[test]
+    fn calibrate_dry_run_parses() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["quorum", "calibrate", "--dry-run"]);
+        assert!(args.is_ok(), "calibrate --dry-run should parse");
+    }
+
+    #[test]
+    fn calibrate_custom_precision_parses() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "quorum", "calibrate",
+            "--suppress-precision", "0.90",
+            "--boost-precision", "0.80",
+        ]);
+        match args.command {
+            Command::Calibrate(opts) => {
+                assert!((opts.suppress_precision - 0.90).abs() < 1e-9);
+                assert!((opts.boost_precision - 0.80).abs() < 1e-9);
+            }
+            _ => panic!("Expected Calibrate command"),
+        }
+    }
+
+    #[test]
+    fn calibrate_defaults() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "calibrate"]);
+        match args.command {
+            Command::Calibrate(opts) => {
+                assert!(!opts.dry_run);
+                assert!((opts.suppress_precision - 0.95).abs() < 1e-9);
+                assert!((opts.boost_precision - 0.85).abs() < 1e-9);
+            }
+            _ => panic!("Expected Calibrate command"),
+        }
     }
 }

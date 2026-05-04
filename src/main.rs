@@ -294,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         }
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
         cli::Command::Context(opts) => std::process::exit(run_context(opts)),
+        cli::Command::Calibrate(opts) => std::process::exit(run_calibrate(opts)),
         cli::Command::Version => {
             println!("quorum {}", env!("CARGO_PKG_VERSION"));
         }
@@ -740,6 +741,48 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
+    // Build calibrator config, loading data-driven thresholds if available.
+    let mut calibrator_config = calibrator::CalibratorConfig::default();
+    let thresholds_path = qhome.join("calibrator_thresholds.toml");
+    if let Some(tc) =
+        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
+    {
+        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+        tracing::info!(
+            suppress = ?calibrator_config.suppress_threshold,
+            boost = ?calibrator_config.boost_threshold,
+            "loaded data-driven calibrator thresholds"
+        );
+    }
+    // QUORUM_FORCE_THRESHOLD overrides both suppress and boost.
+    if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
+        match v.parse::<f64>() {
+            Ok(t) if t.is_finite() && (0.0..=1.0).contains(&t) => {
+                calibrator_config.force_threshold = Some(t);
+                tracing::warn!(
+                    threshold = t,
+                    "QUORUM_FORCE_THRESHOLD active -- collapses neutral zone \
+                     (suppress when score < {t}, boost when score >= {t})"
+                );
+            }
+            Ok(t) => {
+                tracing::warn!(
+                    raw = %v,
+                    parsed = t,
+                    "ignoring QUORUM_FORCE_THRESHOLD: expected finite value in [0.0, 1.0]"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    raw = %v,
+                    error = %e,
+                    "ignoring QUORUM_FORCE_THRESHOLD: parse failed"
+                );
+            }
+        }
+    }
+
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
@@ -753,6 +796,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         context_injector,
         context7_fetcher,
         context7_disabled,
+        calibrator_config,
         ..Default::default()
     };
 
@@ -1751,6 +1795,202 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             println!("{}", output);
         }
         exit_code
+    }
+}
+
+/// Load a JSONL file line-by-line, skipping unparseable lines.
+/// Returns `Ok(vec![])` for missing files, propagates other I/O errors.
+fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+    };
+    let mut entries = Vec::new();
+    let mut skipped = 0usize;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => entries.push(v),
+            Err(_) => skipped += 1,
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            skipped,
+            "skipped malformed JSONL lines"
+        );
+    }
+    Ok(entries)
+}
+
+/// CLI entry point for `quorum calibrate`.
+fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
+    if !(0.0..=1.0).contains(&opts.suppress_precision)
+        || !(0.0..=1.0).contains(&opts.boost_precision)
+    {
+        eprintln!("error: precision values must be between 0.0 and 1.0");
+        return 3;
+    }
+
+    let Some(qhome) = quorum_dir() else {
+        eprintln!("error: cannot determine quorum home directory");
+        return 3;
+    };
+
+    let feedback_path = qhome.join("feedback.jsonl");
+    let traces_path = qhome.join("calibrator_traces.jsonl");
+
+    let feedback = match load_jsonl(&feedback_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 3;
+        }
+    };
+    let traces = match load_jsonl(&traces_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 3;
+        }
+    };
+
+    eprintln!(
+        "Loaded {} feedback entries, {} trace entries",
+        feedback.len(),
+        traces.len(),
+    );
+
+    let samples = quorum::calibrate::join_feedback_and_traces(&feedback, &traces);
+    let positives = samples.iter().filter(|(_, l)| *l).count();
+    let negatives = samples.len() - positives;
+
+    eprintln!(
+        "Joined corpus: {} samples ({} TP/partial, {} FP)",
+        samples.len(),
+        positives,
+        negatives,
+    );
+
+    let config = quorum::calibrate::compute_thresholds(
+        &samples,
+        opts.suppress_precision,
+        opts.boost_precision,
+    );
+
+    // Print summary
+    println!("--- Calibrator Threshold Report ---");
+    println!("Corpus size:    {}", samples.len());
+    println!("Class balance:  {} TP, {} FP", positives, negatives);
+    println!(
+        "Precision targets: suppress={:.2}, boost={:.2}",
+        opts.suppress_precision, opts.boost_precision
+    );
+    println!();
+
+    if let Some(ref s) = config.suppress {
+        println!(
+            "Suppress: threshold={:.4} (precision_target={:.2})",
+            s.threshold, s.precision_target
+        );
+    } else {
+        println!("Suppress: not computed (insufficient data or precision target unachievable)");
+    }
+
+    if let Some(ref b) = config.boost {
+        println!(
+            "Boost:    threshold={:.4} (precision_target={:.2})",
+            b.threshold, b.precision_target
+        );
+    } else {
+        println!("Boost:    not computed (insufficient data or precision target unachievable)");
+    }
+
+    if opts.dry_run {
+        eprintln!("\n(dry run -- no file written)");
+    } else if config.suppress.is_none() && config.boost.is_none() {
+        eprintln!("\nNo thresholds computed (insufficient data). Existing config preserved.");
+    } else {
+        let toml_path = qhome.join("calibrator_thresholds.toml");
+        let toml_str = config.to_toml();
+        if let Err(e) = std::fs::create_dir_all(&qhome) {
+            eprintln!("\nerror: failed to create {}: {e}", qhome.display());
+            return 3;
+        }
+        match std::fs::write(&toml_path, &toml_str) {
+            Ok(()) => {
+                eprintln!("\nWrote {}", toml_path.display());
+            }
+            Err(e) => {
+                eprintln!("\nerror: failed to write {}: {}", toml_path.display(), e);
+                return 3;
+            }
+        }
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod threshold_loading_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn config_loads_thresholds_from_toml_into_calibrator() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("calibrator_thresholds.toml");
+        std::fs::write(
+            &path,
+            "[suppress]\nprecision_target = 0.95\nthreshold = 0.30\n\n[boost]\nprecision_target = 0.85\nthreshold = 0.78\n",
+        )
+        .unwrap();
+        let tc = quorum::threshold_config::ThresholdConfig::load_from(path.to_str().unwrap());
+        assert!(tc.is_some(), "TOML should load successfully");
+        let tc = tc.unwrap();
+
+        let mut calibrator_config = calibrator::CalibratorConfig::default();
+        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+
+        assert!(
+            (calibrator_config.suppress_threshold.unwrap() - 0.30).abs() < 1e-9,
+            "suppress_threshold should be loaded from TOML"
+        );
+        assert!(
+            (calibrator_config.boost_threshold.unwrap() - 0.78).abs() < 1e-9,
+            "boost_threshold should be loaded from TOML"
+        );
+    }
+
+    #[test]
+    fn missing_toml_leaves_config_at_defaults() {
+        let tc =
+            quorum::threshold_config::ThresholdConfig::load_from("/nonexistent/thresholds.toml");
+        assert!(tc.is_none());
+
+        let config = calibrator::CalibratorConfig::default();
+        assert!(config.suppress_threshold.is_none());
+        assert!(config.boost_threshold.is_none());
+        assert!(config.force_threshold.is_none());
+    }
+
+    #[test]
+    fn force_threshold_env_override_applies() {
+        let mut config = calibrator::CalibratorConfig::default();
+        // Simulate QUORUM_FORCE_THRESHOLD env var parsing
+        let force_val = "0.65";
+        if let Ok(t) = force_val.parse::<f64>() {
+            config.force_threshold = Some(t);
+        }
+        assert!(
+            (config.force_threshold.unwrap() - 0.65).abs() < 1e-9,
+            "force_threshold should be set from parsed env value"
+        );
     }
 }
 

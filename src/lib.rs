@@ -81,3 +81,12 @@ pub mod prompt_sanitize;
 
 // AST grounding: identifier extraction from LLM findings.
 pub mod grounding;
+
+// Precision-recall curve and threshold selection for calibrator tuning.
+pub mod metrics;
+
+// Threshold config: TOML read/write for data-driven calibrator thresholds.
+pub mod threshold_config;
+
+// Calibrate: corpus join + threshold computation from feedback + traces.
+pub mod calibrate;

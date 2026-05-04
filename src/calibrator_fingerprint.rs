@@ -175,6 +175,7 @@ mod tests {
             input_severity: Severity::Medium,
             output_severity: Severity::High,
             severity_change_reason: Some(SeverityChangeReason::Boosted),
+            file_path: None,
         }
     }
 

@@ -41,7 +41,7 @@ fn lib_exports_are_reachable_from_integration_tests() {
 
     // calibrate(...) must be callable with no precedents — exercises the
     // public function signature integration tests will rely on.
-    let result = calibrate(vec![finding], &[], &cfg);
+    let result = calibrate(vec![finding], &[], &cfg, "");
     assert_eq!(result.findings.len(), 1);
 
     // CalibratorTraceEntry must be reachable as a public type so snapshot

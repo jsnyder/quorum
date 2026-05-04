@@ -1,6 +1,6 @@
-/// Calibrator: adjusts findings using feedback precedent.
-/// For each finding, searches for similar past findings and their TP/FP verdicts.
-/// FP precedent suppresses findings; TP precedent boosts confidence.
+//! Calibrator: adjusts findings using feedback precedent.
+//! For each finding, searches for similar past findings and their TP/FP verdicts.
+//! FP precedent suppresses findings; TP precedent boosts confidence.
 
 use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
@@ -14,6 +14,7 @@ pub struct CalibrationResult {
     pub traces: Vec<crate::calibrator_trace::CalibratorTraceEntry>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CalibratorConfig {
     /// Minimum similarity for Jaccard fallback (0.0 - 1.0)
     pub similarity_threshold: f64,
@@ -34,6 +35,16 @@ pub struct CalibratorConfig {
     /// avoid the cross-test race documented in `docs/TEST_STRATEGY.md`
     /// ("Env var leakage between tests").
     pub disable_calibrator: Option<bool>,
+    /// Data-driven suppress threshold (PR3): full-suppress when
+    /// `tp / (tp + fp) < threshold`. `None` falls back to legacy magic numbers.
+    pub suppress_threshold: Option<f64>,
+    /// Data-driven boost threshold (PR3): boost severity when
+    /// `tp / (tp + fp) >= threshold`. `None` falls back to legacy magic numbers.
+    pub boost_threshold: Option<f64>,
+    /// Force threshold (PR3): overrides both suppress and boost thresholds.
+    /// Intended for `QUORUM_FORCE_THRESHOLD` env var injection. `None` means
+    /// use the individual suppress/boost thresholds.
+    pub force_threshold: Option<f64>,
 }
 
 impl Default for CalibratorConfig {
@@ -45,6 +56,9 @@ impl Default for CalibratorConfig {
             use_auto_feedback: true,
             inject_suppress_after: 3,
             disable_calibrator: None,
+            suppress_threshold: None,
+            boost_threshold: None,
+            force_threshold: None,
         }
     }
 }
@@ -65,7 +79,7 @@ fn calibrator_disabled(config: &CalibratorConfig) -> bool {
 /// Build a `CalibratorTraceEntry` for a finding with no matching precedents
 /// (empty feedback corpus, empty index, or all entries filtered out). All
 /// weight fields are zero and the reason is `NoMatch`.
-fn make_no_match_trace(finding: &Finding) -> crate::calibrator_trace::CalibratorTraceEntry {
+fn make_no_match_trace(finding: &Finding, file_path: &str) -> crate::calibrator_trace::CalibratorTraceEntry {
     crate::calibrator_trace::CalibratorTraceEntry {
         finding_title: finding.title.clone(),
         finding_category: finding.category.to_string(),
@@ -81,6 +95,7 @@ fn make_no_match_trace(finding: &Finding) -> crate::calibrator_trace::Calibrator
         severity_change_reason: Some(
             crate::calibrator_trace::SeverityChangeReason::NoMatch,
         ),
+        file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
     }
 }
 
@@ -99,6 +114,7 @@ fn make_trace_entry(
     action: Option<CalibratorAction>,
     input_severity: Severity,
     severity_change_reason: Option<crate::calibrator_trace::SeverityChangeReason>,
+    file_path: &str,
 ) -> crate::calibrator_trace::CalibratorTraceEntry {
     crate::calibrator_trace::CalibratorTraceEntry {
         finding_title: finding.title.clone(),
@@ -113,6 +129,7 @@ fn make_trace_entry(
         input_severity,
         output_severity: finding.severity.clone(),
         severity_change_reason,
+        file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
     }
 }
 
@@ -145,34 +162,66 @@ fn calibrate_core_decision(
     soft_fp_weight: f64,
     matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace>,
     input_severity: Severity,
+    file_path: &str,
 ) -> CoreDecision {
     let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
     let mut suppressed = false;
     let mut boosted = false;
 
+    // PR3: compute score once for data-driven threshold decisions.
+    let total = tp_weight + fp_weight;
+    let score = if total > 0.0 { tp_weight / total } else { 0.5 };
+
     // Full suppress: FP weight only. Wontfix no longer contributes.
     let full_suppress_weight = fp_weight;
-    if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
-        finding.calibrator_action = Some(CalibratorAction::Disputed);
-        suppressed = true;
-        let trace = make_trace_entry(
-            finding,
-            tp_weight,
-            fp_weight,
-            wontfix_weight,
-            full_suppress_weight,
-            soft_fp_weight,
-            matched_precedents,
-            finding.calibrator_action.clone(),
-            input_severity,
-            Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
-        );
-        return CoreDecision { suppressed, boosted, trace };
+    let suppress_thresh = config.force_threshold.or(config.suppress_threshold);
+    if let Some(thresh) = suppress_thresh {
+        // Data-driven path: suppress when score is below the threshold and
+        // there is at least some FP evidence.
+        if score < thresh && fp_weight > 0.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            let trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+                file_path,
+            );
+            return CoreDecision { suppressed, boosted, trace };
+        }
+    } else {
+        // Legacy fallback: magic numbers.
+        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            let trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                full_suppress_weight,
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+                file_path,
+            );
+            return CoreDecision { suppressed, boosted, trace };
+        }
     }
 
     // Soft suppress: FP weight only (wontfix is inert), or auto-only FP.
     // This preserves the finding for human review while reducing noise.
     // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
+    // PR3: soft suppress stays on legacy magic numbers (out of scope).
     if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
         || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
     {
@@ -183,7 +232,17 @@ fn calibrate_core_decision(
     }
 
     // Boost: TP clearly dominates FP.
-    if config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0 {
+    let boost_thresh = config.force_threshold.or(config.boost_threshold);
+    let boost_triggered = if let Some(thresh) = boost_thresh {
+        // Data-driven path: boost when score is at or above the threshold
+        // and there is at least some TP evidence.
+        config.boost_tp && score >= thresh && tp_weight > 0.0
+    } else {
+        // Legacy fallback: magic numbers.
+        config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0
+    };
+
+    if boost_triggered {
         // Track A rubric gate: refuse calibrator severity bumps that the
         // finding's own text doesn't justify under the rubric. Default ON;
         // set `QUORUM_RUBRIC_GATE=off` (or `0`) to disable for ablation runs.
@@ -227,6 +286,7 @@ fn calibrate_core_decision(
         finding.calibrator_action.clone(),
         input_severity,
         reason,
+        file_path,
     );
 
     CoreDecision { suppressed, boosted, trace }
@@ -326,6 +386,7 @@ pub fn calibrate(
     findings: Vec<Finding>,
     feedback: &[FeedbackEntry],
     config: &CalibratorConfig,
+    file_path: &str,
 ) -> CalibrationResult {
     // Ablation knob: bypass calibrator post-processing entirely. Honored by
     // BOTH `calibrate` and `calibrate_with_index` so the disable behaves
@@ -368,7 +429,7 @@ pub fn calibrate(
     if filtered.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the corpus is empty / fully filtered.
-        let traces = findings.iter().map(make_no_match_trace).collect();
+        let traces = findings.iter().map(|f| make_no_match_trace(f, file_path)).collect();
         return CalibrationResult {
             findings,
             suppressed: 0,
@@ -395,7 +456,7 @@ pub fn calibrate(
             .collect();
 
         if similar.is_empty() {
-            traces.push(make_no_match_trace(&finding));
+            traces.push(make_no_match_trace(&finding, file_path));
             output.push(finding);
             continue;
         }
@@ -467,6 +528,7 @@ pub fn calibrate(
             soft_fp_weight,
             matched_precedents,
             input_severity,
+            file_path,
         );
         traces.push(decision.trace);
         if decision.suppressed {
@@ -527,6 +589,7 @@ pub fn calibrate_with_index(
     findings: Vec<Finding>,
     index: &mut crate::feedback_index::FeedbackIndex,
     config: &CalibratorConfig,
+    file_path: &str,
 ) -> CalibrationResult {
     // Ablation knob: bypass calibrator post-processing entirely. Must be
     // checked BEFORE any trace emission — including the empty-index NoMatch
@@ -541,7 +604,7 @@ pub fn calibrate_with_index(
     if index.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the index is empty.
-        let traces = findings.iter().map(make_no_match_trace).collect();
+        let traces = findings.iter().map(|f| make_no_match_trace(f, file_path)).collect();
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
     }
 
@@ -599,7 +662,7 @@ pub fn calibrate_with_index(
             .collect();
 
         if similar.is_empty() {
-            traces.push(make_no_match_trace(&finding));
+            traces.push(make_no_match_trace(&finding, file_path));
             output.push(finding);
             continue;
         }
@@ -668,6 +731,7 @@ pub fn calibrate_with_index(
             soft_fp_weight,
             matched_precedents,
             input_severity,
+            file_path,
         );
         traces.push(decision.trace);
         if decision.suppressed {
@@ -1475,7 +1539,7 @@ mod tests {
                 .category("security".into())
                 .build(),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(
             result.findings.len(), 1,
             "OutOfScope FPs must NOT suppress (they're 'real, tracked elsewhere', not 'wrong')"
@@ -1508,7 +1572,7 @@ mod tests {
                 .category("security".into())
                 .build(),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         // 3 same-title Hallucination FPs MUST suppress (existing behavior).
         // If this fails, the OutOfScope test above is meaningless — it could
         // be passing because suppression itself is broken.
@@ -1555,12 +1619,12 @@ mod tests {
         let config = CalibratorConfig::default();
 
         // Path A: calibrate() — in-memory feedback slice.
-        let result_a = calibrate(vec![make_finding()], &entries, &config);
+        let result_a = calibrate(vec![make_finding()], &entries, &config, "");
 
         // Path B: calibrate_with_index() — same corpus via Jaccard index
         // (deterministic; doesn't depend on embedding model availability).
         let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
-        let result_b = calibrate_with_index(vec![make_finding()], &mut index, &config);
+        let result_b = calibrate_with_index(vec![make_finding()], &mut index, &config, "");
 
         assert_eq!(
             result_a.findings.len(), result_b.findings.len(),
@@ -1605,7 +1669,7 @@ mod tests {
             FindingBuilder::new().title("Bug A").build(),
             FindingBuilder::new().title("Bug B").build(),
         ];
-        let result = calibrate(findings, &[], &CalibratorConfig::default());
+        let result = calibrate(findings, &[], &CalibratorConfig::default(), "");
         assert_eq!(result.findings.len(), 2);
         assert_eq!(result.suppressed, 0);
         assert_eq!(result.boosted, 0);
@@ -1625,7 +1689,7 @@ mod tests {
             fb("SQL injection", "security", Verdict::Fp),
             fb("SQL injection", "security", Verdict::Fp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings.len(), 0, "Finding should be suppressed by 2 FP precedents");
         assert_eq!(result.suppressed, 1);
     }
@@ -1642,7 +1706,7 @@ mod tests {
             fb("SQL injection", "security", Verdict::Fp),
             // Only 1 FP, need 2 to suppress
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.suppressed, 0);
     }
@@ -1660,7 +1724,7 @@ mod tests {
             fb("Unused import", "style", Verdict::Fp),
             fb("Unused import", "style", Verdict::Fp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.suppressed, 1);
     }
 
@@ -1680,7 +1744,7 @@ mod tests {
             fb("Buffer overflow", "security", Verdict::Tp),
             fb("Buffer overflow", "security", Verdict::Tp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings.len(), 1);
         assert!(result.findings[0].severity > Severity::Medium, "Should be boosted above Medium");
         assert_eq!(result.boosted, 1);
@@ -1703,7 +1767,7 @@ mod tests {
             boost_tp: false,
             ..Default::default()
         };
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.findings[0].severity, Severity::Medium);
         assert_eq!(result.boosted, 0);
     }
@@ -1733,7 +1797,7 @@ mod tests {
             disable_calibrator: Some(true),
             ..CalibratorConfig::default()
         };
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.findings[0].severity, Severity::Medium, "must not boost when disabled");
         assert_eq!(result.boosted, 0);
         assert_eq!(result.suppressed, 0);
@@ -1756,7 +1820,7 @@ mod tests {
             fb("Race condition", "concurrency", Verdict::Fp),
         ];
         // 2 TP vs 1 FP = keep (and possibly boost)
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings.len(), 1);
     }
 
@@ -1819,7 +1883,7 @@ mod tests {
         let feedback = vec![
             fb("SQL injection", "security", Verdict::Tp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert!(!result.findings[0].similar_precedent.is_empty(),
             "Finding should have precedent annotation");
     }
@@ -1843,7 +1907,7 @@ mod tests {
             use_auto_feedback: false,
             ..Default::default()
         };
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.suppressed, 0, "Auto feedback excluded, should not suppress");
     }
 
@@ -1869,7 +1933,7 @@ mod tests {
         // 2 auto FPs (capped at 1.0) + 1 human FP (1.0) = 2.0 >= 1.5 -> suppress
         let feedback = vec![auto_fb.clone(), auto_fb, human_fb];
         let config = CalibratorConfig::default(); // use_auto_feedback defaults to true
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.suppressed, 1, "Auto+human feedback should suppress (auto capped at 1.0 + human 1.0 = 2.0)");
     }
 
@@ -1884,7 +1948,7 @@ mod tests {
         let feedback = vec![
             fb("Null pointer", "safety", Verdict::Tp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
     }
 
@@ -1919,11 +1983,11 @@ mod tests {
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
         let config = CalibratorConfig::default();
-        let result1 = calibrate(findings.clone(), &vec![human_fp.clone(), auto_fp.clone()], &config);
+        let result1 = calibrate(findings.clone(), &vec![human_fp.clone(), auto_fp.clone()], &config, "");
         assert_eq!(result1.suppressed, 1, "Human+auto FP should suppress");
 
         // 2 auto only: 0.5 + 0.5 = 1.0 < 1.5 threshold -> NOT suppress
-        let result2 = calibrate(findings.clone(), &vec![auto_fp.clone(), auto_fp], &config);
+        let result2 = calibrate(findings.clone(), &vec![auto_fp.clone(), auto_fp], &config, "");
         assert_eq!(result2.suppressed, 0, "2 auto FPs alone should not suppress (insufficient weight)");
     }
 
@@ -1955,11 +2019,11 @@ mod tests {
 
         let config = CalibratorConfig::default();
         // 2 recent human FPs: 1.0 + 1.0 = 2.0 >= 1.5 -> suppress
-        let result1 = calibrate(findings.clone(), &vec![recent_fp.clone(), recent_fp], &config);
+        let result1 = calibrate(findings.clone(), &vec![recent_fp.clone(), recent_fp], &config, "");
         assert_eq!(result1.suppressed, 1);
 
         // 2 old FPs: exp(-90/60) ~= 0.22 each, total ~0.44 < 1.5 -> NOT suppress
-        let result2 = calibrate(findings.clone(), &vec![old_fp.clone(), old_fp], &config);
+        let result2 = calibrate(findings.clone(), &vec![old_fp.clone(), old_fp], &config, "");
         assert!(result2.suppressed <= 1);
     }
 
@@ -1979,7 +2043,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![tp], &config);
+        let result = calibrate(findings, &vec![tp], &config, "");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
     }
@@ -2019,7 +2083,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_tp], &config);
+        let result = calibrate(findings, &vec![postfix_tp], &config, "");
         assert_eq!(result.findings[0].calibrator_action, Some(CalibratorAction::Confirmed));
     }
 
@@ -2042,7 +2106,7 @@ mod tests {
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.suppressed, 0,
             "4 auto FPs should not suppress (capped at 1.0 weight, needs human corroboration)");
     }
@@ -2069,7 +2133,7 @@ mod tests {
         };
         let feedback = vec![auto_fb.clone(), auto_fb, human_fb];
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         assert_eq!(result.suppressed, 1,
             "Auto (capped 1.0) + human (1.0) = 2.0 should suppress");
     }
@@ -2094,7 +2158,7 @@ mod tests {
         }).collect();
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &auto_feedback, &config);
+        let result = calibrate(vec![finding], &auto_feedback, &config, "");
 
         // Finding should NOT be fully suppressed
         assert_eq!(result.suppressed, 0);
@@ -2121,7 +2185,7 @@ mod tests {
         feedback[1].provenance = crate::feedback::Provenance::Human;
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
 
         // Should be fully suppressed (human corroboration)
         assert_eq!(result.suppressed, 1);
@@ -2146,7 +2210,7 @@ mod tests {
         feedback[2].provenance = crate::feedback::Provenance::Human;
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
 
         // Mixed signal — should NOT be soft suppressed
         assert_eq!(result.suppressed, 0);
@@ -2169,7 +2233,7 @@ mod tests {
         }).collect();
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &auto_feedback, &config);
+        let result = calibrate(vec![finding], &auto_feedback, &config, "");
 
         assert_eq!(result.findings.len(), 1); // still in output
         assert_eq!(result.findings[0].severity, Severity::Info); // but downgraded
@@ -2192,7 +2256,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_fp], &config);
+        let result = calibrate(findings, &vec![postfix_fp], &config, "");
         assert_eq!(result.suppressed, 1, "Single PostFix FP should suppress (weight 1.5 >= threshold)");
     }
 
@@ -2212,7 +2276,7 @@ mod tests {
             fb("console.log debug artifact", "quality", Verdict::Wontfix),
         ];
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
 
         assert_eq!(result.suppressed, 0, "wontfix should NOT fully suppress");
         assert_eq!(result.findings.len(), 1);
@@ -2232,7 +2296,7 @@ mod tests {
             fb("console.log debug artifact", "quality", Verdict::Fp),
         ];
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
 
         assert_eq!(result.suppressed, 1, "FP should fully suppress");
         assert_eq!(result.findings.len(), 0);
@@ -2252,7 +2316,7 @@ mod tests {
             fb("unused variable", "quality", Verdict::Wontfix),
         ];
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
 
         // FP alone should drive full suppression
         assert_eq!(result.suppressed, 1);
@@ -2277,7 +2341,7 @@ mod tests {
         ];
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         assert_eq!(result.suppressed, 0, "1 FP + wontfix should NOT reach full suppress threshold");
         assert_eq!(result.findings.len(), 1);
     }
@@ -2301,7 +2365,7 @@ mod tests {
         ];
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         assert_eq!(result.suppressed, 0);
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.findings[0].severity, Severity::Medium,
@@ -2322,7 +2386,7 @@ mod tests {
         ];
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         assert_eq!(result.suppressed, 1);
         assert_eq!(result.traces.len(), 1);
 
@@ -2347,7 +2411,7 @@ mod tests {
         ];
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         assert_eq!(result.traces.len(), 1);
 
         let trace = &result.traces[0];
@@ -2369,7 +2433,7 @@ mod tests {
         ];
 
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(result.traces.len(), 1);
 
@@ -2511,7 +2575,7 @@ mod tests {
             .severity(crate::finding::Severity::Medium)
             .build();
         let config = CalibratorConfig::default();
-        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "");
         assert_eq!(result.findings.len(), 1);
         let out = &result.findings[0];
         assert_eq!(
@@ -2545,7 +2609,7 @@ mod tests {
             .severity(crate::finding::Severity::Medium)
             .build();
         let config = CalibratorConfig::default();
-        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "");
         assert_eq!(result.findings.len(), 1);
         let trace = &result.traces[0];
         assert_eq!(
@@ -2594,7 +2658,7 @@ mod tests {
 
         let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
         let config = CalibratorConfig::default();
-        let result = calibrate_with_index(vec![jwt_finding], &mut index, &config);
+        let result = calibrate_with_index(vec![jwt_finding], &mut index, &config, "");
 
         // Diagnostic trace output (visible with --nocapture).
         let trace = &result.traces[0];
@@ -2631,7 +2695,7 @@ mod tests {
             fb("Missing input validation", "security", Verdict::Fp),
         ];
         let config = CalibratorConfig::default();
-        let result = calibrate(vec![finding], &feedback, &config);
+        let result = calibrate(vec![finding], &feedback, &config, "");
         let trace = &result.traces[0];
         let prec = trace.matched_precedents.first()
             .expect("should have a matched precedent");
@@ -2663,7 +2727,7 @@ mod tests {
         let mut config = CalibratorConfig::default();
         // Lower threshold for this test so the sub-1.0 Jaccard similarity clears the gate.
         config.embedding_similarity_threshold = 0.3;
-        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "");
         let trace = &result.traces[0];
         let prec = trace.matched_precedents.first()
             .expect("precedent should be present when index has a matching entry");
@@ -2690,7 +2754,7 @@ mod tests {
             .category("complexity".into())
             .severity(crate::finding::Severity::Medium)
             .build();
-        let result = calibrate(vec![finding], &feedback, &CalibratorConfig::default());
+        let result = calibrate(vec![finding], &feedback, &CalibratorConfig::default(), "");
         let trace = &result.traces[0];
         assert_eq!(
             trace.fp_weight, 0.0,
@@ -2919,7 +2983,7 @@ mod tests {
             use_auto_feedback: false,
             ..Default::default()
         };
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
         let trace = result.traces.last().expect("expected a calibrator trace");
         assert!(
             !trace.matched_precedents.is_empty(),
@@ -2962,7 +3026,7 @@ mod tests {
                     .build(),
             ];
             let feedback: Vec<_> = (0..*n as i64).map(external_fp).collect();
-            let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+            let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
             let outcome = match (
                 result.suppressed,
                 result.findings.first().map(|f| &f.severity),
@@ -3023,7 +3087,7 @@ mod tests {
                 .build(),
         ];
         let feedback: Vec<_> = (0..10).map(|_| external_tp(0)).collect();
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
@@ -3048,7 +3112,7 @@ mod tests {
                 e
             })
             .collect();
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (trace.fp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
@@ -3069,7 +3133,7 @@ mod tests {
                 .build(),
         ];
         let feedback = vec![external_tp(0)];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (trace.tp_weight - 0.7).abs() < 1e-3,
@@ -3095,7 +3159,7 @@ mod tests {
             e.provenance = crate::feedback::Provenance::PostFix;
             feedback.push(e);
         }
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             trace.tp_weight > EXTERNAL_WEIGHT_CAP + 5.0,
@@ -3117,7 +3181,7 @@ mod tests {
         ];
         let mut feedback: Vec<_> = (0..50).map(|_| external_tp_from("pal", 0)).collect();
         feedback.extend((0..50).map(|_| external_tp_from("third-opinion", 0)));
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
@@ -3141,7 +3205,7 @@ mod tests {
             fb("SQL injection", "security", Verdict::Fp),
             fb("SQL injection", "security", Verdict::Fp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (2.95..=3.05).contains(&trace.fp_weight),
@@ -3170,7 +3234,7 @@ mod tests {
             .title("SQL injection")
             .category("security".into())
             .build();
-        let result = calibrate_with_index(vec![finding], &mut index, &config);
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "");
         let trace = result.traces.last().expect("expected trace");
         assert!(
             (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 1e-3,
@@ -3191,7 +3255,7 @@ mod tests {
                 .severity(Severity::Medium)
                 .build(),
         ];
-        let result = calibrate(findings, &[], &CalibratorConfig::default());
+        let result = calibrate(findings, &[], &CalibratorConfig::default(), "");
         assert_eq!(result.traces.len(), 1);
         assert_eq!(
             result.traces[0].severity_change_reason,
@@ -3213,7 +3277,7 @@ mod tests {
             fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
             fb("Race condition in shared HashMap", "concurrency", Verdict::Tp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings[0].severity, Severity::High);
         assert_eq!(
             result.traces[0].severity_change_reason,
@@ -3238,7 +3302,7 @@ mod tests {
             fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
             fb("Function `foo` has cyclomatic complexity 30", "complexity", Verdict::Tp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings[0].severity, Severity::Medium, "gate blocked the bump");
         assert_eq!(
             result.traces[0].severity_change_reason,
@@ -3259,7 +3323,7 @@ mod tests {
         for _ in 0..5 {
             feedback.push(fb("Use of unwrap", "error-handling", Verdict::Fp));
         }
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         // Strong FP fully suppresses the finding (continue path) —
         // a Disputed trace is still emitted so the eval harness can count it.
         assert_eq!(result.suppressed, 1);
@@ -3288,7 +3352,7 @@ mod tests {
                 .severity(Severity::Medium)
                 .build(),
         ];
-        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default());
+        let result = calibrate_with_index(findings, &mut index, &CalibratorConfig::default(), "");
         assert_eq!(result.traces.len(), 1);
         assert_eq!(
             result.traces[0].severity_change_reason,
@@ -3320,7 +3384,7 @@ mod tests {
             disable_calibrator: Some(true),
             ..CalibratorConfig::default()
         };
-        let result = calibrate_with_index(findings, &mut index, &config);
+        let result = calibrate_with_index(findings, &mut index, &config, "");
         assert!(
             result.traces.is_empty(),
             "Disabled calibrator must short-circuit before NoMatch trace emission, \
@@ -3345,11 +3409,214 @@ mod tests {
             fb("Some marginal finding", "security", Verdict::Tp),
             fb("Some marginal finding", "security", Verdict::Fp),
         ];
-        let result = calibrate(findings, &feedback, &CalibratorConfig::default());
+        let result = calibrate(findings, &feedback, &CalibratorConfig::default(), "");
         assert_eq!(result.findings[0].severity, Severity::Medium);
         assert_eq!(
             result.traces[0].severity_change_reason,
             Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow)
+        );
+    }
+
+    // --- Data-driven threshold tests (Task 5) ---
+
+    #[test]
+    fn data_driven_suppress_threshold_overrides_legacy() {
+        // fp=1.0, tp=0.01 -> score = 0.01/1.01 ~ 0.0099
+        // Legacy: fp=1.0 < 1.5 -> NOT suppress (full_suppress_weight < 1.5).
+        // Data-driven: suppress_threshold=0.05, score < 0.05 -> suppress.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.05);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            decision.suppressed,
+            "data-driven threshold should suppress when score < threshold"
+        );
+    }
+
+    #[test]
+    fn data_driven_boost_threshold_overrides_legacy() {
+        // tp=1.2, fp=0.1 -> score = 1.2/1.3 ~ 0.923
+        // Legacy: tp=1.2 < 1.5 -> NOT boost.
+        // Data-driven: boost_threshold=0.90, score >= 0.90 -> boost.
+        // Use "SQL injection" with security category to pass rubric gate.
+        let mut finding = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.boost_threshold = Some(0.90);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            1.2,  // tp_weight
+            0.1,  // fp_weight
+            0.0,  // wontfix_weight
+            0.1,  // soft_fp_weight
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            decision.boosted,
+            "data-driven threshold should boost when score >= threshold"
+        );
+    }
+
+    #[test]
+    fn legacy_suppress_unchanged_without_threshold() {
+        // fp=1.0, tp=0.01 -- NOT suppressed under legacy (fp < 1.5)
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let config = CalibratorConfig::default(); // no suppress_threshold
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "legacy rules should not suppress when fp < 1.5"
+        );
+    }
+
+    #[test]
+    fn force_threshold_overrides_config() {
+        // force_threshold=0.05: suppress when score < 0.05.
+        // fp=1.0, tp=0.01 -> score=0.0099 < 0.05 -> suppress.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.force_threshold = Some(0.05);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.01,  // tp_weight
+            1.0,   // fp_weight
+            0.0,   // wontfix_weight
+            1.0,   // soft_fp_weight
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            decision.suppressed,
+            "force_threshold should override and suppress"
+        );
+    }
+
+    #[test]
+    fn score_at_exact_threshold_boundary() {
+        // Score exactly at suppress threshold: score = 0.5, threshold = 0.5.
+        // score < thresh is false when score == thresh -> NOT suppressed.
+        // score >= boost_thresh is true when score == thresh -> boosted.
+        let mut finding = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.5);
+        // tp=0.5, fp=0.5 -> score = 0.5
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.5,  // tp_weight
+            0.5,  // fp_weight
+            0.0,
+            0.5,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "score exactly at suppress threshold should NOT suppress (strict <)"
+        );
+
+        // Now test boost at boundary: score = 0.5, boost_threshold = 0.5.
+        let mut finding2 = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config2 = CalibratorConfig::default();
+        config2.boost_threshold = Some(0.5);
+        let decision2 = calibrate_core_decision(
+            &mut finding2,
+            &config2,
+            0.5,  // tp_weight
+            0.5,  // fp_weight
+            0.0,
+            0.5,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            decision2.boosted,
+            "score exactly at boost threshold should boost (inclusive >=)"
+        );
+    }
+
+    #[test]
+    fn zero_weight_score_fallback() {
+        // tp=0, fp=0 -> total=0 -> score=0.5 (neutral).
+        // With suppress_threshold=0.4, score=0.5 >= 0.4 -> NOT suppressed.
+        // With boost_threshold=0.6, score=0.5 < 0.6 -> NOT boosted.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let mut config = CalibratorConfig::default();
+        config.suppress_threshold = Some(0.4);
+        config.boost_threshold = Some(0.6);
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.0,  // tp_weight
+            0.0,  // fp_weight
+            0.0,
+            0.0,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            !decision.suppressed,
+            "zero weights -> score=0.5, should not suppress with threshold=0.4"
+        );
+        assert!(
+            !decision.boosted,
+            "zero weights -> score=0.5, should not boost with threshold=0.6"
         );
     }
 }

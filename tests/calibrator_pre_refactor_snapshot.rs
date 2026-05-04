@@ -338,7 +338,7 @@ fn capture_scenario(scenario: &Scenario) -> Vec<TraceFingerprint> {
     let mut out = Vec::new();
 
     // Path A: in-memory calibrate()
-    let result_a = calibrate(scenario.findings.clone(), &scenario.feedback, &scenario.config);
+    let result_a = calibrate(scenario.findings.clone(), &scenario.feedback, &scenario.config, "");
     out.extend(fingerprints_from_traces(
         scenario.name,
         &result_a.traces,
@@ -356,7 +356,7 @@ fn capture_scenario(scenario: &Scenario) -> Vec<TraceFingerprint> {
         }
         let mut index = FeedbackIndex::build_jaccard_only(&store).expect("jaccard index");
         let result_b =
-            calibrate_with_index(scenario.findings.clone(), &mut index, &scenario.config);
+            calibrate_with_index(scenario.findings.clone(), &mut index, &scenario.config, "");
         out.extend(fingerprints_from_traces(
             scenario.name,
             &result_b.traces,

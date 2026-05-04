@@ -1132,7 +1132,7 @@ mod tests {
         // suppresses HIGH security findings absent feedback would fail here.
         let feedback: Vec<FeedbackEntry> = vec![];
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &feedback, &config);
+        let result = calibrate(findings, &feedback, &config, "");
 
         assert_eq!(
             result.findings.len(),
