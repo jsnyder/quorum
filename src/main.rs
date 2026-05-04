@@ -1882,6 +1882,7 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     eprintln!("  title-only (raw):   {}", join_stats.raw_title_only);
     eprintln!("  title-only (norm):  {}", join_stats.normalized_title_only);
     eprintln!("  ambiguous skipped:  {}", join_stats.ambiguous_skipped);
+    eprintln!("  below threshold:    {}", join_stats.below_threshold);
     eprintln!("  unmatched:          {}", join_stats.unmatched);
 
     let config = quorum::calibrate::compute_thresholds(

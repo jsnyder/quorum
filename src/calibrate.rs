@@ -285,6 +285,8 @@ pub fn join_feedback_and_traces(
                         stats.ambiguous_skipped += 1;
                         continue;
                     }
+                } else if !candidates.is_empty() {
+                    stats.below_threshold += 1;
                 }
             }
         }
@@ -315,6 +317,7 @@ pub fn join_feedback_and_traces(
         raw_title_only = stats.raw_title_only,
         normalized_title_only = stats.normalized_title_only,
         ambiguous_skipped = stats.ambiguous_skipped,
+        below_threshold = stats.below_threshold,
         unmatched = stats.unmatched,
         "join strategy breakdown"
     );
@@ -889,7 +892,8 @@ mod tests {
         let total_classified = stats.exact_raw + stats.exact_normalized
             + stats.fuzzy_same_file + stats.raw_title_only
             + stats.normalized_title_only
-            + stats.ambiguous_skipped + stats.unmatched;
+            + stats.ambiguous_skipped + stats.below_threshold
+            + stats.unmatched;
         // 3 eligible (tp, fp, tp) — wontfix filtered before classification
         assert_eq!(total_classified, 3, "every eligible entry must be classified");
         assert_eq!(samples.len(), 2);
