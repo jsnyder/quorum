@@ -6,12 +6,14 @@ on:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - ".cargo/audit.toml"
       - ".github/workflows/audit.yml"
   pull_request:
     branches: [main]
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - ".cargo/audit.toml"
       - ".github/workflows/audit.yml"
   schedule:
     - cron: "13 6 * * 1"
