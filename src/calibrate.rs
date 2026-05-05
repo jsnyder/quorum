@@ -1716,4 +1716,28 @@ mod tests {
         assert_eq!(stats.no_match, 1);
         assert_eq!(stats.total_backfilled, 0);
     }
+
+    #[test]
+    fn backfill_falls_through_to_normalized_title() {
+        // Feedback has rule-prefixed title, trace has bare title
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "bare-except-pass: Using bare except: pass",
+                "file_path": "src/handler.py",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Using bare except: pass",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/handler.py"));
+        assert_eq!(stats.feedback_normalized, 1);
+        assert_eq!(stats.total_backfilled, 1);
+    }
 }
