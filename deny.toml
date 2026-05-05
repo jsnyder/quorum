@@ -1,0 +1,67 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---- Licenses --------------------------------------------------------------
+# Allowlist of permissive licenses we're comfortable redistributing under MIT.
+# Adding to this list = a deliberate decision that the license is compatible
+# with the project's MIT downstream story. Reject everything else.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "0BSD",
+    # NCSA — University of Illinois/NCSA Open Source License. Permissive,
+    # OSI-approved, MIT-compatible. Used by `libfuzzer-sys` (dev/test dep).
+    "NCSA",
+    # CDLA-Permissive-2.0 — Community Data License Agreement Permissive 2.0.
+    # Used by `webpki-roots` / `webpki-root-certs` (Mozilla root cert bundle).
+    # Permissive, allows redistribution under any terms.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+# ---- Bans ------------------------------------------------------------------
+# Watch for duplicates and known-bad crates. Start with `warn` for duplicates
+# rather than `deny` because clean-up takes coordinated dep work.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+# ---- Sources ---------------------------------------------------------------
+# Only allow crates from crates.io. Add specific git dep allowlists below if/
+# when we add a git-direct dep.
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---- Advisories ------------------------------------------------------------
+# Authoritative advisory scanning lives in `audit.yml` (rustsec/audit-check).
+# Keep this section minimal so the two tools don't fight.
+
+[advisories]
+yanked = "warn"
+ignore = []
