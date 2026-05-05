@@ -18,7 +18,8 @@ use crate::threshold_config::{PathThreshold, ThresholdConfig};
 pub struct JoinFilter {
     /// Only include traces from this quorum version (e.g. `"0.18.4"`).
     pub quorum_version: Option<String>,
-    /// When `true`, exclude traces where `provenance.dirty == Some(true)`.
+    /// When `true`, only include traces with `provenance.dirty == Some(false)`.
+    /// Traces with unknown or missing dirty state are excluded.
     pub clean_only: bool,
     /// Only include traces from this repository.
     pub repo: Option<String>,
