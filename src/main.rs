@@ -546,6 +546,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         return run_review_via_daemon(&opts);
     }
 
+    // Warn when prose files are reviewed in Code mode (the default).
+    // This is advisory only — it never blocks the review.
+    if opts.mode == crate::review_mode::ReviewMode::Code {
+        let prose_extensions = ["md", "txt", "adoc", "rst"];
+        for f in &opts.files {
+            if let Some(ext) = f.extension().and_then(|e| e.to_str()) {
+                if prose_extensions.contains(&ext.to_lowercase().as_str()) {
+                    eprintln!(
+                        "warning: '{}' looks like a prose file. \
+                         Use --mode plan or --mode docs for non-code review.",
+                        f.display()
+                    );
+                }
+            }
+        }
+    }
+
     // Load config
     let cfg = match Config::load(&EnvConfigSource) {
         Ok(c) => c,
@@ -1442,6 +1459,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 deep: opts.deep,
                 parallel_n: opts.parallel as u32,
                 ensemble: opts.ensemble,
+            },
+            mode: if opts.mode == crate::review_mode::ReviewMode::Code {
+                None
+            } else {
+                Some(opts.mode.as_str().to_string())
             },
             context: context_telem,
         };
