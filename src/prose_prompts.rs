@@ -161,7 +161,7 @@ pub fn docs_system_prompt() -> &'static str {
         "- For missing steps: write the step that should be inserted and where.\n",
         "- For contradictions: state which version is correct and how to fix the other.\n",
         "- For ambiguity: rewrite the ambiguous sentence in concrete terms.\n",
-        "- For staleness: identify what needs updating and what the current state likely is.\n",
+        "- For staleness: identify what needs updating and cite the conflicting or outdated text; do not assert external current state unless verifiable from the document or provided context.\n",
         "Do not write \"verify this\", \"check if current\", or \"consider clarifying\" — those are not fixes.\n",
         "\n",
         "BAD: \"Consider updating the version number in the install section.\"\n",

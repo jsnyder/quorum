@@ -77,7 +77,7 @@ Feedback recording works identically. `quorum feedback --file plan.md --finding 
 
 **Calibration is mode-aware.** The calibrator includes `mode` in precedent lookup: same-mode precedents are preferred over cross-mode. A code FP precedent should not suppress the same-text finding in a plan review — the review context is materially different. If same-mode precedents are sparse, cross-mode precedents serve as fallback with reduced weight.
 
-`ReviewRecord` in `reviews.jsonl` gains an optional `mode` field (defaults to `"code"` for backward compat via `serde(default)`). `mode` is tracked in telemetry from Phase 1, not deferred to Phase 3.
+`ReviewRecord` in `reviews.jsonl` gains an optional `mode` field (omitted for code reviews, present for plan/docs). Old records without the field deserialize as `None` via `serde(default)`. `mode` is tracked in telemetry from Phase 1, not deferred to Phase 3.
 
 ### CLI Surface
 
@@ -164,5 +164,5 @@ Key prompt engineering decisions:
 5. Context7 off by default for prose modes
 6. Mixed inputs rejected per-invocation in v1
 7. Telemetry captures `mode` from Phase 1
-8. Reviewing `.md`/`.txt`/`.adoc`/`.rst` without `--mode` errors with hint: "This looks like a prose file. Use --mode plan or --mode docs to review it."
+8. Reviewing `.md`/`.txt`/`.adoc`/`.rst` without `--mode` emits a stderr warning: "looks like a prose file. Use --mode plan or --mode docs for non-code review." (advisory, does not block the review)
 9. Calibrator weighting: same-mode precedents weighted 1.0, cross-mode fallback weighted 0.5 (initial heuristic, tunable after data)

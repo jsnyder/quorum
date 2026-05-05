@@ -541,6 +541,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         None
     };
 
+    // Prose review modes are not yet supported with --daemon or --deep.
+    if opts.mode.is_prose() && (opts.daemon || opts.deep) {
+        eprintln!(
+            "error: --mode {} is not supported with {} yet",
+            opts.mode,
+            if opts.daemon { "--daemon" } else { "--deep" }
+        );
+        return 3;
+    }
+
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {
         return run_review_via_daemon(&opts);

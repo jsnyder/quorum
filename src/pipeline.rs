@@ -215,6 +215,15 @@ fn context7_skip_reason(cfg: &PipelineConfig) -> Option<&'static str> {
     None
 }
 
+/// Select the system prompt appropriate for the review mode.
+fn system_prompt_for_mode(mode: crate::review_mode::ReviewMode) -> &'static str {
+    match mode {
+        crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
+        crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
+        crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
+    }
+}
+
 /// Truncate source code for LLM review if it exceeds the line limit.
 /// Returns (possibly truncated source, optional truncation notice).
 fn truncate_for_review(source: &str, max_lines: usize) -> (String, Option<String>) {
@@ -673,11 +682,7 @@ pub async fn review_file(
 
             let prompt = review::build_review_prompt(&req);
 
-            let sys_prompt = match pipeline_config.mode {
-                crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
-                crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
-                crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
-            };
+            let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
 
             for model in &pipeline_config.models {
                 let t0 = std::time::Instant::now();
@@ -1094,11 +1099,7 @@ pub async fn review_file_llm_only(
             };
 
             let prompt = review::build_review_prompt(&req);
-            let sys_prompt = match pipeline_config.mode {
-                crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
-                crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
-                crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
-            };
+            let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
             for model in &pipeline_config.models {
                 let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
                 match reviewer.review(&prompt, model, sys_prompt) {
