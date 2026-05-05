@@ -1934,7 +1934,14 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         }
         eprintln!("Backup: {}", bak_path.display());
 
-        let tmp_path = traces_path.with_extension("jsonl.tmp");
+        let tmp_path = traces_path.with_file_name(format!(
+            "calibrator_traces.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
         let mut out = match std::fs::File::create(&tmp_path) {
             Ok(f) => std::io::BufWriter::new(f),
             Err(e) => {
