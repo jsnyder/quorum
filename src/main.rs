@@ -1865,7 +1865,7 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         traces.len(),
     );
 
-    let samples = quorum::calibrate::join_feedback_and_traces(&feedback, &traces);
+    let (samples, join_stats) = quorum::calibrate::join_feedback_and_traces(&feedback, &traces);
     let positives = samples.iter().filter(|(_, l)| *l).count();
     let negatives = samples.len() - positives;
 
@@ -1875,6 +1875,15 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         positives,
         negatives,
     );
+    eprintln!("\nJoin strategy breakdown:");
+    eprintln!("  exact (raw):        {}", join_stats.exact_raw);
+    eprintln!("  exact (normalized): {}", join_stats.exact_normalized);
+    eprintln!("  fuzzy (same-file):  {}", join_stats.fuzzy_same_file);
+    eprintln!("  title-only (raw):   {}", join_stats.raw_title_only);
+    eprintln!("  title-only (norm):  {}", join_stats.normalized_title_only);
+    eprintln!("  ambiguous skipped:  {}", join_stats.ambiguous_skipped);
+    eprintln!("  below threshold:    {}", join_stats.below_threshold);
+    eprintln!("  unmatched:          {}", join_stats.unmatched);
 
     let config = quorum::calibrate::compute_thresholds(
         &samples,
