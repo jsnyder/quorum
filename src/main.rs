@@ -838,6 +838,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         context7_fetcher,
         context7_disabled,
         calibrator_config,
+        mode: opts.mode,
         ..Default::default()
     };
 

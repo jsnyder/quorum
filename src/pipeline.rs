@@ -168,6 +168,9 @@ pub struct PipelineConfig {
     /// Loaded from `~/.quorum/calibrator_thresholds.toml` at startup.
     /// When `None`, defaults are used (legacy behavior).
     pub calibrator_config: CalibratorConfig,
+    /// Review mode governing prompt selection, severity rubric, and
+    /// AST/linter applicability. Default: `Code`.
+    pub mode: crate::review_mode::ReviewMode,
 }
 
 impl Default for PipelineConfig {
@@ -191,6 +194,7 @@ impl Default for PipelineConfig {
             context7_disabled: false,
             focus: None,
             calibrator_config: CalibratorConfig::default(),
+            mode: crate::review_mode::ReviewMode::Code,
         }
     }
 }
