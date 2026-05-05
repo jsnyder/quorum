@@ -267,6 +267,30 @@ pub struct CalibrateOpts {
     /// Target precision for boost path (default: 0.85, range 0.0-1.0)
     #[arg(long, default_value = "0.85")]
     pub boost_precision: f64,
+
+    /// Only include traces from this quorum version
+    #[arg(long)]
+    pub trace_version: Option<String>,
+
+    /// Only include traces from clean commits (dirty == false)
+    #[arg(long)]
+    pub clean_only: bool,
+
+    /// Only include traces from this repository
+    #[arg(long)]
+    pub trace_repo: Option<String>,
+
+    /// Only include traces from this commit SHA
+    #[arg(long)]
+    pub trace_commit: Option<String>,
+
+    /// Only include traces from this review run ID
+    #[arg(long)]
+    pub trace_run_id: Option<String>,
+
+    /// Disable fuzzy matching tiers (normalized + Jaccard); raw exact only
+    #[arg(long)]
+    pub disable_fuzzy: bool,
 }
 
 #[derive(Parser)]

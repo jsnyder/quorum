@@ -1898,7 +1898,19 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         traces.len(),
     );
 
-    let (samples, join_stats) = quorum::calibrate::join_feedback_and_traces(&feedback, &traces);
+    let filter = quorum::calibrate::JoinFilter {
+        quorum_version: opts.trace_version.clone(),
+        clean_only: opts.clean_only,
+        repo: opts.trace_repo.clone(),
+        commit_sha: opts.trace_commit.clone(),
+        run_id: opts.trace_run_id.clone(),
+    };
+    let disable_fuzzy = opts.disable_fuzzy
+        || std::env::var("QUORUM_DISABLE_FUZZY_MATCHING").is_ok();
+    let (samples, join_stats) =
+        quorum::calibrate::join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, disable_fuzzy,
+        );
     let positives = samples.iter().filter(|(_, l)| *l).count();
     let negatives = samples.len() - positives;
 
