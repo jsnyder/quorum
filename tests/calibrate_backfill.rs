@@ -27,6 +27,8 @@ fn calibrate_backfill_paths_dry_run() {
         .output()
         .unwrap();
 
+    assert!(output.status.success(), "should exit 0, stderr: {}", String::from_utf8_lossy(&output.stderr));
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("total backfilled:"),
