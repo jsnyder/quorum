@@ -9,6 +9,89 @@ use std::collections::{HashMap, HashSet};
 use crate::metrics;
 use crate::threshold_config::{PathThreshold, ThresholdConfig};
 
+/// Filters applied to traces before joining with feedback.
+///
+/// Default filter retains all traces (including legacy ones without provenance).
+/// Setting any positive filter (e.g. `quorum_version`) excludes legacy traces
+/// that lack provenance metadata.
+#[derive(Debug, Default)]
+pub struct JoinFilter {
+    /// Only include traces from this quorum version (e.g. `"0.18.4"`).
+    pub quorum_version: Option<String>,
+    /// When `true`, exclude traces where `provenance.dirty == Some(true)`.
+    pub clean_only: bool,
+    /// Only include traces from this repository.
+    pub repo: Option<String>,
+    /// Only include traces from this exact commit SHA.
+    pub commit_sha: Option<String>,
+    /// Only include traces from this run ID.
+    pub run_id: Option<String>,
+}
+
+impl JoinFilter {
+    /// Returns `true` when no positive filters are set (only `clean_only` can
+    /// be active). Legacy traces (without provenance) are retained by default.
+    fn is_default(&self) -> bool {
+        self.quorum_version.is_none()
+            && !self.clean_only
+            && self.repo.is_none()
+            && self.commit_sha.is_none()
+            && self.run_id.is_none()
+    }
+
+    /// Returns `true` if the trace passes this filter.
+    fn accepts(&self, trace: &serde_json::Value) -> bool {
+        let prov = trace.get("provenance");
+
+        // Legacy trace (provenance is null or missing)
+        let is_legacy = prov.is_none() || prov.is_some_and(|v| v.is_null());
+
+        if is_legacy {
+            // Default filter retains legacy; any positive filter excludes them.
+            return self.is_default();
+        }
+
+        let prov = prov.unwrap(); // safe: not legacy
+
+        if let Some(ref ver) = self.quorum_version {
+            let trace_ver = prov.get("quorum_version").and_then(|v| v.as_str());
+            if trace_ver != Some(ver.as_str()) {
+                return false;
+            }
+        }
+
+        if self.clean_only {
+            let dirty = prov.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false);
+            if dirty {
+                return false;
+            }
+        }
+
+        if let Some(ref repo) = self.repo {
+            let trace_repo = prov.get("repo").and_then(|v| v.as_str());
+            if trace_repo != Some(repo.as_str()) {
+                return false;
+            }
+        }
+
+        if let Some(ref sha) = self.commit_sha {
+            let trace_sha = prov.get("commit_sha").and_then(|v| v.as_str());
+            if trace_sha != Some(sha.as_str()) {
+                return false;
+            }
+        }
+
+        if let Some(ref rid) = self.run_id {
+            let trace_rid = prov.get("run_id").and_then(|v| v.as_str());
+            if trace_rid != Some(rid.as_str()) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
 /// Minimum token Jaccard similarity for fuzzy title matching.
 const FUZZY_THRESHOLD: f64 = 0.5;
 
@@ -100,6 +183,25 @@ pub fn join_feedback_and_traces(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],
 ) -> (Vec<(f64, bool)>, JoinStats) {
+    join_feedback_and_traces_with_options(feedback, traces, &JoinFilter::default(), false)
+}
+
+/// Like [`join_feedback_and_traces`] but with additional controls:
+///
+/// - `filter`: pre-filters traces by provenance metadata before indexing.
+/// - `disable_fuzzy`: when `true`, skips tiers 2-4 (normalized exact, fuzzy
+///   same-file, normalized title-only). Only tier 1 (raw exact) and the raw
+///   title-only fallback are used.
+pub fn join_feedback_and_traces_with_options(
+    feedback: &[serde_json::Value],
+    traces: &[serde_json::Value],
+    filter: &JoinFilter,
+    disable_fuzzy: bool,
+) -> (Vec<(f64, bool)>, JoinStats) {
+    // Pre-filter traces by provenance metadata.
+    let filtered_traces: Vec<&serde_json::Value> =
+        traces.iter().filter(|t| filter.accepts(t)).collect();
+
     // Tier 1: raw exact (title, file_path)
     let mut raw_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
     let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
@@ -123,7 +225,7 @@ pub fn join_feedback_and_traces(
     let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
     let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
 
-    for t in traces {
+    for t in &filtered_traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
         if title.is_empty() {
             continue;
@@ -143,7 +245,7 @@ pub fn join_feedback_and_traces(
                     e.insert((tp_w, fp_w));
                 }
             }
-            if !norm.is_empty() {
+            if !disable_fuzzy && !norm.is_empty() {
                 let norm_for_ambiguous = norm.clone();
                 match norm_title_only.entry(norm) {
                     std::collections::hash_map::Entry::Occupied(_) => {
@@ -171,22 +273,24 @@ pub fn join_feedback_and_traces(
                 }
             }
 
-            // Tier 2: normalized exact
-            if !norm.is_empty() {
-                let norm_key = (norm.clone(), fp.clone());
-                match norm_map.entry(norm_key.clone()) {
-                    std::collections::hash_map::Entry::Occupied(_) => {
-                        norm_ambiguous.insert(norm_key);
-                    }
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert((tp_w, fp_w));
+            if !disable_fuzzy {
+                // Tier 2: normalized exact
+                if !norm.is_empty() {
+                    let norm_key = (norm.clone(), fp.clone());
+                    match norm_map.entry(norm_key.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            norm_ambiguous.insert(norm_key);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert((tp_w, fp_w));
+                        }
                     }
                 }
-            }
 
-            // Tier 3: file -> normalized traces for fuzzy
-            if !norm.is_empty() {
-                file_traces.entry(fp).or_default().push((norm, (tp_w, fp_w)));
+                // Tier 3: file -> normalized traces for fuzzy
+                if !norm.is_empty() {
+                    file_traces.entry(fp).or_default().push((norm, (tp_w, fp_w)));
+                }
             }
         }
     }
@@ -243,8 +347,8 @@ pub fn join_feedback_and_traces(
             }
         }
 
-        // Tier 2: normalized exact (norm_title, file_path)
-        if !norm.is_empty() {
+        // Tier 2: normalized exact (norm_title, file_path) -- skipped when fuzzy disabled
+        if !disable_fuzzy && !norm.is_empty() {
             if let Some(weights) = norm_map.get(&(norm.clone(), fp.clone())) {
                 if push_sample(&mut samples, weights, is_positive) {
                     stats.exact_normalized += 1;
@@ -253,9 +357,9 @@ pub fn join_feedback_and_traces(
             }
         }
 
-        // Tier 3: fuzzy same-file
+        // Tier 3: fuzzy same-file -- skipped when fuzzy disabled
         let mut fuzzy_below_threshold = false;
-        if !norm.is_empty() && !fp.is_empty() {
+        if !disable_fuzzy && !norm.is_empty() && !fp.is_empty() {
             if let Some(candidates) = file_traces.get(&fp) {
                 let mut best_score = 0.0_f64;
                 let mut second_best = 0.0_f64;
@@ -291,14 +395,14 @@ pub fn join_feedback_and_traces(
             }
         }
 
-        // Tier 4: title-only fallback (raw first, then normalized)
+        // Title-only fallback (raw first, then normalized -- normalized skipped when fuzzy disabled)
         if let Some(weights) = raw_title_only.get(&title) {
             if push_sample(&mut samples, weights, is_positive) {
                 stats.raw_title_only += 1;
                 continue;
             }
         }
-        if !norm.is_empty() {
+        if !disable_fuzzy && !norm.is_empty() {
             if let Some(weights) = norm_title_only.get(&norm) {
                 if push_sample(&mut samples, weights, is_positive) {
                     stats.normalized_title_only += 1;
@@ -1045,5 +1149,286 @@ mod tests {
             "INF weight serialized as JSON null should be treated as 0.0, got {score}"
         );
         assert!(label);
+    }
+
+    // --- Task 6: disable_fuzzy ablation ---
+
+    fn make_trace_with_provenance(
+        title: &str,
+        tp: f64,
+        fp: f64,
+        file_path: Option<&str>,
+        prov: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut v = make_trace(title, tp, fp, file_path);
+        if let Some(p) = prov {
+            v["provenance"] = p;
+        }
+        v
+    }
+
+    #[test]
+    fn disable_fuzzy_skips_normalized_exact() {
+        // Without fuzzy disabled, normalized exact (tier 2) matches backtick variants.
+        // With fuzzy disabled, only raw exact (tier 1) is used -- no match.
+        let feedback = vec![make_feedback("uses a fixed .tmp filename", "tp", "src/a.rs")];
+        let traces = vec![make_trace(
+            "uses a fixed `.tmp` filename",
+            2.0, 0.3, Some("src/a.rs"),
+        )];
+
+        // Fuzzy enabled: should match via tier 2
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(stats.exact_normalized, 1);
+
+        // Fuzzy disabled: no match
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &JoinFilter::default(), true,
+        );
+        assert!(samples.is_empty(), "fuzzy disabled should skip normalized exact");
+        assert_eq!(stats.exact_normalized, 0);
+        assert_eq!(stats.unmatched, 1);
+    }
+
+    #[test]
+    fn disable_fuzzy_skips_fuzzy_same_file() {
+        let feedback = vec![make_feedback(
+            "Reset can race with visit processing",
+            "tp", "src/visit.rs",
+        )];
+        let traces = vec![make_trace(
+            "Reset can race with visit processing and lose the cleaned state",
+            2.0, 0.5, Some("src/visit.rs"),
+        )];
+
+        // Fuzzy enabled: should match via tier 3
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(stats.fuzzy_same_file, 1);
+
+        // Fuzzy disabled: no match
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &JoinFilter::default(), true,
+        );
+        assert!(samples.is_empty(), "fuzzy disabled should skip fuzzy same-file");
+        assert_eq!(stats.fuzzy_same_file, 0);
+    }
+
+    #[test]
+    fn disable_fuzzy_skips_normalized_title_only() {
+        let feedback = vec![make_feedback("fixed .tmp filename", "tp", "src/a.rs")];
+        let traces = vec![make_trace("fixed `.tmp` filename", 1.5, 0.5, None)];
+
+        // Fuzzy enabled: should match via tier 4 (normalized title-only)
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(stats.normalized_title_only, 1);
+
+        // Fuzzy disabled: no match (raw title-only doesn't match either since titles differ)
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &JoinFilter::default(), true,
+        );
+        assert!(samples.is_empty(), "fuzzy disabled should skip normalized title-only");
+        assert_eq!(stats.normalized_title_only, 0);
+    }
+
+    #[test]
+    fn disable_fuzzy_preserves_raw_exact_and_raw_title_only() {
+        // Raw exact (tier 1) and raw title-only should still work when fuzzy is disabled.
+        let feedback = vec![
+            make_feedback("SQL injection", "tp", "src/db.rs"),
+            make_feedback("Unused var", "fp", "src/main.rs"),
+        ];
+        let traces = vec![
+            make_trace("SQL injection", 2.5, 0.3, Some("src/db.rs")), // tier 1
+            make_trace("Unused var", 0.1, 1.8, None),                  // raw title-only
+        ];
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &JoinFilter::default(), true,
+        );
+        assert_eq!(samples.len(), 2);
+        assert_eq!(stats.exact_raw, 1);
+        assert_eq!(stats.raw_title_only, 1);
+    }
+
+    // --- Task 7: JoinFilter ---
+
+    #[test]
+    fn join_filter_default_retains_legacy_traces() {
+        // Default filter includes traces without provenance (legacy).
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![make_trace("Bug", 2.0, 0.3, Some("src/a.rs"))]; // no provenance
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &JoinFilter::default(), false,
+        );
+        assert_eq!(samples.len(), 1, "default filter should retain legacy traces");
+    }
+
+    #[test]
+    fn join_filter_positive_excludes_legacy() {
+        // Setting quorum_version filter excludes traces without provenance.
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![make_trace("Bug", 2.0, 0.3, Some("src/a.rs"))]; // no provenance
+        let filter = JoinFilter {
+            quorum_version: Some("0.18.4".to_string()),
+            ..Default::default()
+        };
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert!(samples.is_empty(), "positive filter should exclude legacy traces");
+    }
+
+    #[test]
+    fn join_filter_by_version() {
+        let feedback = vec![
+            make_feedback("Bug A", "tp", "src/a.rs"),
+            make_feedback("Bug B", "fp", "src/b.rs"),
+        ];
+        let traces = vec![
+            make_trace_with_provenance("Bug A", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "repo": "quorum"
+            }))),
+            make_trace_with_provenance("Bug B", 0.1, 1.8, Some("src/b.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.3",
+                "repo": "quorum"
+            }))),
+        ];
+        let filter = JoinFilter {
+            quorum_version: Some("0.18.4".to_string()),
+            ..Default::default()
+        };
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "only version 0.18.4 trace should match");
+        assert_eq!(stats.exact_raw, 1);
+        // The matched sample should be the TP (Bug A)
+        assert!(samples[0].1, "matched sample should be positive (Bug A)");
+    }
+
+    #[test]
+    fn join_filter_clean_only() {
+        let feedback = vec![
+            make_feedback("Bug A", "tp", "src/a.rs"),
+            make_feedback("Bug B", "fp", "src/b.rs"),
+        ];
+        let traces = vec![
+            make_trace_with_provenance("Bug A", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "dirty": false
+            }))),
+            make_trace_with_provenance("Bug B", 0.1, 1.8, Some("src/b.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "dirty": true
+            }))),
+        ];
+        let filter = JoinFilter {
+            clean_only: true,
+            ..Default::default()
+        };
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "dirty trace should be excluded");
+        assert_eq!(stats.exact_raw, 1);
+        assert!(samples[0].1, "matched sample should be positive (Bug A, clean)");
+    }
+
+    #[test]
+    fn join_filter_by_repo() {
+        let feedback = vec![
+            make_feedback("Bug A", "tp", "src/a.rs"),
+            make_feedback("Bug B", "fp", "src/b.rs"),
+        ];
+        let traces = vec![
+            make_trace_with_provenance("Bug A", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "repo": "quorum"
+            }))),
+            make_trace_with_provenance("Bug B", 0.1, 1.8, Some("src/b.rs"), Some(serde_json::json!({
+                "repo": "other-project"
+            }))),
+        ];
+        let filter = JoinFilter {
+            repo: Some("quorum".to_string()),
+            ..Default::default()
+        };
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "only quorum-repo trace should match");
+        assert!(samples[0].1, "matched sample should be positive (Bug A)");
+    }
+
+    #[test]
+    fn join_filter_by_commit_sha() {
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace_with_provenance("Bug", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "commit_sha": "abc123"
+            }))),
+        ];
+        let filter = JoinFilter {
+            commit_sha: Some("def456".to_string()),
+            ..Default::default()
+        };
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert!(samples.is_empty(), "wrong commit_sha should exclude trace");
+    }
+
+    #[test]
+    fn join_filter_by_run_id() {
+        let feedback = vec![make_feedback("Bug", "tp", "src/a.rs")];
+        let traces = vec![
+            make_trace_with_provenance("Bug", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "run_id": "run-42"
+            }))),
+        ];
+        let filter = JoinFilter {
+            run_id: Some("run-42".to_string()),
+            ..Default::default()
+        };
+        let (samples, stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "matching run_id should pass");
+        assert_eq!(stats.exact_raw, 1);
+    }
+
+    #[test]
+    fn join_filter_combined_version_and_clean() {
+        let feedback = vec![
+            make_feedback("Bug A", "tp", "src/a.rs"),
+            make_feedback("Bug B", "fp", "src/b.rs"),
+            make_feedback("Bug C", "tp", "src/c.rs"),
+        ];
+        let traces = vec![
+            make_trace_with_provenance("Bug A", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "dirty": false
+            }))),
+            make_trace_with_provenance("Bug B", 0.1, 1.8, Some("src/b.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "dirty": true
+            }))),
+            make_trace_with_provenance("Bug C", 1.0, 0.5, Some("src/c.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.3",
+                "dirty": false
+            }))),
+        ];
+        let filter = JoinFilter {
+            quorum_version: Some("0.18.4".to_string()),
+            clean_only: true,
+            ..Default::default()
+        };
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "only Bug A passes both version + clean filter");
+        assert!(samples[0].1, "matched sample should be positive (Bug A)");
     }
 }

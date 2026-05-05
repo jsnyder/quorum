@@ -49,6 +49,11 @@ pub struct CalibratorConfig {
     /// during this calibration run. `None` means no provenance is attached
     /// (backward-compatible default).
     pub trace_provenance: Option<crate::calibrator_trace::TraceProvenance>,
+    /// Ablation flag: when `Some(true)`, the corpus join skips fuzzy matching
+    /// tiers (normalized exact, fuzzy same-file, normalized title-only) and
+    /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
+    /// keeps all tiers active (default).
+    pub disable_fuzzy_matching: Option<bool>,
 }
 
 impl Default for CalibratorConfig {
@@ -64,6 +69,7 @@ impl Default for CalibratorConfig {
             boost_threshold: None,
             force_threshold: None,
             trace_provenance: None,
+            disable_fuzzy_matching: None,
         }
     }
 }
