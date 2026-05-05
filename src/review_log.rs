@@ -260,6 +260,14 @@ pub struct ReviewRecord {
     /// written before this field existed.
     #[serde(default)]
     pub context: ContextTelemetry,
+
+    /// Stable per-finding ULIDs emitted by this review (one per finding,
+    /// in stable post-suppression order). Empty for legacy records that
+    /// pre-date this field. Used by stats analytics to join feedback
+    /// entries (`FeedbackEntry.finding_id`) back to their originating
+    /// review for per-finding precision deduplication.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_ids: Vec<String>,
 }
 
 impl ReviewRecord {
@@ -451,6 +459,7 @@ mod tests {
             flags: Flags { deep: false, parallel_n: 4, ensemble: false },
             mode: None,
             context: ContextTelemetry::default(),
+        finding_ids: Vec::new(),
         }
     }
 
@@ -460,6 +469,44 @@ mod tests {
         let json = serde_json::to_string(&rec).unwrap();
         let back: ReviewRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(rec, back);
+    }
+
+    // ─── Stats redesign Phase 0: ReviewRecord.finding_ids ───
+
+    #[test]
+    fn legacy_review_record_deserializes_with_empty_finding_ids() {
+        // Pre-rollout reviews.jsonl rows lack the finding_ids key. They must
+        // load cleanly (default empty Vec) so the linkage diagnostic counts
+        // them as "unlinked legacy" rather than failing the read.
+        let legacy = r#"{"run_id":"01ABC","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0}"#;
+        let rec: ReviewRecord = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(rec.finding_ids, Vec::<String>::new());
+    }
+
+    #[test]
+    fn record_with_finding_ids_round_trips_preserving_order() {
+        // Order matters: linkage_stats joins by ID, but downstream consumers
+        // (rule attribution, time-ordering) may want positional access.
+        let mut rec = sample_record();
+        rec.finding_ids = vec![
+            "01HXYZ0000000000000000000A".into(),
+            "01HXYZ0000000000000000000B".into(),
+            "01HXYZ0000000000000000000C".into(),
+        ];
+        let json = serde_json::to_string(&rec).unwrap();
+        let back: ReviewRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(rec.finding_ids, back.finding_ids);
+    }
+
+    #[test]
+    fn record_omits_finding_ids_key_when_empty() {
+        // Disk-bloat regression: don't write `"finding_ids":[]` for every
+        // legacy-style record produced by code that doesn't yet populate.
+        let rec = sample_record();
+        assert!(rec.finding_ids.is_empty(), "fixture default must be empty");
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(!json.contains("finding_ids"),
+            "empty finding_ids must not write the key: {json}");
     }
 
     #[test]

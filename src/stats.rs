@@ -652,6 +652,7 @@ mod tests {
             flags: Flags { deep: false, parallel_n: 1, ensemble: false },
             mode: None,
             context: Default::default(),
+        finding_ids: Vec::new(),
         }
     }
 

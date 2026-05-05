@@ -1483,6 +1483,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 Some(opts.mode.as_str().to_string())
             },
             context: context_telem,
+        finding_ids: Vec::new(),
         };
         if let Err(e) = review_log.record(&record) {
             eprintln!("Warning: failed to write review log: {}", e);
