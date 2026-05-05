@@ -749,13 +749,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let trace_provenance = {
         let first_file = opts.files.first().map(|p| p.as_path());
         let repo = first_file.and_then(review_log::detect_repo);
+        let git_dir = first_file
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let commit_sha = std::process::Command::new("git")
+            .current_dir(&git_dir)
             .args(["rev-parse", "HEAD"])
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
         let dirty = std::process::Command::new("git")
+            .current_dir(&git_dir)
             .args(["status", "--porcelain"])
             .output()
             .ok()
@@ -1906,7 +1912,10 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         run_id: opts.trace_run_id.clone(),
     };
     let disable_fuzzy = opts.disable_fuzzy
-        || std::env::var("QUORUM_DISABLE_FUZZY_MATCHING").is_ok();
+        || std::env::var("QUORUM_DISABLE_FUZZY_MATCHING")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
     let (samples, join_stats) =
         quorum::calibrate::join_feedback_and_traces_with_options(
             &feedback, &traces, &filter, disable_fuzzy,

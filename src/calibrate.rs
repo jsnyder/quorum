@@ -61,8 +61,8 @@ impl JoinFilter {
         }
 
         if self.clean_only {
-            let dirty = prov.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false);
-            if dirty {
+            let dirty = prov.get("dirty").and_then(|v| v.as_bool());
+            if dirty != Some(false) {
                 return false;
             }
         }
@@ -1430,5 +1430,30 @@ mod tests {
         );
         assert_eq!(samples.len(), 1, "only Bug A passes both version + clean filter");
         assert!(samples[0].1, "matched sample should be positive (Bug A)");
+    }
+
+    #[test]
+    fn join_filter_clean_only_excludes_unknown_dirty() {
+        let feedback = vec![
+            make_feedback("Bug A", "tp", "src/a.rs"),
+            make_feedback("Bug B", "fp", "src/b.rs"),
+        ];
+        let traces = vec![
+            make_trace_with_provenance("Bug A", 2.0, 0.3, Some("src/a.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4",
+                "dirty": false
+            }))),
+            make_trace_with_provenance("Bug B", 0.1, 1.8, Some("src/b.rs"), Some(serde_json::json!({
+                "quorum_version": "0.18.4"
+            }))),
+        ];
+        let filter = JoinFilter {
+            clean_only: true,
+            ..Default::default()
+        };
+        let (samples, _stats) = join_feedback_and_traces_with_options(
+            &feedback, &traces, &filter, false,
+        );
+        assert_eq!(samples.len(), 1, "trace with unknown dirty should be excluded by clean_only");
     }
 }

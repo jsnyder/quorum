@@ -3713,4 +3713,32 @@ mod tests {
             "calibrate_with_index must stamp provenance from config",
         );
     }
+
+    #[test]
+    fn calibrate_attaches_provenance_on_decision_trace() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security".into())
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let feedback = vec![
+            fb("SQL injection", "security", Verdict::Tp),
+            fb("SQL injection", "security", Verdict::Tp),
+        ];
+        let prov = crate::calibrator_trace::TraceProvenance {
+            run_id: Some("01JTEST_DECISION".into()),
+            ..Default::default()
+        };
+        let mut config = CalibratorConfig::default();
+        config.trace_provenance = Some(prov.clone());
+        let result = calibrate(findings, &feedback, &config, "src/db.rs");
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].provenance.as_ref(),
+            Some(&prov),
+            "decision-path trace must carry provenance from config",
+        );
+    }
 }
