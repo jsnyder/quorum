@@ -1,10 +1,4 @@
-/// System prompts for non-code review modes (plan, docs).
-///
-/// Each prompt mirrors the structure of `LlmClient::system_prompt()` in
-/// llm_client.rs: ~1200 tokens of stable XML-tagged sections covering role
-/// framing, review rubric, severity calibration, response format, and
-/// output hygiene. This enables OpenAI/LiteLLM prompt caching when the
-/// same mode is used across multiple files.
+//! System prompts for non-code review modes (plan, docs).
 
 /// System prompt for `--mode plan`: reviews implementation plans, design
 /// docs, and project proposals for feasibility, gaps, risks, and internal
