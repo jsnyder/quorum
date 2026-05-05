@@ -20,19 +20,21 @@
 /// Reference: Wilson (1927), "Probable Inference, the Law of Succession,
 /// and Statistical Inference."
 pub fn wilson_interval(successes: usize, total: usize, confidence: f64) -> (f64, f64) {
-    if total == 0 {
-        return (0.0, 1.0);
-    }
     // assert! (not debug_assert!) so that release builds also reject
     // impossible inputs. Silent clamping to p=1 would mask upstream data
     // corruption — off-by-one in aggregation, malformed feedback rows,
     // hand-edited JSONL — and produce plausible-looking intervals.
+    // Must be checked BEFORE the total==0 early return so (successes=k>0,
+    // total=0) doesn't slip through as "no data".
     assert!(
         successes <= total,
         "wilson_interval: successes ({}) must not exceed total ({})",
         successes,
         total
     );
+    if total == 0 {
+        return (0.0, 1.0);
+    }
     let n = total as f64;
     let p = (successes as f64 / n).clamp(0.0, 1.0);
     let z = z_score(confidence);
@@ -96,6 +98,16 @@ mod tests {
         let (lo, hi) = wilson_interval(0, 5, 0.95);
         assert_eq!(lo, 0.0, "lower bound clamps to 0");
         assert!(hi > 0.0 && hi < 1.0, "upper bound informative: {}", hi);
+    }
+
+    #[test]
+    #[should_panic(expected = "successes")]
+    fn wilson_interval_panics_when_total_is_zero_but_successes_is_positive() {
+        // The "no data" early-return for total==0 must not also short-
+        // circuit the successes<=total contract: (successes=7, total=0)
+        // is impossible input, not "no data". Without the guard ahead of
+        // the early return it slips through and silently returns (0,1).
+        let _ = wilson_interval(7, 0, 0.95);
     }
 
     #[test]
