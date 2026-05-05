@@ -62,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 ulid = { version = "1", features = ["serde"] }
 
 # File watching
-notify = "7"
+notify = "8"
 
 # HTTP daemon
 axum = "0.8"
