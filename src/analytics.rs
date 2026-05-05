@@ -244,6 +244,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Unknown,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -258,6 +260,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 

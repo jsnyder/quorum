@@ -1712,6 +1712,8 @@ fn run_feedback_inner(
         timestamp: chrono::Utc::now(),
         provenance: feedback::Provenance::Human,
         fp_kind,
+        finding_id: None,
+        rule_id: None,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());

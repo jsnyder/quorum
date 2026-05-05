@@ -203,6 +203,8 @@ impl QuorumHandler {
             timestamp: chrono::Utc::now(),
             provenance: crate::feedback::Provenance::Human,
             fp_kind,
+            finding_id: None,
+            rule_id: None,
         };
 
         self.feedback_store

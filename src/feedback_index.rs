@@ -471,6 +471,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: Provenance::Unknown,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -742,6 +744,8 @@ mod tests {
             timestamp: ts,
             provenance: Provenance::Human,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         };
         let e_fp = FeedbackEntry { verdict: Verdict::Fp, reason: "false alarm".into(), ..e_tp.clone() };
         store.record(&e_tp).unwrap();

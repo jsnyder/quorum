@@ -65,6 +65,8 @@ fn human_fb(title: &str, category: &str, verdict: Verdict) -> FeedbackEntry {
         timestamp: Utc::now() - ChronoDuration::hours(1),
         provenance: Provenance::Human,
         fp_kind: None,
+        finding_id: None,
+        rule_id: None,
     }
 }
 
