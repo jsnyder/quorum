@@ -26,6 +26,7 @@ pub use quorum::review_mode;
 
 mod agent;
 mod analytics;
+mod stats_math;
 mod cache;
 mod cli;
 mod cli_io;
