@@ -99,7 +99,7 @@ async fn acquire_llm_permit(
 
 /// Trait for LLM review — allows testing with fake implementations.
 pub trait LlmReviewer: Send + Sync {
-    fn review(&self, prompt: &str, model: &str) -> anyhow::Result<crate::llm_client::LlmResponse>;
+    fn review(&self, prompt: &str, model: &str, system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse>;
 }
 
 /// Result of reviewing a single file.
@@ -672,6 +672,12 @@ pub async fn review_file(
 
             let prompt = review::build_review_prompt(&req);
 
+            let sys_prompt = match pipeline_config.mode {
+                crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
+                crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
+                crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
+            };
+
             for model in &pipeline_config.models {
                 let t0 = std::time::Instant::now();
                 // EnteredSpan is !Send, so it must not cross an `.await`.
@@ -680,7 +686,7 @@ pub async fn review_file(
                 let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
                 let _span = tracing::info_span!("phase.llm_call", model = %model, file = %file_str)
                     .entered();
-                match reviewer.review(&prompt, model) {
+                match reviewer.review(&prompt, model, sys_prompt) {
                     Ok(resp) => {
                         let (prompt_tok, completion_tok, cached_tok) = resp
                             .usage
@@ -1086,9 +1092,14 @@ pub async fn review_file_llm_only(
             };
 
             let prompt = review::build_review_prompt(&req);
+            let sys_prompt = match pipeline_config.mode {
+                crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
+                crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
+                crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
+            };
             for model in &pipeline_config.models {
                 let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
-                match reviewer.review(&prompt, model) {
+                match reviewer.review(&prompt, model, sys_prompt) {
                     Ok(resp) => {
                         if let Some(u) = &resp.usage {
                             total_usage.prompt_tokens += u.prompt_tokens;
@@ -1829,7 +1840,7 @@ mod tests {
 
         struct EmptyReviewer;
         impl LlmReviewer for EmptyReviewer {
-            fn review(&self, _: &str, _: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(&self, _: &str, _: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 Ok(crate::llm_client::LlmResponse {
                     content: "[]".into(),
                     usage: None,

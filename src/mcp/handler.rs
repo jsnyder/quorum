@@ -288,7 +288,8 @@ impl QuorumHandler {
         }
 
         let model = self.config.model.clone();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+        let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, tool = "chat", "blocking review task failed");
@@ -314,7 +315,8 @@ impl QuorumHandler {
         );
 
         let model = self.config.model.clone();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+        let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, tool = "debug", "blocking review task failed");
@@ -354,7 +356,8 @@ impl QuorumHandler {
         );
 
         let model = self.config.model.clone();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model))
+        let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
+        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, tool = "testgen", "blocking review task failed");
@@ -799,7 +802,7 @@ mod tests {
 
         struct FakeLlm;
         impl LlmReviewer for FakeLlm {
-            fn review(&self, _prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(&self, _prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 Ok(crate::llm_client::LlmResponse {
                     content: "This is a helpful response about the code.".into(),
                     usage: None,
@@ -837,6 +840,7 @@ mod tests {
             &self,
             _prompt: &str,
             _model: &str,
+            _system_prompt: &str,
         ) -> anyhow::Result<crate::llm_client::LlmResponse> {
             self.barrier.wait();
             Ok(crate::llm_client::LlmResponse {
@@ -872,6 +876,7 @@ mod tests {
             &self,
             _prompt: &str,
             _model: &str,
+            _system_prompt: &str,
         ) -> anyhow::Result<crate::llm_client::LlmResponse> {
             Ok(crate::llm_client::LlmResponse {
                 content: self.sentinel.into(),
@@ -905,6 +910,7 @@ mod tests {
             &self,
             _prompt: &str,
             _model: &str,
+            _system_prompt: &str,
         ) -> anyhow::Result<crate::llm_client::LlmResponse> {
             panic!("PanicLlm: synthetic panic for JoinError test");
         }

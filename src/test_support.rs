@@ -38,7 +38,7 @@ pub mod fakes {
     }
 
     impl LlmReviewer for FakeReviewer {
-        fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+        fn review(&self, prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
             self.captured_prompts.lock().unwrap().push(prompt.to_string());
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
@@ -69,7 +69,7 @@ pub mod fakes {
         fn fake_reviewer_empty_sequence_does_not_panic() {
             let reviewer = FakeReviewer::sequence(vec![]);
             // Calling review on empty sequence should not panic
-            let result = reviewer.review("prompt", "model");
+            let result = reviewer.review("prompt", "model", "system");
             // Should either return an error or a sensible default, not panic
             assert!(result.is_err() || result.is_ok());
         }
