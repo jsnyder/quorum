@@ -90,3 +90,9 @@ pub mod threshold_config;
 
 // Calibrate: corpus join + threshold computation from feedback + traces.
 pub mod calibrate;
+
+// Review mode enum: Code (default), Plan, Docs.
+pub mod review_mode;
+
+// Prose-specific prompt templates for Plan and Docs review modes.
+pub mod prose_prompts;

@@ -20,7 +20,9 @@ pub use quorum::merge;
 pub use quorum::parser;
 pub use quorum::patterns;
 pub use quorum::prompt_sanitize;
+pub use quorum::prose_prompts;
 pub use quorum::redact;
+pub use quorum::review_mode;
 
 mod agent;
 mod analytics;
