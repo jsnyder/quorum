@@ -1740,4 +1740,48 @@ mod tests {
         assert_eq!(stats.feedback_normalized, 1);
         assert_eq!(stats.total_backfilled, 1);
     }
+
+    #[test]
+    fn backfill_reports_correct_stats_and_mutations_on_mixed_corpus() {
+        let feedback = vec![
+            serde_json::json!({"finding_title": "A", "file_path": "f1.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "B", "file_path": "f2.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "C", "file_path": "f3.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "C", "file_path": "f4.rs", "verdict": "fp"}),
+        ];
+        let mut traces = vec![
+            // 0: Already has file_path -> skip
+            serde_json::json!({"finding_title": "A", "tp_weight": 1.0, "fp_weight": 0.0, "file_path": "f1.rs"}),
+            // 1: Exact match -> backfill to f2.rs
+            serde_json::json!({"finding_title": "B", "tp_weight": 1.0, "fp_weight": 0.0}),
+            // 2: Ambiguous (C -> f3.rs AND f4.rs)
+            serde_json::json!({"finding_title": "C", "tp_weight": 1.0, "fp_weight": 0.0}),
+            // 3: No match at all
+            serde_json::json!({"finding_title": "D", "tp_weight": 1.0, "fp_weight": 0.0}),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+
+        // Verify stats
+        assert_eq!(stats.already_present, 1);
+        assert_eq!(stats.feedback_exact, 1);
+        assert_eq!(stats.ambiguous, 1);
+        assert_eq!(stats.no_match, 1);
+        assert_eq!(stats.total_backfilled, 1);
+
+        // Verify actual mutations
+        assert_eq!(traces[0]["file_path"].as_str(), Some("f1.rs"), "unchanged");
+        assert_eq!(traces[1]["file_path"].as_str(), Some("f2.rs"), "backfilled");
+        assert!(
+            traces[2].get("file_path").is_none()
+                || traces[2]["file_path"].is_null()
+                || traces[2]["file_path"].as_str() == Some(""),
+            "ambiguous: should not be stamped"
+        );
+        assert!(
+            traces[3].get("file_path").is_none()
+                || traces[3]["file_path"].is_null()
+                || traces[3]["file_path"].as_str() == Some(""),
+            "no match: should not be stamped"
+        );
+    }
 }
