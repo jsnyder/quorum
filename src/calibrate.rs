@@ -515,6 +515,119 @@ pub fn compute_thresholds(
     config
 }
 
+/// Stats from a `backfill_file_paths` run.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BackfillStats {
+    /// Traces that already had file_path (skipped).
+    pub already_present: usize,
+    /// Backfilled via unambiguous feedback title match.
+    pub feedback_exact: usize,
+    /// Backfilled via unambiguous normalized feedback title match.
+    pub feedback_normalized: usize,
+    /// Backfilled via unambiguous matched_precedents file_path.
+    pub precedent_inferred: usize,
+    /// Ambiguous (2+ candidate files) — left as null.
+    pub ambiguous: usize,
+    /// No signal found — left as null.
+    pub no_match: usize,
+    /// Total traces modified.
+    pub total_backfilled: usize,
+}
+
+/// Enrich legacy traces that lack `file_path` by cross-referencing the
+/// feedback corpus.
+pub fn backfill_file_paths(
+    traces: &mut [serde_json::Value],
+    feedback: &[serde_json::Value],
+) -> BackfillStats {
+    let mut exact_map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut norm_map: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for f in feedback {
+        let title = f["finding_title"].as_str().unwrap_or("");
+        let fp = f["file_path"].as_str().unwrap_or("");
+        if title.is_empty() || fp.is_empty() {
+            continue;
+        }
+        exact_map
+            .entry(title.to_string())
+            .or_default()
+            .insert(fp.to_string());
+        let norm = normalize_title(title);
+        if !norm.is_empty() {
+            norm_map.entry(norm).or_default().insert(fp.to_string());
+        }
+    }
+
+    let mut stats = BackfillStats::default();
+
+    for trace in traces.iter_mut() {
+        let existing = trace.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        if !existing.is_empty() {
+            stats.already_present += 1;
+            continue;
+        }
+
+        let title = trace["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            stats.no_match += 1;
+            continue;
+        }
+
+        // Tier 1: exact title match
+        if let Some(files) = exact_map.get(&title) {
+            if files.len() == 1 {
+                let fp = files.iter().next().unwrap().clone();
+                trace["file_path"] = serde_json::Value::String(fp);
+                stats.feedback_exact += 1;
+                stats.total_backfilled += 1;
+                continue;
+            }
+        }
+
+        // Tier 2: normalized title match
+        let norm = normalize_title(&title);
+        if !norm.is_empty() {
+            if let Some(files) = norm_map.get(&norm) {
+                if files.len() == 1 {
+                    let fp = files.iter().next().unwrap().clone();
+                    trace["file_path"] = serde_json::Value::String(fp);
+                    stats.feedback_normalized += 1;
+                    stats.total_backfilled += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Tier 3: precedent inference
+        if let Some(precs) = trace.get("matched_precedents").and_then(|v| v.as_array()) {
+            let prec_files: HashSet<&str> = precs
+                .iter()
+                .filter_map(|p| p["file_path"].as_str())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if prec_files.len() == 1 {
+                let fp = prec_files.into_iter().next().unwrap().to_string();
+                trace["file_path"] = serde_json::Value::String(fp);
+                stats.precedent_inferred += 1;
+                stats.total_backfilled += 1;
+                continue;
+            }
+        }
+
+        // Determine whether it was ambiguous or truly no match
+        let had_exact = exact_map.get(&title).is_some_and(|f| f.len() > 1);
+        let had_norm = !norm.is_empty() && norm_map.get(&norm).is_some_and(|f| f.len() > 1);
+        if had_exact || had_norm {
+            stats.ambiguous += 1;
+        } else {
+            stats.no_match += 1;
+        }
+    }
+
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1456,5 +1569,33 @@ mod tests {
             &feedback, &traces, &filter, false,
         );
         assert_eq!(samples.len(), 1, "trace with unknown dirty should be excluded by clean_only");
+    }
+
+    #[test]
+    fn backfill_stamps_file_path_from_unambiguous_feedback() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "file_path": "src/db.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "file_path": "src/db.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "finding_category": "security",
+                "tp_weight": 2.0,
+                "fp_weight": 0.5
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/db.rs"));
+        assert_eq!(stats.feedback_exact, 1);
+        assert_eq!(stats.total_backfilled, 1);
     }
 }
