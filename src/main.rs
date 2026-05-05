@@ -1904,6 +1904,67 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         traces.len(),
     );
 
+    if opts.backfill_paths {
+        let mut traces_mut = traces;
+        let stats = quorum::calibrate::backfill_file_paths(&mut traces_mut, &feedback);
+        eprintln!("\nBackfill results:");
+        eprintln!("  already had file_path: {}", stats.already_present);
+        eprintln!("  feedback (exact):      {}", stats.feedback_exact);
+        eprintln!("  feedback (normalized): {}", stats.feedback_normalized);
+        eprintln!("  precedent inferred:    {}", stats.precedent_inferred);
+        eprintln!("  ambiguous (skipped):   {}", stats.ambiguous);
+        eprintln!("  no match (skipped):    {}", stats.no_match);
+        eprintln!("  total backfilled:      {}", stats.total_backfilled);
+
+        if stats.total_backfilled == 0 {
+            eprintln!("\nNo traces to backfill.");
+            return 0;
+        }
+
+        if opts.dry_run {
+            eprintln!("\n(dry run -- no files written)");
+            return 0;
+        }
+
+        // Atomic write: backup original, write new
+        let bak_path = traces_path.with_extension("jsonl.bak");
+        if let Err(e) = std::fs::copy(&traces_path, &bak_path) {
+            eprintln!("error: failed to create backup: {e}");
+            return 3;
+        }
+        eprintln!("Backup: {}", bak_path.display());
+
+        let tmp_path = traces_path.with_file_name(format!(
+            "calibrator_traces.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let mut out = match std::fs::File::create(&tmp_path) {
+            Ok(f) => std::io::BufWriter::new(f),
+            Err(e) => {
+                eprintln!("error: failed to create temp file: {e}");
+                return 3;
+            }
+        };
+        use std::io::Write;
+        for t in &traces_mut {
+            if let Err(e) = writeln!(out, "{}", serde_json::to_string(t).unwrap()) {
+                eprintln!("error: write failed: {e}");
+                return 3;
+            }
+        }
+        drop(out);
+        if let Err(e) = std::fs::rename(&tmp_path, &traces_path) {
+            eprintln!("error: rename failed: {e}");
+            return 3;
+        }
+        eprintln!("Wrote {}", traces_path.display());
+        return 0;
+    }
+
     let filter = quorum::calibrate::JoinFilter {
         quorum_version: opts.trace_version.clone(),
         clean_only: opts.clean_only,
