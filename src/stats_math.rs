@@ -23,7 +23,11 @@ pub fn wilson_interval(successes: usize, total: usize, confidence: f64) -> (f64,
     if total == 0 {
         return (0.0, 1.0);
     }
-    debug_assert!(
+    // assert! (not debug_assert!) so that release builds also reject
+    // impossible inputs. Silent clamping to p=1 would mask upstream data
+    // corruption — off-by-one in aggregation, malformed feedback rows,
+    // hand-edited JSONL — and produce plausible-looking intervals.
+    assert!(
         successes <= total,
         "wilson_interval: successes ({}) must not exceed total ({})",
         successes,
@@ -92,6 +96,18 @@ mod tests {
         let (lo, hi) = wilson_interval(0, 5, 0.95);
         assert_eq!(lo, 0.0, "lower bound clamps to 0");
         assert!(hi > 0.0 && hi < 1.0, "upper bound informative: {}", hi);
+    }
+
+    #[test]
+    #[should_panic(expected = "successes")]
+    fn wilson_interval_panics_when_successes_exceeds_total() {
+        // Documents the contract: successes must not exceed total.
+        // Production guard is `assert!` (not `debug_assert!`) so the
+        // failure is visible in release builds too — silently clamping
+        // to p=1 would mask upstream data corruption (off-by-one in
+        // aggregation, malformed feedback rows, etc.) and produce
+        // plausible-looking intervals on broken inputs.
+        let _ = wilson_interval(7, 5, 0.95);
     }
 
     #[test]

@@ -319,18 +319,39 @@ async fn main() -> anyhow::Result<()> {
 /// Pure function — reads the JSONL files but produces a String rather than
 /// printing, so unit tests can pin the contract on a tempdir fixture.
 fn format_join_health(quorum_home: &std::path::Path) -> String {
+    use std::fmt::Write;
+
     let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
-    let reviews = log.load_all().unwrap_or_default();
+    let reviews = match log.load_all() {
+        Ok(r) => r,
+        Err(e) => {
+            // Surface the failure rather than rendering a misleading
+            // "0 reviews" line. The diagnostic exists to assess data
+            // health — silent zeros would defeat the point.
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews.jsonl: {e}").unwrap();
+            return out;
+        }
+    };
 
     let store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
-    let feedback = store.load_all().unwrap_or_default();
+    let feedback = match store.load_all() {
+        Ok(f) => f,
+        Err(e) => {
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read feedback.jsonl: {e}").unwrap();
+            return out;
+        }
+    };
 
     let stats = analytics::linkage_stats(&reviews, &feedback);
     let total_findings: usize = reviews.iter().map(|r| r.finding_ids.len()).sum();
-    let rate_pct = (stats.rate() * 100.0).round() as u32;
+    let rate = stats.rate();
+    let rate_pct = (rate * 100.0).round() as u32;
 
     let mut out = String::new();
-    use std::fmt::Write;
     writeln!(out, "Linkage health").unwrap();
     writeln!(
         out,
@@ -349,7 +370,7 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
     .unwrap();
     if stats.linked + stats.unlinked == 0 {
         writeln!(out, "  Linkage rate: — (no feedback entries)").unwrap();
-    } else if rate_pct < 85 {
+    } else if rate < 0.85 {
         writeln!(
             out,
             "  Linkage rate: {}%   ← below 85% threshold; per-finding precision falls back to entry-level",
@@ -2572,6 +2593,55 @@ mod join_health_tests {
         assert!(out.contains("Feedback: 2 entries (1 linked, 1 unlinked legacy)"), "got:\n{out}");
         assert!(out.contains("50%"), "rate must show as 50%: got:\n{out}");
         assert!(out.contains("below 85% threshold"), "fallback banner missing: got:\n{out}");
+    }
+
+    #[test]
+    fn join_health_surfaces_review_log_read_error_instead_of_silent_zeros() {
+        // Regression: load_all().unwrap_or_default() silently swallows IO
+        // errors and renders a healthy-looking "0 reviews" line. Make
+        // reviews.jsonl unreadable (here: a directory at that path) and
+        // assert the diagnostic surfaces the failure rather than lying.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("reviews.jsonl")).unwrap();
+
+        let out = format_join_health(dir.path());
+        assert!(
+            out.to_lowercase().contains("error"),
+            "must surface read failure; got:\n{out}"
+        );
+        assert!(
+            !out.contains("Reviews: 0 with"),
+            "must not falsely report empty dataset; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn join_health_rate_below_85_that_rounds_to_85_still_shows_fallback() {
+        // Regression: rate-then-round comparison gives a false pass at the
+        // 85% gate. 169 linked + 31 unlinked = 200 entries → exactly 84.5%
+        // linkage. Rust's f64::round is round-half-away-from-zero, so
+        // (84.5).round() == 85.0. The threshold check must compare the
+        // unrounded rate, not the rendered integer percent.
+        let dir = TempDir::new().unwrap();
+        let ids: Vec<String> = (0..169).map(|i| format!("\"FID-{i}\"")).collect();
+        let id_array = format!("[{}]", ids.join(","));
+        write_jsonl(dir.path(), "reviews.jsonl", &[
+            &format!(r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#, id_array),
+        ]);
+        let mut fb_lines: Vec<String> = (0..169).map(|i| {
+            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-{}"}}"#, i)
+        }).collect();
+        for _ in 0..31 {
+            fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#.to_string());
+        }
+        let fb_refs: Vec<&str> = fb_lines.iter().map(|s| s.as_str()).collect();
+        write_jsonl(dir.path(), "feedback.jsonl", &fb_refs);
+
+        let out = format_join_health(dir.path());
+        assert!(
+            out.contains("below 85% threshold"),
+            "84.5% must trigger fallback banner; got:\n{out}"
+        );
     }
 
     #[test]

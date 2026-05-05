@@ -165,8 +165,12 @@ impl FindingBuilder {
 
     /// Override the auto-generated ULID. Use only when reconstructing a
     /// known finding (e.g. JSON re-parse, MCP round-trip); production code
-    /// should let `new()` mint a fresh ULID.
+    /// should let `new()` mint a fresh ULID. Empty strings are rejected
+    /// because `id` is the join key for `collect_finding_ids` and
+    /// `analytics::linkage_stats` — an empty id would collide with every
+    /// other empty id and silently corrupt linkage.
     pub fn id(mut self, id: &str) -> Self {
+        assert!(!id.is_empty(), "FindingBuilder::id: id must be non-empty");
         self.inner.id = id.into();
         self
     }
@@ -622,6 +626,18 @@ mod tests {
     fn finding_id_explicit_overrides_builder_default() {
         let f = FindingBuilder::new().id("my-explicit-id").build();
         assert_eq!(f.id, "my-explicit-id");
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty")]
+    fn finding_builder_id_rejects_empty_string() {
+        // Empty IDs would silently corrupt collect_finding_ids /
+        // linkage_stats: every finding with id="" would join to every
+        // feedback row with the same empty id. The default
+        // (`new_finding_ulid`) is non-empty by construction; the explicit
+        // setter must enforce the same invariant for round-trip /
+        // test-fixture callers.
+        let _ = FindingBuilder::new().id("").build();
     }
 
     #[test]
