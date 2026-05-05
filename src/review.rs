@@ -132,6 +132,7 @@ impl LlmFinding {
             }
         };
         Finding {
+            id: crate::finding::new_finding_ulid(),
             title: self.title,
             description: self.description,
             severity,

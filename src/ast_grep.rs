@@ -275,6 +275,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                 };
 
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("{}: {}", rule.id, message),
                     description: message,
                     severity,

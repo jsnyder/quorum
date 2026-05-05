@@ -274,6 +274,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
         let severity = ruff_code_to_severity(code);
 
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: format!("{}: {}", code, message),
             description: message.to_string(),
             severity,
@@ -333,6 +334,7 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
         };
 
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: format!("{}: {}", code, message),
             description: message.to_string(),
             severity,
@@ -380,6 +382,7 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             };
 
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: format!("{}: {}", rule_id, message),
                 description: message.to_string(),
                 severity,
@@ -441,6 +444,7 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
         };
 
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: format!("yamllint: {}", message),
             description: message.to_string(),
             severity,
@@ -485,6 +489,7 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
             };
 
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: format!("SC{}: {}", code, message),
                 description: message.to_string(),
                 severity,
@@ -546,6 +551,7 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
         };
 
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: format!("{}: {}", rule, message),
             description: message.to_string(),
             severity,
@@ -591,6 +597,7 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             };
 
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: format!("{}: {}", rule_name, message),
                 description: message.to_string(),
                 severity,

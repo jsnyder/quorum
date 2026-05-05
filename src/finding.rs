@@ -1,6 +1,16 @@
 use crate::category::Category;
 use serde::{Deserialize, Serialize};
 
+/// Generate a fresh ULID for a Finding's `id`.
+///
+/// Used both as the FindingBuilder default and as the serde-default for
+/// pre-rollout JSON dumps that lack the `id` field. ULID is monotonic-ish,
+/// 26 chars in Crockford base32 — short enough to display in CLI output,
+/// stable enough to dedup feedback against.
+pub fn new_finding_ulid() -> String {
+    ulid::Ulid::new().to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -57,6 +67,12 @@ pub enum GroundingStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
+    /// Stable per-finding identifier (ULID, 26 chars). Generated at build
+    /// time so it's available for feedback recording, dedup, and reviews.jsonl
+    /// linkage. `#[serde(default)]` mints a fresh ULID for legacy JSON
+    /// dumps that pre-date this field.
+    #[serde(default = "new_finding_ulid")]
+    pub id: String,
     pub title: String,
     pub description: String,
     pub severity: Severity,
@@ -116,6 +132,7 @@ impl FindingBuilder {
     pub fn new() -> Self {
         Self {
             inner: Finding {
+                id: new_finding_ulid(),
                 title: "Test finding".into(),
                 description: "Test description".into(),
                 severity: Severity::Info,
@@ -135,6 +152,14 @@ impl FindingBuilder {
                 grounding_status: None,
             },
         }
+    }
+
+    /// Override the auto-generated ULID. Use only when reconstructing a
+    /// known finding (e.g. JSON re-parse, MCP round-trip); production code
+    /// should let `new()` mint a fresh ULID.
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner.id = id.into();
+        self
     }
 
     pub fn title(mut self, t: &str) -> Self {
@@ -282,6 +307,7 @@ mod tests {
     #[test]
     fn finding_serializes_to_json_with_all_fields() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "Unvalidated input".into(),
             description: "User input flows to db.execute()".into(),
             severity: Severity::Critical,
@@ -315,6 +341,7 @@ mod tests {
     #[test]
     fn finding_json_roundtrip() {
         let original = Finding {
+            id: new_finding_ulid(),
             title: "Test finding".into(),
             description: "A test".into(),
             severity: Severity::High,
@@ -341,6 +368,7 @@ mod tests {
     #[test]
     fn finding_with_empty_optional_fields_serializes_cleanly() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "Minimal".into(),
             description: "Desc".into(),
             severity: Severity::Info,
@@ -369,6 +397,7 @@ mod tests {
     #[test]
     fn finding_line_range_valid() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "T".into(),
             description: "D".into(),
             severity: Severity::Info,
@@ -393,6 +422,7 @@ mod tests {
     #[test]
     fn finding_line_range_single_line_valid() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "T".into(),
             description: "D".into(),
             severity: Severity::Info,
@@ -417,6 +447,7 @@ mod tests {
     #[test]
     fn finding_line_range_inverted_invalid() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "T".into(),
             description: "D".into(),
             severity: Severity::Info,
@@ -441,6 +472,7 @@ mod tests {
     #[test]
     fn finding_line_range_zero_start_invalid() {
         let f = Finding {
+            id: new_finding_ulid(),
             title: "T".into(),
             description: "D".into(),
             severity: Severity::Info,
@@ -560,5 +592,42 @@ mod tests {
         let f = FindingBuilder::new().build();
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("based_on_excerpt"));
+    }
+
+    // ─── Stats redesign Phase 0: Finding.id (per-finding identity) ───
+
+    #[test]
+    fn finding_builder_assigns_unique_ulid_id() {
+        let a = FindingBuilder::new().build();
+        let b = FindingBuilder::new().build();
+        assert_eq!(a.id.len(), 26, "ULID is 26 chars in canonical Crockford encoding");
+        assert_ne!(a.id, b.id, "each FindingBuilder produces a fresh ULID");
+        // ULID monotonicity isn't guaranteed across rapid calls; just check
+        // both are valid Crockford-base32 — alphanumeric, no I/L/O/U.
+        for c in a.id.chars() {
+            assert!(c.is_ascii_alphanumeric(), "ULID char must be alphanumeric: {c}");
+        }
+    }
+
+    #[test]
+    fn finding_id_explicit_overrides_builder_default() {
+        let f = FindingBuilder::new().id("my-explicit-id").build();
+        assert_eq!(f.id, "my-explicit-id");
+    }
+
+    #[test]
+    fn finding_serializes_id_into_json() {
+        let f = FindingBuilder::new().id("01HXYZ").build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"id\":\"01HXYZ\""), "id must appear in JSON: {json}");
+    }
+
+    #[test]
+    fn finding_legacy_json_without_id_deserializes_with_default() {
+        // Pre-rollout JSON dumps (e.g. piped output saved to disk before the
+        // schema bump) must still load. They get a freshly-minted ULID.
+        let legacy = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"calibrator_action":null,"similar_precedent":[]}"#;
+        let f: Finding = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(f.id.len(), 26, "missing id deserializes to a fresh ULID");
     }
 }
