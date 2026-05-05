@@ -668,6 +668,7 @@ pub async fn review_file(
                 context_block,
                 truncation_notice: truncation_notice.clone(),
                 focus: pipeline_config.focus.clone(),
+                mode: pipeline_config.mode,
             };
 
             let prompt = review::build_review_prompt(&req);
@@ -1089,6 +1090,7 @@ pub async fn review_file_llm_only(
                 context_block: None,
                 truncation_notice: truncation_notice.clone(),
                 focus: pipeline_config.focus.clone(),
+                mode: pipeline_config.mode,
             };
 
             let prompt = review::build_review_prompt(&req);
