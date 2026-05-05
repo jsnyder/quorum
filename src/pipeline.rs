@@ -203,6 +203,9 @@ impl Default for PipelineConfig {
 /// Returns `Some(reason)` when the per-file enrichment block must NOT run.
 /// `--skip-context7` wins over `context7_disabled` for log-message clarity.
 fn context7_skip_reason(cfg: &PipelineConfig) -> Option<&'static str> {
+    if cfg.mode.is_prose() {
+        return Some("prose review mode (use --context7 to enable)");
+    }
     if cfg.skip_context7 {
         return Some("--skip-context7");
     }
@@ -393,9 +396,9 @@ pub async fn review_file(
         None
     };
 
-    // Source 1: Local AST analysis
+    // Source 1: Local AST analysis (skipped for prose reviews)
     let mut local_findings = Vec::new();
-    {
+    if !pipeline_config.mode.is_prose() {
         let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
         let t0 = std::time::Instant::now();
         local_findings.extend(analysis::analyze_complexity(
@@ -414,9 +417,9 @@ pub async fn review_file(
     }
     all_sources.push(local_findings);
 
-    // Source 2: ast-grep library rules
+    // Source 2: ast-grep library rules (skipped for prose reviews)
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ast_grep::ext_to_language(ext).is_some() {
+    if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
         let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
         let t0 = std::time::Instant::now();
         let project_root = find_project_root(file_path);
@@ -447,69 +450,76 @@ pub async fn review_file(
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review
         } else {
+            // Redact secrets before LLM
+            let redacted_code = redact::redact_secrets(source);
+            let (review_code, truncation_notice) =
+                truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
+
             // Hydrate context: use diff ranges if available, else full file.
+            // Prose reviews skip hydration entirely — no AST-derived context.
             //
             // #137: match on full repo-relative path equality (NOT ends_with),
             // resolved through the project root so `src/foo.rs` does not
             // cross-match `nested/src/foo.rs`.
-            let changed_lines: Vec<(u32, u32)> =
-                if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-                    // Hoist canonicalization out of the filter loop: review_path and
-                    // repo_root are loop-invariant, only diff_path varies. Without
-                    // this, large diffs paid 2 canonicalize syscalls per range entry.
-                    let repo_root = find_project_root(file_path);
-                    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-                    diff_ranges
-                        .iter()
-                        .filter(|(path, _)| resolver.matches(path))
-                        .flat_map(|(_, ranges)| ranges.clone())
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-            let hydration_ranges = if changed_lines.is_empty() {
-                let total_lines = source.lines().count() as u32;
-                vec![(1, total_lines.max(1))]
+            let redacted_ctx = if pipeline_config.mode.is_prose() {
+                crate::hydration::HydrationContext::default()
             } else {
-                changed_lines
-            };
-            let hydrate_t0 = std::time::Instant::now();
-            let ctx = {
-                let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
-                let c = hydration::hydrate(tree, source, lang, &hydration_ranges);
-                tracing::info!(
-                    phase = "hydrate",
-                    duration_ms = hydrate_t0.elapsed().as_millis() as u64,
-                    callees = c.callee_signatures.len(),
-                    types = c.type_definitions.len(),
-                    imports = c.import_targets.len(),
-                    "phase complete"
-                );
-                c
-            };
+                let changed_lines: Vec<(u32, u32)> =
+                    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+                        // Hoist canonicalization out of the filter loop: review_path and
+                        // repo_root are loop-invariant, only diff_path varies. Without
+                        // this, large diffs paid 2 canonicalize syscalls per range entry.
+                        let repo_root = find_project_root(file_path);
+                        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+                        diff_ranges
+                            .iter()
+                            .filter(|(path, _)| resolver.matches(path))
+                            .flat_map(|(_, ranges)| ranges.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                let hydration_ranges = if changed_lines.is_empty() {
+                    let total_lines = source.lines().count() as u32;
+                    vec![(1, total_lines.max(1))]
+                } else {
+                    changed_lines
+                };
+                let hydrate_t0 = std::time::Instant::now();
+                let ctx = {
+                    let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
+                    let c = hydration::hydrate(tree, source, lang, &hydration_ranges);
+                    tracing::info!(
+                        phase = "hydrate",
+                        duration_ms = hydrate_t0.elapsed().as_millis() as u64,
+                        callees = c.callee_signatures.len(),
+                        types = c.type_definitions.len(),
+                        imports = c.import_targets.len(),
+                        "phase complete"
+                    );
+                    c
+                };
 
-            // Redact secrets in both code AND hydration context before LLM
-            let redacted_code = redact::redact_secrets(source);
-            let (review_code, truncation_notice) =
-                truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
-            let redacted_ctx = crate::hydration::HydrationContext {
-                callee_signatures: ctx
-                    .callee_signatures
-                    .iter()
-                    .map(|s| redact::redact_secrets(s))
-                    .collect(),
-                type_definitions: ctx
-                    .type_definitions
-                    .iter()
-                    .map(|s| redact::redact_secrets(s))
-                    .collect(),
-                callers: ctx.callers.clone(),
-                import_targets: ctx
-                    .import_targets
-                    .iter()
-                    .map(|s| redact::redact_secrets(s))
-                    .collect(),
-                qualified_names: ctx.qualified_names.clone(),
+                // Redact hydration context for parity with redacted code
+                crate::hydration::HydrationContext {
+                    callee_signatures: ctx
+                        .callee_signatures
+                        .iter()
+                        .map(|s| redact::redact_secrets(s))
+                        .collect(),
+                    type_definitions: ctx
+                        .type_definitions
+                        .iter()
+                        .map(|s| redact::redact_secrets(s))
+                        .collect(),
+                    callers: ctx.callers.clone(),
+                    import_targets: ctx
+                        .import_targets
+                        .iter()
+                        .map(|s| redact::redact_secrets(s))
+                        .collect(),
+                    qualified_names: ctx.qualified_names.clone(),
+                }
             };
 
             // Fetch Context7 framework docs (curated frameworks + dep-based enrichment).
@@ -601,7 +611,11 @@ pub async fn review_file(
             // Optional `quorum context` injection (retrieve → plan → render).
             // When no injector is wired, this is a no-op and `context_block`
             // stays `None`, preserving byte-identical prompts.
-            let context_block = match pipeline_config.context_injector.as_ref() {
+            // Prose reviews skip context injection — no AST-derived identifiers.
+            let context_block = if pipeline_config.mode.is_prose() {
+                None
+            } else {
+                match pipeline_config.context_injector.as_ref() {
                 Some(inj) => {
                     let mut identifiers: Vec<String> = redacted_ctx
                         .callee_signatures
@@ -637,6 +651,7 @@ pub async fn review_file(
                     outcome.rendered
                 }
                 None => None,
+                }
             };
 
             let req = ReviewRequest {
@@ -719,13 +734,15 @@ pub async fn review_file(
         result
     };
 
-    // Grounding: verify LLM-cited symbols exist in source
-    let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let merged = grounding::apply_grounding(merged, source, grounding_disabled);
-    {
-        let gc = grounding::count_grounding_outcomes(&merged);
+    // Grounding: verify LLM-cited symbols exist in source (skipped for prose reviews)
+    let merged = if pipeline_config.mode.is_prose() {
+        merged
+    } else {
+        let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
             verified = gc.verified,
@@ -734,7 +751,8 @@ pub async fn review_file(
             not_checked = gc.not_checked,
             "grounding pass complete"
         );
-    }
+        grounded
+    };
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback =
@@ -991,8 +1009,8 @@ pub async fn review_file_llm_only(
             let language = lang_name_from_path(file_path);
 
             // Context7 framework docs (metrics aggregate into the function-scoped var)
-            let framework_docs = if pipeline_config.skip_context7 {
-                tracing::debug!("Context7: enrichment skipped via --skip-context7");
+            let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+                tracing::debug!(reason, "Context7: enrichment skipped");
                 None
             } else {
                 let project_root = find_project_root(file_path);
@@ -1101,13 +1119,15 @@ pub async fn review_file_llm_only(
 
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 
-    // Grounding: verify LLM-cited symbols exist in source
-    let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let merged = grounding::apply_grounding(merged, source, grounding_disabled);
-    {
-        let gc = grounding::count_grounding_outcomes(&merged);
+    // Grounding: verify LLM-cited symbols exist in source (skipped for prose reviews)
+    let merged = if pipeline_config.mode.is_prose() {
+        merged
+    } else {
+        let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
             verified = gc.verified,
@@ -1116,7 +1136,8 @@ pub async fn review_file_llm_only(
             not_checked = gc.not_checked,
             "grounding pass complete"
         );
-    }
+        grounded
+    };
 
     // Calibrate
     let has_feedback =
@@ -1950,5 +1971,104 @@ mod tests {
         let resolver = ReviewPathResolver::new(&outside, repo.path());
         assert!(!resolver.matches("src/foo.rs"));
         assert!(!resolver.matches("anything"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Prose review mode — code-only stages must be skipped
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn context7_skip_reason_honors_prose_mode() {
+        let cfg = PipelineConfig {
+            mode: crate::review_mode::ReviewMode::Plan,
+            ..Default::default()
+        };
+        let reason = context7_skip_reason(&cfg);
+        assert_eq!(
+            reason,
+            Some("prose review mode (use --context7 to enable)"),
+        );
+    }
+
+    #[test]
+    fn context7_skip_reason_prose_wins_over_skip_flag() {
+        // Prose check comes first in the predicate — verify ordering
+        let cfg = PipelineConfig {
+            mode: crate::review_mode::ReviewMode::Docs,
+            skip_context7: true,
+            ..Default::default()
+        };
+        let reason = context7_skip_reason(&cfg);
+        assert_eq!(
+            reason,
+            Some("prose review mode (use --context7 to enable)"),
+        );
+    }
+
+    /// Prose mode (Plan) must skip local AST analysis and ast-grep scanning.
+    /// LLM review, merge, calibration, and output must still function.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn prose_mode_skips_local_ast_and_ast_grep() {
+        // Source with patterns that would normally trigger local AST findings
+        // (eval is a security pattern detected by analyze_insecure_patterns).
+        let source = "def run(code):\n    eval(code)\n";
+        let tree = parser::parse(source, Language::Python).unwrap();
+        let config = PipelineConfig {
+            mode: crate::review_mode::ReviewMode::Plan,
+            ..Default::default()
+        };
+        let result = review_file(
+            Path::new("test.py"),
+            source,
+            Language::Python,
+            &tree,
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        // No findings from LocalAst or Linter("ast-grep") should appear
+        for f in &result.findings {
+            assert!(
+                !matches!(&f.source, Source::LocalAst),
+                "prose mode must skip local AST; found: {:?}",
+                f,
+            );
+            assert!(
+                !matches!(&f.source, Source::Linter(name) if name == "ast-grep"),
+                "prose mode must skip ast-grep; found: {:?}",
+                f,
+            );
+        }
+    }
+
+    /// Code mode still produces local AST findings (control for the prose test).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn code_mode_produces_local_ast_findings() {
+        let source = "def run(code):\n    eval(code)\n";
+        let tree = parser::parse(source, Language::Python).unwrap();
+        let config = PipelineConfig {
+            mode: crate::review_mode::ReviewMode::Code,
+            ..Default::default()
+        };
+        let result = review_file(
+            Path::new("test.py"),
+            source,
+            Language::Python,
+            &tree,
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| matches!(&f.source, Source::LocalAst)),
+            "code mode should produce LocalAst findings for eval()",
+        );
     }
 }
