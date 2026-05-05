@@ -1,9 +1,57 @@
 /// Per-source TP/FP analytics computed from the feedback store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::feedback::{FeedbackEntry, Verdict};
+use crate::review_log::ReviewRecord;
+
+/// Reviews ↔ feedback linkage health.
+///
+/// Counts feedback entries that have a `finding_id` matching some review's
+/// `finding_ids` list. Used by the headline trend to decide whether
+/// per-finding precision math is trustworthy (≥85% linked) or should
+/// fall back to entry-level math with a banner. Also surfaced directly
+/// via `quorum stats --join-health`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkageStats {
+    pub linked: usize,
+    pub unlinked: usize,
+}
+
+impl LinkageStats {
+    /// Fraction of feedback entries that join back to a known finding.
+    /// Returns 0.0 for an empty corpus rather than NaN.
+    pub fn rate(&self) -> f64 {
+        let total = self.linked + self.unlinked;
+        if total == 0 {
+            0.0
+        } else {
+            self.linked as f64 / total as f64
+        }
+    }
+}
+
+/// Compute reviews ↔ feedback linkage statistics.
+///
+/// O(R + F) where R = total finding_ids across reviews and F = feedback
+/// entries. Builds a HashSet of known finding_ids so duplicate IDs in the
+/// review log don't inflate the linked count.
+pub fn linkage_stats(reviews: &[ReviewRecord], feedback: &[FeedbackEntry]) -> LinkageStats {
+    let known: HashSet<&str> = reviews
+        .iter()
+        .flat_map(|r| r.finding_ids.iter().map(String::as_str))
+        .collect();
+
+    let mut stats = LinkageStats::default();
+    for entry in feedback {
+        match &entry.finding_id {
+            Some(fid) if known.contains(fid.as_str()) => stats.linked += 1,
+            _ => stats.unlinked += 1,
+        }
+    }
+    stats
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct SourceStats {
@@ -510,5 +558,107 @@ mod tests {
         let entries = vec![entry("model", Verdict::Tp)]; // only 1 entry
         let trend = precision_trend(&entries, 7);
         assert!(trend.is_empty()); // not enough data
+    }
+
+    // ─── Stats redesign Phase 0: linkage_stats ───
+    //
+    // Counts feedback entries that have a finding_id matching some review's
+    // finding_ids list. The linkage rate gates whether the headline trend
+    // can compute per-finding precision (≥85%) or must fall back to entry-
+    // level math with a banner.
+
+    fn review_with_finding_ids(ids: &[&str]) -> crate::review_log::ReviewRecord {
+        crate::review_log::ReviewRecord {
+            run_id: crate::review_log::ReviewRecord::new_ulid(),
+            timestamp: Utc::now(),
+            quorum_version: "0.1".into(),
+            repo: None,
+            invoked_from: "tty".into(),
+            model: "test".into(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: crate::review_log::SeverityCounts::default(),
+            suppressed_by_rule: HashMap::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
+            duration_ms: 0,
+            flags: crate::review_log::Flags::default(),
+            context: crate::review_log::ContextTelemetry::default(),
+            finding_ids: ids.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn fb_with_finding_id(id: &str) -> FeedbackEntry {
+        let mut e = entry("model", Verdict::Tp);
+        e.finding_id = Some(id.into());
+        e
+    }
+
+    #[test]
+    fn linkage_with_zero_reviews_and_zero_feedback_returns_zero_rate() {
+        let stats = linkage_stats(&[], &[]);
+        assert_eq!(stats.linked, 0);
+        assert_eq!(stats.unlinked, 0);
+        assert_eq!(stats.rate(), 0.0);
+    }
+
+    #[test]
+    fn linkage_full_when_every_feedback_has_matching_finding_id() {
+        let reviews = vec![review_with_finding_ids(&["A", "B"])];
+        let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("B")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2);
+        assert_eq!(stats.unlinked, 0);
+        assert!((stats.rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn linkage_partial_with_legacy_entries_in_corpus() {
+        let reviews = vec![review_with_finding_ids(&["A", "B"])];
+        let mut legacy = entry("model", Verdict::Tp);
+        legacy.finding_id = None;
+        let feedback = vec![fb_with_finding_id("A"), legacy];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 1);
+        assert_eq!(stats.unlinked, 1);
+        assert!((stats.rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn linkage_dangling_finding_id_counts_as_unlinked() {
+        // A feedback entry references a finding_id not present in any
+        // review's finding_ids — counts as unlinked, not as match-error.
+        let reviews = vec![review_with_finding_ids(&["A"])];
+        let feedback = vec![fb_with_finding_id("Z-NONEXISTENT")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 0);
+        assert_eq!(stats.unlinked, 1);
+    }
+
+    #[test]
+    fn linkage_duplicate_finding_id_in_reviews_does_not_double_count() {
+        // Pathological case: the same finding_id appears in two reviews.
+        // The HashSet lookup means we count the feedback entry once.
+        let reviews = vec![
+            review_with_finding_ids(&["A"]),
+            review_with_finding_ids(&["A"]),
+        ];
+        let feedback = vec![fb_with_finding_id("A")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 1);
+        assert_eq!(stats.unlinked, 0);
+    }
+
+    #[test]
+    fn linkage_two_feedback_for_same_finding_each_count_separately() {
+        // Both entries reference the same finding (e.g. Human + PostFix on
+        // the same finding) — each is a linked entry. Per-finding dedup
+        // happens later in Task 7, not here.
+        let reviews = vec![review_with_finding_ids(&["A"])];
+        let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("A")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2);
     }
 }
