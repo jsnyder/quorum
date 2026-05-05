@@ -25,7 +25,7 @@ quorum review docs/ARCHITECTURE.md --mode docs
 | Mode | Focus | Categories Emphasized |
 |------|-------|----------------------|
 | `code` | Current behavior (default) | All 10 |
-| `plan` | Feasibility, gaps, risks, missing acceptance criteria, scope creep, contradictions | Correctness, Logic, Validation, Robustness |
+| `plan` | Feasibility, gaps, risks, missing acceptance criteria, scope creep, contradictions | Correctness, Logic, Validation, Robustness, Maintainability |
 | `docs` | Clarity, completeness, accuracy, internal consistency, stale references | Correctness, Validation, Maintainability |
 
 `spec` deferred to v2 — its rubric overlaps significantly with `plan`. Add it when the review rubrics demonstrably diverge.
