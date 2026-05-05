@@ -291,6 +291,10 @@ pub struct CalibrateOpts {
     /// Disable fuzzy matching tiers (normalized + Jaccard); raw exact only
     #[arg(long)]
     pub disable_fuzzy: bool,
+
+    /// Backfill file_path on legacy traces using feedback cross-reference
+    #[arg(long)]
+    pub backfill_paths: bool,
 }
 
 #[derive(Parser)]

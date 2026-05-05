@@ -515,6 +515,119 @@ pub fn compute_thresholds(
     config
 }
 
+/// Stats from a `backfill_file_paths` run.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BackfillStats {
+    /// Traces that already had file_path (skipped).
+    pub already_present: usize,
+    /// Backfilled via unambiguous feedback title match.
+    pub feedback_exact: usize,
+    /// Backfilled via unambiguous normalized feedback title match.
+    pub feedback_normalized: usize,
+    /// Backfilled via unambiguous matched_precedents file_path.
+    pub precedent_inferred: usize,
+    /// Ambiguous (2+ candidate files) — left as null.
+    pub ambiguous: usize,
+    /// No signal found — left as null.
+    pub no_match: usize,
+    /// Total traces modified.
+    pub total_backfilled: usize,
+}
+
+/// Enrich legacy traces that lack `file_path` by cross-referencing the
+/// feedback corpus.
+pub fn backfill_file_paths(
+    traces: &mut [serde_json::Value],
+    feedback: &[serde_json::Value],
+) -> BackfillStats {
+    let mut exact_map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut norm_map: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for f in feedback {
+        let title = f["finding_title"].as_str().unwrap_or("");
+        let fp = f["file_path"].as_str().unwrap_or("");
+        if title.is_empty() || fp.is_empty() {
+            continue;
+        }
+        exact_map
+            .entry(title.to_string())
+            .or_default()
+            .insert(fp.to_string());
+        let norm = normalize_title(title);
+        if !norm.is_empty() {
+            norm_map.entry(norm).or_default().insert(fp.to_string());
+        }
+    }
+
+    let mut stats = BackfillStats::default();
+
+    for trace in traces.iter_mut() {
+        let existing = trace.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        if !existing.is_empty() {
+            stats.already_present += 1;
+            continue;
+        }
+
+        let title = trace["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            stats.no_match += 1;
+            continue;
+        }
+
+        // Tier 1: exact title match
+        if let Some(files) = exact_map.get(&title) {
+            if files.len() == 1 {
+                let fp = files.iter().next().unwrap().clone();
+                trace["file_path"] = serde_json::Value::String(fp);
+                stats.feedback_exact += 1;
+                stats.total_backfilled += 1;
+                continue;
+            }
+        }
+
+        // Tier 2: normalized title match
+        let norm = normalize_title(&title);
+        if !norm.is_empty() {
+            if let Some(files) = norm_map.get(&norm) {
+                if files.len() == 1 {
+                    let fp = files.iter().next().unwrap().clone();
+                    trace["file_path"] = serde_json::Value::String(fp);
+                    stats.feedback_normalized += 1;
+                    stats.total_backfilled += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Tier 3: precedent inference
+        if let Some(precs) = trace.get("matched_precedents").and_then(|v| v.as_array()) {
+            let prec_files: HashSet<&str> = precs
+                .iter()
+                .filter_map(|p| p["file_path"].as_str())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if prec_files.len() == 1 {
+                let fp = prec_files.into_iter().next().unwrap().to_string();
+                trace["file_path"] = serde_json::Value::String(fp);
+                stats.precedent_inferred += 1;
+                stats.total_backfilled += 1;
+                continue;
+            }
+        }
+
+        // Determine whether it was ambiguous or truly no match
+        let had_exact = exact_map.get(&title).is_some_and(|f| f.len() > 1);
+        let had_norm = !norm.is_empty() && norm_map.get(&norm).is_some_and(|f| f.len() > 1);
+        if had_exact || had_norm {
+            stats.ambiguous += 1;
+        } else {
+            stats.no_match += 1;
+        }
+    }
+
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1456,5 +1569,219 @@ mod tests {
             &feedback, &traces, &filter, false,
         );
         assert_eq!(samples.len(), 1, "trace with unknown dirty should be excluded by clean_only");
+    }
+
+    #[test]
+    fn backfill_stamps_file_path_from_unambiguous_feedback() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "file_path": "src/db.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "file_path": "src/db.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection risk",
+                "finding_category": "security",
+                "tp_weight": 2.0,
+                "fp_weight": 0.5
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/db.rs"));
+        assert_eq!(stats.feedback_exact, 1);
+        assert_eq!(stats.total_backfilled, 1);
+    }
+
+    #[test]
+    fn backfill_skips_traces_with_existing_file_path() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection",
+                "file_path": "src/db.rs",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection",
+                "finding_category": "security",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0,
+                "file_path": "src/other.rs"
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/other.rs"));
+        assert_eq!(stats.already_present, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
+
+    #[test]
+    fn backfill_leaves_ambiguous_as_null() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/a.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/b.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        // Should NOT have file_path set
+        let fp = traces[0].get("file_path");
+        assert!(
+            fp.is_none() || fp.unwrap().is_null() || fp.unwrap().as_str() == Some(""),
+            "ambiguous title should not be stamped, got: {:?}",
+            fp
+        );
+        assert_eq!(stats.ambiguous, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
+
+    #[test]
+    fn backfill_uses_precedent_when_feedback_ambiguous() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/a.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/b.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0,
+                "matched_precedents": [
+                    {"finding_title": "unwrap risk", "file_path": "src/a.rs", "verdict": "tp"},
+                    {"finding_title": "unwrap again", "file_path": "src/a.rs", "verdict": "tp"}
+                ]
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/a.rs"));
+        assert_eq!(stats.precedent_inferred, 1);
+        assert_eq!(stats.total_backfilled, 1);
+    }
+
+    #[test]
+    fn backfill_handles_empty_inputs() {
+        let mut empty_traces: Vec<serde_json::Value> = vec![];
+        let empty_feedback: Vec<serde_json::Value> = vec![];
+        let stats = backfill_file_paths(&mut empty_traces, &empty_feedback);
+        assert_eq!(stats, BackfillStats::default());
+    }
+
+    #[test]
+    fn backfill_skips_trace_with_missing_title() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "A",
+                "file_path": "f.rs",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(stats.no_match, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
+
+    #[test]
+    fn backfill_falls_through_to_normalized_title() {
+        // Feedback has rule-prefixed title, trace has bare title
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "bare-except-pass: Using bare except: pass",
+                "file_path": "src/handler.py",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Using bare except: pass",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/handler.py"));
+        assert_eq!(stats.feedback_normalized, 1);
+        assert_eq!(stats.total_backfilled, 1);
+    }
+
+    #[test]
+    fn backfill_reports_correct_stats_and_mutations_on_mixed_corpus() {
+        let feedback = vec![
+            serde_json::json!({"finding_title": "A", "file_path": "f1.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "B", "file_path": "f2.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "C", "file_path": "f3.rs", "verdict": "tp"}),
+            serde_json::json!({"finding_title": "C", "file_path": "f4.rs", "verdict": "fp"}),
+        ];
+        let mut traces = vec![
+            // 0: Already has file_path -> skip
+            serde_json::json!({"finding_title": "A", "tp_weight": 1.0, "fp_weight": 0.0, "file_path": "f1.rs"}),
+            // 1: Exact match -> backfill to f2.rs
+            serde_json::json!({"finding_title": "B", "tp_weight": 1.0, "fp_weight": 0.0}),
+            // 2: Ambiguous (C -> f3.rs AND f4.rs)
+            serde_json::json!({"finding_title": "C", "tp_weight": 1.0, "fp_weight": 0.0}),
+            // 3: No match at all
+            serde_json::json!({"finding_title": "D", "tp_weight": 1.0, "fp_weight": 0.0}),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+
+        // Verify stats
+        assert_eq!(stats.already_present, 1);
+        assert_eq!(stats.feedback_exact, 1);
+        assert_eq!(stats.ambiguous, 1);
+        assert_eq!(stats.no_match, 1);
+        assert_eq!(stats.total_backfilled, 1);
+
+        // Verify actual mutations
+        assert_eq!(traces[0]["file_path"].as_str(), Some("f1.rs"), "unchanged");
+        assert_eq!(traces[1]["file_path"].as_str(), Some("f2.rs"), "backfilled");
+        assert!(
+            traces[2].get("file_path").is_none()
+                || traces[2]["file_path"].is_null()
+                || traces[2]["file_path"].as_str() == Some(""),
+            "ambiguous: should not be stamped"
+        );
+        assert!(
+            traces[3].get("file_path").is_none()
+                || traces[3]["file_path"].is_null()
+                || traces[3]["file_path"].as_str() == Some(""),
+            "no match: should not be stamped"
+        );
     }
 }
