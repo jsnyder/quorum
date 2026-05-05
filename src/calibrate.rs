@@ -1598,4 +1598,122 @@ mod tests {
         assert_eq!(stats.feedback_exact, 1);
         assert_eq!(stats.total_backfilled, 1);
     }
+
+    #[test]
+    fn backfill_skips_traces_with_existing_file_path() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection",
+                "file_path": "src/db.rs",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "SQL injection",
+                "finding_category": "security",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0,
+                "file_path": "src/other.rs"
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/other.rs"));
+        assert_eq!(stats.already_present, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
+
+    #[test]
+    fn backfill_leaves_ambiguous_as_null() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/a.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/b.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        // Should NOT have file_path set
+        let fp = traces[0].get("file_path");
+        assert!(
+            fp.is_none() || fp.unwrap().is_null() || fp.unwrap().as_str() == Some(""),
+            "ambiguous title should not be stamped, got: {:?}",
+            fp
+        );
+        assert_eq!(stats.ambiguous, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
+
+    #[test]
+    fn backfill_uses_precedent_when_feedback_ambiguous() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/a.rs",
+                "verdict": "tp"
+            }),
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "file_path": "src/b.rs",
+                "verdict": "fp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "finding_title": "Use of unwrap()",
+                "finding_category": "correctness",
+                "tp_weight": 1.0,
+                "fp_weight": 0.0,
+                "matched_precedents": [
+                    {"finding_title": "unwrap risk", "file_path": "src/a.rs", "verdict": "tp"},
+                    {"finding_title": "unwrap again", "file_path": "src/a.rs", "verdict": "tp"}
+                ]
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(traces[0]["file_path"].as_str(), Some("src/a.rs"));
+        assert_eq!(stats.precedent_inferred, 1);
+        assert_eq!(stats.total_backfilled, 1);
+    }
+
+    #[test]
+    fn backfill_handles_empty_inputs() {
+        let mut empty_traces: Vec<serde_json::Value> = vec![];
+        let empty_feedback: Vec<serde_json::Value> = vec![];
+        let stats = backfill_file_paths(&mut empty_traces, &empty_feedback);
+        assert_eq!(stats, BackfillStats::default());
+    }
+
+    #[test]
+    fn backfill_skips_trace_with_missing_title() {
+        let feedback = vec![
+            serde_json::json!({
+                "finding_title": "A",
+                "file_path": "f.rs",
+                "verdict": "tp"
+            }),
+        ];
+        let mut traces = vec![
+            serde_json::json!({
+                "tp_weight": 1.0,
+                "fp_weight": 0.0
+            }),
+        ];
+        let stats = backfill_file_paths(&mut traces, &feedback);
+        assert_eq!(stats.no_match, 1);
+        assert_eq!(stats.total_backfilled, 0);
+    }
 }
