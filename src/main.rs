@@ -139,6 +139,15 @@ async fn main() -> anyhow::Result<()> {
             // `$HOME/.quorum`, then to `./.quorum` as a last resort.
             let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
 
+            // --join-health diagnostic: short-circuit normal dashboard, just
+            // report reviews↔feedback finding_id linkage rate. Used to assess
+            // whether per-finding precision math (Phase A) is trustworthy or
+            // should fall back to entry-level with a banner.
+            if opts.join_health {
+                let exit_code = run_join_health(&quorum_home);
+                std::process::exit(exit_code);
+            }
+
             // Dimensional views read reviews.jsonl and aggregate via the
             // `dimensions` module. Classic dims: --by-repo/--by-caller/--rolling.
             // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
@@ -303,6 +312,71 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Build the rendered `--join-health` diagnostic from a quorum state dir.
+///
+/// Pure function — reads the JSONL files but produces a String rather than
+/// printing, so unit tests can pin the contract on a tempdir fixture.
+fn format_join_health(quorum_home: &std::path::Path) -> String {
+    let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+    let reviews = log.load_all().unwrap_or_default();
+
+    let store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+    let feedback = store.load_all().unwrap_or_default();
+
+    let stats = analytics::linkage_stats(&reviews, &feedback);
+    let total_findings: usize = reviews.iter().map(|r| r.finding_ids.len()).sum();
+    let rate_pct = (stats.rate() * 100.0).round() as u32;
+
+    let mut out = String::new();
+    use std::fmt::Write;
+    writeln!(out, "Linkage health").unwrap();
+    writeln!(
+        out,
+        "  Reviews: {} with {} findings",
+        reviews.len(),
+        total_findings
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "  Feedback: {} entries ({} linked, {} unlinked legacy)",
+        feedback.len(),
+        stats.linked,
+        stats.unlinked
+    )
+    .unwrap();
+    if stats.linked + stats.unlinked == 0 {
+        writeln!(out, "  Linkage rate: — (no feedback entries)").unwrap();
+    } else if rate_pct < 85 {
+        writeln!(
+            out,
+            "  Linkage rate: {}%   ← below 85% threshold; per-finding precision falls back to entry-level",
+            rate_pct
+        )
+        .unwrap();
+    } else {
+        writeln!(
+            out,
+            "  Linkage rate: {}%   ← per-finding precision math active",
+            rate_pct
+        )
+        .unwrap();
+    }
+    out
+}
+
+/// `quorum stats --join-health` — diagnostic that reports the
+/// reviews↔feedback `finding_id` linkage rate. Used to assess whether
+/// per-finding precision math (Phase A headline trend) is trustworthy or
+/// should fall back to entry-level with a banner.
+///
+/// Exit code is always 0 — this is a diagnostic, not a check. A low
+/// linkage rate is a real-world condition during rollout, not a failure.
+fn run_join_health(quorum_home: &std::path::Path) -> i32 {
+    print!("{}", format_join_health(quorum_home));
+    0
 }
 
 /// Translate clap args for `quorum context ...` into a `ContextCmd` and run
@@ -2454,5 +2528,76 @@ mod feedback_tests {
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod join_health_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Write `content` (already JSONL-formatted) to `dir/<name>` for the
+    /// fixture-driven format_join_health tests. Builders rather than
+    /// inline JSON literals so test intent reads top-to-bottom.
+    fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[&str]) {
+        let path = dir.join(name);
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn join_health_empty_dir_reports_no_feedback() {
+        let dir = TempDir::new().unwrap();
+        let out = format_join_health(dir.path());
+        assert!(out.contains("Linkage health"));
+        assert!(out.contains("Reviews: 0"));
+        assert!(out.contains("Feedback: 0"));
+        assert!(out.contains("(no feedback entries)"));
+    }
+
+    #[test]
+    fn join_health_below_85_percent_emits_fallback_banner() {
+        let dir = TempDir::new().unwrap();
+        // 1 review with 1 finding_id; 2 feedback entries (1 linked, 1 legacy).
+        // Linkage = 50% → below threshold.
+        write_jsonl(dir.path(), "reviews.jsonl", &[
+            r#"{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":["FID-LINKED"]}"#,
+        ]);
+        write_jsonl(dir.path(), "feedback.jsonl", &[
+            r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-LINKED"}"#,
+            r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#,
+        ]);
+
+        let out = format_join_health(dir.path());
+        assert!(out.contains("Reviews: 1 with 1 findings"), "got:\n{out}");
+        assert!(out.contains("Feedback: 2 entries (1 linked, 1 unlinked legacy)"), "got:\n{out}");
+        assert!(out.contains("50%"), "rate must show as 50%: got:\n{out}");
+        assert!(out.contains("below 85% threshold"), "fallback banner missing: got:\n{out}");
+    }
+
+    #[test]
+    fn join_health_at_or_above_85_percent_omits_fallback_banner() {
+        let dir = TempDir::new().unwrap();
+        // 9 linked + 1 legacy = 90% linkage, above threshold.
+        let mut review_ids = String::from("[");
+        for i in 0..9 {
+            if i > 0 { review_ids.push(','); }
+            review_ids.push_str(&format!("\"FID-{}\"", i));
+        }
+        review_ids.push(']');
+        write_jsonl(dir.path(), "reviews.jsonl", &[
+            &format!(r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#, review_ids),
+        ]);
+
+        let mut fb_lines: Vec<String> = (0..9).map(|i| {
+            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-{}"}}"#, i)
+        }).collect();
+        fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#.to_string());
+        let fb_refs: Vec<&str> = fb_lines.iter().map(|s| s.as_str()).collect();
+        write_jsonl(dir.path(), "feedback.jsonl", &fb_refs);
+
+        let out = format_join_health(dir.path());
+        assert!(out.contains("90%"), "rate must show as 90%: got:\n{out}");
+        assert!(!out.contains("below 85% threshold"), "must NOT show fallback banner at 90%: got:\n{out}");
+        assert!(out.contains("per-finding precision math active"), "got:\n{out}");
     }
 }

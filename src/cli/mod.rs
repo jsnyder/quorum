@@ -344,6 +344,12 @@ pub struct StatsOpts {
     /// default dashboard. Restores the pre-highlights output shape.
     #[arg(long)]
     pub minimal: bool,
+
+    /// Diagnostic: report reviews↔feedback finding_id linkage rate and
+    /// short-circuit the normal dashboard. Use to assess whether per-finding
+    /// precision math is trustworthy or should fall back to entry-level.
+    #[arg(long)]
+    pub join_health: bool,
 }
 
 fn parse_rolling_n(s: &str) -> Result<usize, String> {
