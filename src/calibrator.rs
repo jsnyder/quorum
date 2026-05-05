@@ -96,6 +96,7 @@ fn make_no_match_trace(finding: &Finding, file_path: &str) -> crate::calibrator_
             crate::calibrator_trace::SeverityChangeReason::NoMatch,
         ),
         file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
+        provenance: None,
     }
 }
 
@@ -130,6 +131,7 @@ fn make_trace_entry(
         output_severity: finding.severity.clone(),
         severity_change_reason,
         file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
+        provenance: None,
     }
 }
 
