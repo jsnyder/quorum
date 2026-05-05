@@ -29,8 +29,8 @@ pub struct JoinFilter {
 }
 
 impl JoinFilter {
-    /// Returns `true` when no positive filters are set (only `clean_only` can
-    /// be active). Legacy traces (without provenance) are retained by default.
+    /// Returns `true` when all filters are at their default values. Legacy
+    /// traces (without provenance) are retained only when this returns true.
     fn is_default(&self) -> bool {
         self.quorum_version.is_none()
             && !self.clean_only
