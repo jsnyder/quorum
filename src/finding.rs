@@ -11,6 +11,15 @@ pub fn new_finding_ulid() -> String {
     ulid::Ulid::new().to_string()
 }
 
+/// Collect the stable IDs of a slice of findings, in order.
+///
+/// Used at review-write time to populate `ReviewRecord.finding_ids` so
+/// `feedback.jsonl` entries (`FeedbackEntry.finding_id`) can be joined
+/// back to their originating review for per-finding precision math.
+pub fn collect_finding_ids(findings: &[Finding]) -> Vec<String> {
+    findings.iter().map(|f| f.id.clone()).collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -629,5 +638,20 @@ mod tests {
         let legacy = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"calibrator_action":null,"similar_precedent":[]}"#;
         let f: Finding = serde_json::from_str(legacy).expect("legacy load");
         assert_eq!(f.id.len(), 26, "missing id deserializes to a fresh ULID");
+    }
+
+    #[test]
+    fn collect_finding_ids_preserves_order() {
+        let a = FindingBuilder::new().id("ID-A").build();
+        let b = FindingBuilder::new().id("ID-B").build();
+        let c = FindingBuilder::new().id("ID-C").build();
+        let ids = collect_finding_ids(&[a, b, c]);
+        assert_eq!(ids, vec!["ID-A", "ID-B", "ID-C"]);
+    }
+
+    #[test]
+    fn collect_finding_ids_empty_input_yields_empty_vec() {
+        let ids = collect_finding_ids(&[]);
+        assert!(ids.is_empty());
     }
 }
