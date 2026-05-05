@@ -2273,6 +2273,23 @@ mod tests {
         let result: Result<FeedbackEntry, _> = serde_json::from_str(bad_json);
         assert!(result.is_err(), "non-string finding_id must fail to deserialize");
     }
+
+    #[test]
+    fn legacy_row_resave_does_not_introduce_finding_id_or_rule_id_keys() {
+        // The actual disk-bloat regression test: read a legacy row, serialize
+        // it back, and assert no new keys appeared. This guards the
+        // read/modify/write path used by FeedbackStore and the daemon — if
+        // either silently injected `"finding_id":null` on rewrite, the entire
+        // feedback.jsonl would gradually accumulate ~30 KB of null pollution
+        // on full corpus rewrites.
+        let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":"gpt","timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
+        let resaved = serde_json::to_string(&entry).expect("resave");
+        assert!(!resaved.contains("\"finding_id\""),
+            "resave must not introduce finding_id key: {resaved}");
+        assert!(!resaved.contains("\"rule_id\""),
+            "resave must not introduce rule_id key: {resaved}");
+    }
 }
 
 #[cfg(test)]
