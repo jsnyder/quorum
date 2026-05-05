@@ -1,0 +1,19 @@
+# cargo-audit policy. Consumed by `rustsec/audit-check` in
+# `.github/workflows/audit.yml`. See https://rustsec.org/.
+
+[advisories]
+# Block on `low`, `medium`, `high`, and `critical` vulnerabilities (= the
+# cargo-audit default; documented explicitly so the policy is visible).
+# CodeRabbit suggested `"high"` — rejected because Quorum is security-
+# adjacent and we'd rather take noise on low/medium CVEs than miss them.
+#
+# Informational advisories (unmaintained, unsound, notice) surface as
+# warnings only — they're useful signal but rarely actionable as a hard
+# gate, since the unmaintained-crate problem usually requires an
+# upstream replacement to propagate.
+severity_threshold = "low"
+
+# Each entry below MUST include the advisory ID, an inline comment with
+# justification, an owner, and a date. Empty by default — adding an
+# ignore is a deliberate decision, not a workflow shortcut.
+ignore = []
