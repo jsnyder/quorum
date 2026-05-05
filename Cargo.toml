@@ -108,7 +108,7 @@ pulldown-cmark = "0.13"
 walkdir = "2"
 
 # SQLite + vector search (context feature: chunk index with FTS5 and vec0)
-rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+rusqlite = { version = "0.39", features = ["bundled", "functions"] }
 sqlite-vec = "0.1"
 libc = "0.2.186"
 # tree-sitter-dockerfile grammar is vendored in grammars/ and compiled via build.rs
