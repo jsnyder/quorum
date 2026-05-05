@@ -741,8 +741,41 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
+    // Generate run_id early so it can be shared between TraceProvenance
+    // and ReviewRecord (design constraint: same ULID for join key).
+    let run_id = review_log::ReviewRecord::new_ulid();
+
+    // Compute trace provenance ONCE before per-file fanout (design H3).
+    let trace_provenance = {
+        let first_file = opts.files.first().map(|p| p.as_path());
+        let repo = first_file.and_then(review_log::detect_repo);
+        let commit_sha = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        let dirty = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| !o.stdout.is_empty());
+
+        quorum::calibrator_trace::TraceProvenance {
+            quorum_version: Some(env!("CARGO_PKG_VERSION").into()),
+            repo,
+            commit_sha,
+            dirty,
+            review_model: models.first().cloned(),
+            run_id: Some(run_id.clone()),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        }
+    };
+
     // Build calibrator config, loading data-driven thresholds if available.
     let mut calibrator_config = calibrator::CalibratorConfig::default();
+    calibrator_config.trace_provenance = Some(trace_provenance);
     let thresholds_path = qhome.join("calibrator_thresholds.toml");
     if let Some(tc) =
         quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
@@ -1381,7 +1414,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
 
         let record = review_log::ReviewRecord {
-            run_id: review_log::ReviewRecord::new_ulid(),
+            run_id: run_id.clone(),
             timestamp: chrono::Utc::now(),
             quorum_version: env!("CARGO_PKG_VERSION").to_string(),
             repo,
