@@ -45,6 +45,15 @@ pub struct CalibratorConfig {
     /// Intended for `QUORUM_FORCE_THRESHOLD` env var injection. `None` means
     /// use the individual suppress/boost thresholds.
     pub force_threshold: Option<f64>,
+    /// Provenance metadata stamped onto every `CalibratorTraceEntry` produced
+    /// during this calibration run. `None` means no provenance is attached
+    /// (backward-compatible default).
+    pub trace_provenance: Option<crate::calibrator_trace::TraceProvenance>,
+    /// Ablation flag: when `Some(true)`, the corpus join skips fuzzy matching
+    /// tiers (normalized exact, fuzzy same-file, normalized title-only) and
+    /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
+    /// keeps all tiers active (default).
+    pub disable_fuzzy_matching: Option<bool>,
 }
 
 impl Default for CalibratorConfig {
@@ -59,6 +68,8 @@ impl Default for CalibratorConfig {
             suppress_threshold: None,
             boost_threshold: None,
             force_threshold: None,
+            trace_provenance: None,
+            disable_fuzzy_matching: None,
         }
     }
 }
@@ -96,6 +107,7 @@ fn make_no_match_trace(finding: &Finding, file_path: &str) -> crate::calibrator_
             crate::calibrator_trace::SeverityChangeReason::NoMatch,
         ),
         file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
+        provenance: None,
     }
 }
 
@@ -130,6 +142,7 @@ fn make_trace_entry(
         output_severity: finding.severity.clone(),
         severity_change_reason,
         file_path: if file_path.is_empty() { None } else { Some(file_path.to_string()) },
+        provenance: None,
     }
 }
 
@@ -429,7 +442,11 @@ pub fn calibrate(
     if filtered.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the corpus is empty / fully filtered.
-        let traces = findings.iter().map(|f| make_no_match_trace(f, file_path)).collect();
+        let traces = findings.iter().map(|f| {
+            let mut t = make_no_match_trace(f, file_path);
+            t.provenance = config.trace_provenance.clone();
+            t
+        }).collect();
         return CalibrationResult {
             findings,
             suppressed: 0,
@@ -456,7 +473,9 @@ pub fn calibrate(
             .collect();
 
         if similar.is_empty() {
-            traces.push(make_no_match_trace(&finding, file_path));
+            let mut trace = make_no_match_trace(&finding, file_path);
+            trace.provenance = config.trace_provenance.clone();
+            traces.push(trace);
             output.push(finding);
             continue;
         }
@@ -519,7 +538,7 @@ pub fn calibrate(
             ));
         }
 
-        let decision = calibrate_core_decision(
+        let mut decision = calibrate_core_decision(
             &mut finding,
             config,
             tp_weight,
@@ -530,6 +549,7 @@ pub fn calibrate(
             input_severity,
             file_path,
         );
+        decision.trace.provenance = config.trace_provenance.clone();
         traces.push(decision.trace);
         if decision.suppressed {
             suppressed += 1;
@@ -604,7 +624,11 @@ pub fn calibrate_with_index(
     if index.is_empty() {
         // Track B: emit NoMatch traces so the eval harness sees per-finding
         // calibration outcomes even when the index is empty.
-        let traces = findings.iter().map(|f| make_no_match_trace(f, file_path)).collect();
+        let traces = findings.iter().map(|f| {
+            let mut t = make_no_match_trace(f, file_path);
+            t.provenance = config.trace_provenance.clone();
+            t
+        }).collect();
         return CalibrationResult { findings, suppressed: 0, boosted: 0, traces };
     }
 
@@ -662,7 +686,9 @@ pub fn calibrate_with_index(
             .collect();
 
         if similar.is_empty() {
-            traces.push(make_no_match_trace(&finding, file_path));
+            let mut trace = make_no_match_trace(&finding, file_path);
+            trace.provenance = config.trace_provenance.clone();
+            traces.push(trace);
             output.push(finding);
             continue;
         }
@@ -722,7 +748,7 @@ pub fn calibrate_with_index(
             ));
         }
 
-        let decision = calibrate_core_decision(
+        let mut decision = calibrate_core_decision(
             &mut finding,
             config,
             tp_weight,
@@ -733,6 +759,7 @@ pub fn calibrate_with_index(
             input_severity,
             file_path,
         );
+        decision.trace.provenance = config.trace_provenance.clone();
         traces.push(decision.trace);
         if decision.suppressed {
             suppressed += 1;
@@ -3617,6 +3644,101 @@ mod tests {
         assert!(
             !decision.boosted,
             "zero weights -> score=0.5, should not boost with threshold=0.6"
+        );
+    }
+
+    // --- Trace provenance stamping tests ---
+
+    #[test]
+    fn calibrate_attaches_provenance_to_traces() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security".into())
+                .severity(Severity::Medium)
+                .build(),
+            FindingBuilder::new()
+                .title("Unused variable")
+                .category("quality".into())
+                .severity(Severity::Low)
+                .build(),
+        ];
+        let prov = crate::calibrator_trace::TraceProvenance {
+            quorum_version: Some("0.19.0-test".into()),
+            repo: Some("test-repo".into()),
+            run_id: Some("01JTEST_CAL".into()),
+            ..Default::default()
+        };
+        let mut config = CalibratorConfig::default();
+        config.trace_provenance = Some(prov.clone());
+        // Empty feedback: all traces take the NoMatch path.
+        let result = calibrate(findings, &[], &config, "test.rs");
+        assert_eq!(result.traces.len(), 2, "one trace per finding");
+        for trace in &result.traces {
+            assert_eq!(
+                trace.provenance.as_ref(),
+                Some(&prov),
+                "every trace must carry the config provenance; finding={}",
+                trace.finding_title,
+            );
+        }
+    }
+
+    #[test]
+    fn calibrate_with_index_attaches_provenance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        // Empty store -> empty index -> NoMatch path in calibrate_with_index.
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Buffer overflow")
+                .category("security".into())
+                .severity(Severity::High)
+                .build(),
+        ];
+        let prov = crate::calibrator_trace::TraceProvenance {
+            quorum_version: Some("0.19.0-test".into()),
+            commit_sha: Some("deadbeef".into()),
+            ..Default::default()
+        };
+        let mut config = CalibratorConfig::default();
+        config.trace_provenance = Some(prov.clone());
+        let result = calibrate_with_index(findings, &mut index, &config, "buf.c");
+        assert_eq!(result.traces.len(), 1, "one trace per finding");
+        assert_eq!(
+            result.traces[0].provenance.as_ref(),
+            Some(&prov),
+            "calibrate_with_index must stamp provenance from config",
+        );
+    }
+
+    #[test]
+    fn calibrate_attaches_provenance_on_decision_trace() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("SQL injection")
+                .category("security".into())
+                .severity(Severity::Medium)
+                .build(),
+        ];
+        let feedback = vec![
+            fb("SQL injection", "security", Verdict::Tp),
+            fb("SQL injection", "security", Verdict::Tp),
+        ];
+        let prov = crate::calibrator_trace::TraceProvenance {
+            run_id: Some("01JTEST_DECISION".into()),
+            ..Default::default()
+        };
+        let mut config = CalibratorConfig::default();
+        config.trace_provenance = Some(prov.clone());
+        let result = calibrate(findings, &feedback, &config, "src/db.rs");
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].provenance.as_ref(),
+            Some(&prov),
+            "decision-path trace must carry provenance from config",
         );
     }
 }
