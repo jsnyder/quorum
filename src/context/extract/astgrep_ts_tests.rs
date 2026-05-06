@@ -22,16 +22,18 @@ export function verifyToken(token: string, opts: VerifyOpts): Claims | AuthError
         .find(|c| c.qualified_name.as_deref() == Some("verifyToken"))
         .unwrap();
     assert_eq!(vt.kind, super::super::types::ChunkKind::Symbol);
-    assert!(vt
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("export function verifyToken"));
-    assert!(vt
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("Claims | AuthError"));
+    assert!(
+        vt.signature
+            .as_ref()
+            .unwrap()
+            .contains("export function verifyToken")
+    );
+    assert!(
+        vt.signature
+            .as_ref()
+            .unwrap()
+            .contains("Claims | AuthError")
+    );
     assert!(vt.content.contains("Validates a JWT"));
     assert!(vt.content.contains("signing key"));
     assert!(vt.metadata.is_exported);
@@ -48,11 +50,13 @@ fn extracts_exported_interface() {
         .find(|c| c.qualified_name.as_deref() == Some("VerifyOpts"))
         .expect("VerifyOpts not extracted");
     assert_eq!(iface.kind, super::super::types::ChunkKind::Symbol);
-    assert!(iface
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("export interface VerifyOpts"));
+    assert!(
+        iface
+            .signature
+            .as_ref()
+            .unwrap()
+            .contains("export interface VerifyOpts")
+    );
 }
 
 #[test]
@@ -228,15 +232,23 @@ export class Widget {
         .expect("Widget class not extracted");
     let sig = w.signature.as_ref().unwrap();
     assert!(sig.contains("export class Widget"), "got: {sig}");
-    assert!(!sig.contains('{'), "class body must be stripped, got: {sig}");
-    assert!(!sig.contains("render"), "class body must be stripped, got: {sig}");
-    assert!(!sig.contains("private id"), "class body must be stripped, got: {sig}");
+    assert!(
+        !sig.contains('{'),
+        "class body must be stripped, got: {sig}"
+    );
+    assert!(
+        !sig.contains("render"),
+        "class body must be stripped, got: {sig}"
+    );
+    assert!(
+        !sig.contains("private id"),
+        "class body must be stripped, got: {sig}"
+    );
 }
 
 #[test]
 fn mini_ts_auth_fixture_extracts_verify_token() {
-    let src =
-        std::fs::read_to_string("tests/fixtures/context/repos/mini-ts/src/auth.ts").unwrap();
+    let src = std::fs::read_to_string("tests/fixtures/context/repos/mini-ts/src/auth.ts").unwrap();
     let chunks = extract_typescript(&src, "src/auth.ts", "mini-ts", "abc", when()).unwrap();
     let names: Vec<_> = chunks
         .iter()

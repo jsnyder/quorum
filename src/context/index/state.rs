@@ -101,10 +101,7 @@ impl IndexState {
             path: tmp.clone(),
             source,
         })?;
-        std::fs::rename(&tmp, path).map_err(|source| StateError::Io {
-            path: tmp,
-            source,
-        })?;
+        std::fs::rename(&tmp, path).map_err(|source| StateError::Io { path: tmp, source })?;
         Ok(())
     }
 
@@ -117,10 +114,12 @@ impl IndexState {
                     expected: CURRENT_SCHEMA_VERSION,
                 }
             }
-            Some(s) if s.embedder_model_hash != expected_model_hash => StateCheck::ReembedRequired {
-                on_disk: s.embedder_model_hash.clone(),
-                expected: expected_model_hash.to_string(),
-            },
+            Some(s) if s.embedder_model_hash != expected_model_hash => {
+                StateCheck::ReembedRequired {
+                    on_disk: s.embedder_model_hash.clone(),
+                    expected: expected_model_hash.to_string(),
+                }
+            }
             Some(_) => StateCheck::Ok,
         }
     }
@@ -187,11 +186,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("state.json.")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("state.json."))
             .collect();
         assert!(
             leftovers.is_empty(),

@@ -11,7 +11,7 @@
 //! - Methods inside `impl` blocks, `use` statements, macros, consts, and type
 //!   aliases are not extracted.
 
-use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
+use ast_grep_config::{GlobalRules, RuleConfig, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 use chrono::{DateTime, Utc};
 
@@ -109,8 +109,7 @@ pub fn extract_rust(
 
     // Count name occurrences so we can disambiguate chunk ids when the same name
     // appears more than once in a file.
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for s in &raw {
         *name_counts.entry(s.name.clone()).or_insert(0) += 1;
     }

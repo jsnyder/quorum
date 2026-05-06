@@ -8,14 +8,12 @@ use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
 fn table_names(db: &std::path::Path) -> Vec<String> {
     let conn = Connection::open(db).unwrap();
-    conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name",
-    )
-    .unwrap()
-    .query_map([], |r| r.get::<_, String>(0))
-    .unwrap()
-    .collect::<Result<_, _>>()
-    .unwrap()
+    conn.prepare("SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 #[test]
@@ -102,9 +100,7 @@ fn tokenizer_preserves_underscores_in_identifiers() {
     assert_eq!(matches_verify, vec!["b".to_string()]);
 
     let matches_full: Vec<String> = conn
-        .prepare(
-            "SELECT id FROM chunks_fts WHERE chunks_fts MATCH 'verify_token' ORDER BY id",
-        )
+        .prepare("SELECT id FROM chunks_fts WHERE chunks_fts MATCH 'verify_token' ORDER BY id")
         .unwrap()
         .query_map([], |r| r.get::<_, String>(0))
         .unwrap()
@@ -361,11 +357,9 @@ fn rebuild_replaces_prior_source_chunks_atomically() {
     );
     for gone in ["a", "b", "c"] {
         let present: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM chunks WHERE id = ?1",
-                [gone],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM chunks WHERE id = ?1", [gone], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(present, 0, "chunk {gone} should have been removed");
     }
@@ -404,8 +398,14 @@ fn rebuild_preserves_other_sources() {
     builder.rebuild_from_jsonl("A", &jsonl_a2).unwrap();
 
     let conn = builder.conn();
-    assert_eq!(count(conn, "SELECT count(*) FROM chunks WHERE source = 'A'"), 1);
-    assert_eq!(count(conn, "SELECT count(*) FROM chunks WHERE source = 'B'"), 3);
+    assert_eq!(
+        count(conn, "SELECT count(*) FROM chunks WHERE source = 'A'"),
+        1
+    );
+    assert_eq!(
+        count(conn, "SELECT count(*) FROM chunks WHERE source = 'B'"),
+        3
+    );
     assert_eq!(count(conn, "SELECT count(*) FROM chunks_vec"), 4);
     assert_eq!(count(conn, "SELECT count(*) FROM chunks_fts"), 4);
 }

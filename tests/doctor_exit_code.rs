@@ -21,8 +21,7 @@ fn home_with_no_sources_toml() -> tempfile::TempDir {
 /// can't accidentally leak into the developer's real profile on Windows.
 fn quorum_cmd_with_home(tmp: &tempfile::TempDir) -> Command {
     let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("HOME", tmp.path())
-        .env("USERPROFILE", tmp.path());
+    cmd.env("HOME", tmp.path()).env("USERPROFILE", tmp.path());
     cmd
 }
 

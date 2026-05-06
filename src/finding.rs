@@ -613,12 +613,19 @@ mod tests {
     fn finding_builder_assigns_unique_ulid_id() {
         let a = FindingBuilder::new().build();
         let b = FindingBuilder::new().build();
-        assert_eq!(a.id.len(), 26, "ULID is 26 chars in canonical Crockford encoding");
+        assert_eq!(
+            a.id.len(),
+            26,
+            "ULID is 26 chars in canonical Crockford encoding"
+        );
         assert_ne!(a.id, b.id, "each FindingBuilder produces a fresh ULID");
         // ULID monotonicity isn't guaranteed across rapid calls; just check
         // both are valid Crockford-base32 — alphanumeric, no I/L/O/U.
         for c in a.id.chars() {
-            assert!(c.is_ascii_alphanumeric(), "ULID char must be alphanumeric: {c}");
+            assert!(
+                c.is_ascii_alphanumeric(),
+                "ULID char must be alphanumeric: {c}"
+            );
         }
     }
 
@@ -644,7 +651,10 @@ mod tests {
     fn finding_serializes_id_into_json() {
         let f = FindingBuilder::new().id("01HXYZ").build();
         let json = serde_json::to_string(&f).unwrap();
-        assert!(json.contains("\"id\":\"01HXYZ\""), "id must appear in JSON: {json}");
+        assert!(
+            json.contains("\"id\":\"01HXYZ\""),
+            "id must appear in JSON: {json}"
+        );
     }
 
     #[test]

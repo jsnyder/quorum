@@ -6,9 +6,11 @@ fn parallel_flag_accepted() {
     let path = dir.path().join("test.rs");
     std::fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
 
-    Command::cargo_bin("quorum").unwrap()
+    Command::cargo_bin("quorum")
+        .unwrap()
         .arg("review")
-        .arg("--parallel").arg("4")
+        .arg("--parallel")
+        .arg("4")
         .arg(&path)
         .assert()
         .success();
@@ -20,9 +22,11 @@ fn parallel_1_sequential() {
     let path = dir.path().join("test.py");
     std::fs::write(&path, "x = 1\n").unwrap();
 
-    Command::cargo_bin("quorum").unwrap()
+    Command::cargo_bin("quorum")
+        .unwrap()
         .arg("review")
-        .arg("--parallel").arg("1")
+        .arg("--parallel")
+        .arg("1")
         .arg(&path)
         .assert()
         .success();
@@ -34,9 +38,11 @@ fn parallel_0_unlimited() {
     let path = dir.path().join("test.rs");
     std::fs::write(&path, "fn main() {}\n").unwrap();
 
-    Command::cargo_bin("quorum").unwrap()
+    Command::cargo_bin("quorum")
+        .unwrap()
         .arg("review")
-        .arg("--parallel").arg("0")
+        .arg("--parallel")
+        .arg("0")
         .arg(&path)
         .assert()
         .success();
@@ -50,9 +56,11 @@ fn parallel_json_output_valid() {
         std::fs::write(&path, format!("x = {}\n", i)).unwrap();
     }
 
-    let output = Command::cargo_bin("quorum").unwrap()
+    let output = Command::cargo_bin("quorum")
+        .unwrap()
         .arg("review")
-        .arg("--parallel").arg("2")
+        .arg("--parallel")
+        .arg("2")
         .arg("--json")
         .arg(dir.path().join("file1.py"))
         .arg(dir.path().join("file2.py"))
@@ -62,8 +70,8 @@ fn parallel_json_output_valid() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.trim().is_empty() && stdout.trim() != "[]" {
-        let _: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("parallel JSON output should be valid");
+        let _: serde_json::Value =
+            serde_json::from_str(&stdout).expect("parallel JSON output should be valid");
     }
 }
 
@@ -74,17 +82,22 @@ fn parallel_handles_missing_file() {
     std::fs::write(&good, "fn main() {}\n").unwrap();
     let bad = dir.path().join("nonexistent.rs");
 
-    let output = Command::cargo_bin("quorum").unwrap()
+    let output = Command::cargo_bin("quorum")
+        .unwrap()
         .arg("review")
-        .arg("--parallel").arg("2")
+        .arg("--parallel")
+        .arg("2")
         .arg(&good)
         .arg(&bad)
         .output()
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not found") || stderr.contains("nonexistent") || stderr.contains("Error"),
-        "should report missing file, got: {}", stderr);
+    assert!(
+        stderr.contains("not found") || stderr.contains("nonexistent") || stderr.contains("Error"),
+        "should report missing file, got: {}",
+        stderr
+    );
 }
 
 #[test]

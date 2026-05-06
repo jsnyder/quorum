@@ -24,7 +24,10 @@ inject_min_score = 0.65
     assert_eq!(config.sources[0].name, "internal-auth");
     assert_eq!(config.sources[0].kind, SourceKind::Rust);
     assert_eq!(config.sources[0].weight, Some(10));
-    assert!(matches!(config.sources[0].location, SourceLocation::Git { .. }));
+    assert!(matches!(
+        config.sources[0].location,
+        SourceLocation::Git { .. }
+    ));
     match &config.sources[0].location {
         SourceLocation::Git { url, rev } => {
             assert_eq!(url, "git@github.com:myorg/auth.git");
@@ -34,7 +37,10 @@ inject_min_score = 0.65
     }
     assert_eq!(config.sources[1].name, "tf-net");
     assert_eq!(config.sources[1].kind, SourceKind::Terraform);
-    assert!(matches!(config.sources[1].location, SourceLocation::Path(_)));
+    assert!(matches!(
+        config.sources[1].location,
+        SourceLocation::Path(_)
+    ));
     assert_eq!(config.context.inject_budget_tokens, 1500);
 }
 
@@ -187,7 +193,10 @@ kind = "rust"
 inject_budget_tokens = 0
 "#;
     let err = SourcesConfig::from_str(toml).unwrap_err();
-    assert!(err.to_string().contains("inject_budget_tokens"), "got: {err}");
+    assert!(
+        err.to_string().contains("inject_budget_tokens"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -248,7 +257,10 @@ inject_min_socre = 0.5   # typo
 "#;
     let err = SourcesConfig::from_str(toml).unwrap_err();
     let s = err.to_string().to_lowercase();
-    assert!(s.contains("unknown") || s.contains("inject_min_socre"), "got: {err}");
+    assert!(
+        s.contains("unknown") || s.contains("inject_min_socre"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -278,7 +290,10 @@ foo = "bar"
 "#;
     let err = SourcesConfig::from_str(toml).unwrap_err();
     let s = err.to_string().to_lowercase();
-    assert!(s.contains("unknown") || s.contains("unknown_block"), "got: {err}");
+    assert!(
+        s.contains("unknown") || s.contains("unknown_block"),
+        "got: {err}"
+    );
 }
 
 #[test]

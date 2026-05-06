@@ -1,10 +1,9 @@
-/// Review telemetry: append-only JSONL recording review metadata.
-/// No file contents, no finding text, no code snippets. Just counts and metadata.
-
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+/// Review telemetry: append-only JSONL recording review metadata.
+/// No file contents, no finding text, no code snippets. Just counts and metadata.
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TelemetryEntry {
@@ -16,9 +15,12 @@ pub struct TelemetryEntry {
     pub tokens_out: u64,
     pub duration_ms: u64,
     pub suppressed: usize,
-    #[serde(default)] pub context7_resolved: u32,
-    #[serde(default)] pub context7_resolve_failed: u32,
-    #[serde(default)] pub context7_query_failed: u32,
+    #[serde(default)]
+    pub context7_resolved: u32,
+    #[serde(default)]
+    pub context7_resolve_failed: u32,
+    #[serde(default)]
+    pub context7_query_failed: u32,
     /// #123 Layer 1 (Task 10): fraction of `Verdict::Fp` feedback entries
     /// that carry a `fp_kind` discriminator. Range [0.0, 1.0]. `None` when
     /// the loaded feedback store has no FP entries (denominator zero).
@@ -144,7 +146,11 @@ impl TelemetryStore {
             // real line truly exceeded the cap.
             let payload_len = if buf.ends_with(b"\n") {
                 let n = buf.len() - 1;
-                if n > 0 && buf[n - 1] == b'\r' { n - 1 } else { n }
+                if n > 0 && buf[n - 1] == b'\r' {
+                    n - 1
+                } else {
+                    n
+                }
             } else {
                 buf.len()
             };
@@ -167,10 +173,7 @@ impl TelemetryStore {
                 }
                 stats.skipped += 1;
                 if stats.errors.len() < MAX_PARSE_ERRORS {
-                    let snippet: String = String::from_utf8_lossy(&buf)
-                        .chars()
-                        .take(80)
-                        .collect();
+                    let snippet: String = String::from_utf8_lossy(&buf).chars().take(80).collect();
                     stats.errors.push(ParseError {
                         line_no,
                         snippet,
@@ -183,7 +186,11 @@ impl TelemetryStore {
             // Trim the trailing newline (and \r if CRLF) before parsing.
             let line_bytes = if buf.ends_with(b"\n") {
                 let end = buf.len() - 1;
-                let end = if end > 0 && buf[end - 1] == b'\r' { end - 1 } else { end };
+                let end = if end > 0 && buf[end - 1] == b'\r' {
+                    end - 1
+                } else {
+                    end
+                };
                 &buf[..end]
             } else {
                 &buf[..]
@@ -297,8 +304,8 @@ mod tests {
             "duration_ms": 0,
             "suppressed": 0
         }"#;
-        let entry: TelemetryEntry = serde_json::from_str(old)
-            .expect("old JSONL rows must deserialize after schema bump");
+        let entry: TelemetryEntry =
+            serde_json::from_str(old).expect("old JSONL rows must deserialize after schema bump");
         assert_eq!(entry.context7_resolved, 0);
         assert_eq!(entry.context7_resolve_failed, 0);
         assert_eq!(entry.context7_query_failed, 0);
@@ -346,7 +353,10 @@ mod tests {
         store.record(&sample_entry()).unwrap();
         // Append garbage
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         writeln!(f, "{{garbage}}").unwrap();
         writeln!(f, "not json at all").unwrap();
         store.record(&sample_entry()).unwrap();
@@ -612,14 +622,16 @@ mod tests {
 
         let mut old = sample_entry();
         old.ts = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
-            .unwrap().with_timezone(&Utc);
+            .unwrap()
+            .with_timezone(&Utc);
         store.record(&old).unwrap();
 
         let recent = sample_entry(); // ts = now
         store.record(&recent).unwrap();
 
         let since = chrono::DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z")
-            .unwrap().with_timezone(&Utc);
+            .unwrap()
+            .with_timezone(&Utc);
         let entries = store.load_since(since).unwrap();
         assert_eq!(entries.len(), 1);
     }

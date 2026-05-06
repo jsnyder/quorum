@@ -22,11 +22,16 @@ fn parse_cargo(path: &Path) -> Vec<Dependency> {
     };
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let push_table = |table: &toml::value::Table, out: &mut Vec<Dependency>, seen: &mut std::collections::HashSet<String>| {
+    let push_table = |table: &toml::value::Table,
+                      out: &mut Vec<Dependency>,
+                      seen: &mut std::collections::HashSet<String>| {
         for name in table.keys() {
             let normalized = name.replace('-', "_");
             if seen.insert(normalized.clone()) {
-                out.push(Dependency { name: normalized, language: "rust".into() });
+                out.push(Dependency {
+                    name: normalized,
+                    language: "rust".into(),
+                });
             }
         }
     };
@@ -62,18 +67,30 @@ fn parse_package_json(path: &Path, has_tsconfig: bool) -> Vec<Dependency> {
             return Vec::new();
         }
     };
-    let lang = if has_tsconfig { "typescript" } else { "javascript" };
+    let lang = if has_tsconfig {
+        "typescript"
+    } else {
+        "javascript"
+    };
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // Dedupe across sections — a package legitimately appearing in
     // both `dependencies` and `peerDependencies` (common during
     // migrations) used to emit duplicate entries. Mirrors parse_cargo's
     // HashSet-based dedup for parser-symmetry.
-    for key in &["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
+    for key in &[
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
         if let Some(obj) = parsed.get(*key).and_then(|v| v.as_object()) {
             for name in obj.keys() {
                 if seen.insert(name.clone()) {
-                    out.push(Dependency { name: name.clone(), language: lang.into() });
+                    out.push(Dependency {
+                        name: name.clone(),
+                        language: lang.into(),
+                    });
                 }
             }
         }
@@ -90,7 +107,11 @@ fn strip_python_dep_spec(raw: &str) -> Option<String> {
         .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';' | '@'))
         .unwrap_or(no_extras.len());
     let name = no_extras[..name_end].trim();
-    if name.is_empty() { None } else { Some(name.to_string()) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 /// Parse `pyproject.toml`.
@@ -116,9 +137,7 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
     // user tried to declare deps and got it wrong — do NOT fall through to
     // requirements.txt and surface stale deps. Treat malformed-but-present as
     // "explicitly declared empty".
-    let project_dependencies_value = parsed
-        .get("project")
-        .and_then(|p| p.get("dependencies"));
+    let project_dependencies_value = parsed.get("project").and_then(|p| p.get("dependencies"));
     let pep621_array = project_dependencies_value.and_then(|d| d.as_array());
     if let Some(arr) = pep621_array {
         let mut out = Vec::new();
@@ -136,7 +155,10 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
                     continue;
                 }
                 if let Some(name) = strip_python_dep_spec(s) {
-                    out.push(Dependency { name, language: "python".into() });
+                    out.push(Dependency {
+                        name,
+                        language: "python".into(),
+                    });
                 }
             }
         }
@@ -213,9 +235,14 @@ fn parse_pyproject(path: &Path) -> Option<Vec<Dependency>> {
                       out: &mut Vec<Dependency>,
                       seen: &mut std::collections::HashSet<String>| {
         for name in table.keys() {
-            if name == "python" { continue; }
+            if name == "python" {
+                continue;
+            }
             if seen.insert(name.clone()) {
-                out.push(Dependency { name: name.clone(), language: "python".into() });
+                out.push(Dependency {
+                    name: name.clone(),
+                    language: "python".into(),
+                });
             }
         }
     };
@@ -293,9 +320,8 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
     let mut out = Vec::new();
     for raw_line in content.lines() {
         let line = raw_line.trim();
-        if line.is_empty()
-            || line.starts_with('#')
-            || line.starts_with('-')   // pip options: -r, -e, --find-links, --no-binary, -c, --pre, etc.
+        if line.is_empty() || line.starts_with('#') || line.starts_with('-')
+        // pip options: -r, -e, --find-links, --no-binary, -c, --pre, etc.
         {
             continue;
         }
@@ -311,7 +337,10 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
             let looks_like_url = lhs_trim.contains("://") || lhs_trim.starts_with("git+");
             if !lhs_trim.is_empty() && !looks_like_url {
                 if let Some(name) = strip_python_dep_spec(lhs_trim) {
-                    out.push(Dependency { name, language: "python".into() });
+                    out.push(Dependency {
+                        name,
+                        language: "python".into(),
+                    });
                 }
                 continue;
             }
@@ -337,7 +366,10 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
             continue;
         }
         if let Some(name) = strip_python_dep_spec(line) {
-            out.push(Dependency { name, language: "python".into() });
+            out.push(Dependency {
+                name,
+                language: "python".into(),
+            });
         }
     }
     out
@@ -356,12 +388,18 @@ pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     }
     let pyp = project_dir.join("pyproject.toml");
     let req = project_dir.join("requirements.txt");
-    let pyproject_deps = if pyp.exists() { parse_pyproject(&pyp) } else { None };
+    let pyproject_deps = if pyp.exists() {
+        parse_pyproject(&pyp)
+    } else {
+        None
+    };
     match pyproject_deps {
         Some(deps) => out.extend(deps),
-        None => if req.exists() {
-            out.extend(parse_requirements_txt(&req));
-        },
+        None => {
+            if req.exists() {
+                out.extend(parse_requirements_txt(&req));
+            }
+        }
     }
     out
 }
@@ -377,7 +415,8 @@ mod tests {
 
     /// Test helper: write a Cargo.toml with the given (name, version) dep pairs in [dependencies].
     fn cargo_with(deps: &[(&str, &str)]) -> String {
-        let mut s = String::from("[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\n");
+        let mut s =
+            String::from("[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[dependencies]\n");
         for (n, v) in deps {
             s.push_str(&format!("{n} = \"{v}\"\n"));
         }
@@ -387,16 +426,30 @@ mod tests {
     #[test]
     fn cargo_string_dep_is_parsed() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", &cargo_with(&[("tokio", "1"), ("serde", "1.0")]));
+        write(
+            dir.path(),
+            "Cargo.toml",
+            &cargo_with(&[("tokio", "1"), ("serde", "1.0")]),
+        );
         let deps = parse_dependencies(dir.path());
-        assert!(deps.iter().any(|d| d.name == "tokio" && d.language == "rust"));
-        assert!(deps.iter().any(|d| d.name == "serde" && d.language == "rust"));
+        assert!(
+            deps.iter()
+                .any(|d| d.name == "tokio" && d.language == "rust")
+        );
+        assert!(
+            deps.iter()
+                .any(|d| d.name == "serde" && d.language == "rust")
+        );
     }
 
     #[test]
     fn cargo_table_dep_is_parsed() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = { version = \"1\", features = [\"full\"] }\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[dependencies]\ntokio = { version = \"1\", features = [\"full\"] }\n",
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "tokio"));
     }
@@ -407,7 +460,10 @@ mod tests {
         // are common in real Rust projects. Skipping them silently drops deps
         // like winapi/nix from enrichment.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", r#"
+        write(
+            dir.path(),
+            "Cargo.toml",
+            r#"
 [target.'cfg(unix)'.dependencies]
 nix = "0.27"
 
@@ -419,19 +475,28 @@ inotify = "0.10"
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1"
-"#);
+"#,
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         for expected in ["nix", "winapi", "inotify", "cc"] {
-            assert!(names.contains(&expected.to_string()),
-                "missing {expected} in {names:?}");
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing {expected} in {names:?}"
+            );
         }
     }
 
     #[test]
     fn cargo_dev_and_build_deps_included() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[dev-dependencies]\ntempfile = \"3\"\n\n[build-dependencies]\ncc = \"1\"\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[dev-dependencies]\ntempfile = \"3\"\n\n[build-dependencies]\ncc = \"1\"\n",
+        );
         let deps = parse_dependencies(dir.path());
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"tempfile"));
@@ -441,7 +506,11 @@ cc = "1"
     #[test]
     fn cargo_workspace_true_extracts_name() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = { workspace = true }\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[dependencies]\ntokio = { workspace = true }\n",
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "tokio"));
     }
@@ -451,7 +520,11 @@ cc = "1"
         // serde-json in manifest becomes serde_json in code.
         // Without normalization, the imports-filter would never match.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", &cargo_with(&[("serde-json", "1"), ("tokio-stream", "0.1")]));
+        write(
+            dir.path(),
+            "Cargo.toml",
+            &cargo_with(&[("serde-json", "1"), ("tokio-stream", "0.1")]),
+        );
         let deps = parse_dependencies(dir.path());
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"serde_json"), "got {names:?}");
@@ -461,7 +534,11 @@ cc = "1"
     #[test]
     fn cargo_workspace_root_with_only_members_returns_empty() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[workspace]\nmembers = [\"a\", \"b\"]\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.is_empty());
     }
@@ -472,10 +549,16 @@ cc = "1"
         // is an explicit accepted limitation in the design). Pin this so a future
         // change to broaden parsing is a deliberate decision, not a silent regression.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\ntokio = \"1\"\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\ntokio = \"1\"\n",
+        );
         let deps = parse_dependencies(dir.path());
-        assert!(!deps.iter().any(|d| d.name == "tokio"),
-            "workspace.dependencies parsing is deferred; got {deps:?}");
+        assert!(
+            !deps.iter().any(|d| d.name == "tokio"),
+            "workspace.dependencies parsing is deferred; got {deps:?}"
+        );
     }
 
     #[test]
@@ -485,21 +568,32 @@ cc = "1"
         // assertion was a stale comment from before that change. Pin the
         // actual contract so a future regression is caught.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[dependencies]\ntokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[dependencies]\ntokio = \"1\"\n\n[dev-dependencies]\ntokio = \"1\"\n",
+        );
         let deps = parse_dependencies(dir.path());
         let count = deps.iter().filter(|d| d.name == "tokio").count();
-        assert_eq!(count, 1, "tokio should appear exactly once after dedupe: {deps:?}");
+        assert_eq!(
+            count, 1,
+            "tokio should appear exactly once after dedupe: {deps:?}"
+        );
     }
 
     #[test]
     fn package_json_all_dep_kinds_included() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "package.json", r#"{
+        write(
+            dir.path(),
+            "package.json",
+            r#"{
             "dependencies": {"react": "^18"},
             "devDependencies": {"vitest": "^1"},
             "peerDependencies": {"@types/react": "^18"},
             "optionalDependencies": {"fsevents": "*"}
-        }"#);
+        }"#,
+        );
         let deps = parse_dependencies(dir.path());
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         for n in ["react", "vitest", "@types/react", "fsevents"] {
@@ -517,20 +611,31 @@ cc = "1"
         // dedupes by name, so this is a cleanliness/consistency fix
         // rather than a behavioral one.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "package.json", r#"{
+        write(
+            dir.path(),
+            "package.json",
+            r#"{
             "dependencies": {"react": "^18"},
             "peerDependencies": {"react": "^18"},
             "devDependencies": {"react": "^18"}
-        }"#);
+        }"#,
+        );
         let deps = parse_dependencies(dir.path());
         let count = deps.iter().filter(|d| d.name == "react").count();
-        assert_eq!(count, 1, "react should appear exactly once after dedupe: {deps:?}");
+        assert_eq!(
+            count, 1,
+            "react should appear exactly once after dedupe: {deps:?}"
+        );
     }
 
     #[test]
     fn package_json_scoped_packages_kept_verbatim() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "package.json", r#"{"dependencies": {"@nestjs/core": "^10"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"dependencies": {"@nestjs/core": "^10"}}"#,
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "@nestjs/core"));
     }
@@ -538,7 +643,11 @@ cc = "1"
     #[test]
     fn package_json_dependencies_get_typescript_language_when_project_is_typescript() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "package.json", r#"{"dependencies": {"react": "^18"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"dependencies": {"react": "^18"}}"#,
+        );
         write(dir.path(), "tsconfig.json", "{}");
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().all(|d| d.language == "typescript"));
@@ -547,7 +656,11 @@ cc = "1"
     #[test]
     fn package_json_dependencies_get_javascript_language_when_project_is_not_typescript() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "package.json", r#"{"dependencies": {"react": "^18"}}"#);
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"dependencies": {"react": "^18"}}"#,
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().all(|d| d.language == "javascript"));
     }
@@ -563,11 +676,15 @@ cc = "1"
     #[test]
     fn pyproject_pep621_deps_parsed_with_extras_and_versions_stripped() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 name = "x"
 dependencies = ["fastapi>=0.100", "pydantic[email]>=2", "httpx"]
-"#);
+"#,
+        );
         let deps = parse_dependencies(dir.path());
         let mut names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
         names.sort();
@@ -578,12 +695,16 @@ dependencies = ["fastapi>=0.100", "pydantic[email]>=2", "httpx"]
     #[test]
     fn pyproject_poetry_deps_parsed_excluding_python_key() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry.dependencies]
 python = "^3.11"
 fastapi = "^0.100"
 httpx = { version = "*" }
-"#);
+"#,
+        );
         let deps = parse_dependencies(dir.path());
         let mut names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
         names.sort();
@@ -593,24 +714,45 @@ httpx = { version = "*" }
     #[test]
     fn requirements_txt_skips_comments_and_blanks() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt", "# top comment\n\nfastapi\n# inline comment after\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        write(
+            dir.path(),
+            "requirements.txt",
+            "# top comment\n\nfastapi\n# inline comment after\n",
+        );
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
     #[test]
     fn requirements_txt_skips_includes_and_editable() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt", "fastapi\n-r dev.txt\n-e .\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        write(
+            dir.path(),
+            "requirements.txt",
+            "fastapi\n-r dev.txt\n-e .\n",
+        );
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
     #[test]
     fn requirements_txt_skips_vcs_urls() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt", "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        write(
+            dir.path(),
+            "requirements.txt",
+            "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n",
+        );
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -622,10 +764,15 @@ httpx = { version = "*" }
     #[test]
     fn requirements_txt_keeps_pep508_named_git_url() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            "fastapi\nmypkg @ git+https://github.com/foo/bar.git\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            "fastapi\nmypkg @ git+https://github.com/foo/bar.git\n",
+        );
         let mut names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["fastapi", "mypkg"]);
     }
@@ -633,10 +780,15 @@ httpx = { version = "*" }
     #[test]
     fn requirements_txt_keeps_pep508_named_https_wheel() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            "wheelpkg @ https://example.com/pkg.whl\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            "wheelpkg @ https://example.com/pkg.whl\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["wheelpkg"]);
     }
 
@@ -644,10 +796,15 @@ httpx = { version = "*" }
     fn requirements_txt_keeps_pep508_named_url_with_extras() {
         // `mypkg[extra1,extra2] @ git+https://...` -> name `mypkg`, extras dropped.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            "mypkg[email,async] @ git+https://github.com/foo/bar.git\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            "mypkg[email,async] @ git+https://github.com/foo/bar.git\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["mypkg"]);
     }
 
@@ -657,10 +814,15 @@ httpx = { version = "*" }
         // bare `git+https://...` and `https://...` with no `name @` prefix
         // must still be skipped (no valid dep name to extract).
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            "fastapi\ngit+https://github.com/x/y.git\nhttps://example.com/pkg.whl\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -668,10 +830,15 @@ httpx = { version = "*" }
     fn requirements_txt_skips_at_with_empty_name() {
         // ` @ git+https://...` (no name before @) must NOT yield an empty-string dep.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            " @ git+https://github.com/x/y.git\nfastapi\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            " @ git+https://github.com/x/y.git\nfastapi\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -681,10 +848,15 @@ httpx = { version = "*" }
         // strip_python_dep_spec splits on whitespace first, so it handles this
         // — pin it so a future tightening doesn't regress.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
-            "mypkg [email,async] @ git+https://github.com/foo/bar.git\n");
+        write(
+            dir.path(),
+            "requirements.txt",
+            "mypkg [email,async] @ git+https://github.com/foo/bar.git\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["mypkg"]);
     }
 
@@ -696,13 +868,18 @@ httpx = { version = "*" }
         // form. Earlier naive split_once('@') yielded bogus deps like
         // "https://user" or "git+ssh://user".
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
+        write(
+            dir.path(),
+            "requirements.txt",
             "fastapi\n\
              https://user@example.com/pkg.whl\n\
              git+ssh://git@github.com/foo/bar.git\n\
-             git+https://token:x-oauth-basic@github.com/foo/bar.git\n");
+             git+https://token:x-oauth-basic@github.com/foo/bar.git\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -713,13 +890,18 @@ httpx = { version = "*" }
         // previously be emitted as fake deps named "./dist/pkg.whl" etc.
         // Path-shaped tokens are NOT package names; skip them.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
+        write(
+            dir.path(),
+            "requirements.txt",
             "fastapi\n\
              ./dist/pkg.whl\n\
              ../lib\n\
-             /opt/pkg.tar.gz\n");
+             /opt/pkg.tar.gz\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -730,15 +912,20 @@ httpx = { version = "*" }
         // `--find-links`, `--no-binary`, `--index-url`, `-c constraints.txt`
         // all currently fell through to strip_python_dep_spec and were emitted.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
+        write(
+            dir.path(),
+            "requirements.txt",
             "--find-links ./wheels\n\
              --no-binary :all:\n\
              --index-url https://pypi.example.com/simple\n\
              -c constraints.txt\n\
              --pre\n\
-             fastapi\n");
+             fastapi\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -748,15 +935,21 @@ httpx = { version = "*" }
         // form already survives via strip_python_dep_spec stopping at the space,
         // but pin it explicitly so a future tighter URL filter doesn't regress it.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 dependencies = [
   "fastapi",
   "name @ git+https://github.com/a/b.git",
 ]
-"#);
+"#,
+        );
         let mut names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["fastapi", "name"]);
     }
@@ -768,16 +961,22 @@ dependencies = [
         // strip_python_dep_spec lacked `@` in its terminator list, so the
         // no-spaces form returned the literal "name@url" as the package name.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 dependencies = [
   "fastapi",
   "mypkg@https://example.com/pkg.whl",
   "other@git+https://github.com/a/b.git",
 ]
-"#);
+"#,
+        );
         let mut names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["fastapi", "mypkg", "other"]);
     }
@@ -785,8 +984,15 @@ dependencies = [
     #[test]
     fn requirements_txt_strips_version_specifiers() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt", "fastapi>=0.100\nrequests==2.31.0\n");
-        let mut names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        write(
+            dir.path(),
+            "requirements.txt",
+            "fastapi>=0.100\nrequests==2.31.0\n",
+        );
+        let mut names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["fastapi", "requests"]);
     }
@@ -794,9 +1000,16 @@ dependencies = [
     #[test]
     fn requirements_txt_skipped_when_pyproject_present() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", "[project]\ndependencies = [\"fastapi\"]\n");
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[project]\ndependencies = [\"fastapi\"]\n",
+        );
         write(dir.path(), "requirements.txt", "django\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -807,17 +1020,24 @@ dependencies = [
         // silently fell through to [tool.poetry.dependencies], merging two
         // dep-source-of-truth sections.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 dependencies = []
 
 [tool.poetry.dependencies]
 django = "*"
-"#);
+"#,
+        );
         let deps = parse_dependencies(dir.path());
         let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, Vec::<String>::new(),
-            "empty PEP 621 array must win, not fall through to Poetry: {names:?}");
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "empty PEP 621 array must win, not fall through to Poetry: {names:?}"
+        );
     }
 
     // --- Bug 2: pyproject without recognized section silently dropped requirements.txt ---
@@ -830,9 +1050,16 @@ django = "*"
         // Build-system-only pyproject: no [project] AND no [tool.poetry] →
         // pyproject yields nothing useful → requirements.txt should win.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", "[build-system]\nrequires = [\"setuptools\"]\n");
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[build-system]\nrequires = [\"setuptools\"]\n",
+        );
         write(dir.path(), "requirements.txt", "fastapi\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -843,7 +1070,10 @@ django = "*"
         let dir = TempDir::new().unwrap();
         write(dir.path(), "pyproject.toml", "this is not valid toml ===\n");
         write(dir.path(), "requirements.txt", "django\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["django"]);
     }
 
@@ -856,16 +1086,25 @@ django = "*"
         // `[project]` with a malformed dependencies key as "explicitly
         // declared zero deps" and stop there.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 name = "broken"
 dependencies = "this should be an array"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "fastapi\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, Vec::<String>::new(),
-            "wrong-type dependencies must NOT fall through to requirements.txt");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "wrong-type dependencies must NOT fall through to requirements.txt"
+        );
     }
 
     #[test]
@@ -876,16 +1115,25 @@ dependencies = "this should be an array"
         // the user *tried* to declare Poetry deps. Falling through to
         // requirements.txt would surface stale or wrong deps.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "broken"
 dependencies = "this should be a table"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "fastapi\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, Vec::<String>::new(),
-            "Poetry wrong-type dependencies must NOT fall through to requirements.txt");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "Poetry wrong-type dependencies must NOT fall through to requirements.txt"
+        );
     }
 
     #[test]
@@ -895,14 +1143,20 @@ dependencies = "this should be a table"
         // is "no Poetry deps section" — should still fall through to
         // requirements.txt.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "myproj"
 version = "0.1.0"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "django\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["django"]);
     }
 
@@ -913,7 +1167,10 @@ version = "0.1.0"
         // The parser used to ignore that section entirely, missing
         // pytest/black/etc. in any project still on the legacy layout.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "legacy"
 
@@ -924,9 +1181,12 @@ fastapi = "^0.100"
 [tool.poetry.dev-dependencies]
 pytest = "^7"
 black = "^23"
-"#);
+"#,
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         for n in ["fastapi", "pytest", "black"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
@@ -939,7 +1199,10 @@ black = "^23"
         // group (dev, test, lint, docs, ...) contributes deps. The
         // parser used to ignore them entirely.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "modern"
 
@@ -952,9 +1215,12 @@ pytest = "^8"
 
 [tool.poetry.group.lint.dependencies]
 ruff = "^0.5"
-"#);
+"#,
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         for n in ["django", "pytest", "ruff"] {
             assert!(names.contains(&n.to_string()), "missing {n} in {names:?}");
         }
@@ -969,18 +1235,27 @@ ruff = "^0.5"
         // the requirements.txt fallback. Now we only count groups that
         // actually contain a `dependencies` key.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "metadata-only-groups"
 
 [tool.poetry.group.dev]
 optional = true
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "django\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, vec!["django"],
-            "metadata-only Poetry groups should not block requirements.txt: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["django"],
+            "metadata-only Poetry groups should not block requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -991,15 +1266,24 @@ optional = true
         // probe-all-three guard falls through to requirements.txt.
         // The user *clearly* intended Poetry; warn and treat as empty.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool]
 poetry = "this should be a table"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, Vec::<String>::new(),
-            "wrong-type [tool.poetry] root must NOT fall through: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            Vec::<String>::new(),
+            "wrong-type [tool.poetry] root must NOT fall through: {names:?}"
+        );
     }
 
     #[test]
@@ -1012,28 +1296,41 @@ poetry = "this should be a table"
         // for any project with a malformed main table — strictly worse
         // than the prior state. Warn but continue.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "broken-main-good-dev"
 dependencies = "this should be a table"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"pytest".into()),
-            "valid dev-deps must still be parsed when main is malformed: {names:?}");
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"pytest".into()),
+            "valid dev-deps must still be parsed when main is malformed: {names:?}"
+        );
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
     fn pyproject_wrong_type_main_poetry_deps_still_picks_up_valid_groups() {
         // Same shape with modern Poetry 1.2+ groups.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "broken-main-good-groups"
 dependencies = ["should", "be", "a", "table", "not", "array"]
@@ -1043,16 +1340,23 @@ pytest = "^8"
 
 [tool.poetry.group.lint.dependencies]
 ruff = "^0.5"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         for n in ["pytest", "ruff"] {
-            assert!(names.contains(&n.to_string()),
-                "valid group {n} must be parsed when main is malformed: {names:?}");
+            assert!(
+                names.contains(&n.to_string()),
+                "valid group {n} must be parsed when main is malformed: {names:?}"
+            );
         }
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -1064,7 +1368,10 @@ ruff = "^0.5"
         // explicitly empty, matching the existing wrong-type guards on
         // [project].dependencies and [tool.poetry.dependencies] (CR7).
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "broken-dev"
 
@@ -1072,14 +1379,21 @@ name = "broken-dev"
 fastapi = "^0.100"
 
 dev-dependencies = "this should be a table"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"fastapi".into()),
-            "main deps must still parse: {names:?}");
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"fastapi".into()),
+            "main deps must still parse: {names:?}"
+        );
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -1087,20 +1401,31 @@ dev-dependencies = "this should be a table"
         // Same shape, applied to the [tool.poetry.group] table itself
         // (e.g. someone wrote `group = "dev"` instead of nested tables).
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "broken-group"
 group = "this should be a table of groups"
 
 [tool.poetry.dependencies]
 django = "^5"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"django".into()), "main deps must still parse: {names:?}");
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"django".into()),
+            "main deps must still parse: {names:?}"
+        );
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -1109,7 +1434,10 @@ django = "^5"
         // [tool.poetry.group.dev] should be skipped with a warn while
         // [tool.poetry.group.lint.dependencies] still contributes ruff.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "mixed-groups"
 
@@ -1118,11 +1446,16 @@ dev = "this should be a sub-table"
 
 [tool.poetry.group.lint.dependencies]
 ruff = "^0.5"
-"#);
+"#,
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"ruff".into()),
-            "valid sibling group must still parse: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"ruff".into()),
+            "valid sibling group must still parse: {names:?}"
+        );
     }
 
     #[test]
@@ -1133,22 +1466,36 @@ ruff = "^0.5"
         // — losing the dev-deps entirely. The fix must treat any of
         // {main, dev, group} as a valid signal that Poetry owns this project.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "devtools-only"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7"
 black = "^23"
-"#);
+"#,
+        );
         // Sentinel: if we incorrectly fall through, this would leak in.
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
-        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
-        assert!(names.contains(&"black".into()), "black missing in {names:?}");
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"pytest".into()),
+            "pytest missing in {names:?}"
+        );
+        assert!(
+            names.contains(&"black".into()),
+            "black missing in {names:?}"
+        );
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -1156,7 +1503,10 @@ black = "^23"
         // Same shape as the legacy-only case, but with modern Poetry 1.2+
         // groups and no main [tool.poetry.dependencies] table.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry]
 name = "groups-only"
 
@@ -1165,14 +1515,22 @@ ruff = "^0.5"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "WRONG_SHOULD_NOT_APPEAR\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert!(names.contains(&"ruff".into()), "ruff missing in {names:?}");
-        assert!(names.contains(&"pytest".into()), "pytest missing in {names:?}");
-        assert!(!names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
-            "must not fall through to requirements.txt: {names:?}");
+        assert!(
+            names.contains(&"pytest".into()),
+            "pytest missing in {names:?}"
+        );
+        assert!(
+            !names.contains(&"WRONG_SHOULD_NOT_APPEAR".into()),
+            "must not fall through to requirements.txt: {names:?}"
+        );
     }
 
     #[test]
@@ -1181,7 +1539,10 @@ pytest = "^8"
         // main + override in dev) yields one entry, mirroring parse_cargo
         // and the new package.json contract.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [tool.poetry.dependencies]
 requests = "^2"
 
@@ -1190,10 +1551,14 @@ requests = "^2"
 
 [tool.poetry.group.test.dependencies]
 requests = "^2"
-"#);
+"#,
+        );
         let deps = parse_dependencies(dir.path());
         let count = deps.iter().filter(|d| d.name == "requests").count();
-        assert_eq!(count, 1, "requests should appear exactly once after dedupe: {deps:?}");
+        assert_eq!(
+            count, 1,
+            "requests should appear exactly once after dedupe: {deps:?}"
+        );
     }
 
     #[test]
@@ -1202,14 +1567,20 @@ requests = "^2"
         // and NO `dependencies` key at all is "no PEP 621 deps section" —
         // should still fall through to requirements.txt or Poetry.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 name = "myproj"
 version = "0.1.0"
-"#);
+"#,
+        );
         write(dir.path(), "requirements.txt", "fastapi\n");
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -1220,14 +1591,19 @@ version = "0.1.0"
         // The previous path heuristic only caught lines with `/` or leading
         // `.`/`/`. Bare filenames slipped through.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "requirements.txt",
+        write(
+            dir.path(),
+            "requirements.txt",
             "fastapi\n\
              mypkg-1.0.0-py3-none-any.whl\n\
              package.tar.gz\n\
              archive.zip\n\
-             plugin.egg\n");
+             plugin.egg\n",
+        );
         let names: Vec<_> = parse_dependencies(dir.path())
-            .iter().map(|d| d.name.clone()).collect();
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, vec!["fastapi"]);
     }
 
@@ -1237,9 +1613,16 @@ version = "0.1.0"
         // explicit `dependencies = []` declares zero deps and must NOT
         // silently fall through to a stray requirements.txt.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", "[project]\ndependencies = []\n");
+        write(
+            dir.path(),
+            "pyproject.toml",
+            "[project]\ndependencies = []\n",
+        );
         write(dir.path(), "requirements.txt", "fastapi\n");
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         assert_eq!(names, Vec::<String>::new());
     }
 
@@ -1249,7 +1632,10 @@ version = "0.1.0"
         // garbage names like "git+https". parse_requirements_txt already filters
         // these; parse_pyproject must too.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 dependencies = [
   "fastapi",
@@ -1257,31 +1643,50 @@ dependencies = [
   "https://example.com/pkg.whl",
   "name @ git+https://github.com/a/b.git",
 ]
-"#);
-        let names: Vec<_> = parse_dependencies(dir.path()).iter().map(|d| d.name.clone()).collect();
+"#,
+        );
+        let names: Vec<_> = parse_dependencies(dir.path())
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         // Only "fastapi" (a clean PEP 508 name) and "name" (the PEP 508 direct-ref
         // form: `name @ url` — the name half is legitimate) should survive.
         // Bare URLs without a leading `name @` are unusable as Context7 lookup keys.
         let mut sorted = names.clone();
         sorted.sort();
-        assert!(sorted.contains(&"fastapi".to_string()), "fastapi missing: {names:?}");
-        assert!(!sorted.iter().any(|n| n.contains("://") || n.starts_with("git+")),
-            "URL-shaped names must be filtered: {names:?}");
+        assert!(
+            sorted.contains(&"fastapi".to_string()),
+            "fastapi missing: {names:?}"
+        );
+        assert!(
+            !sorted
+                .iter()
+                .any(|n| n.contains("://") || n.starts_with("git+")),
+            "URL-shaped names must be filtered: {names:?}"
+        );
     }
 
     #[test]
     fn pyproject_pep621_wins_when_both_sections_present() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "pyproject.toml", r#"
+        write(
+            dir.path(),
+            "pyproject.toml",
+            r#"
 [project]
 dependencies = ["fastapi"]
 
 [tool.poetry.dependencies]
 django = "*"
-"#);
+"#,
+        );
         let deps = parse_dependencies(dir.path());
         let names: Vec<_> = deps.iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, vec!["fastapi"], "PEP 621 must win, not be merged with Poetry: {names:?}");
+        assert_eq!(
+            names,
+            vec!["fastapi"],
+            "PEP 621 must win, not be merged with Poetry: {names:?}"
+        );
     }
 
     #[test]
@@ -1289,11 +1694,19 @@ django = "*"
         // foo is the import-side name; "real-crate" is what's on crates.io.
         // We must surface "foo" so the import filter matches `use foo::...`.
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "Cargo.toml", "[dependencies]\nfoo = { package = \"real-crate\", version = \"1\" }\n");
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[dependencies]\nfoo = { package = \"real-crate\", version = \"1\" }\n",
+        );
         let deps = parse_dependencies(dir.path());
-        assert!(deps.iter().any(|d| d.name == "foo"),
-            "renamed dep must surface key: {deps:?}");
-        assert!(!deps.iter().any(|d| d.name == "real_crate"),
-            "must not surface package name: {deps:?}");
+        assert!(
+            deps.iter().any(|d| d.name == "foo"),
+            "renamed dep must surface key: {deps:?}"
+        );
+        assert!(
+            !deps.iter().any(|d| d.name == "real_crate"),
+            "must not surface package name: {deps:?}"
+        );
     }
 }

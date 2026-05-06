@@ -17,12 +17,12 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rusqlite::Connection;
 
 use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesConfig};
-use crate::context::extract::dispatch::{extract_source, ExtractConfig};
-use crate::context::index::builder::{ensure_vec_loaded, IndexBuilder};
+use crate::context::extract::dispatch::{ExtractConfig, extract_source};
+use crate::context::index::builder::{IndexBuilder, ensure_vec_loaded};
 use crate::context::index::state::IndexState;
 #[cfg(feature = "embeddings")]
 use crate::context::index::traits::FastEmbedEmbedder;
@@ -592,10 +592,7 @@ fn run_init<D: ContextDeps>(deps: &D) -> Result<CmdOutput> {
                 ));
             }
             Ok(CmdOutput {
-                stdout: format!(
-                    "context already initialized at {}",
-                    sources_path.display()
-                ),
+                stdout: format!("context already initialized at {}", sources_path.display()),
                 created_paths: Vec::new(),
                 removed_paths: Vec::new(),
                 warnings: vec![format!(
@@ -622,8 +619,7 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
     // gate before we touch the on-disk file or join `<home>/sources/<name>`
     // anywhere downstream.
     let name = args.name.trim();
-    crate::cli::validate_source_name(name)
-        .map_err(|e| anyhow!("source name invalid: {e}"))?;
+    crate::cli::validate_source_name(name).map_err(|e| anyhow!("source name invalid: {e}"))?;
     let kind = SourceKind::parse_cli(&args.kind).ok_or_else(|| {
         anyhow!(
             "unknown kind '{}' (expected one of: rust, typescript, javascript, python, go, terraform, service, docs)",
@@ -693,8 +689,7 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
     };
 
     let sources_path = deps.home_dir().join("sources.toml");
-    SourcesConfig::append_source(&sources_path, &entry)
-        .map_err(|e| anyhow!("{e}"))?;
+    SourcesConfig::append_source(&sources_path, &entry).map_err(|e| anyhow!("{e}"))?;
 
     Ok(CmdOutput {
         stdout: format!("added source '{}'", entry.name),
@@ -710,8 +705,7 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
 fn run_list<D: ContextDeps>(args: &ListArgs, deps: &D) -> Result<CmdOutput> {
     let sources_path = deps.home_dir().join("sources.toml");
     if !sources_path.exists() {
-        let msg =
-            "no sources registered; run `quorum context init` first".to_string();
+        let msg = "no sources registered; run `quorum context init` first".to_string();
         return Ok(CmdOutput {
             stdout: msg.clone(),
             created_paths: Vec::new(),
@@ -806,7 +800,10 @@ fn render_list_compact(sources: &[SourceEntry]) -> String {
     // callers can rely on stable, user-visible ordering.
     let mut out = String::new();
     for e in sources {
-        let weight = e.weight.map(|w| w.to_string()).unwrap_or_else(|| "-".into());
+        let weight = e
+            .weight
+            .map(|w| w.to_string())
+            .unwrap_or_else(|| "-".into());
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\n",
             e.name,
@@ -1085,7 +1082,10 @@ fn run_refresh<D: ContextDeps>(args: &RefreshArgs, deps: &D) -> Result<CmdOutput
 
     if failures == entries.len() && matches!(args.selector, SourceSelector::Single(_)) {
         return Err(anyhow!(
-            lines.last().cloned().unwrap_or_else(|| "refresh failed".into())
+            lines
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "refresh failed".into())
         ));
     }
 
@@ -1172,11 +1172,8 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
     // straight to `query` has never run it.
     ensure_vec_loaded();
 
-    let conn = Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
+    let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
 
     let k = args.k.unwrap_or(5).max(1);
     let filters = if args.source.is_some() {
@@ -1239,10 +1236,7 @@ fn resolve_query_target<D: ContextDeps>(
     ))
 }
 
-fn render_query_table(
-    hits: &[crate::context::retrieve::ScoredChunk],
-    explain: bool,
-) -> String {
+fn render_query_table(hits: &[crate::context::retrieve::ScoredChunk], explain: bool) -> String {
     if hits.is_empty() {
         return "no hits".to_string();
     }
@@ -1271,10 +1265,7 @@ fn render_query_table(
     out
 }
 
-fn render_query_compact(
-    hits: &[crate::context::retrieve::ScoredChunk],
-    explain: bool,
-) -> String {
+fn render_query_compact(hits: &[crate::context::retrieve::ScoredChunk], explain: bool) -> String {
     if hits.is_empty() {
         return "no hits".to_string();
     }
@@ -1384,13 +1375,11 @@ fn on_disk_source_dirs(home: &Path) -> Result<Vec<(String, PathBuf)>> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&root)
-        .map_err(|e| anyhow!("read_dir({}): {e}", root.display()))?;
+    let entries =
+        std::fs::read_dir(&root).map_err(|e| anyhow!("read_dir({}): {e}", root.display()))?;
     for ent in entries {
         let ent = ent.map_err(|e| anyhow!("read_dir entry: {e}"))?;
-        let ft = ent
-            .file_type()
-            .map_err(|e| anyhow!("file_type: {e}"))?;
+        let ft = ent.file_type().map_err(|e| anyhow!("file_type: {e}"))?;
         if !ft.is_dir() {
             continue;
         }
@@ -1433,7 +1422,8 @@ fn run_prune<D: ContextDeps>(args: &PruneArgs, deps: &D) -> Result<CmdOutput> {
         // No config => every sources/<x>/ dir is orphan. Proceed without
         // erroring: prune is inherently idempotent and this is a valid
         // "clean up an abandoned install" case.
-        SourcesConfig::from_str("").unwrap_or_else(|_| SourcesConfig::from_str("[context]\n").expect("empty config"))
+        SourcesConfig::from_str("")
+            .unwrap_or_else(|_| SourcesConfig::from_str("[context]\n").expect("empty config"))
     };
     let (registered, unsafe_names) = registered_safe_names(&cfg);
     let root = sources_root(deps.home_dir());
@@ -1518,7 +1508,10 @@ fn check_sources_toml<D: ContextDeps>(deps: &D) -> (CheckResult, Option<SourcesC
                 name: "sources_toml_exists_and_parses",
                 scope: None,
                 status: CheckStatus::Fail { fixable: false },
-                detail: format!("{} does not exist; run `quorum context init`", path.display()),
+                detail: format!(
+                    "{} does not exist; run `quorum context init`",
+                    path.display()
+                ),
             },
             None,
         );
@@ -1614,10 +1607,7 @@ fn db_chunk_count(db: &Path) -> Result<i64> {
     // the future and we don't want a subtle "works in tests, fails in
     // production" split between the fresh-process and post-index cases.
     ensure_vec_loaded();
-    let conn = Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let n: i64 = conn.query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
     Ok(n)
 }
@@ -1757,10 +1747,7 @@ fn check_state_json<D: ContextDeps>(deps: &D, name: &str) -> CheckResult {
     }
 }
 
-fn check_orphan_dirs<D: ContextDeps>(
-    deps: &D,
-    cfg: Option<&SourcesConfig>,
-) -> Result<CheckResult> {
+fn check_orphan_dirs<D: ContextDeps>(deps: &D, cfg: Option<&SourcesConfig>) -> Result<CheckResult> {
     let registered: std::collections::HashSet<String> = cfg
         .map(|c| c.sources.iter().map(|s| s.name.clone()).collect())
         .unwrap_or_default();
@@ -1961,9 +1948,7 @@ fn repair_one_source<D: ContextDeps>(
 
         // Write fresh state.json.
         let head_sha = match source_repo_root(entry) {
-            Some(root) if root.exists() => {
-                deps.git().head_sha(root).unwrap_or(None)
-            }
+            Some(root) if root.exists() => deps.git().head_sha(root).unwrap_or(None),
             _ => None,
         };
         let state = IndexState::new(deps.embedder().model_hash())
@@ -1983,11 +1968,7 @@ fn repair_one_source<D: ContextDeps>(
     Ok(())
 }
 
-fn render_doctor_json(
-    checks: &[CheckResult],
-    ok: bool,
-    repair_lines: &[String],
-) -> Result<String> {
+fn render_doctor_json(checks: &[CheckResult], ok: bool, repair_lines: &[String]) -> Result<String> {
     let items: Vec<serde_json::Value> = checks
         .iter()
         .map(|c| {

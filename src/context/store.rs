@@ -93,10 +93,7 @@ impl ChunkStore {
                 continue;
             }
             let chunk: Chunk = serde_json::from_str(trimmed).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("line {}: {e}", idx + 1),
-                )
+                io::Error::new(io::ErrorKind::InvalidData, format!("line {}: {e}", idx + 1))
             })?;
             chunks.push(chunk);
         }

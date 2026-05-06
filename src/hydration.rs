@@ -44,19 +44,46 @@ pub fn hydrate(
     let mut all_imports: Vec<(String, String)> = Vec::new(); // (imported_name, full_text)
 
     // Gather definitions
-    collect_definitions(&root, source, &func_kinds, &type_kinds, &import_kinds,
-        &mut all_funcs, &mut all_types, &mut all_imports);
+    collect_definitions(
+        &root,
+        source,
+        &func_kinds,
+        &type_kinds,
+        &import_kinds,
+        &mut all_funcs,
+        &mut all_types,
+        &mut all_imports,
+    );
 
     // For each changed region, find function calls and resolve callees
     let mut seen_callees = std::collections::HashSet::new();
     let mut seen_types = std::collections::HashSet::new();
 
     for &(start, end) in changed_lines {
-        collect_calls_in_range(&root, source, lang, &call_kinds, start, end,
-            &all_funcs, &mut ctx.callee_signatures, &mut ctx.qualified_names, &mut seen_callees);
+        collect_calls_in_range(
+            &root,
+            source,
+            lang,
+            &call_kinds,
+            start,
+            end,
+            &all_funcs,
+            &mut ctx.callee_signatures,
+            &mut ctx.qualified_names,
+            &mut seen_callees,
+        );
 
-        collect_type_refs_in_range(&root, source, lang, &type_kinds, start, end,
-            &all_types, &mut ctx.type_definitions, &mut seen_types);
+        collect_type_refs_in_range(
+            &root,
+            source,
+            lang,
+            &type_kinds,
+            start,
+            end,
+            &all_types,
+            &mut ctx.type_definitions,
+            &mut seen_types,
+        );
 
         // Walk identifier-like leaf nodes (NOT comments / string literals) in the
         // changed range so import filtering can avoid matching tokens that look
@@ -64,9 +91,17 @@ pub fn hydrate(
         let mut idents_in_range = std::collections::HashSet::new();
         collect_identifiers_in_range(&root, source, start, end, &mut idents_in_range);
 
-        collect_import_refs_in_range(&root, source, &import_kinds, start, end,
-            &all_imports, &idents_in_range,
-            &mut ctx.import_targets, &mut ctx.qualified_names);
+        collect_import_refs_in_range(
+            &root,
+            source,
+            &import_kinds,
+            start,
+            end,
+            &all_imports,
+            &idents_in_range,
+            &mut ctx.import_targets,
+            &mut ctx.qualified_names,
+        );
     }
 
     // Caller blast radius: if changed lines contain a function definition,
@@ -75,7 +110,15 @@ pub fn hydrate(
         for (name, _, fstart, _fend) in &all_funcs {
             if *fstart >= start && *fstart <= end {
                 // This function's signature is in the changed region
-                find_callers_of(&root, source, lang, &call_kinds, name, &all_funcs, &mut ctx.callers);
+                find_callers_of(
+                    &root,
+                    source,
+                    lang,
+                    &call_kinds,
+                    name,
+                    &all_funcs,
+                    &mut ctx.callers,
+                );
             }
         }
     }
@@ -99,7 +142,11 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
     match lang {
         Language::Rust => vec!["struct_item", "enum_item", "type_item"],
         Language::Python => vec!["class_definition"],
-        Language::TypeScript | Language::Tsx => vec!["interface_declaration", "type_alias_declaration", "class_declaration"],
+        Language::TypeScript | Language::Tsx => vec![
+            "interface_declaration",
+            "type_alias_declaration",
+            "class_declaration",
+        ],
         Language::Yaml => vec![],
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
@@ -174,8 +221,16 @@ fn collect_definitions(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            collect_definitions(&child, source, func_kinds, type_kinds, import_kinds_list,
-                funcs, types, imports);
+            collect_definitions(
+                &child,
+                source,
+                func_kinds,
+                type_kinds,
+                import_kinds_list,
+                funcs,
+                types,
+                imports,
+            );
         }
     }
 }
@@ -237,7 +292,10 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     } else if text.starts_with("from ") {
         // Python: from X import a, b, c  /  from X import (a, b as c)
         if let Some(after_import) = text.split(" import ").nth(1) {
-            let cleaned = after_import.trim().trim_start_matches('(').trim_end_matches(')');
+            let cleaned = after_import
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')');
             for part in cleaned.split(',') {
                 let part = part.trim();
                 if part.is_empty() {
@@ -274,7 +332,11 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
                     } else {
                         None
                     };
-                    let head = clause[..open].trim().trim_end_matches(',').trim().to_string();
+                    let head = clause[..open]
+                        .trim()
+                        .trim_end_matches(',')
+                        .trim()
+                        .to_string();
                     (head, inner)
                 }
                 None => (clause.to_string(), None),
@@ -364,7 +426,9 @@ fn collect_calls_in_range(
         if let Some(func_node) = node.child_by_field_name("function") {
             let func_text = &source[func_node.byte_range()];
             // Get the simple name (last identifier)
-            let call_name = func_text.rsplit('.').next()
+            let call_name = func_text
+                .rsplit('.')
+                .next()
                 .unwrap_or(func_text)
                 .rsplit("::")
                 .next()
@@ -391,8 +455,10 @@ fn collect_calls_in_range(
     // open before the changed range.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            collect_calls_in_range(&child, source, _lang, call_kinds, start_line, end_line,
-                all_funcs, out, qnames_out, seen);
+            collect_calls_in_range(
+                &child, source, _lang, call_kinds, start_line, end_line, all_funcs, out,
+                qnames_out, seen,
+            );
         }
     }
 }
@@ -427,8 +493,17 @@ fn collect_type_refs_in_range(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            collect_type_refs_in_range(&child, source, _lang, _type_kinds, start_line, end_line,
-                all_types, out, seen);
+            collect_type_refs_in_range(
+                &child,
+                source,
+                _lang,
+                _type_kinds,
+                start_line,
+                end_line,
+                all_types,
+                out,
+                seen,
+            );
         }
     }
 }
@@ -550,10 +625,7 @@ pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
                     if let Ok(s) = start_str.parse::<u32>() {
                         // Count is optional in unified diff format (defaults to 1).
                         // "@@ -10 +10 @@" means a single-line change at line 10.
-                        let count = nums
-                            .get(1)
-                            .and_then(|c| c.parse::<u32>().ok())
-                            .unwrap_or(1);
+                        let count = nums.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(1);
                         // Pure-deletion hunks (+N,0) have count==0 and contribute no
                         // changed lines on the new side — skip rather than emit a
                         // garbage (N, N-1) range from saturating_sub underflow.
@@ -587,7 +659,9 @@ fn find_callers_of(
     if call_kinds.contains(&node.kind()) {
         if let Some(func_node) = node.child_by_field_name("function") {
             let func_text = &source[func_node.byte_range()];
-            let call_name = func_text.rsplit('.').next()
+            let call_name = func_text
+                .rsplit('.')
+                .next()
                 .unwrap_or(func_text)
                 .rsplit("::")
                 .next()
@@ -610,7 +684,15 @@ fn find_callers_of(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            find_callers_of(&child, source, _lang, call_kinds, target_name, all_funcs, callers);
+            find_callers_of(
+                &child,
+                source,
+                _lang,
+                call_kinds,
+                target_name,
+                all_funcs,
+                callers,
+            );
         }
     }
 }
@@ -618,7 +700,7 @@ fn find_callers_of(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{parse, Language};
+    use crate::parser::{Language, parse};
 
     // -- Callee signatures --
 
@@ -639,7 +721,9 @@ fn process(data: &str) {
         // Changed lines: process() at lines 5-8
         let ctx = hydrate(&tree, source, Language::Rust, &[(5, 8)]);
         assert!(
-            ctx.callee_signatures.iter().any(|s| s.contains("validate") && s.contains("&str")),
+            ctx.callee_signatures
+                .iter()
+                .any(|s| s.contains("validate") && s.contains("&str")),
             "Should find callee signature for validate(). Got: {:?}",
             ctx.callee_signatures
         );
@@ -849,7 +933,13 @@ fn process() {
         let tree = parse(source, Language::Rust).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(1, 3)]);
         // external_crate_fn not defined in file — should not crash, just empty
-        assert!(ctx.callee_signatures.is_empty() || ctx.callee_signatures.iter().all(|s| !s.contains("fn external_crate_fn")));
+        assert!(
+            ctx.callee_signatures.is_empty()
+                || ctx
+                    .callee_signatures
+                    .iter()
+                    .all(|s| !s.contains("fn external_crate_fn"))
+        );
     }
 
     #[test]
@@ -890,7 +980,11 @@ fn another_unrelated() -> i32 { 99 }
         let diff = hydrate(&tree, source, Language::Rust, &[(5, 9)]);
 
         // Diff hydration should find callee (validate) but NOT unrelated functions
-        assert!(diff.callee_signatures.iter().any(|s| s.contains("validate")));
+        assert!(
+            diff.callee_signatures
+                .iter()
+                .any(|s| s.contains("validate"))
+        );
         // Full hydration gets everything
         assert!(full.callee_signatures.len() >= diff.callee_signatures.len());
     }
@@ -938,8 +1032,8 @@ fn another_unrelated() -> i32 { 99 }
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].0, "src/main.rs");
         assert_eq!(parsed[0].1.len(), 2);
-        assert_eq!(parsed[0].1[0], (5, 8));   // +5,4
-        assert_eq!(parsed[0].1[1], (21, 25));  // +21,5
+        assert_eq!(parsed[0].1[0], (5, 8)); // +5,4
+        assert_eq!(parsed[0].1[1], (21, 25)); // +21,5
     }
 
     #[test]
@@ -978,7 +1072,9 @@ fn process(data: &str) {
                       \x20   input.to_string()\n\
                       }\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
 
         // Range [(4,4)] covers `let _ = helper();`. Line 1's multibyte chars
@@ -989,7 +1085,9 @@ fn process(data: &str) {
         // expected results. Without this, a swallowed panic returning
         // Default would pass a no-panic check vacuously.
         assert!(
-            ctx.callee_signatures.iter().any(|s| s.starts_with("fn helper")),
+            ctx.callee_signatures
+                .iter()
+                .any(|s| s.starts_with("fn helper")),
             "expected `helper` callee even when source contains multibyte UTF-8; got {:?}",
             ctx.callee_signatures
         );
@@ -1002,7 +1100,9 @@ fn process(data: &str) {
                       }\n\
                       fn caller() { greet(); }\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]); // emoji line
         // Hydration may or may not pick up greet's signature here — but it MUST NOT panic.
@@ -1022,19 +1122,38 @@ fn process(data: &str) {
                       \x20   let _: HashMap<String, u32> = HashMap::new();\n\
                       }\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         // Only line 4 (Arc usage in `touched`) changes.
         let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
-        let arc_count = ctx.import_targets.iter()
+        let arc_count = ctx
+            .import_targets
+            .iter()
             .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
             .count();
-        let hashmap_count = ctx.import_targets.iter()
-            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+        let hashmap_count = ctx
+            .import_targets
+            .iter()
+            .filter(|i| {
+                i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:")
+            })
             .count();
-        assert_eq!(arc_count, 1, "Arc must be hydrated exactly once; got {:?}", ctx.import_targets);
-        assert_eq!(hashmap_count, 0, "HashMap must NOT be hydrated; got {:?}", ctx.import_targets);
-        assert!(!ctx.import_targets.is_empty(), "import_targets unexpectedly empty");
+        assert_eq!(
+            arc_count, 1,
+            "Arc must be hydrated exactly once; got {:?}",
+            ctx.import_targets
+        );
+        assert_eq!(
+            hashmap_count, 0,
+            "HashMap must NOT be hydrated; got {:?}",
+            ctx.import_targets
+        );
+        assert!(
+            !ctx.import_targets.is_empty(),
+            "import_targets unexpectedly empty"
+        );
     }
 
     #[test]
@@ -1048,17 +1167,32 @@ fn process(data: &str) {
                       \x20   let _: HashMap<String, u32> = HashMap::new();\n\
                       }\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(7, 7)]); // HashMap line
-        let arc_count = ctx.import_targets.iter()
+        let arc_count = ctx
+            .import_targets
+            .iter()
             .filter(|i| i.ends_with("::Arc") || i.as_str() == "Arc" || i.starts_with("Arc:"))
             .count();
-        let hashmap_count = ctx.import_targets.iter()
-            .filter(|i| i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:"))
+        let hashmap_count = ctx
+            .import_targets
+            .iter()
+            .filter(|i| {
+                i.ends_with("::HashMap") || i.as_str() == "HashMap" || i.starts_with("HashMap:")
+            })
             .count();
-        assert_eq!(arc_count, 0, "Arc must NOT be hydrated when HashMap line is changed");
-        assert_eq!(hashmap_count, 1, "HashMap must be hydrated; got {:?}", ctx.import_targets);
+        assert_eq!(
+            arc_count, 0,
+            "Arc must NOT be hydrated when HashMap line is changed"
+        );
+        assert_eq!(
+            hashmap_count, 1,
+            "HashMap must be hydrated; got {:?}",
+            ctx.import_targets
+        );
     }
 
     // -- #173: TypeScript default/namespace import bindings --
@@ -1072,8 +1206,11 @@ fn process(data: &str) {
     #[test]
     fn extract_imported_names_typescript_mixed_default_and_named() {
         let names = extract_imported_names("import foo, { bar, baz } from \"x\";");
-        assert_eq!(names, vec!["foo".to_string(), "bar".to_string(), "baz".to_string()],
-            "mixed default+named must yield local binding plus named members; got {names:?}");
+        assert_eq!(
+            names,
+            vec!["foo".to_string(), "bar".to_string(), "baz".to_string()],
+            "mixed default+named must yield local binding plus named members; got {names:?}"
+        );
     }
 
     #[test]
@@ -1085,7 +1222,11 @@ fn process(data: &str) {
     #[test]
     fn extract_imported_names_typescript_default_with_namespace() {
         let names = extract_imported_names("import foo, * as ns from \"x\";");
-        assert_eq!(names, vec!["foo".to_string(), "ns".to_string()], "got {names:?}");
+        assert_eq!(
+            names,
+            vec!["foo".to_string(), "ns".to_string()],
+            "got {names:?}"
+        );
     }
 
     // -- #172: extract_imported_names splits Rust grouped use --
@@ -1109,14 +1250,22 @@ fn process(data: &str) {
                       }\n";
         // helper() spans lines 3..=6 (the call expression). Only line 4 (the "1," argument) is in the changed range.
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(4, 4)]);
-        let helper_sigs: Vec<_> = ctx.callee_signatures.iter()
+        let helper_sigs: Vec<_> = ctx
+            .callee_signatures
+            .iter()
             .filter(|s| s.starts_with("fn helper"))
             .collect();
-        assert_eq!(helper_sigs.len(), 1,
-            "expected exactly one `fn helper` signature; got {:?}", ctx.callee_signatures);
+        assert_eq!(
+            helper_sigs.len(),
+            1,
+            "expected exactly one `fn helper` signature; got {:?}",
+            ctx.callee_signatures
+        );
     }
 
     #[test]
@@ -1131,11 +1280,18 @@ fn process(data: &str) {
                       \x20   );\n\
                       }\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
-        assert!(ctx.callee_signatures.iter().all(|s| !s.starts_with("fn helper")),
-            "range [(1,1)] should not hydrate `helper` as a callee; got {:?}", ctx.callee_signatures);
+        assert!(
+            ctx.callee_signatures
+                .iter()
+                .all(|s| !s.starts_with("fn helper")),
+            "range [(1,1)] should not hydrate `helper` as a callee; got {:?}",
+            ctx.callee_signatures
+        );
     }
 
     // -- #171: parse_unified_diff omitted-count handling --
@@ -1147,7 +1303,11 @@ fn process(data: &str) {
         let result = parse_unified_diff(diff);
         assert_eq!(result.len(), 1, "expected one file");
         assert_eq!(result[0].0, "file.rs");
-        assert_eq!(result[0].1, vec![(10, 10)], "single-line hunk should yield (10, 10)");
+        assert_eq!(
+            result[0].1,
+            vec![(10, 10)],
+            "single-line hunk should yield (10, 10)"
+        );
     }
 
     #[test]
@@ -1206,7 +1366,10 @@ fn uses_map() {
         // Only line 2 (body) is changed -- should NOT trigger caller search
         let tree = parse(source, Language::Rust).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(2, 2)]);
-        assert!(ctx.callers.is_empty(), "body-only edit should not trigger caller blast radius");
+        assert!(
+            ctx.callers.is_empty(),
+            "body-only edit should not trigger caller blast radius"
+        );
     }
 
     #[test]
@@ -1215,7 +1378,10 @@ fn uses_map() {
         // Line 1 = signature of `helper` -- SHOULD trigger caller search
         let tree = parse(source, Language::Rust).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(1, 1)]);
-        assert!(!ctx.callers.is_empty(), "signature edit should trigger caller blast radius");
+        assert!(
+            !ctx.callers.is_empty(),
+            "signature edit should trigger caller blast radius"
+        );
     }
 
     #[test]
@@ -1224,7 +1390,10 @@ fn uses_map() {
         // Lines 2-5 are body only, signature is line 1
         let tree = parse(source, Language::Rust).unwrap();
         let ctx = hydrate(&tree, source, Language::Rust, &[(2, 5)]);
-        assert!(ctx.callers.is_empty(), "wide body edit should not trigger caller blast radius");
+        assert!(
+            ctx.callers.is_empty(),
+            "wide body edit should not trigger caller blast radius"
+        );
     }
 
     // -- #179: Python import parsing returns correct local names --
@@ -1303,7 +1472,9 @@ fn uses_map() {
                       \x20   let _ = helper();\n\
                       }";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
 
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1382,11 +1553,13 @@ fn uses_map() {
         // Only line 3 (the "1," argument) is in the changed range.
         let ctx = hydrate(&tree, source, Language::TypeScript, &[(3, 3)]);
         assert_eq!(
-            ctx.callee_signatures.iter().filter(|s| s.contains("g")).count(),
+            ctx.callee_signatures
+                .iter()
+                .filter(|s| s.contains("g"))
+                .count(),
             1,
             "expected exactly one signature containing 'g'; got {:?}",
             ctx.callee_signatures,
         );
     }
-
 }

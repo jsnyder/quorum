@@ -98,8 +98,7 @@ pub fn resolve_precedence(
     }
 
     // For each competition group, pick the winner index and record losers.
-    let mut loser_indices: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
+    let mut loser_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for (qname, indices) in &groups {
         if indices.len() < 2 {
@@ -147,11 +146,7 @@ pub fn resolve_precedence(
 /// `std::cmp::Ordering` comparator: `a` "less" means `a` ranks before `b`
 /// (i.e. `a` is the preferred winner). Using `min_by` with this yields the
 /// winner.
-fn compare_chunks(
-    a: &ScoredChunk,
-    b: &ScoredChunk,
-    weights: &SourceWeights,
-) -> std::cmp::Ordering {
+fn compare_chunks(a: &ScoredChunk, b: &ScoredChunk, weights: &SourceWeights) -> std::cmp::Ordering {
     let wa = weights.get(&a.chunk.source);
     let wb = weights.get(&b.chunk.source);
     // Weight desc: higher weight ranks earlier.
@@ -160,7 +155,12 @@ fn compare_chunks(
         non_eq => return non_eq,
     }
     // indexed_at desc: newer ranks earlier.
-    match b.chunk.metadata.indexed_at.cmp(&a.chunk.metadata.indexed_at) {
+    match b
+        .chunk
+        .metadata
+        .indexed_at
+        .cmp(&a.chunk.metadata.indexed_at)
+    {
         std::cmp::Ordering::Equal => {}
         non_eq => return non_eq,
     }

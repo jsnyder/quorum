@@ -82,7 +82,9 @@ pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
 /// `normalize_clean` on a malformed-but-recognized statement.
 fn strip_verb<'a>(rest: &'a str, verb: &str) -> Option<&'a str> {
     let tail = rest.strip_prefix(verb)?;
-    if tail.is_empty() { return Some(""); }
+    if tail.is_empty() {
+        return Some("");
+    }
     let first = tail.chars().next()?;
     if first.is_whitespace() {
         Some(tail.trim_start())
@@ -119,7 +121,9 @@ fn parse_python_from(stmt: &str) -> Vec<String> {
     // stmt = "os.path import join"
     let module = stmt.split_whitespace().next().unwrap_or("");
     let head = module.split('.').next().unwrap_or("");
-    if head.is_empty() { return Vec::new(); }
+    if head.is_empty() {
+        return Vec::new();
+    }
     vec![head.to_string()]
 }
 
@@ -162,7 +166,9 @@ fn normalize_ts_package(pkg: &str) -> Vec<String> {
         return vec![pkg.to_string()];
     }
     let head = pkg.split('/').next().unwrap_or(pkg);
-    if head.is_empty() { return Vec::new(); }
+    if head.is_empty() {
+        return Vec::new();
+    }
     vec![head.to_string()]
 }
 
@@ -212,16 +218,36 @@ pub fn enrich_for_review(
     }
 
     for dep in import_matched.into_iter().take(ENRICH_K) {
-        if seen.contains(&dep.name) { continue; }
+        if seen.contains(&dep.name) {
+            continue;
+        }
         let query = curated_query_for(&dep.name)
             .unwrap_or_else(|| generic_query_for_language(&dep.language).into());
-        try_fetch_one(&dep.name, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+        try_fetch_one(
+            &dep.name,
+            &query,
+            imports,
+            fetcher,
+            &mut docs,
+            &mut metrics,
+            &mut seen,
+        );
     }
 
     for fw in curated_frameworks {
-        if seen.contains(fw) { continue; }
+        if seen.contains(fw) {
+            continue;
+        }
         if let Some(query) = curated_query_for(fw) {
-            try_fetch_one(fw, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+            try_fetch_one(
+                fw,
+                &query,
+                imports,
+                fetcher,
+                &mut docs,
+                &mut metrics,
+                &mut seen,
+            );
         }
     }
 
@@ -259,12 +285,17 @@ fn try_fetch_one(
             metrics.context7_resolved += 1;
             let enriched = build_code_aware_query(query, imports);
             if let Some(content) = fetcher.query_docs(&lib_id, &enriched, 5000) {
-                docs.push(ContextDoc { library: name.into(), content });
+                docs.push(ContextDoc {
+                    library: name.into(),
+                    content,
+                });
             } else {
                 metrics.context7_query_failed += 1;
             }
         }
-        None => { metrics.context7_resolve_failed += 1; }
+        None => {
+            metrics.context7_resolve_failed += 1;
+        }
     }
 }
 
@@ -291,7 +322,9 @@ pub fn curated_query_for(name: &str) -> Option<String> {
         "express" => "middleware security input validation",
         "vue" => "reactivity composition API common pitfalls",
         "fastify" => "plugin system validation security hooks",
-        "home-assistant" => "automations templates blueprints Jinja2 states triggers conditions actions",
+        "home-assistant" => {
+            "automations templates blueprints Jinja2 states triggers conditions actions"
+        }
         "esphome" => "yaml components lambda sensors substitutions",
         "terraform" => "provider resource data module security best practices",
         _ => return None,
@@ -305,7 +338,8 @@ pub fn build_code_aware_query(base_query: &str, import_targets: &[String]) -> St
     if import_targets.is_empty() {
         return base_query.to_string();
     }
-    let keywords: Vec<String> = import_targets.iter()
+    let keywords: Vec<String> = import_targets
+        .iter()
         .filter_map(|imp| extract_query_keyword(imp))
         .filter(|s| s.len() > 2) // skip very short names like "os", "re"
         .take(10)
@@ -334,13 +368,17 @@ fn extract_query_keyword(imp: &str) -> Option<String> {
             || rest_trim.starts_with("import ")
         {
             let symbol = symbol.trim();
-            if !symbol.is_empty() { return Some(symbol.to_string()); }
+            if !symbol.is_empty() {
+                return Some(symbol.to_string());
+            }
         }
     }
     if let Some(stripped) = imp.strip_prefix('@') {
         return stripped.split('/').next().map(|s| s.to_string());
     }
-    imp.split(&['.', '/', ':'][..]).next_back().map(|s| s.to_string())
+    imp.split(&['.', '/', ':'][..])
+        .next_back()
+        .map(|s| s.to_string())
 }
 
 /// Format context docs as a prompt section.
@@ -356,7 +394,10 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
         // explicit `text` keeps Markdown renderers from highlighting as Bash by
         // default and makes the intent ("opaque blob, do not parse") explicit (N2).
         let sanitized = doc.content.replace("```", "'''");
-        section.push_str(&format!("### {}\n```text\n{}\n```\n\n", doc.library, sanitized));
+        section.push_str(&format!(
+            "### {}\n```text\n{}\n```\n\n",
+            doc.library, sanitized
+        ));
     }
     section
 }
@@ -386,7 +427,12 @@ pub struct CachedContextFetcher<'a> {
 
 impl<'a> CachedContextFetcher<'a> {
     pub fn new(inner: &'a dyn ContextFetcher, max_entries: usize) -> Self {
-        Self::new_with_clock(inner, max_entries, DEFAULT_RESOLVE_TTL, std::time::Instant::now)
+        Self::new_with_clock(
+            inner,
+            max_entries,
+            DEFAULT_RESOLVE_TTL,
+            std::time::Instant::now,
+        )
     }
 
     pub fn new_with_clock(
@@ -424,10 +470,13 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
             // LruCache::put auto-evicts the LRU entry at capacity — preserves
             // hot entries instead of dropping the entire cache like the prior
             // `clear()` did.
-            cache.put(name.to_string(), ResolveCacheEntry {
-                result: result.clone(),
-                cached_at: now,
-            });
+            cache.put(
+                name.to_string(),
+                ResolveCacheEntry {
+                    result: result.clone(),
+                    cached_at: now,
+                },
+            );
         }
         result
     }
@@ -472,7 +521,8 @@ impl Context7HttpFetcher {
             .filter(|k| !k.trim().is_empty())
             .or_else(|| {
                 let home = std::env::var("HOME").ok()?;
-                std::fs::read_to_string(format!("{}/.context7_key", home)).ok()
+                std::fs::read_to_string(format!("{}/.context7_key", home))
+                    .ok()
                     .map(|s| s.trim().to_string())
                     .filter(|k| !k.is_empty())
             });
@@ -501,7 +551,7 @@ impl ContextFetcher for Context7HttpFetcher {
                 .get("https://context7.com/api/v1/search")
                 .query(&[("libraryName", name), ("query", name)])
                 .header("Authorization", format!("Bearer {}", api_key))
-                .send()
+                .send(),
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -536,13 +586,19 @@ impl ContextFetcher for Context7HttpFetcher {
 
         let resp = match self.block_on(
             self.http
-                .get(format!("https://context7.com/api/v1/{}",
-                    library_id.trim_start_matches('/').split('/')
-                        .map(|seg| url::form_urlencoded::byte_serialize(seg.as_bytes()).collect::<String>())
-                        .collect::<Vec<_>>().join("/")))
+                .get(format!(
+                    "https://context7.com/api/v1/{}",
+                    library_id
+                        .trim_start_matches('/')
+                        .split('/')
+                        .map(|seg| url::form_urlencoded::byte_serialize(seg.as_bytes())
+                            .collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                ))
                 .query(&[("query", query), ("tokens", &max_tokens.to_string())])
                 .header("Authorization", format!("Bearer {}", api_key))
-                .send()
+                .send(),
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -554,7 +610,11 @@ impl ContextFetcher for Context7HttpFetcher {
         let status = resp.status();
         if !status.is_success() {
             let body = self.block_on(resp.text()).unwrap_or_default();
-            eprintln!("Context7 query_docs: HTTP {} - {}", status, &body[..200.min(body.len())]);
+            eprintln!(
+                "Context7 query_docs: HTTP {} - {}",
+                status,
+                &body[..200.min(body.len())]
+            );
             return None;
         }
 
@@ -578,7 +638,8 @@ impl ContextFetcher for Context7HttpFetcher {
                 }
             }
             if let Some(snippets) = json["snippets"].as_array() {
-                let combined: String = snippets.iter()
+                let combined: String = snippets
+                    .iter()
                     .filter_map(|s| s["content"].as_str())
                     .collect::<Vec<_>>()
                     .join("\n\n---\n\n");
@@ -600,20 +661,33 @@ mod test_support {
 
     pub struct Spy;
     impl ContextFetcher for Spy {
-        fn resolve_library(&self, name: &str) -> Option<String> { Some(format!("/lib/{name}")) }
+        fn resolve_library(&self, name: &str) -> Option<String> {
+            Some(format!("/lib/{name}"))
+        }
         fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
             Some(format!("docs for {lib}"))
         }
     }
 
-    pub struct CapturingSpy { pub queries: Mutex<Vec<(String, String)>> }
+    pub struct CapturingSpy {
+        pub queries: Mutex<Vec<(String, String)>>,
+    }
     impl CapturingSpy {
-        pub fn new() -> Self { Self { queries: Mutex::new(Vec::new()) } }
+        pub fn new() -> Self {
+            Self {
+                queries: Mutex::new(Vec::new()),
+            }
+        }
     }
     impl ContextFetcher for CapturingSpy {
-        fn resolve_library(&self, name: &str) -> Option<String> { Some(name.into()) }
+        fn resolve_library(&self, name: &str) -> Option<String> {
+            Some(name.into())
+        }
         fn query_docs(&self, lib: &str, query: &str, _: usize) -> Option<String> {
-            self.queries.lock().unwrap().push((lib.into(), query.into()));
+            self.queries
+                .lock()
+                .unwrap()
+                .push((lib.into(), query.into()));
             Some("doc".into())
         }
     }
@@ -644,8 +718,10 @@ mod tests {
         for (name, marker) in cases {
             let q = curated_query_for(name)
                 .unwrap_or_else(|| panic!("missing curated query for {name}"));
-            assert!(q.contains(marker),
-                "curated query for {name} missing marker '{marker}': got {q:?}");
+            assert!(
+                q.contains(marker),
+                "curated query for {name} missing marker '{marker}': got {q:?}"
+            );
         }
     }
 
@@ -682,7 +758,10 @@ mod tests {
     #[test]
     fn generic_query_for_unknown_language_falls_back_to_minimal_security() {
         let q = generic_query_for_language("brainfuck");
-        assert!(q.contains("security"), "fallback must mention security: {q:?}");
+        assert!(
+            q.contains("security"),
+            "fallback must mention security: {q:?}"
+        );
     }
 
     // --- normalize_import_to_dep_names: direct unit tests ---
@@ -694,8 +773,14 @@ mod tests {
 
     #[test]
     fn normalize_module_path_returns_root_segment() {
-        assert_eq!(normalize_import_to_dep_names("tokio::sync::Mutex"), vec!["tokio"]);
-        assert_eq!(normalize_import_to_dep_names("fastapi.routing"), vec!["fastapi"]);
+        assert_eq!(
+            normalize_import_to_dep_names("tokio::sync::Mutex"),
+            vec!["tokio"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("fastapi.routing"),
+            vec!["fastapi"]
+        );
     }
 
     #[test]
@@ -711,8 +796,10 @@ mod tests {
     #[test]
     fn normalize_leading_colon_does_not_yield_empty_string() {
         let out = normalize_import_to_dep_names("::std::ptr");
-        assert!(out.iter().all(|s| !s.is_empty()),
-            "leading :: must not yield empty head: {out:?}");
+        assert!(
+            out.iter().all(|s| !s.is_empty()),
+            "leading :: must not yield empty head: {out:?}"
+        );
     }
 
     #[test]
@@ -793,9 +880,8 @@ mod tests {
         // one entry per imported symbol, so callers see N copies of the same
         // statement; each must extract every crate so dep-name lookup matches
         // any of them.
-        let mut got = normalize_import_to_dep_names(
-            "Mutex: use {tokio::sync::Mutex, serde::Serialize};",
-        );
+        let mut got =
+            normalize_import_to_dep_names("Mutex: use {tokio::sync::Mutex, serde::Serialize};");
         got.sort();
         assert_eq!(got, vec!["serde", "tokio"]);
     }
@@ -805,9 +891,7 @@ mod tests {
         // Same fix applied per-segment: empty leading segments inside the
         // group must be skipped, so `use {::tokio::A, ::serde::B};` yields
         // both crates, not `["{"]`.
-        let mut got = normalize_import_to_dep_names(
-            "A: use {::tokio::A, ::serde::B};",
-        );
+        let mut got = normalize_import_to_dep_names("A: use {::tokio::A, ::serde::B};");
         got.sort();
         assert_eq!(got, vec!["serde", "tokio"]);
     }
@@ -963,8 +1047,14 @@ mod tests {
         // A future change that breaks bare `tokio` / `tokio::sync::Mutex` would
         // also break the test fixtures used by other modules.
         assert_eq!(normalize_import_to_dep_names("tokio"), vec!["tokio"]);
-        assert_eq!(normalize_import_to_dep_names("tokio::sync::Mutex"), vec!["tokio"]);
-        assert_eq!(normalize_import_to_dep_names("fastapi.routing"), vec!["fastapi"]);
+        assert_eq!(
+            normalize_import_to_dep_names("tokio::sync::Mutex"),
+            vec!["tokio"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("fastapi.routing"),
+            vec!["fastapi"]
+        );
     }
 
     // --- enrich_for_review: behavior tests ---
@@ -974,16 +1064,28 @@ mod tests {
         use crate::dep_manifest::Dependency;
         use test_support::Spy;
         let deps = vec![
-            Dependency { name: "tokio".into(), language: "rust".into() },
-            Dependency { name: "serde".into(), language: "rust".into() },
-            Dependency { name: "axum".into(), language: "rust".into() },
+            Dependency {
+                name: "tokio".into(),
+                language: "rust".into(),
+            },
+            Dependency {
+                name: "serde".into(),
+                language: "rust".into(),
+            },
+            Dependency {
+                name: "axum".into(),
+                language: "rust".into(),
+            },
         ];
         let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
         let result = enrich_for_review(&deps, &[], &imports, &Spy);
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.as_str()).collect();
         assert!(libs.contains(&"tokio"));
         assert!(libs.contains(&"serde"));
-        assert!(!libs.contains(&"axum"), "axum not in imports — must be skipped");
+        assert!(
+            !libs.contains(&"axum"),
+            "axum not in imports — must be skipped"
+        );
     }
 
     #[test]
@@ -991,12 +1093,17 @@ mod tests {
         use crate::dep_manifest::Dependency;
         use test_support::CapturingSpy;
         let spy = CapturingSpy::new();
-        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let deps = vec![Dependency {
+            name: "react".into(),
+            language: "javascript".into(),
+        }];
         let imports = vec!["react".into()];
         let _ = enrich_for_review(&deps, &[], &imports, &spy);
         let captured = spy.queries.lock().unwrap();
-        assert!(captured.iter().any(|(_, q)| q.contains("hooks")),
-            "curated query expected, got {captured:?}");
+        assert!(
+            captured.iter().any(|(_, q)| q.contains("hooks")),
+            "curated query expected, got {captured:?}"
+        );
     }
 
     #[test]
@@ -1004,20 +1111,29 @@ mod tests {
         use crate::dep_manifest::Dependency;
         use test_support::CapturingSpy;
         let spy = CapturingSpy::new();
-        let deps = vec![Dependency { name: "tokio".into(), language: "rust".into() }];
+        let deps = vec![Dependency {
+            name: "tokio".into(),
+            language: "rust".into(),
+        }];
         let imports = vec!["tokio::spawn".into()];
         let _ = enrich_for_review(&deps, &[], &imports, &spy);
         let captured = spy.queries.lock().unwrap();
-        assert!(captured.iter().any(|(_, q)| q.contains("async")),
-            "rust generic query expected, got {captured:?}");
+        assert!(
+            captured.iter().any(|(_, q)| q.contains("async")),
+            "rust generic query expected, got {captured:?}"
+        );
     }
 
     #[test]
     fn enrich_for_review_with_empty_inputs_returns_no_docs_and_zero_metrics() {
         struct Spy;
         impl ContextFetcher for Spy {
-            fn resolve_library(&self, _: &str) -> Option<String> { None }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn resolve_library(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
         let result = enrich_for_review(&[], &[], &[], &Spy);
         assert!(result.docs.is_empty());
@@ -1030,9 +1146,12 @@ mod tests {
     fn enrich_with_exactly_five_matched_deps_returns_five_docs() {
         use crate::dep_manifest::Dependency;
         use test_support::Spy;
-        let deps: Vec<_> = (0..5).map(|i| Dependency {
-            name: format!("dep{i}"), language: "rust".into(),
-        }).collect();
+        let deps: Vec<_> = (0..5)
+            .map(|i| Dependency {
+                name: format!("dep{i}"),
+                language: "rust".into(),
+            })
+            .collect();
         let imports: Vec<_> = (0..5).map(|i| format!("dep{i}::x")).collect();
         let result = enrich_for_review(&deps, &[], &imports, &Spy);
         assert_eq!(result.docs.len(), 5);
@@ -1042,36 +1161,50 @@ mod tests {
     fn enrich_with_six_matched_drops_the_last_in_import_order() {
         use crate::dep_manifest::Dependency;
         use test_support::Spy;
-        let deps: Vec<_> = (0..6).map(|i| Dependency {
-            name: format!("dep{i}"), language: "rust".into(),
-        }).collect();
+        let deps: Vec<_> = (0..6)
+            .map(|i| Dependency {
+                name: format!("dep{i}"),
+                language: "rust".into(),
+            })
+            .collect();
         let imports: Vec<_> = (0..6).map(|i| format!("dep{i}::x")).collect();
         let result = enrich_for_review(&deps, &[], &imports, &Spy);
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
         assert_eq!(libs.len(), 5);
-        assert!(!libs.contains(&"dep5".to_string()),
-            "dep5 should be dropped; got {libs:?}");
+        assert!(
+            !libs.contains(&"dep5".to_string()),
+            "dep5 should be dropped; got {libs:?}"
+        );
     }
 
     #[test]
     fn enrich_returns_first_five_in_import_occurrence_order() {
         use crate::dep_manifest::Dependency;
         use test_support::Spy;
-        let deps: Vec<_> = (0..10).map(|i| Dependency {
-            name: format!("dep{i}"), language: "rust".into(),
-        }).collect();
+        let deps: Vec<_> = (0..10)
+            .map(|i| Dependency {
+                name: format!("dep{i}"),
+                language: "rust".into(),
+            })
+            .collect();
         let imports: Vec<_> = (0..10).map(|i| format!("dep{i}::x")).collect();
         let result = enrich_for_review(&deps, &[], &imports, &Spy);
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
-        assert_eq!(libs, vec!["dep0", "dep1", "dep2", "dep3", "dep4"],
-            "must be import-order, not HashMap iteration order");
+        assert_eq!(
+            libs,
+            vec!["dep0", "dep1", "dep2", "dep3", "dep4"],
+            "must be import-order, not HashMap iteration order"
+        );
     }
 
     #[test]
     fn enrich_dedupes_curated_framework_already_in_deps() {
         use crate::dep_manifest::Dependency;
         use test_support::Spy;
-        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let deps = vec![Dependency {
+            name: "react".into(),
+            language: "javascript".into(),
+        }];
         let imports = vec!["react".into()];
         let frameworks = vec!["react".into()];
         let result = enrich_for_review(&deps, &frameworks, &imports, &Spy);
@@ -1097,7 +1230,9 @@ mod tests {
         use test_support::CapturingSpy;
 
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), r#"
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"
 [package]
 name = "x"
 version = "0.1.0"
@@ -1106,7 +1241,9 @@ version = "0.1.0"
 tokio = "1"
 serde = "1"
 axum = "0.7"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let spy = CapturingSpy::new();
         let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
@@ -1115,7 +1252,10 @@ axum = "0.7"
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
         assert!(libs.contains(&"tokio".to_string()));
         assert!(libs.contains(&"serde".to_string()));
-        assert!(!libs.contains(&"axum".to_string()), "axum not in imports — must be skipped");
+        assert!(
+            !libs.contains(&"axum".to_string()),
+            "axum not in imports — must be skipped"
+        );
 
         // Telemetry: 2 deps were import-matched and resolved.
         assert_eq!(result.metrics.context7_resolved, 2);
@@ -1126,35 +1266,50 @@ axum = "0.7"
     #[test]
     fn cached_fetcher_negative_resolve_result_is_cached() {
         use std::sync::Mutex;
-        struct CountingSpy { calls: Mutex<u32> }
+        struct CountingSpy {
+            calls: Mutex<u32>,
+        }
         impl ContextFetcher for CountingSpy {
             fn resolve_library(&self, _: &str) -> Option<String> {
                 *self.calls.lock().unwrap() += 1;
                 None
             }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
-        let inner = CountingSpy { calls: Mutex::new(0) };
+        let inner = CountingSpy {
+            calls: Mutex::new(0),
+        };
         let cached = CachedContextFetcher::new(&inner, 16);
         assert!(cached.resolve_library("missing").is_none());
         assert!(cached.resolve_library("missing").is_none());
         assert!(cached.resolve_library("missing").is_none());
-        assert_eq!(*inner.calls.lock().unwrap(), 1,
-            "subsequent calls must hit negative cache");
+        assert_eq!(
+            *inner.calls.lock().unwrap(),
+            1,
+            "subsequent calls must hit negative cache"
+        );
     }
 
     #[test]
     fn cached_fetcher_positive_resolve_result_is_cached() {
         use std::sync::Mutex;
-        struct CountingSpy { calls: Mutex<u32> }
+        struct CountingSpy {
+            calls: Mutex<u32>,
+        }
         impl ContextFetcher for CountingSpy {
             fn resolve_library(&self, name: &str) -> Option<String> {
                 *self.calls.lock().unwrap() += 1;
                 Some(format!("/lib/{name}"))
             }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
-        let inner = CountingSpy { calls: Mutex::new(0) };
+        let inner = CountingSpy {
+            calls: Mutex::new(0),
+        };
         let cached = CachedContextFetcher::new(&inner, 16);
         assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
         assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
@@ -1165,29 +1320,36 @@ axum = "0.7"
     fn cached_fetcher_negative_resolve_cache_expires_after_ttl() {
         use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
-        struct CountingSpy { calls: Mutex<u32> }
+        struct CountingSpy {
+            calls: Mutex<u32>,
+        }
         impl ContextFetcher for CountingSpy {
             fn resolve_library(&self, _: &str) -> Option<String> {
                 *self.calls.lock().unwrap() += 1;
                 None
             }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
-        let inner = CountingSpy { calls: Mutex::new(0) };
+        let inner = CountingSpy {
+            calls: Mutex::new(0),
+        };
         let now = Instant::now();
         let time = Arc::new(Mutex::new(now));
         let time_clone = time.clone();
-        let cached = CachedContextFetcher::new_with_clock(
-            &inner,
-            16,
-            Duration::from_secs(60),
-            move || *time_clone.lock().unwrap(),
-        );
+        let cached =
+            CachedContextFetcher::new_with_clock(&inner, 16, Duration::from_secs(60), move || {
+                *time_clone.lock().unwrap()
+            });
         let _ = cached.resolve_library("missing");
         *time.lock().unwrap() = now + Duration::from_secs(120);
         let _ = cached.resolve_library("missing");
-        assert_eq!(*inner.calls.lock().unwrap(), 2,
-            "expired entry must trigger fresh inner call");
+        assert_eq!(
+            *inner.calls.lock().unwrap(),
+            2,
+            "expired entry must trigger fresh inner call"
+        );
     }
 
     #[test]
@@ -1198,17 +1360,28 @@ axum = "0.7"
         use crate::dep_manifest::Dependency;
         struct ResolveOkButQueryFails;
         impl ContextFetcher for ResolveOkButQueryFails {
-            fn resolve_library(&self, name: &str) -> Option<String> { Some(format!("/lib/{name}")) }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                Some(format!("/lib/{name}"))
+            }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
-        let deps = vec![Dependency { name: "react".into(), language: "javascript".into() }];
+        let deps = vec![Dependency {
+            name: "react".into(),
+            language: "javascript".into(),
+        }];
         let imports = vec!["react".into()];
         let frameworks = vec!["react".into()];
         let result = enrich_for_review(&deps, &frameworks, &imports, &ResolveOkButQueryFails);
-        assert_eq!(result.metrics.context7_resolved, 1,
-            "resolve must not double-count");
-        assert_eq!(result.metrics.context7_query_failed, 1,
-            "query_failed must not double-count");
+        assert_eq!(
+            result.metrics.context7_resolved, 1,
+            "resolve must not double-count"
+        );
+        assert_eq!(
+            result.metrics.context7_query_failed, 1,
+            "query_failed must not double-count"
+        );
     }
 
     #[test]
@@ -1217,18 +1390,35 @@ axum = "0.7"
         struct PartialSpy;
         impl ContextFetcher for PartialSpy {
             fn resolve_library(&self, name: &str) -> Option<String> {
-                if name == "good" { Some("/lib/good".into()) }
-                else if name == "query_fails" { Some("/lib/qf".into()) }
-                else { None }
+                if name == "good" {
+                    Some("/lib/good".into())
+                } else if name == "query_fails" {
+                    Some("/lib/qf".into())
+                } else {
+                    None
+                }
             }
             fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
-                if lib == "/lib/good" { Some("doc".into()) } else { None }
+                if lib == "/lib/good" {
+                    Some("doc".into())
+                } else {
+                    None
+                }
             }
         }
         let deps = vec![
-            Dependency { name: "good".into(), language: "rust".into() },
-            Dependency { name: "missing".into(), language: "rust".into() },
-            Dependency { name: "query_fails".into(), language: "rust".into() },
+            Dependency {
+                name: "good".into(),
+                language: "rust".into(),
+            },
+            Dependency {
+                name: "missing".into(),
+                language: "rust".into(),
+            },
+            Dependency {
+                name: "query_fails".into(),
+                language: "rust".into(),
+            },
         ];
         let imports = vec!["good".into(), "missing".into(), "query_fails".into()];
         let result = enrich_for_review(&deps, &[], &imports, &PartialSpy);
@@ -1242,14 +1432,18 @@ axum = "0.7"
         // @nestjs/core should yield "nestjs" (the framework hint), not "core" (useless).
         let query = build_code_aware_query("base", &["@nestjs/core".into()]);
         assert!(query.contains("nestjs"), "got: {query}");
-        assert!(!query.split_whitespace().any(|w| w == "core"), "got: {query}");
+        assert!(
+            !query.split_whitespace().any(|w| w == "core"),
+            "got: {query}"
+        );
     }
 
     #[test]
     fn format_context_section_with_docs() {
-        let docs = vec![
-            ContextDoc { library: "react".into(), content: "useEffect requires deps array".into() },
-        ];
+        let docs = vec![ContextDoc {
+            library: "react".into(),
+            content: "useEffect requires deps array".into(),
+        }];
         let section = format_context_section(&docs);
         assert!(section.contains("react"));
         assert!(section.contains("useEffect"));
@@ -1282,9 +1476,13 @@ axum = "0.7"
     #[test]
     fn build_code_aware_query_appends_imports() {
         let base = "hooks rules component lifecycle common pitfalls";
-        let imports = vec!["useEffect".to_string(), "useState".to_string(), "useCallback".to_string()];
+        let imports = vec![
+            "useEffect".to_string(),
+            "useState".to_string(),
+            "useCallback".to_string(),
+        ];
         let query = build_code_aware_query(base, &imports);
-        assert!(query.contains("hooks rules"));  // baseline preserved
+        assert!(query.contains("hooks rules")); // baseline preserved
         assert!(query.contains("useEffect"));
         assert!(query.contains("useState"));
     }
@@ -1308,7 +1506,10 @@ axum = "0.7"
     #[test]
     fn build_code_aware_query_extracts_short_names() {
         let base = "ORM security";
-        let imports = vec!["os.path.join".to_string(), "collections.OrderedDict".to_string()];
+        let imports = vec![
+            "os.path.join".to_string(),
+            "collections.OrderedDict".to_string(),
+        ];
         let query = build_code_aware_query(base, &imports);
         assert!(query.contains("join"));
         assert!(query.contains("OrderedDict"));
@@ -1338,22 +1539,31 @@ axum = "0.7"
         let query = build_code_aware_query("base", &imports);
         // Imported-symbol keywords are present.
         assert!(query.contains("Mutex"), "missing Mutex: {query}");
-        assert!(query.contains("Deserialize"), "missing Deserialize: {query}");
+        assert!(
+            query.contains("Deserialize"),
+            "missing Deserialize: {query}"
+        );
         assert!(query.contains("useState"), "missing useState: {query}");
         assert!(query.contains("join"), "missing join: {query}");
         // Garbage tokens from naive splitting are absent.
-        assert!(!query.contains("Mutex;"), "leaked trailing semicolon: {query}");
+        assert!(
+            !query.contains("Mutex;"),
+            "leaked trailing semicolon: {query}"
+        );
         assert!(!query.contains("react'"), "leaked closing quote: {query}");
         // Trash tokens from the use-statement body must not leak in.
         for trash in [" import ", "use ", " from "] {
-            assert!(!query.contains(trash), "leaked statement keyword {trash:?}: {query}");
+            assert!(
+                !query.contains(trash),
+                "leaked statement keyword {trash:?}: {query}"
+            );
         }
     }
 
     #[test]
     fn cached_fetcher_avoids_duplicate_calls() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct CountingFetcher {
             calls: Arc<AtomicUsize>,
@@ -1362,14 +1572,21 @@ axum = "0.7"
             fn resolve_library(&self, name: &str) -> Option<String> {
                 Some(format!("/lib/{}", name))
             }
-            fn query_docs(&self, library_id: &str, _query: &str, _max_tokens: usize) -> Option<String> {
+            fn query_docs(
+                &self,
+                library_id: &str,
+                _query: &str,
+                _max_tokens: usize,
+            ) -> Option<String> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Some(format!("docs for {}", library_id))
             }
         }
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let inner = CountingFetcher { calls: calls.clone() };
+        let inner = CountingFetcher {
+            calls: calls.clone(),
+        };
         let cached = CachedContextFetcher::new(&inner, 16);
 
         // First call hits inner
@@ -1393,20 +1610,26 @@ axum = "0.7"
         // max_entries, dropping every entry at once. With LRU semantics, only
         // the *least-recently-used* entry should be evicted. Most-recently-used
         // entries must still hit cache after the wrap.
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct CountingResolver { calls: Arc<AtomicUsize> }
+        struct CountingResolver {
+            calls: Arc<AtomicUsize>,
+        }
         impl ContextFetcher for CountingResolver {
             fn resolve_library(&self, name: &str) -> Option<String> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Some(format!("/lib/{}", name))
             }
-            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> { None }
+            fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
+                None
+            }
         }
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let inner = CountingResolver { calls: calls.clone() };
+        let inner = CountingResolver {
+            calls: calls.clone(),
+        };
         let cached = CachedContextFetcher::new(&inner, 3);
 
         // Fill cache to capacity.
@@ -1438,12 +1661,16 @@ axum = "0.7"
     #[test]
     fn cached_fetcher_query_docs_evicts_lru_entry_at_capacity() {
         // Same regression check for query_docs cache.
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct CountingQuery { calls: Arc<AtomicUsize> }
+        struct CountingQuery {
+            calls: Arc<AtomicUsize>,
+        }
         impl ContextFetcher for CountingQuery {
-            fn resolve_library(&self, name: &str) -> Option<String> { Some(name.into()) }
+            fn resolve_library(&self, name: &str) -> Option<String> {
+                Some(name.into())
+            }
             fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Some(format!("docs:{lib}"))
@@ -1451,7 +1678,9 @@ axum = "0.7"
         }
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let inner = CountingQuery { calls: calls.clone() };
+        let inner = CountingQuery {
+            calls: calls.clone(),
+        };
         let cached = CachedContextFetcher::new(&inner, 2);
 
         let _ = cached.query_docs("a", "q", 5000);
@@ -1464,8 +1693,11 @@ axum = "0.7"
 
         // "b" must hit cache.
         let _ = cached.query_docs("b", "q", 5000);
-        assert_eq!(calls.load(Ordering::SeqCst), 3,
-            "LRU eviction must keep hot entries; old clear() would push this to 4");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "LRU eviction must keep hot entries; old clear() would push this to 4"
+        );
     }
 
     #[test]
@@ -1482,6 +1714,9 @@ axum = "0.7"
 
         let inner = StubFetcher;
         let cached = CachedContextFetcher::new(&inner, 16);
-        assert_eq!(cached.resolve_library("react"), Some("/resolved/react".into()));
+        assert_eq!(
+            cached.resolve_library("react"),
+            Some("/resolved/react".into())
+        );
     }
 }

@@ -1,9 +1,9 @@
 //! Unit tests for `src/context/cli.rs`.
 
 use super::cli::{
-    run_context_cmd, AddArgs, AddLocation, CheckStatus, ContextCmd, ContextDeps, DoctorArgs,
-    DoctorFormat, IndexArgs, ListArgs, ListFormat, PruneArgs, QueryArgs, QueryFormat,
-    RefreshArgs, SourceSelector, TestDeps,
+    AddArgs, AddLocation, CheckStatus, ContextCmd, ContextDeps, DoctorArgs, DoctorFormat,
+    IndexArgs, ListArgs, ListFormat, PruneArgs, QueryArgs, QueryFormat, RefreshArgs,
+    SourceSelector, TestDeps, run_context_cmd,
 };
 use super::config::{SourceLocation, SourcesConfig};
 use std::path::PathBuf;
@@ -30,11 +30,7 @@ fn run_context_cmd_init_creates_sources_toml() {
     let output = run_context_cmd(&ContextCmd::Init, &deps).expect("init succeeds");
 
     let expected = deps.home_dir().join("sources.toml");
-    assert!(
-        expected.exists(),
-        "init must create {}",
-        expected.display()
-    );
+    assert!(expected.exists(), "init must create {}", expected.display());
     assert_eq!(output.created_paths, vec![expected.clone()]);
     assert!(output.warnings.is_empty(), "first init emits no warnings");
     assert!(
@@ -71,10 +67,7 @@ fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
         output.created_paths
     );
     assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.contains("already exists")),
+        output.warnings.iter().any(|w| w.contains("already exists")),
         "warning should mention the existing file: {:?}",
         output.warnings
     );
@@ -152,8 +145,8 @@ fn run_context_cmd_init_errors_when_sources_path_is_a_directory() {
     let deps = TestDeps::new();
     std::fs::create_dir_all(deps.home_dir().join("sources.toml"))
         .expect("mkdir sources.toml as a dir");
-    let err = run_context_cmd(&ContextCmd::Init, &deps)
-        .expect_err("init over a non-file path must fail");
+    let err =
+        run_context_cmd(&ContextCmd::Init, &deps).expect_err("init over a non-file path must fail");
     let msg = format!("{err}");
     assert!(
         msg.contains("not a regular file"),
@@ -170,7 +163,10 @@ fn run_context_cmd_init_writes_directly_under_home_dir() {
     let deps = TestDeps::new();
     let output = run_context_cmd(&ContextCmd::Init, &deps).unwrap();
     let expected = deps.home_dir().join("sources.toml");
-    assert!(expected.exists(), "sources.toml must land at <home>/sources.toml");
+    assert!(
+        expected.exists(),
+        "sources.toml must land at <home>/sources.toml"
+    );
     assert_eq!(output.created_paths, vec![expected]);
     let doubled = deps.home_dir().join(".quorum").join("sources.toml");
     assert!(
@@ -225,17 +221,17 @@ fn add_appends_path_source_to_sources_toml() {
         out.stdout
     );
 
-    let cfg = SourcesConfig::load(&deps.home_dir().join("sources.toml"))
-        .expect("re-load after add");
+    let cfg =
+        SourcesConfig::load(&deps.home_dir().join("sources.toml")).expect("re-load after add");
     assert_eq!(cfg.sources.len(), 1);
     let e = &cfg.sources[0];
     assert_eq!(e.name, "core");
     assert_eq!(e.weight, Some(3));
-    assert_eq!(e.ignore, vec!["target/**".to_string(), "**/*.snap".to_string()]);
     assert_eq!(
-        e.location,
-        SourceLocation::Path(PathBuf::from("/tmp/core"))
+        e.ignore,
+        vec!["target/**".to_string(), "**/*.snap".to_string()]
     );
+    assert_eq!(e.location, SourceLocation::Path(PathBuf::from("/tmp/core")));
 }
 
 #[test]
@@ -251,7 +247,12 @@ fn add_appends_git_source_with_optional_rev() {
     );
     run_context_cmd(&ContextCmd::Add(args), &deps).expect("add git w/ rev");
 
-    let args_no_rev = git_add_args("ha", "python", "https://github.com/home-assistant/core", None);
+    let args_no_rev = git_add_args(
+        "ha",
+        "python",
+        "https://github.com/home-assistant/core",
+        None,
+    );
     run_context_cmd(&ContextCmd::Add(args_no_rev), &deps).expect("add git no rev");
 
     let cfg = SourcesConfig::load(&deps.home_dir().join("sources.toml")).expect("load");
@@ -303,18 +304,12 @@ fn add_rejects_empty_name_or_empty_path_or_empty_url() {
     let deps = TestDeps::new();
     run_context_cmd(&ContextCmd::Init, &deps).expect("init");
 
-    let e1 = run_context_cmd(
-        &ContextCmd::Add(path_add_args("", "rust", "/tmp/x")),
-        &deps,
-    )
-    .expect_err("empty name");
+    let e1 = run_context_cmd(&ContextCmd::Add(path_add_args("", "rust", "/tmp/x")), &deps)
+        .expect_err("empty name");
     assert!(format!("{e1}").to_lowercase().contains("name"));
 
-    let e2 = run_context_cmd(
-        &ContextCmd::Add(path_add_args("x", "rust", "   ")),
-        &deps,
-    )
-    .expect_err("empty path");
+    let e2 = run_context_cmd(&ContextCmd::Add(path_add_args("x", "rust", "   ")), &deps)
+        .expect_err("empty path");
     assert!(format!("{e2}").to_lowercase().contains("path"));
 
     let e3 = run_context_cmd(
@@ -322,7 +317,10 @@ fn add_rejects_empty_name_or_empty_path_or_empty_url() {
         &deps,
     )
     .expect_err("empty url");
-    assert!(format!("{e3}").to_lowercase().contains("url") || format!("{e3}").to_lowercase().contains("git"));
+    assert!(
+        format!("{e3}").to_lowercase().contains("url")
+            || format!("{e3}").to_lowercase().contains("git")
+    );
 
     // None of the failed adds should have mutated the file.
     let cfg = SourcesConfig::load(&deps.home_dir().join("sources.toml")).expect("load");
@@ -391,8 +389,9 @@ fn list_on_uninitialized_repo_returns_friendly_message_not_error() {
     let out = run_context_cmd(&ContextCmd::List(ListArgs::default()), &deps)
         .expect("list on uninit is NOT an error");
     assert!(
-        out.warnings.iter().any(|w| w.contains("no sources")
-            || w.contains("context init")),
+        out.warnings
+            .iter()
+            .any(|w| w.contains("no sources") || w.contains("context init")),
         "should warn and suggest init: {:?}",
         out.warnings
     );
@@ -438,7 +437,8 @@ fn list_renders_table_of_registered_sources() {
     assert!(s.contains("dev"), "{s}");
     // The weight "2" and ignore count "1" for core must actually appear.
     assert!(
-        s.lines().any(|l| l.contains("core") && l.contains('2') && l.contains('1')),
+        s.lines()
+            .any(|l| l.contains("core") && l.contains('2') && l.contains('1')),
         "row for 'core' must surface weight=2 and ignore count=1: {s}"
     );
     // ha has no weight and no ignore globs — expect a "0" ignore count on its row.
@@ -446,7 +446,10 @@ fn list_renders_table_of_registered_sources() {
         s.lines().any(|l| l.contains("ha") && l.contains('0')),
         "row for 'ha' must surface ignore count=0: {s}"
     );
-    assert!(s.contains("NAME") || s.contains("name"), "header expected: {s}");
+    assert!(
+        s.contains("NAME") || s.contains("name"),
+        "header expected: {s}"
+    );
 }
 
 #[test]
@@ -505,7 +508,10 @@ fn add_rejects_control_characters_in_user_strings() {
         AddArgs {
             name: "ok".to_string(),
             kind: "rust".to_string(),
-            location: AddLocation::Git { url: "https://bad\n.com".into(), rev: None },
+            location: AddLocation::Git {
+                url: "https://bad\n.com".into(),
+                rev: None,
+            },
             weight: None,
             ignore: Vec::new(),
         },
@@ -559,10 +565,7 @@ fn add_rejects_path_traversal_name_at_handler() {
     )
     .expect_err("../etc must be rejected by handler even if clap is bypassed");
     let msg = format!("{err}").to_lowercase();
-    assert!(
-        msg.contains("name"),
-        "error must mention --name: {msg}"
-    );
+    assert!(msg.contains("name"), "error must mention --name: {msg}");
 }
 
 #[test]
@@ -717,9 +720,17 @@ fn index_single_source_creates_jsonl_and_db_under_home() {
     let jsonl = src_dir.join("chunks.jsonl");
     let db = src_dir.join("index.db");
     let state = src_dir.join("state.json");
-    assert!(jsonl.exists(), "chunks.jsonl must be created at {}", jsonl.display());
+    assert!(
+        jsonl.exists(),
+        "chunks.jsonl must be created at {}",
+        jsonl.display()
+    );
     assert!(db.exists(), "index.db must be created at {}", db.display());
-    assert!(state.exists(), "state.json must be created at {}", state.display());
+    assert!(
+        state.exists(),
+        "state.json must be created at {}",
+        state.display()
+    );
 
     assert!(out.created_paths.contains(&jsonl));
     assert!(out.created_paths.contains(&db));
@@ -729,7 +740,11 @@ fn index_single_source_creates_jsonl_and_db_under_home() {
         "stdout must announce per-source success: {:?}",
         out.stdout
     );
-    assert!(out.warnings.is_empty(), "no warnings on happy path: {:?}", out.warnings);
+    assert!(
+        out.warnings.is_empty(),
+        "no warnings on happy path: {:?}",
+        out.warnings
+    );
 }
 
 #[test]
@@ -738,7 +753,11 @@ fn index_all_continues_past_single_source_failure() {
     run_context_cmd(&ContextCmd::Init, &deps).expect("init");
     // Good source.
     run_context_cmd(
-        &ContextCmd::Add(path_add_args("good", "rust", &fixture_path_str("mini-rust"))),
+        &ContextCmd::Add(path_add_args(
+            "good",
+            "rust",
+            &fixture_path_str("mini-rust"),
+        )),
         &deps,
     )
     .expect("add good");
@@ -765,7 +784,10 @@ fn index_all_continues_past_single_source_failure() {
         .join("sources")
         .join("good")
         .join("index.db");
-    assert!(good_db.exists(), "good source must be indexed despite bad one failing");
+    assert!(
+        good_db.exists(),
+        "good source must be indexed despite bad one failing"
+    );
     // Summary must mention both.
     assert!(out.stdout.contains("indexed 'good'"), "{:?}", out.stdout);
     assert!(
@@ -1059,8 +1081,7 @@ fn prune_removes_orphan_source_dirs_listed_in_output() {
     let keeper_dir = make_source_dir(&deps, "keeper");
     let orphan_dir = make_source_dir(&deps, "orphan");
 
-    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps)
-        .expect("prune ok");
+    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps).expect("prune ok");
 
     assert!(
         !orphan_dir.exists(),
@@ -1105,10 +1126,12 @@ fn prune_preserves_registered_source_dirs() {
     let a = make_source_dir(&deps, "alpha");
     let b = make_source_dir(&deps, "beta");
 
-    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps)
-        .expect("prune ok");
+    let out = run_context_cmd(&ContextCmd::Prune(PruneArgs::default()), &deps).expect("prune ok");
 
-    assert!(a.exists() && b.exists(), "both registered dirs must survive");
+    assert!(
+        a.exists() && b.exists(),
+        "both registered dirs must survive"
+    );
     assert!(
         out.removed_paths.is_empty(),
         "no orphans => removed_paths empty: {:?}",
@@ -1211,11 +1234,15 @@ fn doctor_all_green_on_healthy_state() {
     let out = run_context_cmd(&ContextCmd::Doctor(args), &deps).expect("doctor ok");
 
     let v = parse_doctor_json(&out.stdout);
-    let checks = v.get("checks").and_then(|x| x.as_array()).expect("checks[]");
+    let checks = v
+        .get("checks")
+        .and_then(|x| x.as_array())
+        .expect("checks[]");
     for c in checks {
         let status = c.get("status").and_then(|x| x.as_str()).unwrap_or("");
         assert_eq!(
-            status, "pass",
+            status,
+            "pass",
             "check {} must be pass on healthy state: {c}",
             c.get("name").and_then(|x| x.as_str()).unwrap_or("?")
         );
@@ -1232,7 +1259,11 @@ fn doctor_reports_missing_source_dir_as_fixable_failure() {
     let deps = TestDeps::new();
     run_context_cmd(&ContextCmd::Init, &deps).expect("init");
     run_context_cmd(
-        &ContextCmd::Add(path_add_args("mini", "rust", &fixture_path_str("mini-rust"))),
+        &ContextCmd::Add(path_add_args(
+            "mini",
+            "rust",
+            &fixture_path_str("mini-rust"),
+        )),
         &deps,
     )
     .expect("add");
@@ -1257,7 +1288,11 @@ fn doctor_reports_missing_source_dir_as_fixable_failure() {
 fn doctor_reports_missing_index_db_as_fixable_failure() {
     let deps = TestDeps::new();
     seed_and_index(&deps, "mini", "mini-rust");
-    let db = deps.home_dir().join("sources").join("mini").join("index.db");
+    let db = deps
+        .home_dir()
+        .join("sources")
+        .join("mini")
+        .join("index.db");
     std::fs::remove_file(&db).expect("remove index.db");
 
     let args = DoctorArgs {
@@ -1281,7 +1316,11 @@ fn doctor_reports_mismatched_model_hash() {
     seed_and_index(&deps, "mini", "mini-rust");
     // Rewrite state.json with a bogus model hash to simulate an embedder
     // upgrade between index runs.
-    let state_path = deps.home_dir().join("sources").join("mini").join("state.json");
+    let state_path = deps
+        .home_dir()
+        .join("sources")
+        .join("mini")
+        .join("state.json");
     let bad = serde_json::json!({
         "schema_version": 1,
         "embedder_model_hash": "definitely-not-the-current-hash",
@@ -1342,15 +1381,15 @@ fn doctor_json_schema_is_stable() {
     let v = parse_doctor_json(&out.stdout);
     // Top-level: ok: bool, checks: array.
     assert!(v.get("ok").and_then(|x| x.as_bool()).is_some(), "ok: bool");
-    let checks = v.get("checks").and_then(|x| x.as_array()).expect("checks[]");
+    let checks = v
+        .get("checks")
+        .and_then(|x| x.as_array())
+        .expect("checks[]");
     assert!(!checks.is_empty(), "must emit at least one check");
     // Each check: name, status, fixable, detail, scope (None or "<source>").
     for c in checks {
         for key in ["name", "status", "fixable", "detail"] {
-            assert!(
-                c.get(key).is_some(),
-                "check must have '{key}': {c}"
-            );
+            assert!(c.get(key).is_some(), "check must have '{key}': {c}");
         }
         let status = c.get("status").and_then(|x| x.as_str()).unwrap();
         assert!(
@@ -1383,7 +1422,11 @@ fn doctor_json_schema_is_stable() {
 fn doctor_repair_rebuilds_missing_index_db() {
     let deps = TestDeps::new();
     seed_and_index(&deps, "mini", "mini-rust");
-    let db = deps.home_dir().join("sources").join("mini").join("index.db");
+    let db = deps
+        .home_dir()
+        .join("sources")
+        .join("mini")
+        .join("index.db");
     std::fs::remove_file(&db).expect("remove db");
     assert!(!db.exists());
 
@@ -1412,10 +1455,7 @@ fn doctor_repair_rebuilds_missing_index_db() {
     let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
     for c in checks {
         let status = c.get("status").and_then(|x| x.as_str()).unwrap_or("");
-        assert_ne!(
-            status, "fail",
-            "no residual failures after repair: {c}"
-        );
+        assert_ne!(status, "fail", "no residual failures after repair: {c}");
     }
 }
 
@@ -1425,7 +1465,11 @@ fn doctor_repair_is_best_effort_continues_past_one_source_failure() {
     run_context_cmd(&ContextCmd::Init, &deps).expect("init");
     // Good source: fully indexed.
     run_context_cmd(
-        &ContextCmd::Add(path_add_args("good", "rust", &fixture_path_str("mini-rust"))),
+        &ContextCmd::Add(path_add_args(
+            "good",
+            "rust",
+            &fixture_path_str("mini-rust"),
+        )),
         &deps,
     )
     .expect("add good");
@@ -1437,7 +1481,11 @@ fn doctor_repair_is_best_effort_continues_past_one_source_failure() {
     )
     .expect("index good");
     // Delete good's db to force a fixable failure.
-    let good_db = deps.home_dir().join("sources").join("good").join("index.db");
+    let good_db = deps
+        .home_dir()
+        .join("sources")
+        .join("good")
+        .join("index.db");
     std::fs::remove_file(&good_db).expect("remove good db");
 
     // Bad source: registered but sources/bad/ never created and jsonl absent
@@ -1519,12 +1567,12 @@ fn run_doctor_doctor_failed_false_with_warn_only() {
     // a real regression in orphan-warning behavior.
     let v = parse_doctor_json(&out.stdout);
     let checks = v.get("checks").and_then(|x| x.as_array()).unwrap();
-    let any_fail_in_json = checks.iter().any(|c| {
-        c.get("status").and_then(|x| x.as_str()) == Some("fail")
-    });
-    let any_warn_in_json = checks.iter().any(|c| {
-        c.get("status").and_then(|x| x.as_str()) == Some("warn")
-    });
+    let any_fail_in_json = checks
+        .iter()
+        .any(|c| c.get("status").and_then(|x| x.as_str()) == Some("fail"));
+    let any_warn_in_json = checks
+        .iter()
+        .any(|c| c.get("status").and_then(|x| x.as_str()) == Some("warn"));
     assert!(
         !any_fail_in_json,
         "fixture must produce warn-only state; got fail rows in: {}",
@@ -1543,4 +1591,3 @@ fn run_doctor_doctor_failed_false_with_warn_only() {
         out.doctor_failed
     );
 }
-

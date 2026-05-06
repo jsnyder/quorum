@@ -8,16 +8,54 @@ static BACKTICK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").
 static STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         // Rust
-        "self", "Self", "super", "crate", "true", "false", "None", "Some",
-        "unwrap", "expect", "clone", "iter", "into", "from", "default",
-        "push", "is_empty", "map", "filter", "collect", "Result", "Option",
-        "String", "Vec", "Box", "Arc", "Mutex",
+        "self",
+        "Self",
+        "super",
+        "crate",
+        "true",
+        "false",
+        "None",
+        "Some",
+        "unwrap",
+        "expect",
+        "clone",
+        "iter",
+        "into",
+        "from",
+        "default",
+        "push",
+        "is_empty",
+        "map",
+        "filter",
+        "collect",
+        "Result",
+        "Option",
+        "String",
+        "Vec",
+        "Box",
+        "Arc",
+        "Mutex",
         // Python
-        "True", "False", "print", "list", "dict", "str", "int", "float",
-        "bool", "type", "init",
+        "True",
+        "False",
+        "print",
+        "list",
+        "dict",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "type",
+        "init",
         // TypeScript/JS
-        "this", "null", "undefined", "console", "log",
-        "length", "toString", "Promise",
+        "this",
+        "null",
+        "undefined",
+        "console",
+        "log",
+        "length",
+        "toString",
+        "Promise",
     ]
     .into_iter()
     .collect()
@@ -44,7 +82,10 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
         .collect()
 }
 
-pub fn extract_identifiers_from_finding_text<'a>(title: &'a str, _description: &'a str) -> Vec<&'a str> {
+pub fn extract_identifiers_from_finding_text<'a>(
+    title: &'a str,
+    _description: &'a str,
+) -> Vec<&'a str> {
     extract_identifiers(title)
 }
 
@@ -79,9 +120,15 @@ fn contains_symbol(text: &str, id: &str) -> bool {
     let needs_trailing_boundary = id.ends_with(is_word_char);
     text.match_indices(id).any(|(idx, _)| {
         let before_ok = !needs_leading_boundary
-            || text[..idx].chars().next_back().is_none_or(|c| !is_word_char(c));
+            || text[..idx]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_word_char(c));
         let after_ok = !needs_trailing_boundary
-            || text[idx + id.len()..].chars().next().is_none_or(|c| !is_word_char(c));
+            || text[idx + id.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_word_char(c));
         before_ok && after_ok
     })
 }
@@ -255,12 +302,17 @@ mod tests {
             "Missing error handling",
             "The function `process_data` at line 42 swallows the error",
         );
-        assert!(ids.is_empty(), "description identifiers should not be used as fallback");
+        assert!(
+            ids.is_empty(),
+            "description identifiers should not be used as fallback"
+        );
     }
 
     #[test]
     fn multibyte_utf8_identifier() {
-        let ids = extract_identifiers("`some_func` and `\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}` both present");
+        let ids = extract_identifiers(
+            "`some_func` and `\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}` both present",
+        );
         assert_eq!(ids.len(), 2);
     }
 
@@ -362,7 +414,12 @@ mod tests {
                 .severity(input.clone())
                 .build();
             let result = verify_grounding(&f, sample_source());
-            assert_eq!(result.severity_change, Some(expected), "failed for {:?}", input);
+            assert_eq!(
+                result.severity_change,
+                Some(expected),
+                "failed for {:?}",
+                input
+            );
         }
     }
 
@@ -505,7 +562,10 @@ mod tests {
         let result = apply_grounding(findings, source, false);
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
         assert_eq!(result[0].severity, Severity::High);
-        assert_eq!(result[1].grounding_status, Some(GroundingStatus::SymbolNotFound));
+        assert_eq!(
+            result[1].grounding_status,
+            Some(GroundingStatus::SymbolNotFound)
+        );
         assert_eq!(result[1].severity, Severity::Medium); // demoted
         assert!(result[2].grounding_status.is_none()); // LocalAst untouched
         assert_eq!(result[2].severity, Severity::Medium);
@@ -635,6 +695,9 @@ mod tests {
             GroundingStatus::NotChecked,
             "title has no backticked IDs; description fallback should not cause SymbolNotFound"
         );
-        assert!(result.severity_change.is_none(), "severity should not change");
+        assert!(
+            result.severity_change.is_none(),
+            "severity should not change"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use super::rerank::{rerank, RerankConfig, RerankInput};
+use super::rerank::{RerankConfig, RerankInput, rerank};
 use chrono::{DateTime, Duration, Utc};
 
 fn input(
@@ -20,9 +20,7 @@ fn input(
 }
 
 fn t(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .unwrap()
-        .with_timezone(&Utc)
+    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
 }
 
 fn now() -> DateTime<Utc> {

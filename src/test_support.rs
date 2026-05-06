@@ -2,10 +2,10 @@
 
 #[cfg(test)]
 pub mod fakes {
+    use crate::llm_client::LlmTurnResult;
+    use crate::pipeline::LlmReviewer;
     use std::collections::VecDeque;
     use std::sync::Mutex;
-    use crate::pipeline::LlmReviewer;
-    use crate::llm_client::LlmTurnResult;
 
     /// Fake reviewer that returns responses in sequence.
     /// Falls back to last response if sequence exhausted.
@@ -38,15 +38,30 @@ pub mod fakes {
     }
 
     impl LlmReviewer for FakeReviewer {
-        fn review(&self, prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
-            self.captured_prompts.lock().unwrap().push(prompt.to_string());
+        fn review(
+            &self,
+            prompt: &str,
+            _model: &str,
+            _system_prompt: &str,
+        ) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            self.captured_prompts
+                .lock()
+                .unwrap()
+                .push(prompt.to_string());
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
                 anyhow::bail!("FakeReviewer: no responses configured");
             }
-            let resp = if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap() };
-            resp.map(|content| crate::llm_client::LlmResponse { content, usage: None })
-                .map_err(|e| anyhow::anyhow!(e))
+            let resp = if q.len() > 1 {
+                q.pop_front().unwrap()
+            } else {
+                q.front().cloned().unwrap()
+            };
+            resp.map(|content| crate::llm_client::LlmResponse {
+                content,
+                usage: None,
+            })
+            .map_err(|e| anyhow::anyhow!(e))
         }
     }
 
@@ -57,7 +72,9 @@ pub mod fakes {
 
     impl FakeAgentReviewer {
         pub fn new(turns: Vec<LlmTurnResult>) -> Self {
-            Self { turns: Mutex::new(turns.into()) }
+            Self {
+                turns: Mutex::new(turns.into()),
+            }
         }
     }
 

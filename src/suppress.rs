@@ -137,7 +137,12 @@ pub fn load_project_suppressions(path: &std::path::Path) -> Vec<SuppressionRule>
 pub fn format_suppressed_finding(finding: &Finding, rule: &SuppressionRule) -> String {
     let reason = rule.reason.as_deref().unwrap_or("no reason given");
     let safe_title: String = finding.title.chars().filter(|c| !c.is_control()).collect();
-    let safe_category: String = finding.category.as_str().chars().filter(|c| !c.is_control()).collect();
+    let safe_category: String = finding
+        .category
+        .as_str()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
     format!(
         "  [SUPPRESSED] {}  [{}]\n    Reason: {}\n",
         safe_title, safe_category, reason
@@ -370,7 +375,10 @@ category = "security"
         assert_eq!(result.kept.len(), 1);
         assert_eq!(result.kept[0].title, "SQL injection risk");
         assert_eq!(result.suppressed.len(), 1);
-        assert_eq!(result.suppressed[0].0.title, "TLS certificate verification disabled");
+        assert_eq!(
+            result.suppressed[0].0.title,
+            "TLS certificate verification disabled"
+        );
     }
 
     #[test]
@@ -407,9 +415,7 @@ category = "security"
             FindingBuilder::new()
                 .title("SQL injection risk in query builder")
                 .build(),
-            FindingBuilder::new()
-                .title("Unused import")
-                .build(),
+            FindingBuilder::new().title("Unused import").build(),
         ];
         let result = apply_suppressions(findings, &rules, "src/main.py");
         assert_eq!(result.kept.len(), 1);
@@ -425,9 +431,11 @@ category = "security"
             file: None,
             reason: Some("Internal service".into()),
         }];
-        let findings = vec![FindingBuilder::new()
-            .title("TLS certificate verification disabled")
-            .build()];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("TLS certificate verification disabled")
+                .build(),
+        ];
         let result = apply_suppressions(findings, &rules, "src/main.py");
         assert_eq!(result.suppressed.len(), 1);
         let (_, matched_rule) = &result.suppressed[0];

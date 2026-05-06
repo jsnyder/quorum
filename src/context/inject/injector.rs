@@ -15,10 +15,10 @@ use crate::context::inject::plan::plan_injection;
 use crate::context::inject::render::render_context_block;
 use crate::context::inject::stale::NoStaleness;
 use crate::context::retrieve::{
-    resolve_precedence, Filters, PrecedenceLog, RetrievalQuery, ScoredChunk, SourceWeights,
+    Filters, PrecedenceLog, RetrievalQuery, ScoredChunk, SourceWeights, resolve_precedence,
 };
 use crate::context::types::ChunkKind;
-use crate::review_log::{hash_rendered_block, ContextTelemetry};
+use crate::review_log::{ContextTelemetry, hash_rendered_block};
 
 /// Request shape that the review pipeline passes to the injector.
 ///
@@ -255,7 +255,11 @@ impl ContextInjectionSource for ContextInjector {
                     // nuke every remaining chunk via a `>=` that can
                     // never be true — fail loud in debug builds and
                     // drop defensively in release.
-                    debug_assert!(!thr.is_nan(), "calibrator returned NaN threshold for {}", h.chunk.id);
+                    debug_assert!(
+                        !thr.is_nan(),
+                        "calibrator returned NaN threshold for {}",
+                        h.chunk.id
+                    );
                     !thr.is_nan() && h.score >= thr
                 })
                 .collect();
@@ -302,11 +306,7 @@ impl ContextInjectionSource for ContextInjector {
         tele.injected_chunk_count = plan.injected.len() as u32;
         tele.injected_by_leg = crate::review_log::LegCounts::from_chunks(&plan.injected);
         tele.injected_tokens = plan.token_count as u32;
-        tele.injected_chunk_ids = plan
-            .injected
-            .iter()
-            .map(|c| c.chunk.id.clone())
-            .collect();
+        tele.injected_chunk_ids = plan.injected.iter().map(|c| c.chunk.id.clone()).collect();
         let mut uniq_sources: Vec<String> = Vec::new();
         for c in &plan.injected {
             if !uniq_sources.iter().any(|s| s == &c.chunk.source) {
@@ -352,7 +352,11 @@ fn score_distribution(hits: &[ScoredChunk]) -> Option<ScoreDist> {
     // tiebreak policy yields nondeterministic ordering. A NaN in the
     // retrieval path is a bug upstream; we record nothing rather than
     // serve a misleading distribution.
-    let mut scores: Vec<f32> = hits.iter().map(|h| h.score).filter(|s| !s.is_nan()).collect();
+    let mut scores: Vec<f32> = hits
+        .iter()
+        .map(|h| h.score)
+        .filter(|s| !s.is_nan())
+        .collect();
     if scores.is_empty() {
         return None;
     }
@@ -360,7 +364,11 @@ fn score_distribution(hits: &[ScoredChunk]) -> Option<ScoreDist> {
     let n = scores.len();
     let min = scores[0];
     // Nearest-rank percentile: index = max(0, ceil(p * n) - 1).
-    let pct_idx = |p: f32| ((n as f32 * p).ceil() as usize).saturating_sub(1).min(n - 1);
+    let pct_idx = |p: f32| {
+        ((n as f32 * p).ceil() as usize)
+            .saturating_sub(1)
+            .min(n - 1)
+    };
     let p10 = scores[pct_idx(0.10)];
     // Proper median: average the two middle values for even n.
     let median = if n % 2 == 0 {
@@ -566,11 +574,7 @@ mod tests {
     #[test]
     fn score_distribution_filters_nan() {
         // NaN scores are dropped; distribution is computed from the rest.
-        let hits = vec![
-            scored("a", 0.2),
-            scored("nan", f32::NAN),
-            scored("b", 0.8),
-        ];
+        let hits = vec![scored("a", 0.2), scored("nan", f32::NAN), scored("b", 0.8)];
         let d = super::score_distribution(&hits).expect("non-NaN scores remain");
         assert!((d.min - 0.2).abs() < 1e-6);
         assert!((d.median - 0.5).abs() < 1e-6, "median={}", d.median);
@@ -592,9 +596,8 @@ mod tests {
             sources: vec![],
             context: ctx_with_min_score(0.5),
         };
-        let retriever: Arc<RetrieverFn> = Arc::new(|_q| {
-            Ok(vec![scored("ok", 0.9), scored("bad", f32::NAN)])
-        });
+        let retriever: Arc<RetrieverFn> =
+            Arc::new(|_q| Ok(vec![scored("ok", 0.9), scored("bad", f32::NAN)]));
         let injector = ContextInjector::new(&sources, retriever);
         let req = InjectionRequest {
             file_path: "x.rs".into(),
@@ -606,8 +609,10 @@ mod tests {
         let out = injector.inject(&req);
         assert_eq!(out.telemetry.nan_scores_dropped, 1);
         assert_eq!(out.telemetry.retrieved_chunk_count, 2);
-        assert_eq!(out.telemetry.suppressed_by_floor, 0,
-            "NaN was counted as a NaN drop, not as a floor drop");
+        assert_eq!(
+            out.telemetry.suppressed_by_floor, 0,
+            "NaN was counted as a NaN drop, not as a floor drop"
+        );
     }
 
     #[test]
@@ -616,9 +621,8 @@ mod tests {
             sources: vec![],
             context: ctx_with_min_score(0.5),
         };
-        let retriever: Arc<RetrieverFn> = Arc::new(|_q| {
-            Ok(vec![scored("a", f32::NAN), scored("b", f32::NAN)])
-        });
+        let retriever: Arc<RetrieverFn> =
+            Arc::new(|_q| Ok(vec![scored("a", f32::NAN), scored("b", f32::NAN)]));
         let injector = ContextInjector::new(&sources, retriever);
         let req = InjectionRequest {
             file_path: "x.rs".into(),
@@ -630,7 +634,9 @@ mod tests {
         let out = injector.inject(&req);
         assert_eq!(out.telemetry.nan_scores_dropped, 2);
         assert!(out.rendered.is_none());
-        assert!(out.telemetry.rerank_score_median.is_none(),
-            "score distribution must not be populated when every score was NaN");
+        assert!(
+            out.telemetry.rerank_score_median.is_none(),
+            "score distribution must not be populated when every score was NaN"
+        );
     }
 }

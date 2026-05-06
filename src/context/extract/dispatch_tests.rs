@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 
-use super::dispatch::{extract_source, ExtractConfig, FixedClock};
+use super::dispatch::{ExtractConfig, FixedClock, extract_source};
 use crate::context::config::{SourceEntry, SourceKind, SourceLocation};
 use crate::context::types::ChunkKind;
 

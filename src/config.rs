@@ -39,8 +39,8 @@ impl Config {
 
         let api_key = Self::get_trimmed(source, "QUORUM_API_KEY");
 
-        let model = Self::get_trimmed(source, "QUORUM_MODEL")
-            .unwrap_or_else(|| Self::DEFAULT_MODEL.into());
+        let model =
+            Self::get_trimmed(source, "QUORUM_MODEL").unwrap_or_else(|| Self::DEFAULT_MODEL.into());
 
         Ok(Config {
             base_url,

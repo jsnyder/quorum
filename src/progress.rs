@@ -1,6 +1,5 @@
 /// Interactive terminal progress feedback.
 /// Writes spinner + status to stderr when TTY, silent when piped.
-
 use std::io::{self, IsTerminal, Write};
 
 pub struct ProgressReporter {
@@ -18,35 +17,56 @@ impl ProgressReporter {
     }
 
     pub fn detect() -> Self {
-        Self { is_tty: io::stderr().is_terminal() }
+        Self {
+            is_tty: io::stderr().is_terminal(),
+        }
     }
 
     pub fn start_file(&self, file_path: &str) {
-        if !self.is_tty { return; }
+        if !self.is_tty {
+            return;
+        }
         eprint!("\x1b[2m{}\x1b[0m ", sanitize(file_path));
         let _ = io::stderr().flush();
     }
 
     pub fn update(&self, status: &str) {
-        if !self.is_tty { return; }
+        if !self.is_tty {
+            return;
+        }
         eprint!("\r\x1b[2K\x1b[2m  {} \x1b[0m", sanitize(status));
         let _ = io::stderr().flush();
     }
 
     pub fn model_call(&self, file_path: &str, model: &str) {
-        if !self.is_tty { return; }
-        eprint!("\r\x1b[2K\x1b[2m  {} reviewing with {}...\x1b[0m", sanitize(file_path), sanitize(model));
+        if !self.is_tty {
+            return;
+        }
+        eprint!(
+            "\r\x1b[2K\x1b[2m  {} reviewing with {}...\x1b[0m",
+            sanitize(file_path),
+            sanitize(model)
+        );
         let _ = io::stderr().flush();
     }
 
     pub fn agent_tool_call(&self, file_path: &str, tool_name: &str, iteration: usize) {
-        if !self.is_tty { return; }
-        eprint!("\r\x1b[2K\x1b[2m  {} [iter {}] calling {}...\x1b[0m", sanitize(file_path), iteration, sanitize(tool_name));
+        if !self.is_tty {
+            return;
+        }
+        eprint!(
+            "\r\x1b[2K\x1b[2m  {} [iter {}] calling {}...\x1b[0m",
+            sanitize(file_path),
+            iteration,
+            sanitize(tool_name)
+        );
         let _ = io::stderr().flush();
     }
 
     pub fn finish_file(&self, finding_count: usize) {
-        if !self.is_tty { return; }
+        if !self.is_tty {
+            return;
+        }
         if finding_count == 0 {
             eprintln!("\r\x1b[2K\x1b[32m  clean\x1b[0m");
         } else {
@@ -55,7 +75,9 @@ impl ProgressReporter {
     }
 
     pub fn clear_line(&self) {
-        if !self.is_tty { return; }
+        if !self.is_tty {
+            return;
+        }
         eprint!("\r\x1b[2K");
         let _ = io::stderr().flush();
     }

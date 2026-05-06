@@ -1,6 +1,5 @@
 /// Secret redaction: strip API keys, passwords, tokens from code before sending to LLM.
 /// Always-on — no opt-out.
-
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -100,19 +99,26 @@ mod tests {
     fn redact_preserves_bare_variable_assignment() {
         let input = "api_key=openai_api_key";
         let output = redact_secrets(input);
-        assert_eq!(input, output, "Bare variable references should NOT be redacted");
+        assert_eq!(
+            input, output,
+            "Bare variable references should NOT be redacted"
+        );
     }
 
     #[test]
     fn redact_preserves_variable_references() {
         let input = "api_key = os.getenv('OPENAI_API_KEY')\nopenai_api_key = config.api_key";
         let output = redact_secrets(input);
-        assert_eq!(input, output, "Variable references and function calls should NOT be redacted");
+        assert_eq!(
+            input, output,
+            "Variable references and function calls should NOT be redacted"
+        );
     }
 
     #[test]
     fn redact_bearer_token() {
-        let input = r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"#;
+        let input =
+            r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"#;
         let output = redact_secrets(input);
         assert!(!output.contains("eyJhbGciOiJIUzI1NiJ9"));
     }
@@ -173,7 +179,8 @@ mod tests {
 
     #[test]
     fn redact_private_key_block() {
-        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
+        let input =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
         let output = redact_secrets(input);
         assert!(!output.contains("MIIEpAIBAAKCAQEA"));
         assert!(output.contains("[REDACTED"));
@@ -236,10 +243,7 @@ mod tests {
         // Issue #68: PASSWORD="pa\"ssword" — the value class [^\n"]{6,}
         // stops at the first " and the {6,} floor fails on the 3-char
         // prefix `pa\`, so the secret leaks through.
-        let cases = [
-            r#"PASSWORD = "pa\"ssword""#,
-            r#"API_KEY = "abc\"def""#,
-        ];
+        let cases = [r#"PASSWORD = "pa\"ssword""#, r#"API_KEY = "abc\"def""#];
         for input in cases {
             let output = redact_secrets(input);
             assert!(
@@ -269,7 +273,10 @@ mod tests {
         // on the line.
         let input = r#"PASSWORD = "pa\"ssword" PUBLIC = "visible""#;
         let output = redact_secrets(input);
-        assert!(output.contains("[REDACTED]"), "expected redaction; got: {output}");
+        assert!(
+            output.contains("[REDACTED]"),
+            "expected redaction; got: {output}"
+        );
         // The non-secret keyword `PUBLIC` is not in the secret-keyword
         // anchor list, so its value should remain literally visible.
         assert!(
@@ -376,10 +383,10 @@ mod tests {
         // Pin the (?i) flag still works for auth_<credential> after dropping
         // bare `auth`. Each case must redact via its credential-shaped suffix.
         for input in [
-            r#"Auth_Token = "tok1""#,       // via `token`
-            r#"AUTH_PASSWORD = "pw1""#,     // via `password`
-            r#"auth-secret = "shh""#,       // via `secret` (hyphen variant)
-            r#"AUTH_API_KEY = "ak""#,       // via `api_key` suffix chain
+            r#"Auth_Token = "tok1""#,   // via `token`
+            r#"AUTH_PASSWORD = "pw1""#, // via `password`
+            r#"auth-secret = "shh""#,   // via `secret` (hyphen variant)
+            r#"AUTH_API_KEY = "ak""#,   // via `api_key` suffix chain
         ] {
             let output = redact_secrets(input);
             assert!(

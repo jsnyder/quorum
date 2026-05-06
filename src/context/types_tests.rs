@@ -226,8 +226,10 @@ fn provenance_rejects_nan_confidence() {
     let json_inf = r#"{"extractor": "x", "confidence": 1.0e300, "source_uri": "u"}"#;
     // 1.0e300 as f32 is infinity
     let err = serde_json::from_str::<Provenance>(json_inf).unwrap_err();
-    assert!(err.to_string().contains("finite") || err.to_string().contains("[0.0, 1.0]"),
-        "got: {err}");
+    assert!(
+        err.to_string().contains("finite") || err.to_string().contains("[0.0, 1.0]"),
+        "got: {err}"
+    );
 }
 
 #[test]

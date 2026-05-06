@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 /// Feedback storage: JSONL file for recording TP/FP verdicts on findings.
 ///
 /// Verdict on-disk schema (backward-compatible):
@@ -6,10 +8,7 @@
 ///   object: `{"context_misleading": {"blamed_chunk_ids": ["c1", "c2"]}}`.
 ///
 /// Legacy entries without the struct variant continue to deserialize unchanged.
-
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,15 +19,17 @@ pub enum Verdict {
     Wontfix,
     /// Recorded when the injected retrieval context misled the reviewer.
     /// `blamed_chunk_ids` may be empty (defaults to "last-injected" downstream).
-    ContextMisleading { blamed_chunk_ids: Vec<String> },
+    ContextMisleading {
+        blamed_chunk_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
     Human,
-    PostFix,                // verdict recorded after applying a fix (strongest signal)
-    AutoCalibrate(String),  // model name used for auto-calibration
+    PostFix,               // verdict recorded after applying a fix (strongest signal)
+    AutoCalibrate(String), // model name used for auto-calibration
     /// Verdict from another review agent (pal, third-opinion, gemini, reviewdog, ...).
     /// Calibrator weight: 0.7x (see calibrator.rs). `confidence` is stored but
     /// IGNORED by the calibrator in v1 — reserved for future confidence-aware weighting.
@@ -274,11 +275,7 @@ pub(crate) fn rename_or_tolerate_race(
             // If src is still present, the NotFound came from somewhere
             // else (missing dst parent, missing intermediate dir, etc.) —
             // propagate so the misconfiguration surfaces.
-            if src.exists() {
-                Err(e)
-            } else {
-                Ok(false)
-            }
+            if src.exists() { Err(e) } else { Ok(false) }
         }
         Err(e) => Err(e),
     }
@@ -304,8 +301,7 @@ const MAX_INBOX_FILE_BYTES: u64 = 1024 * 1024;
 /// on Unix via `O_NOFOLLOW | O_NONBLOCK` and is the authoritative
 /// handle-bound check.
 fn classify_inbox_entry(path: &std::path::Path) -> Result<(), String> {
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| format!("stat failed: {e}"))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("stat failed: {e}"))?;
     let ft = meta.file_type();
     if ft.is_symlink() {
         return Err("symlink".into());
@@ -392,7 +388,8 @@ fn read_inbox_file(path: &std::path::Path) -> std::io::Result<String> {
         ));
     }
     let mut buf = String::new();
-    file.take(MAX_INBOX_FILE_BYTES + 1).read_to_string(&mut buf)?;
+    file.take(MAX_INBOX_FILE_BYTES + 1)
+        .read_to_string(&mut buf)?;
     if buf.len() as u64 > MAX_INBOX_FILE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -463,9 +460,8 @@ impl FeedbackStore {
         // informative.
         let unlock_result = FileExt::unlock(&file);
         write_result?;
-        unlock_result.with_context(|| {
-            format!("Failed to unlock feedback file: {}", self.path.display())
-        })?;
+        unlock_result
+            .with_context(|| format!("Failed to unlock feedback file: {}", self.path.display()))?;
         Ok(())
     }
 
@@ -515,17 +511,18 @@ impl FeedbackStore {
             }
         };
         FileExt::lock_shared(&file).with_context(|| {
-            format!("Failed to lock feedback file for read: {}", self.path.display())
+            format!(
+                "Failed to lock feedback file for read: {}",
+                self.path.display()
+            )
         })?;
         let mut content = String::new();
         let read_result = file.read_to_string(&mut content);
         let unlock_result = FileExt::unlock(&file);
-        read_result.with_context(|| {
-            format!("Failed to read feedback file: {}", self.path.display())
-        })?;
-        unlock_result.with_context(|| {
-            format!("Failed to unlock feedback file: {}", self.path.display())
-        })?;
+        read_result
+            .with_context(|| format!("Failed to read feedback file: {}", self.path.display()))?;
+        unlock_result
+            .with_context(|| format!("Failed to unlock feedback file: {}", self.path.display()))?;
         let mut entries = Vec::new();
         let mut skipped = 0usize;
         for line in content.lines() {
@@ -613,8 +610,7 @@ impl FeedbackStore {
         // Issue #103: surface per-entry iteration errors via report.errors
         // instead of silently filter-mapping them to nothing. A permission
         // glitch on one entry must not invisibly strand subsequent ingestion.
-        let (entries, iter_errors) =
-            drain_inbox_entries(read.map(|r| r.map(|e| e.path())));
+        let (entries, iter_errors) = drain_inbox_entries(read.map(|r| r.map(|e| e.path())));
         report.errors.extend(iter_errors);
         let candidates: Vec<PathBuf> = entries
             .into_iter()
@@ -654,7 +650,10 @@ impl FeedbackStore {
         for file in files {
             // STEP A: CLAIM. Atomic rename into processing/. ENOENT → another
             // process already claimed it; skip.
-            let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown.jsonl");
+            let fname = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown.jsonl");
             let claim_ulid = ulid::Ulid::new().to_string();
             let claimed = processing_dir.join(format!("{fname}.{claim_ulid}.jsonl"));
             match rename_or_tolerate_race(&file, &claimed) {
@@ -722,9 +721,7 @@ impl FeedbackStore {
                     report.errors.push(DrainError {
                         file: claimed.clone(),
                         line: 0,
-                        message: format!(
-                            "archive rename failed: {e}; file left in processing/"
-                        ),
+                        message: format!("archive rename failed: {e}; file left in processing/"),
                     });
                     // File stays in processing/ — operator resolves manually.
                 }
@@ -886,7 +883,8 @@ mod tests {
 
         // Round-trip equality: re-deserialize must reproduce the original
         // (no silent data loss beyond the absent fp_kind key).
-        let round_trip: FeedbackEntry = serde_json::from_str(&reserialized).expect("re-deserialize");
+        let round_trip: FeedbackEntry =
+            serde_json::from_str(&reserialized).expect("re-deserialize");
         assert_eq!(round_trip.fp_kind, entry.fp_kind);
         assert_eq!(round_trip.file_path, entry.file_path);
         assert_eq!(round_trip.finding_title, entry.finding_title);
@@ -899,10 +897,18 @@ mod tests {
         let cases = vec![
             FpKind::Hallucination,
             FpKind::TrustModelAssumption,
-            FpKind::CompensatingControl { reference: "PR #99 line 42".into() },
-            FpKind::PatternOvergeneralization { discriminator_hint: Some("hint text".into()) },
-            FpKind::PatternOvergeneralization { discriminator_hint: None },
-            FpKind::OutOfScope { tracked_in: Some("#456".into()) },
+            FpKind::CompensatingControl {
+                reference: "PR #99 line 42".into(),
+            },
+            FpKind::PatternOvergeneralization {
+                discriminator_hint: Some("hint text".into()),
+            },
+            FpKind::PatternOvergeneralization {
+                discriminator_hint: None,
+            },
+            FpKind::OutOfScope {
+                tracked_in: Some("#456".into()),
+            },
             FpKind::OutOfScope { tracked_in: None },
         ];
         for original in cases {
@@ -974,10 +980,7 @@ mod tests {
 
     #[test]
     fn fp_kind_utilization_rate_zero_when_none_tagged() {
-        let entries = vec![
-            make_entry(Verdict::Fp, None),
-            make_entry(Verdict::Fp, None),
-        ];
+        let entries = vec![make_entry(Verdict::Fp, None), make_entry(Verdict::Fp, None)];
         let rate = compute_fp_kind_utilization_rate(&entries).expect("denominator > 0");
         assert!((rate - 0.0).abs() < 1e-6, "expected 0.0, got {}", rate);
     }
@@ -995,7 +998,8 @@ mod tests {
             "agent": "pal",
             "agent_model": null,
             "confidence": null
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     // Issue #93: handler tests need to inspect the path a handler-owned
@@ -1038,8 +1042,16 @@ mod tests {
             vec![PathBuf::from("/tmp/a.jsonl"), PathBuf::from("/tmp/b.jsonl")],
             "ok paths must still be drained"
         );
-        assert_eq!(errors.len(), 1, "iteration error must be surfaced; got: {:?}", errors);
-        assert_eq!(errors[0].line, 0, "iteration errors are file-level (line 0)");
+        assert_eq!(
+            errors.len(),
+            1,
+            "iteration error must be surfaced; got: {:?}",
+            errors
+        );
+        assert_eq!(
+            errors[0].line, 0,
+            "iteration errors are file-level (line 0)"
+        );
     }
 
     #[test]
@@ -1158,7 +1170,11 @@ mod tests {
     #[test]
     fn record_creates_missing_parent_directory() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("missing").join("nested").join("feedback.jsonl");
+        let path = dir
+            .path()
+            .join("missing")
+            .join("nested")
+            .join("feedback.jsonl");
         assert!(
             !path.parent().unwrap().exists(),
             "precondition: parent dir must not pre-exist"
@@ -1189,7 +1205,9 @@ mod tests {
         let err = store
             .record(&sample_entry(Verdict::Tp))
             .expect_err("record must fail when parent cannot be created");
-        let has_io_cause = err.chain().any(|e| e.downcast_ref::<std::io::Error>().is_some());
+        let has_io_cause = err
+            .chain()
+            .any(|e| e.downcast_ref::<std::io::Error>().is_some());
         assert!(
             has_io_cause,
             "error chain must include io::Error (got: {err:#})"
@@ -1206,7 +1224,10 @@ mod tests {
     #[test]
     fn provenance_serializes_correctly() {
         assert_eq!(serde_json::to_value(&Provenance::Human).unwrap(), "human");
-        assert_eq!(serde_json::to_value(&Provenance::PostFix).unwrap(), "post_fix");
+        assert_eq!(
+            serde_json::to_value(&Provenance::PostFix).unwrap(),
+            "post_fix"
+        );
     }
 
     #[test]
@@ -1233,7 +1254,10 @@ mod tests {
         assert_eq!(all.len(), 1);
         match &all[0].verdict {
             Verdict::ContextMisleading { blamed_chunk_ids } => {
-                assert_eq!(blamed_chunk_ids, &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+                assert_eq!(
+                    blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]
+                );
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
@@ -1314,7 +1338,11 @@ mod tests {
         let all = store.load_all().unwrap();
         assert_eq!(all.len(), 1);
         match &all[0].provenance {
-            Provenance::External { agent, model, confidence } => {
+            Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
                 assert_eq!(agent, "pal");
                 assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
                 assert_eq!(*confidence, Some(0.9));
@@ -1332,13 +1360,19 @@ mod tests {
         };
         let v = serde_json::to_value(&p).unwrap();
         // Externally tagged: {"external": {...}}
-        assert!(v.get("external").is_some(), "expected 'external' tag, got {v}");
+        assert!(
+            v.get("external").is_some(),
+            "expected 'external' tag, got {v}"
+        );
         let inner = v.get("external").unwrap();
         assert_eq!(inner.get("agent").and_then(|x| x.as_str()), Some("pal"));
         // `confidence: None` may serialize as `null` OR be absent (if serde is
         // later configured with skip_serializing_if). Both are valid wire forms.
-        assert!(inner.get("confidence").map_or(true, |c| c.is_null()),
-            "confidence must be null or absent, got {:?}", inner.get("confidence"));
+        assert!(
+            inner.get("confidence").map_or(true, |c| c.is_null()),
+            "confidence must be null or absent, got {:?}",
+            inner.get("confidence")
+        );
     }
 
     #[test]
@@ -1348,7 +1382,11 @@ mod tests {
         let json = r#"{"external":{"agent":"pal","model":"gpt-5.4"}}"#;
         let p: Provenance = serde_json::from_str(json).unwrap();
         match p {
-            Provenance::External { agent, model, confidence } => {
+            Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
                 assert_eq!(agent, "pal");
                 assert_eq!(model.as_deref(), Some("gpt-5.4"));
                 assert_eq!(confidence, None);
@@ -1373,9 +1411,21 @@ mod tests {
     fn clamp_confidence_rejects_nan_inf() {
         // f32::clamp is NOT NaN-safe — it returns NaN for NaN input.
         // clamp_confidence must detect non-finite values explicitly.
-        assert_eq!(clamp_confidence(Some(f32::NAN)), None, "NaN must become None");
-        assert_eq!(clamp_confidence(Some(f32::INFINITY)), None, "+inf must become None");
-        assert_eq!(clamp_confidence(Some(f32::NEG_INFINITY)), None, "-inf must become None");
+        assert_eq!(
+            clamp_confidence(Some(f32::NAN)),
+            None,
+            "NaN must become None"
+        );
+        assert_eq!(
+            clamp_confidence(Some(f32::INFINITY)),
+            None,
+            "+inf must become None"
+        );
+        assert_eq!(
+            clamp_confidence(Some(f32::NEG_INFINITY)),
+            None,
+            "-inf must become None"
+        );
     }
 
     #[test]
@@ -1395,29 +1445,38 @@ mod tests {
         let all = store.load_all().unwrap();
         assert_eq!(all.len(), 1);
         match &all[0].provenance {
-            Provenance::External { agent, model, confidence } => {
+            Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
                 assert_eq!(agent, "pal");
                 assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
                 assert_eq!(*confidence, Some(0.85));
             }
             o => panic!("expected External, got {o:?}"),
         }
-        assert!(all[0].model.is_none(), "entry.model should be None (reviewer model, not agent model)");
+        assert!(
+            all[0].model.is_none(),
+            "entry.model should be None (reviewer model, not agent model)"
+        );
     }
 
     #[test]
     fn record_external_normalizes_agent_name() {
         let (store, _dir) = test_store();
-        store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::Tp,
-            reason: "r".into(),
-            agent: "  PaL  ".into(),
-            agent_model: None,
-            confidence: None,
-        }).unwrap();
+        store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::Tp,
+                reason: "r".into(),
+                agent: "  PaL  ".into(),
+                agent_model: None,
+                confidence: None,
+            })
+            .unwrap();
         let all = store.load_all().unwrap();
         match &all[0].provenance {
             Provenance::External { agent, .. } => assert_eq!(agent, "pal"),
@@ -1428,33 +1487,39 @@ mod tests {
     #[test]
     fn record_external_rejects_empty_agent() {
         let (store, _dir) = test_store();
-        let err = store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::Tp,
-            reason: "r".into(),
-            agent: "   ".into(),
-            agent_model: None,
-            confidence: None,
-        }).expect_err("empty agent must be rejected");
-        assert!(err.to_string().to_lowercase().contains("agent"),
-            "error message should mention agent: {err}");
+        let err = store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::Tp,
+                reason: "r".into(),
+                agent: "   ".into(),
+                agent_model: None,
+                confidence: None,
+            })
+            .expect_err("empty agent must be rejected");
+        assert!(
+            err.to_string().to_lowercase().contains("agent"),
+            "error message should mention agent: {err}"
+        );
     }
 
     #[test]
     fn record_external_defaults_missing_category_to_unknown() {
         let (store, _dir) = test_store();
-        store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::Tp,
-            reason: "r".into(),
-            agent: "pal".into(),
-            agent_model: None,
-            confidence: None,
-        }).unwrap();
+        store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::Tp,
+                reason: "r".into(),
+                agent: "pal".into(),
+                agent_model: None,
+                confidence: None,
+            })
+            .unwrap();
         let all = store.load_all().unwrap();
         assert_eq!(all[0].finding_category, "unknown");
     }
@@ -1462,16 +1527,18 @@ mod tests {
     #[test]
     fn record_external_applies_clamp_confidence() {
         let (store, _dir) = test_store();
-        store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::Tp,
-            reason: "r".into(),
-            agent: "pal".into(),
-            agent_model: None,
-            confidence: Some(1.5),
-        }).unwrap();
+        store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::Tp,
+                reason: "r".into(),
+                agent: "pal".into(),
+                agent_model: None,
+                confidence: Some(1.5),
+            })
+            .unwrap();
         let all = store.load_all().unwrap();
         match &all[0].provenance {
             Provenance::External { confidence, .. } => {
@@ -1487,16 +1554,20 @@ mod tests {
         // injected context — an external agent can't credibly produce them.
         // Reject at ingest to avoid polluting the calibrator's retrieval signal.
         let (store, _dir) = test_store();
-        let err = store.record_external(ExternalVerdictInput {
-            file_path: "a.rs".into(),
-            finding_title: "t".into(),
-            finding_category: None,
-            verdict: Verdict::ContextMisleading { blamed_chunk_ids: vec!["c1".into()] },
-            reason: "r".into(),
-            agent: "pal".into(),
-            agent_model: None,
-            confidence: None,
-        }).expect_err("ContextMisleading must be rejected for External provenance");
+        let err = store
+            .record_external(ExternalVerdictInput {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: None,
+                verdict: Verdict::ContextMisleading {
+                    blamed_chunk_ids: vec!["c1".into()],
+                },
+                reason: "r".into(),
+                agent: "pal".into(),
+                agent_model: None,
+                confidence: None,
+            })
+            .expect_err("ContextMisleading must be rejected for External provenance");
         assert!(
             err.to_string().to_lowercase().contains("context"),
             "error message must mention context_misleading: {err}"
@@ -1512,8 +1583,7 @@ mod tests {
         // a field, or accept the breakage explicitly with a migration plan.
         // Issue #98.
         let raw = r#"{"file_path":"src/x.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"r","model":null,"timestamp":"2026-04-24T17:00:00Z","provenance":{"external":{"agent":"pal","model":"gpt-5.4","confidence":0.9}}}"#;
-        let entry: FeedbackEntry =
-            serde_json::from_str(raw).expect("frozen row must deserialize");
+        let entry: FeedbackEntry = serde_json::from_str(raw).expect("frozen row must deserialize");
         match &entry.provenance {
             Provenance::External {
                 agent,
@@ -1539,8 +1609,8 @@ mod tests {
         // Same pin as above but with optional model/confidence omitted.
         // Tests that #[serde(default)] on those fields holds across versions.
         let raw = r#"{"file_path":"a.rs","finding_title":"t","finding_category":"unknown","verdict":"fp","reason":"r","timestamp":"2026-04-24T17:00:00Z","provenance":{"external":{"agent":"third-opinion"}}}"#;
-        let entry: FeedbackEntry = serde_json::from_str(raw)
-            .expect("frozen minimal-optional row must deserialize");
+        let entry: FeedbackEntry =
+            serde_json::from_str(raw).expect("frozen minimal-optional row must deserialize");
         match &entry.provenance {
             Provenance::External {
                 agent,
@@ -1605,7 +1675,10 @@ mod tests {
         assert_eq!(report.drained_files, 0);
         assert_eq!(report.entries, 0);
         assert!(report.errors.is_empty());
-        assert!(!processed.exists(), "processed/ must not be created when inbox is absent");
+        assert!(
+            !processed.exists(),
+            "processed/ must not be created when inbox is absent"
+        );
     }
 
     #[test]
@@ -1620,7 +1693,10 @@ mod tests {
         assert_eq!(report.entries, 0);
         assert!(report.errors.is_empty());
         assert_eq!(report.processed_dir_total_bytes, 0);
-        assert!(!processed.exists(), "processed/ should not be created when inbox is empty");
+        assert!(
+            !processed.exists(),
+            "processed/ should not be created when inbox is empty"
+        );
     }
 
     #[test]
@@ -1639,7 +1715,8 @@ mod tests {
             "agent": "pal",
             "agent_model": "gemini-3-pro-preview",
             "confidence": 0.9
-        })).unwrap();
+        }))
+        .unwrap();
         let inbox_file = inbox.join("pal-run-1.jsonl");
         std::fs::write(&inbox_file, format!("{line}\n")).unwrap();
 
@@ -1653,21 +1730,35 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert!(matches!(all[0].provenance, Provenance::External { .. }));
 
-        assert!(!inbox_file.exists(), "inbox file should be moved after drain");
+        assert!(
+            !inbox_file.exists(),
+            "inbox file should be moved after drain"
+        );
 
-        let processed_files: Vec<_> = std::fs::read_dir(&processed).unwrap().collect::<Result<_,_>>().unwrap();
+        let processed_files: Vec<_> = std::fs::read_dir(&processed)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(processed_files.len(), 1);
         let name = processed_files[0].file_name().into_string().unwrap();
-        assert!(name.starts_with("pal-run-1.jsonl."), "expected ulid-suffixed name, got {name}");
+        assert!(
+            name.starts_with("pal-run-1.jsonl."),
+            "expected ulid-suffixed name, got {name}"
+        );
         assert!(name.ends_with(".jsonl"));
 
         // Claim-then-ingest invariant: processing/ must be empty on success.
         let processing = inbox.join("processing");
         if processing.exists() {
-            let leftover: Vec<_> = std::fs::read_dir(&processing).unwrap().collect::<Result<_,_>>().unwrap();
-            assert!(leftover.is_empty(),
+            let leftover: Vec<_> = std::fs::read_dir(&processing)
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(
+                leftover.is_empty(),
                 "processing/ must be empty after successful drain, found {:?}",
-                leftover.iter().map(|e| e.path()).collect::<Vec<_>>());
+                leftover.iter().map(|e| e.path()).collect::<Vec<_>>()
+            );
         }
     }
 
@@ -1687,7 +1778,8 @@ mod tests {
             "agent": "pal",
             "agent_model": null,
             "confidence": null
-        })).unwrap();
+        }))
+        .unwrap();
         let bad = "{not json";
         std::fs::write(inbox.join("mix.jsonl"), format!("{good}\n{bad}\n{good}\n")).unwrap();
 
@@ -1752,9 +1844,15 @@ mod tests {
 
         let report = store.drain_inbox(&inbox, &processed).unwrap();
 
-        assert_eq!(report.entries, 0, "symlinked inbox file must not be ingested");
+        assert_eq!(
+            report.entries, 0,
+            "symlinked inbox file must not be ingested"
+        );
         assert!(
-            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with("rejected:")),
             "expected 'rejected: ...' error, got: {:?}",
             report.errors
         );
@@ -1782,11 +1880,17 @@ mod tests {
 
         assert_eq!(report.entries, 0);
         assert!(
-            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with("rejected:")),
             "expected 'rejected: ...' error, got: {:?}",
             report.errors
         );
-        assert!(inbox.join("huge.jsonl").exists(), "oversized file must remain in inbox/ (fail-closed)");
+        assert!(
+            inbox.join("huge.jsonl").exists(),
+            "oversized file must remain in inbox/ (fail-closed)"
+        );
     }
 
     #[test]
@@ -1806,11 +1910,17 @@ mod tests {
 
         assert_eq!(report.entries, 0);
         assert!(
-            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with("rejected:")),
             "expected 'rejected: ...' error for non-regular file, got: {:?}",
             report.errors
         );
-        assert!(sock_path.exists(), "non-regular file must remain in inbox/ (fail-closed)");
+        assert!(
+            sock_path.exists(),
+            "non-regular file must remain in inbox/ (fail-closed)"
+        );
     }
 
     #[test]
@@ -1832,11 +1942,17 @@ mod tests {
 
         assert_eq!(report.entries, 0);
         assert!(
-            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with("rejected:")),
             "expected 'rejected: ...' error for FIFO, got: {:?}",
             report.errors
         );
-        assert!(fifo_path.exists(), "FIFO must remain in inbox/ (fail-closed)");
+        assert!(
+            fifo_path.exists(),
+            "FIFO must remain in inbox/ (fail-closed)"
+        );
         assert!(!inbox.join("processing").join("evil.jsonl").exists());
     }
 
@@ -1862,7 +1978,11 @@ mod tests {
 
         let report = store.drain_inbox(&inbox, &processed).unwrap();
         assert_eq!(report.entries, 1, "exactly-at-cap file must be accepted");
-        assert!(report.errors.is_empty(), "no errors expected, got: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "no errors expected, got: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -1880,11 +2000,17 @@ mod tests {
         let report = store.drain_inbox(&inbox, &processed).unwrap();
         assert_eq!(report.entries, 0);
         assert!(
-            report.errors.iter().any(|e| e.message.starts_with("rejected:")),
+            report
+                .errors
+                .iter()
+                .any(|e| e.message.starts_with("rejected:")),
             "expected 'rejected: ...' error, got: {:?}",
             report.errors
         );
-        assert!(inbox.join("over.jsonl").exists(), "off-by-one file must remain in inbox/ (fail-closed)");
+        assert!(
+            inbox.join("over.jsonl").exists(),
+            "off-by-one file must remain in inbox/ (fail-closed)"
+        );
     }
 
     #[test]
@@ -1997,11 +2123,19 @@ mod tests {
         let inbox = dir.path().join("inbox");
         let processed = dir.path().join("processed");
         std::fs::create_dir_all(&inbox).unwrap();
-        std::fs::write(inbox.join("ok.jsonl"), format!("{}\n", valid_external_jsonl_line())).unwrap();
+        std::fs::write(
+            inbox.join("ok.jsonl"),
+            format!("{}\n", valid_external_jsonl_line()),
+        )
+        .unwrap();
 
         let report = store.drain_inbox(&inbox, &processed).unwrap();
         assert_eq!(report.entries, 1);
-        assert!(report.errors.is_empty(), "no errors expected, got: {:?}", report.errors);
+        assert!(
+            report.errors.is_empty(),
+            "no errors expected, got: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -2063,10 +2197,7 @@ mod tests {
             h.join().unwrap();
         }
         let content = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<_> = content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .collect();
+        let lines: Vec<_> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(
             lines.len(),
             THREADS * PER_THREAD,
@@ -2152,7 +2283,10 @@ mod tests {
             "rename must propagate Err when src still exists; got {:?}",
             result
         );
-        assert!(src.exists(), "src must remain in place after a failed rename");
+        assert!(
+            src.exists(),
+            "src must remain in place after a failed rename"
+        );
     }
 
     #[test]
@@ -2174,8 +2308,11 @@ mod tests {
         assert_eq!(report.entries, 1, "only the valid line was appended");
         assert_eq!(report.errors.len(), 1, "uppercase TP must land in errors");
         let msg = report.errors[0].message.to_lowercase();
-        assert!(msg.contains("tp") || msg.contains("verdict") || msg.contains("unknown variant"),
-            "error must reference the bad verdict: {}", report.errors[0].message);
+        assert!(
+            msg.contains("tp") || msg.contains("verdict") || msg.contains("unknown variant"),
+            "error must reference the bad verdict: {}",
+            report.errors[0].message
+        );
     }
 
     // ─── Stats redesign Phase 0: finding_id / rule_id schema additions ───
@@ -2189,8 +2326,8 @@ mod tests {
     fn legacy_jsonl_row_loads_with_none_finding_id_and_rule_id() {
         // A row written before the schema bump — no finding_id or rule_id keys.
         let legacy_json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":"gpt","timestamp":"2026-01-01T00:00:00Z"}"#;
-        let entry: FeedbackEntry = serde_json::from_str(legacy_json)
-            .expect("legacy row must still deserialize");
+        let entry: FeedbackEntry =
+            serde_json::from_str(legacy_json).expect("legacy row must still deserialize");
         assert_eq!(entry.finding_id, None);
         assert_eq!(entry.rule_id, None);
     }
@@ -2214,8 +2351,14 @@ mod tests {
             rule_id: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        assert!(!json.contains("\"finding_id\""), "json must not contain finding_id key when None: {json}");
-        assert!(!json.contains("\"rule_id\""), "json must not contain rule_id key when None: {json}");
+        assert!(
+            !json.contains("\"finding_id\""),
+            "json must not contain finding_id key when None: {json}"
+        );
+        assert!(
+            !json.contains("\"rule_id\""),
+            "json must not contain rule_id key when None: {json}"
+        );
     }
 
     #[test]
@@ -2235,7 +2378,10 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.finding_id.as_deref(), Some("01HXYZ1234567890ABCDEFGHJK"));
+        assert_eq!(
+            back.finding_id.as_deref(),
+            Some("01HXYZ1234567890ABCDEFGHJK")
+        );
         assert_eq!(back.rule_id.as_deref(), Some("python/eval-non-literal"));
     }
 
@@ -2257,9 +2403,14 @@ mod tests {
             rule_id: Some("python/md5-usage".into()),
         };
         let json = serde_json::to_string(&entry).expect("serialize");
-        assert!(!json.contains("\"finding_id\""), "finding_id should be omitted: {json}");
-        assert!(json.contains("\"rule_id\":\"python/md5-usage\""),
-            "rule_id must be present in json: {json}");
+        assert!(
+            !json.contains("\"finding_id\""),
+            "finding_id should be omitted: {json}"
+        );
+        assert!(
+            json.contains("\"rule_id\":\"python/md5-usage\""),
+            "rule_id must be present in json: {json}"
+        );
         let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.finding_id, None);
         assert_eq!(back.rule_id.as_deref(), Some("python/md5-usage"));
@@ -2271,7 +2422,10 @@ mod tests {
         // Catches accidental refactors to Option<serde_json::Value>.
         let bad_json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":42}"#;
         let result: Result<FeedbackEntry, _> = serde_json::from_str(bad_json);
-        assert!(result.is_err(), "non-string finding_id must fail to deserialize");
+        assert!(
+            result.is_err(),
+            "non-string finding_id must fail to deserialize"
+        );
     }
 
     #[test]
@@ -2285,10 +2439,14 @@ mod tests {
         let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":"gpt","timestamp":"2026-01-01T00:00:00Z"}"#;
         let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
         let resaved = serde_json::to_string(&entry).expect("resave");
-        assert!(!resaved.contains("\"finding_id\""),
-            "resave must not introduce finding_id key: {resaved}");
-        assert!(!resaved.contains("\"rule_id\""),
-            "resave must not introduce rule_id key: {resaved}");
+        assert!(
+            !resaved.contains("\"finding_id\""),
+            "resave must not introduce finding_id key: {resaved}"
+        );
+        assert!(
+            !resaved.contains("\"rule_id\""),
+            "resave must not introduce rule_id key: {resaved}"
+        );
     }
 }
 

@@ -1,6 +1,5 @@
 /// MCP tool definitions for quorum.
-
-use rust_mcp_sdk::macros::{mcp_tool, JsonSchema};
+use rust_mcp_sdk::macros::{JsonSchema, mcp_tool};
 use serde::{Deserialize, Serialize};
 
 #[mcp_tool(
@@ -211,7 +210,10 @@ mod tests {
             (r#""fp""#, FeedbackVerdict::Fp),
             (r#""partial""#, FeedbackVerdict::Partial),
             (r#""wontfix""#, FeedbackVerdict::Wontfix),
-            (r#""context_misleading""#, FeedbackVerdict::ContextMisleading),
+            (
+                r#""context_misleading""#,
+                FeedbackVerdict::ContextMisleading,
+            ),
         ] {
             let v: FeedbackVerdict =
                 serde_json::from_str(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
@@ -347,7 +349,8 @@ mod tests {
             "category":"security",
             "fpKind":"hallucination"
         }"#;
-        let tool: FeedbackTool = serde_json::from_str(json).expect("all declared fields must parse");
+        let tool: FeedbackTool =
+            serde_json::from_str(json).expect("all declared fields must parse");
         assert_eq!(tool.verdict, FeedbackVerdict::Fp);
         assert_eq!(tool.from_agent.as_deref(), Some("pal"));
     }

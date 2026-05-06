@@ -1,6 +1,4 @@
-use super::identifiers::{
-    harvest_identifiers, load_stoplist, ReviewedFile, Symbol,
-};
+use super::identifiers::{ReviewedFile, Symbol, harvest_identifiers, load_stoplist};
 
 fn sym(names: &[&str]) -> Vec<Symbol> {
     names.iter().map(|n| Symbol::new(*n)).collect()
@@ -97,8 +95,7 @@ fn duplicate_refs_are_deduped_preserving_order() {
 #[test]
 fn generic_refs_mix_with_specific_keeps_refs_only() {
     let refs = sym(&["Client", "process_payment"]);
-    let file = ReviewedFile::new("src/foo.rs", "rust")
-        .with_neighbors(["shouldNotAppear"]);
+    let file = ReviewedFile::new("src/foo.rs", "rust").with_neighbors(["shouldNotAppear"]);
     let ids = harvest_identifiers(&refs, &file, &load_stoplist("rust"));
     assert_eq!(
         ids,

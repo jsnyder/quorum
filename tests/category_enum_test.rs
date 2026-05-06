@@ -32,8 +32,14 @@ fn serde_roundtrip_all_variants() {
 
 #[test]
 fn serde_uses_kebab_case() {
-    assert_eq!(serde_json::to_string(&Category::ErrorHandling).unwrap(), "\"error-handling\"");
-    assert_eq!(serde_json::to_string(&Category::Security).unwrap(), "\"security\"");
+    assert_eq!(
+        serde_json::to_string(&Category::ErrorHandling).unwrap(),
+        "\"error-handling\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Category::Security).unwrap(),
+        "\"security\""
+    );
 }
 
 #[test]

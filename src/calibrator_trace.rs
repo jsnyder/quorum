@@ -1,8 +1,8 @@
 //! Calibrator decision tracing: structured records of per-finding calibration decisions.
 
-use serde::{Deserialize, Serialize};
-use crate::finding::{CalibratorAction, Severity};
 use crate::feedback::Verdict;
+use crate::finding::{CalibratorAction, Severity};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrecedentTrace {
@@ -149,7 +149,10 @@ mod tests {
             (NoMatch, "\"no_match\""),
         ] {
             let s = serde_json::to_string(&variant).unwrap();
-            assert_eq!(s, expected, "variant {variant:?} must serialize to {expected}");
+            assert_eq!(
+                s, expected,
+                "variant {variant:?} must serialize to {expected}"
+            );
         }
     }
 
@@ -173,8 +176,10 @@ mod tests {
             provenance: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
-        assert!(!json.contains("severity_change_reason"),
-            "None reason must be omitted from JSON to keep traces backward-compatible");
+        assert!(
+            !json.contains("severity_change_reason"),
+            "None reason must be omitted from JSON to keep traces backward-compatible"
+        );
     }
 
     #[test]
@@ -220,7 +225,10 @@ mod tests {
     fn old_trace_entry_without_file_path_deserializes() {
         let json = r#"{"finding_title":"test","finding_category":"security","tp_weight":1.0,"fp_weight":0.5,"wontfix_weight":0.0,"full_suppress_weight":0.5,"soft_fp_weight":0.5,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
         let trace: CalibratorTraceEntry = serde_json::from_str(json).unwrap();
-        assert_eq!(trace.file_path, None, "old entries should parse with None file_path");
+        assert_eq!(
+            trace.file_path, None,
+            "old entries should parse with None file_path"
+        );
     }
 
     #[test]
@@ -251,19 +259,27 @@ mod tests {
         let trace = CalibratorTraceEntry {
             finding_title: "test".into(),
             finding_category: "security".into(),
-            tp_weight: 0.0, fp_weight: 0.0, wontfix_weight: 0.0,
-            full_suppress_weight: 0.0, soft_fp_weight: 0.0,
-            matched_precedents: vec![], action: None,
-            input_severity: Severity::Low, output_severity: Severity::Low,
-            severity_change_reason: None, file_path: None,
+            tp_weight: 0.0,
+            fp_weight: 0.0,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.0,
+            soft_fp_weight: 0.0,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Low,
+            output_severity: Severity::Low,
+            severity_change_reason: None,
+            file_path: None,
             provenance: Some(TraceProvenance {
                 quorum_version: Some("0.19.0".into()),
                 ..Default::default()
             }),
         };
         let json = serde_json::to_string(&trace).unwrap();
-        assert!(json.contains(r#""provenance":{"quorum_version":"0.19.0"}"#),
-            "provenance must be a nested object, got: {json}");
+        assert!(
+            json.contains(r#""provenance":{"quorum_version":"0.19.0"}"#),
+            "provenance must be a nested object, got: {json}"
+        );
     }
 
     #[test]
@@ -285,15 +301,23 @@ mod tests {
         let trace = CalibratorTraceEntry {
             finding_title: "x".into(),
             finding_category: "y".into(),
-            tp_weight: 0.0, fp_weight: 0.0, wontfix_weight: 0.0,
-            full_suppress_weight: 0.0, soft_fp_weight: 0.0,
-            matched_precedents: vec![], action: None,
-            input_severity: Severity::Low, output_severity: Severity::Low,
-            severity_change_reason: None, file_path: None,
+            tp_weight: 0.0,
+            fp_weight: 0.0,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.0,
+            soft_fp_weight: 0.0,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Low,
+            output_severity: Severity::Low,
+            severity_change_reason: None,
+            file_path: None,
             provenance: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
-        assert!(!json.contains("provenance"),
-            "None provenance must be omitted from JSON");
+        assert!(
+            !json.contains("provenance"),
+            "None provenance must be omitted from JSON"
+        );
     }
 }

@@ -10,10 +10,10 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
+use super::Filters;
 use super::bm25::{Bm25Hit, bm25_search, build_match_expression};
 use super::rerank::{RerankConfig, RerankInput, ScoreBreakdown, rerank};
 use super::vector::{VecHit, vec_search};
-use super::Filters;
 use crate::context::index::traits::{Clock, Embedder};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -89,14 +89,10 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
         let structural_hits: Vec<String> = if q.structural_names.is_empty() {
             Vec::new()
         } else {
-            super::structural::structural_search(
-                self.conn,
-                &q.structural_names,
-                &q.filters,
-            )?
-            .into_iter()
-            .map(|h| h.chunk_id)
-            .collect()
+            super::structural::structural_search(self.conn, &q.structural_names, &q.filters)?
+                .into_iter()
+                .map(|h| h.chunk_id)
+                .collect()
         };
 
         if bm25_hits.is_empty() && vec_hits.is_empty() && structural_hits.is_empty() {

@@ -1,6 +1,5 @@
 /// AST parse cache: avoid re-parsing unchanged files.
 /// Keyed by SHA-256 hash of file content.
-
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
@@ -25,9 +24,7 @@ pub struct ParseCache {
 impl ParseCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(LruCache::new(
-                NonZeroUsize::new(capacity.max(1)).unwrap(),
-            )),
+            inner: Mutex::new(LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap())),
             hits: Mutex::new(0),
             misses: Mutex::new(0),
             capacity,
@@ -40,11 +37,7 @@ impl ParseCache {
         hex::encode(hasher.finalize())
     }
 
-    pub fn get_or_parse(
-        &self,
-        content: &str,
-        lang: Language,
-    ) -> anyhow::Result<tree_sitter::Tree> {
+    pub fn get_or_parse(&self, content: &str, lang: Language) -> anyhow::Result<tree_sitter::Tree> {
         let hash = Self::content_hash(content);
         let mut cache = self.inner.lock().unwrap();
 
@@ -59,7 +52,13 @@ impl ParseCache {
 
         let tree = crate::parser::parse(content, lang)?;
         let mut cache = self.inner.lock().unwrap();
-        cache.put(hash, CachedParse { tree: tree.clone(), lang });
+        cache.put(
+            hash,
+            CachedParse {
+                tree: tree.clone(),
+                lang,
+            },
+        );
         Ok(tree)
     }
 
@@ -178,7 +177,9 @@ mod tests {
     fn cache_different_languages() {
         let cache = ParseCache::new(10);
         cache.get_or_parse("x = 1", Language::Python).unwrap();
-        cache.get_or_parse("let x = 1;", Language::TypeScript).unwrap();
+        cache
+            .get_or_parse("let x = 1;", Language::TypeScript)
+            .unwrap();
         assert_eq!(cache.stats().size, 2);
     }
 }

@@ -1,13 +1,12 @@
 /// Stats dashboard -- reads local data files and computes metrics.
-
 use crate::analytics;
 use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice};
 use crate::feedback::FeedbackStore;
 use crate::formatting;
 use crate::glyphs;
+use crate::output::Style;
 use crate::review_log::ReviewLog;
 use crate::telemetry::TelemetryStore;
-use crate::output::Style;
 
 /// Highlights cap: we show the most active slices, trimmed hard to keep the
 /// default dashboard compact. Callers wanting everything use --by-repo etc.
@@ -89,7 +88,11 @@ pub fn compute_report(
     let total_wontfix: usize = stats.values().map(|s| s.wontfix).sum();
     let relevant = total_tp + total_partial;
     let precision_denom = relevant + total_fp;
-    let precision = if precision_denom > 0 { relevant as f64 / precision_denom as f64 } else { 0.0 };
+    let precision = if precision_denom > 0 {
+        relevant as f64 / precision_denom as f64
+    } else {
+        0.0
+    };
 
     // Precision trend (7-day windows)
     let precision_trend = analytics::precision_trend(&feedback, 7);
@@ -101,7 +104,8 @@ pub fn compute_report(
     let tokens_in_7d: u64 = recent.iter().map(|e| e.tokens_in).sum();
     let tokens_out_7d: u64 = recent.iter().map(|e| e.tokens_out).sum();
 
-    let total_findings_7d: usize = recent.iter()
+    let total_findings_7d: usize = recent
+        .iter()
         .map(|e| e.findings.values().sum::<usize>())
         .sum();
     let total_suppressed_7d: usize = recent.iter().map(|e| e.suppressed).sum();
@@ -143,7 +147,10 @@ pub fn compute_report(
     // empty vectors, which the renderer treats as "no data" and hides.
     let review_records = review_log.load_all().unwrap_or_default();
     let top_repos = take_top(dimensions::group_by_repo(&review_records), HIGHLIGHT_TOP_N);
-    let top_callers = take_top(dimensions::group_by_caller(&review_records), HIGHLIGHT_TOP_N);
+    let top_callers = take_top(
+        dimensions::group_by_caller(&review_records),
+        HIGHLIGHT_TOP_N,
+    );
     let rolling_windows = dimensions::rolling_window(&review_records, ROLLING_N, ROLLING_WINDOWS);
 
     // Linkage / capture / external overlap (Phase A).
@@ -155,9 +162,7 @@ pub fn compute_report(
     // Capture-labeled = feedback entries timestamped in the 7d window.
     // Coarse but useful — exact would require joining each feedback row
     // to a review timestamp, which we deliberately don't do here.
-    let capture_labeled = feedback.iter()
-        .filter(|e| e.timestamp >= since_7d)
-        .count();
+    let capture_labeled = feedback.iter().filter(|e| e.timestamp >= since_7d).count();
     let capture_rate = if capture_total > 0 {
         (capture_labeled as f64 / capture_total as f64).min(1.0)
     } else {
@@ -304,11 +309,7 @@ pub fn format_headline_trend(report: &StatsReport) -> String {
     let tail = windows.last().unwrap();
     let ci = if tail.count >= MIN_TREND_WINDOW_N && tail.precision_denom > 0 {
         let successes = (tail.precision * tail.precision_denom as f64).round() as usize;
-        let (lo, hi) = crate::stats_math::wilson_interval(
-            successes,
-            tail.precision_denom,
-            0.95,
-        );
+        let (lo, hi) = crate::stats_math::wilson_interval(successes, tail.precision_denom, 0.95);
         format!(
             " [{lo}-{hi}]",
             lo = (lo * 100.0).round() as u32,
@@ -351,11 +352,21 @@ pub fn format_human_with_full(report: &StatsReport, style: &Style, full: bool) -
     let mut out = format_human_core(report, style);
     let unicode = crate::output::unicode_ok_default();
     if !report.top_repos.is_empty() {
-        out.push_str(&format_highlight_block("By repo (top)", &report.top_repos, style, unicode));
+        out.push_str(&format_highlight_block(
+            "By repo (top)",
+            &report.top_repos,
+            style,
+            unicode,
+        ));
     }
     if full {
         if !report.top_callers.is_empty() {
-            out.push_str(&format_highlight_block("By caller (top)", &report.top_callers, style, unicode));
+            out.push_str(&format_highlight_block(
+                "By caller (top)",
+                &report.top_callers,
+                style,
+                unicode,
+            ));
         }
         if !report.rolling_windows.is_empty() {
             out.push_str(&format_highlight_block(
@@ -372,11 +383,18 @@ pub fn format_human_with_full(report: &StatsReport, style: &Style, full: bool) -
 /// One highlight section: a mini-table (up to 3 rows) sized to not compete
 /// with the full --by-repo/--by-caller tables. Intentionally narrower than
 /// format_dimension_table.
-fn format_highlight_block(title: &str, slices: &[DimensionSlice], style: &Style, unicode: bool) -> String {
+fn format_highlight_block(
+    title: &str,
+    slices: &[DimensionSlice],
+    style: &Style,
+    unicode: bool,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "\n{bold}{title}{reset}\n",
-        bold = style.bold, reset = style.reset, title = title,
+        bold = style.bold,
+        reset = style.reset,
+        title = title,
     ));
     for s in slices {
         let key = if s.key.chars().count() > 18 {
@@ -393,7 +411,11 @@ fn format_highlight_block(title: &str, slices: &[DimensionSlice], style: &Style,
             format!("  {} {}", spark, arrow)
         };
         let low = if s.low_sample {
-            format!("  {dim}(low sample){reset}", dim = style.dim, reset = style.reset)
+            format!(
+                "  {dim}(low sample){reset}",
+                dim = style.dim,
+                reset = style.reset
+            )
         } else {
             String::new()
         };
@@ -414,7 +436,8 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
 
     out.push_str(&format!(
         "{bold}Feedback Health{reset}\n",
-        bold = style.bold, reset = style.reset
+        bold = style.bold,
+        reset = style.reset
     ));
     out.push_str(&format!(
         "  Entries: {}  Precision: {}\n",
@@ -443,18 +466,21 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
 
     out.push_str(&format!(
         "\n{bold}Activity (last 7 days){reset}\n",
-        bold = style.bold, reset = style.reset
+        bold = style.bold,
+        reset = style.reset
     ));
     out.push_str(&format!(
         "  Reviews: {}  Findings/review: {:.1}  Suppression: {}\n",
-        report.reviews_7d, report.findings_per_review,
+        report.reviews_7d,
+        report.findings_per_review,
         formatting::format_pct(report.suppression_rate),
     ));
 
     if report.tokens_in_7d > 0 || report.tokens_out_7d > 0 {
         out.push_str(&format!(
             "\n{bold}Spend (last 7 days){reset}\n",
-            bold = style.bold, reset = style.reset
+            bold = style.bold,
+            reset = style.reset
         ));
         out.push_str(&format!(
             "  Tokens: {} in / {} out  Cost: {}  Tokens/finding: {}\n",
@@ -516,10 +542,19 @@ pub fn format_dimension_table(
             Some(r) if !s.low_sample => {
                 let bar = glyphs::hbar(r * 100.0, 100.0, unicode);
                 let pct = format!("{:>3}%", (r * 100.0).round() as i64);
-                format!("{}{bar}{reset} {}", color_for_accept(r, style), pct,
-                    bar = bar, reset = style.reset)
+                format!(
+                    "{}{bar}{reset} {}",
+                    color_for_accept(r, style),
+                    pct,
+                    bar = bar,
+                    reset = style.reset
+                )
             }
-            _ => format!("{dim}—                    {reset}", dim = style.dim, reset = style.reset),
+            _ => format!(
+                "{dim}—                    {reset}",
+                dim = style.dim,
+                reset = style.reset
+            ),
         };
 
         let trend_cell = if s.sparkline_points.is_empty() {
@@ -531,7 +566,11 @@ pub fn format_dimension_table(
         };
 
         let low_tag = if s.low_sample {
-            format!("  {dim}(low sample){reset}", dim = style.dim, reset = style.reset)
+            format!(
+                "  {dim}(low sample){reset}",
+                dim = style.dim,
+                reset = style.reset
+            )
         } else {
             String::new()
         };
@@ -559,7 +598,11 @@ pub fn format_dimension_table(
     out.push_str(&format!(
         "\n  {dim}{} {}  {} reviews{}{reset}\n",
         slices.len(),
-        if slices.len() == 1 { unit_label_singular(mode) } else { unit_label_plural(mode) },
+        if slices.len() == 1 {
+            unit_label_singular(mode)
+        } else {
+            unit_label_plural(mode)
+        },
         total_reviews,
         low_note,
         dim = style.dim,
@@ -586,9 +629,13 @@ fn truncate_key(key: &str, width: usize) -> String {
 }
 
 fn color_for_accept(rate: f64, style: &Style) -> &str {
-    if rate >= 0.70 { style.green }
-    else if rate < 0.40 { style.red }
-    else { "" }
+    if rate >= 0.70 {
+        style.green
+    } else if rate < 0.40 {
+        style.red
+    } else {
+        ""
+    }
 }
 
 fn unit_label_singular(mode: &str) -> &'static str {
@@ -616,7 +663,8 @@ pub fn format_dimension_compact(mode: &str, slices: &[DimensionSlice]) -> String
             low_count += 1;
             continue;
         }
-        let acc = s.accept_rate
+        let acc = s
+            .accept_rate
             .map(|r| format!(" acc{}", (r * 100.0).round() as i64))
             .unwrap_or_default();
         parts.push(format!(
@@ -641,33 +689,55 @@ pub fn format_compact(report: &StatsReport) -> String {
     ];
 
     if !report.precision_trend.is_empty() {
-        let trend: Vec<String> = report.precision_trend.iter()
+        let trend: Vec<String> = report
+            .precision_trend
+            .iter()
             .map(|w| formatting::format_pct(w.precision))
             .collect();
         parts.push(format!("trend:{}", trend.join(">")));
     }
 
     parts.push(format!("reviews_7d:{}", report.reviews_7d));
-    parts.push(format!("findings_per_review:{:.1}", report.findings_per_review));
+    parts.push(format!(
+        "findings_per_review:{:.1}",
+        report.findings_per_review
+    ));
 
     if report.tokens_in_7d > 0 {
-        parts.push(format!("tokens_in:{}", formatting::format_count(report.tokens_in_7d)));
-        parts.push(format!("tokens_out:{}", formatting::format_count(report.tokens_out_7d)));
+        parts.push(format!(
+            "tokens_in:{}",
+            formatting::format_count(report.tokens_in_7d)
+        ));
+        parts.push(format!(
+            "tokens_out:{}",
+            formatting::format_count(report.tokens_out_7d)
+        ));
         parts.push(format!("cost:{}", formatting::format_cost(report.cost_7d)));
     }
 
-    parts.push(format!("linkage:{}", formatting::format_pct(report.linkage_rate)));
-    parts.push(format!("capture:{}", formatting::format_pct(report.capture_rate)));
+    parts.push(format!(
+        "linkage:{}",
+        formatting::format_pct(report.linkage_rate)
+    ));
+    parts.push(format!(
+        "capture:{}",
+        formatting::format_pct(report.capture_rate)
+    ));
 
     if !report.external_overlap.per_agent.is_empty() {
-        let agent_parts: Vec<String> = report.external_overlap.per_agent.iter()
+        let agent_parts: Vec<String> = report
+            .external_overlap
+            .per_agent
+            .iter()
             .map(|a| format!("{}:{}/{}", a.agent, a.agree, a.overlap))
             .collect();
         parts.push(format!("external:{}", agent_parts.join(",")));
     }
 
     if !report.precision_trend_per_finding.is_empty() {
-        let pf: Vec<String> = report.precision_trend_per_finding.iter()
+        let pf: Vec<String> = report
+            .precision_trend_per_finding
+            .iter()
             .map(|w| formatting::format_pct(w.precision))
             .collect();
         parts.push(format!("per-finding:{}", pf.join(">")));
@@ -694,7 +764,9 @@ pub fn format_context_dimension_table(
 
     out.push_str(&format!(
         "{bold}~ Stats: {mode}{reset}\n\n",
-        bold = style.bold, reset = style.reset, mode = mode,
+        bold = style.bold,
+        reset = style.reset,
+        mode = mode,
     ));
 
     if slices.is_empty() {
@@ -732,7 +804,11 @@ pub fn format_context_dimension_table(
         };
 
         let low_tag = if s.low_sample {
-            format!("  {dim}(low sample){reset}", dim = style.dim, reset = style.reset)
+            format!(
+                "  {dim}(low sample){reset}",
+                dim = style.dim,
+                reset = style.reset
+            )
         } else {
             String::new()
         };
@@ -861,10 +937,13 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    fn make_review_log(dir: &TempDir, records: &[crate::review_log::ReviewRecord]) -> crate::review_log::ReviewLog {
+    fn make_review_log(
+        dir: &TempDir,
+        records: &[crate::review_log::ReviewRecord],
+    ) -> crate::review_log::ReviewLog {
         let log = crate::review_log::ReviewLog::new(dir.path().join("reviews.jsonl"));
         for r in records {
             log.record(r).unwrap();
@@ -884,14 +963,26 @@ mod tests {
             files_reviewed: 1,
             lines_added: None,
             lines_removed: None,
-            findings_by_severity: SeverityCounts { critical: 0, high: findings, medium: 0, low: 0, info: 0 },
+            findings_by_severity: SeverityCounts {
+                critical: 0,
+                high: findings,
+                medium: 0,
+                low: 0,
+                info: 0,
+            },
             suppressed_by_rule: Default::default(),
-            tokens_in: 0, tokens_out: 0, tokens_cache_read: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
             duration_ms: 100,
-            flags: Flags { deep: false, parallel_n: 1, ensemble: false },
+            flags: Flags {
+                deep: false,
+                parallel_n: 1,
+                ensemble: false,
+            },
             mode: None,
             context: Default::default(),
-        finding_ids: Vec::new(),
+            finding_ids: Vec::new(),
         }
     }
 
@@ -933,8 +1024,14 @@ mod tests {
         let report = compute_report(&fb, &tl, &rl).unwrap();
         let out = format_human_with_full(&report, &Style::plain(), false);
         assert!(out.contains("By repo"), "By repo stays in default: {out}");
-        assert!(!out.contains("By caller"), "By caller hides without --full: {out}");
-        assert!(!out.contains("Rolling"), "Rolling hides without --full: {out}");
+        assert!(
+            !out.contains("By caller"),
+            "By caller hides without --full: {out}"
+        );
+        assert!(
+            !out.contains("Rolling"),
+            "Rolling hides without --full: {out}"
+        );
     }
 
     #[test]
@@ -971,13 +1068,18 @@ mod tests {
         StatsReport {
             feedback_count: 0,
             precision: 0.0,
-            tp: 0, fp: 0, partial: 0, wontfix: 0,
+            tp: 0,
+            fp: 0,
+            partial: 0,
+            wontfix: 0,
             precision_trend: vec![],
             reviews_7d: 0,
             findings_per_review: 0.0,
             suppression_rate: 0.0,
-            tokens_in_7d: 0, tokens_out_7d: 0,
-            cost_7d: 0.0, tokens_per_finding: 0.0,
+            tokens_in_7d: 0,
+            tokens_out_7d: 0,
+            cost_7d: 0.0,
+            tokens_per_finding: 0.0,
             model: String::new(),
             top_repos: Vec::new(),
             top_callers: Vec::new(),
@@ -986,7 +1088,11 @@ mod tests {
             linkage_rate: 0.0,
             linkage_linked: 0,
             linkage_unlinked: 0,
-            capture_rate: if capture_total > 0 { capture_labeled as f64 / capture_total as f64 } else { 0.0 },
+            capture_rate: if capture_total > 0 {
+                capture_labeled as f64 / capture_total as f64
+            } else {
+                0.0
+            },
             capture_labeled,
             capture_total,
             headline_trend_uses_finding_id: uses_finding_id,
@@ -1000,21 +1106,31 @@ mod tests {
         // 4-window trend, last window n=145 ≥ 30 → Wilson CI shown.
         let report = make_report_for_trend(
             vec![pw(0.77, 30), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
-            212, 1159, true,
+            212,
+            1159,
+            true,
         );
         let out = format_headline_trend(&report);
         assert!(out.contains("77 → 81"), "trend chain missing: {out}");
         assert!(out.contains("76%"), "current window pct missing: {out}");
         assert!(out.contains("["), "expected CI bracket: {out}");
-        assert!(out.contains("n=145"), "expected sample-size annotation: {out}");
-        assert!(out.contains("capture"), "capture-rate inline missing: {out}");
+        assert!(
+            out.contains("n=145"),
+            "expected sample-size annotation: {out}"
+        );
+        assert!(
+            out.contains("capture"),
+            "capture-rate inline missing: {out}"
+        );
     }
 
     #[test]
     fn headline_trend_replaces_low_n_window_with_n_too_low() {
         let report = make_report_for_trend(
             vec![pw(0.77, 8), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
-            10, 100, true,
+            10,
+            100,
+            true,
         );
         let out = format_headline_trend(&report);
         assert!(
@@ -1078,7 +1194,8 @@ mod tests {
                 fp_kind: None,
                 finding_id: Some(format!("FID-{i}")),
                 rule_id: None,
-            }).unwrap();
+            })
+            .unwrap();
         }
         for _ in 0..3 {
             fb.record(&crate::feedback::FeedbackEntry {
@@ -1093,11 +1210,15 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
-            }).unwrap();
+            })
+            .unwrap();
         }
         let report = compute_report(&fb, &tl, &rl).unwrap();
         assert!((report.linkage_rate - 0.85).abs() < 1e-9);
-        assert!(report.headline_trend_uses_finding_id, "85% must flip the gate");
+        assert!(
+            report.headline_trend_uses_finding_id,
+            "85% must flip the gate"
+        );
     }
 
     #[test]
@@ -1121,10 +1242,18 @@ mod tests {
         let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
         let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
         let mut records = Vec::new();
-        for _ in 0..5 { records.push(rec("alpha", "tty", 2)); }
-        for _ in 0..3 { records.push(rec("beta", "tty", 1)); }
-        for _ in 0..1 { records.push(rec("gamma", "tty", 1)); }
-        for _ in 0..2 { records.push(rec("delta", "tty", 1)); }
+        for _ in 0..5 {
+            records.push(rec("alpha", "tty", 2));
+        }
+        for _ in 0..3 {
+            records.push(rec("beta", "tty", 1));
+        }
+        for _ in 0..1 {
+            records.push(rec("gamma", "tty", 1));
+        }
+        for _ in 0..2 {
+            records.push(rec("delta", "tty", 1));
+        }
         let rl = make_review_log(&dir, &records);
         let report = compute_report(&fb, &tl, &rl).unwrap();
         assert_eq!(report.top_repos.len(), 3, "should cap at 3");
@@ -1139,9 +1268,15 @@ mod tests {
         let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
         let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
         let mut records = Vec::new();
-        for _ in 0..4 { records.push(rec("r", "claude_code", 2)); }
-        for _ in 0..2 { records.push(rec("r", "tty", 1)); }
-        for _ in 0..1 { records.push(rec("r", "codex_ci", 1)); }
+        for _ in 0..4 {
+            records.push(rec("r", "claude_code", 2));
+        }
+        for _ in 0..2 {
+            records.push(rec("r", "tty", 1));
+        }
+        for _ in 0..1 {
+            records.push(rec("r", "codex_ci", 1));
+        }
         let rl = make_review_log(&dir, &records);
         let report = compute_report(&fb, &tl, &rl).unwrap();
         assert_eq!(report.top_callers[0].key, "claude_code");
@@ -1156,7 +1291,10 @@ mod tests {
         let records: Vec<_> = (0..120).map(|_| rec("r", "tty", 1)).collect();
         let rl = make_review_log(&dir, &records);
         let report = compute_report(&fb, &tl, &rl).unwrap();
-        assert!(!report.rolling_windows.is_empty(), "should produce at least one rolling-50 window");
+        assert!(
+            !report.rolling_windows.is_empty(),
+            "should produce at least one rolling-50 window"
+        );
         assert!(report.rolling_windows.len() <= 4);
     }
 
@@ -1184,7 +1322,11 @@ mod tests {
         let rl = make_review_log(&dir, &records);
         let report = compute_report(&fb, &tl, &rl).unwrap();
         let out = format_human_minimal(&report, &Style::plain());
-        assert!(!out.contains("By repo"), "minimal output should omit repo block: {}", out);
+        assert!(
+            !out.contains("By repo"),
+            "minimal output should omit repo block: {}",
+            out
+        );
         assert!(!out.contains("By caller"));
         assert!(out.contains("Feedback Health"), "minimal keeps core blocks");
     }
@@ -1344,8 +1486,8 @@ mod tests {
         assert!(out.contains("Feedback Health"));
         assert!(out.contains("Activity (last 7 days)"));
         assert!(out.contains("Spend (last 7 days)"));
-        assert!(out.contains("2.0k"));  // feedback count
-        assert!(out.contains("74%"));   // precision
+        assert!(out.contains("2.0k")); // feedback count
+        assert!(out.contains("74%")); // precision
     }
 
     fn slice(key: &str, n: u32, findings: u32, files: u64, low_sample: bool) -> DimensionSlice {
@@ -1353,7 +1495,11 @@ mod tests {
             key: key.into(),
             n_reviews: n,
             n_findings: findings,
-            findings_per_file: if files == 0 { 0.0 } else { findings as f64 / files as f64 },
+            findings_per_file: if files == 0 {
+                0.0
+            } else {
+                findings as f64 / files as f64
+            },
             findings_per_kloc: None,
             accept_rate: None,
             severity_mix: Default::default(),
@@ -1406,7 +1552,11 @@ mod tests {
         s.accept_rate = Some(0.78);
         let out = format_dimension_table("by-repo", &[s], &Style::plain(), true);
         // A 78% bar should have some filled and some empty cells.
-        assert!(out.contains('█'), "unicode bar should contain full-block char, got:\n{}", out);
+        assert!(
+            out.contains('█'),
+            "unicode bar should contain full-block char, got:\n{}",
+            out
+        );
     }
 
     #[test]
@@ -1445,10 +1595,16 @@ mod tests {
 
     #[test]
     fn dimension_compact_single_line_no_glyphs() {
-        let slices = vec![slice("alpha", 10, 23, 10, false), slice("beta", 3, 6, 3, true)];
+        let slices = vec![
+            slice("alpha", 10, 23, 10, false),
+            slice("beta", 3, 6, 3, true),
+        ];
         let out = format_dimension_compact("by-repo", &slices);
-        assert!(!out.contains('\n') || out.trim_end().lines().count() == 1,
-            "compact mode must be single-line, got: {:?}", out);
+        assert!(
+            !out.contains('\n') || out.trim_end().lines().count() == 1,
+            "compact mode must be single-line, got: {:?}",
+            out
+        );
         assert!(!out.contains('█'), "compact mode must not use semigraphics");
         assert!(out.contains("alpha"));
     }

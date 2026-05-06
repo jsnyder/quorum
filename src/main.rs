@@ -26,7 +26,6 @@ pub use quorum::review_mode;
 
 mod agent;
 mod analytics;
-mod stats_math;
 mod cache;
 mod cli;
 mod cli_io;
@@ -48,6 +47,7 @@ mod progress;
 mod review;
 mod review_log;
 mod stats;
+mod stats_math;
 mod suppress;
 mod telemetry;
 #[cfg(test)]
@@ -2121,10 +2121,12 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-    let (samples, join_stats) =
-        quorum::calibrate::join_feedback_and_traces_with_options(
-            &feedback, &traces, &filter, disable_fuzzy,
-        );
+    let (samples, join_stats) = quorum::calibrate::join_feedback_and_traces_with_options(
+        &feedback,
+        &traces,
+        &filter,
+        disable_fuzzy,
+    );
     let positives = samples.iter().filter(|(_, l)| *l).count();
     let negatives = samples.len() - positives;
 
@@ -2583,19 +2585,33 @@ mod join_health_tests {
         let dir = TempDir::new().unwrap();
         // 1 review with 1 finding_id; 2 feedback entries (1 linked, 1 legacy).
         // Linkage = 50% → below threshold.
-        write_jsonl(dir.path(), "reviews.jsonl", &[
-            r#"{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":["FID-LINKED"]}"#,
-        ]);
-        write_jsonl(dir.path(), "feedback.jsonl", &[
-            r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-LINKED"}"#,
-            r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#,
-        ]);
+        write_jsonl(
+            dir.path(),
+            "reviews.jsonl",
+            &[
+                r#"{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":["FID-LINKED"]}"#,
+            ],
+        );
+        write_jsonl(
+            dir.path(),
+            "feedback.jsonl",
+            &[
+                r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-LINKED"}"#,
+                r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#,
+            ],
+        );
 
         let out = format_join_health(dir.path());
         assert!(out.contains("Reviews: 1 with 1 findings"), "got:\n{out}");
-        assert!(out.contains("Feedback: 2 entries (1 linked, 1 unlinked legacy)"), "got:\n{out}");
+        assert!(
+            out.contains("Feedback: 2 entries (1 linked, 1 unlinked legacy)"),
+            "got:\n{out}"
+        );
         assert!(out.contains("50%"), "rate must show as 50%: got:\n{out}");
-        assert!(out.contains("below 85% threshold"), "fallback banner missing: got:\n{out}");
+        assert!(
+            out.contains("below 85% threshold"),
+            "fallback banner missing: got:\n{out}"
+        );
     }
 
     #[test]
@@ -2628,9 +2644,14 @@ mod join_health_tests {
         let dir = TempDir::new().unwrap();
         let ids: Vec<String> = (0..169).map(|i| format!("\"FID-{i}\"")).collect();
         let id_array = format!("[{}]", ids.join(","));
-        write_jsonl(dir.path(), "reviews.jsonl", &[
-            &format!(r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#, id_array),
-        ]);
+        write_jsonl(
+            dir.path(),
+            "reviews.jsonl",
+            &[&format!(
+                r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#,
+                id_array
+            )],
+        );
         let mut fb_lines: Vec<String> = (0..169).map(|i| {
             format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-{}"}}"#, i)
         }).collect();
@@ -2653,13 +2674,20 @@ mod join_health_tests {
         // 9 linked + 1 legacy = 90% linkage, above threshold.
         let mut review_ids = String::from("[");
         for i in 0..9 {
-            if i > 0 { review_ids.push(','); }
+            if i > 0 {
+                review_ids.push(',');
+            }
             review_ids.push_str(&format!("\"FID-{}\"", i));
         }
         review_ids.push(']');
-        write_jsonl(dir.path(), "reviews.jsonl", &[
-            &format!(r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#, review_ids),
-        ]);
+        write_jsonl(
+            dir.path(),
+            "reviews.jsonl",
+            &[&format!(
+                r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#,
+                review_ids
+            )],
+        );
 
         let mut fb_lines: Vec<String> = (0..9).map(|i| {
             format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-{}"}}"#, i)
@@ -2670,7 +2698,13 @@ mod join_health_tests {
 
         let out = format_join_health(dir.path());
         assert!(out.contains("90%"), "rate must show as 90%: got:\n{out}");
-        assert!(!out.contains("below 85% threshold"), "must NOT show fallback banner at 90%: got:\n{out}");
-        assert!(out.contains("per-finding precision math active"), "got:\n{out}");
+        assert!(
+            !out.contains("below 85% threshold"),
+            "must NOT show fallback banner at 90%: got:\n{out}"
+        );
+        assert!(
+            out.contains("per-finding precision math active"),
+            "got:\n{out}"
+        );
     }
 }

@@ -1,7 +1,6 @@
 /// Bounded agent loop for deep code review.
 /// Gives the LLM tools to investigate the codebase before producing findings.
 /// Bounded by max iterations, max tool calls, and max bytes read.
-
 use crate::finding::Finding;
 use crate::pipeline::LlmReviewer;
 use crate::tools::ToolRegistry;
@@ -83,10 +82,20 @@ pub fn agent_review(
 
     // Get project file listing for context (bounded by config)
     let file_listing = tools
-        .execute("list_files", &serde_json::json!({}), config.max_bytes_read / 2)
+        .execute(
+            "list_files",
+            &serde_json::json!({}),
+            config.max_bytes_read / 2,
+        )
         .unwrap_or_else(|_| "Unable to list files.".into());
 
-    let prompt = render_review_prompt(&safe_path_or_default(file_path), &file_listing, code, &tool_descriptions, config);
+    let prompt = render_review_prompt(
+        &safe_path_or_default(file_path),
+        &file_listing,
+        code,
+        &tool_descriptions,
+        config,
+    );
 
     let sys_prompt = crate::llm_client::OpenAiClient::system_prompt();
     let resp = reviewer.review(&prompt, model, sys_prompt)?;
@@ -305,14 +314,20 @@ fn force_final_turn(
     }
 }
 
-fn append_assistant_tool_calls(messages: &mut Vec<serde_json::Value>, calls: &[crate::llm_client::ToolCall]) {
-    let tc_json: Vec<serde_json::Value> = calls.iter().map(|tc| {
-        serde_json::json!({
-            "id": tc.id,
-            "type": "function",
-            "function": {"name": tc.name, "arguments": tc.arguments}
+fn append_assistant_tool_calls(
+    messages: &mut Vec<serde_json::Value>,
+    calls: &[crate::llm_client::ToolCall],
+) {
+    let tc_json: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|tc| {
+            serde_json::json!({
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": tc.arguments}
+            })
         })
-    }).collect();
+        .collect();
     messages.push(serde_json::json!({
         "role": "assistant",
         "content": null,
@@ -340,7 +355,10 @@ pub fn agent_loop(
         )}),
     ];
 
-    let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+    let mut state = AgentState {
+        total_bytes_read: 0,
+        total_tool_calls: 0,
+    };
 
     for _iteration in 0..config.max_iterations {
         let result = reviewer.chat_turn(&messages, &tool_defs, model)?;
@@ -374,10 +392,8 @@ pub fn agent_loop(
                         // values aren't escaped by sanitize_inline_metadata, and
                         // tool_call_id already distinguishes which call produced
                         // this output for the LLM.
-                        let wrapped = format!(
-                            "<tool_output>{}</tool_output>",
-                            escape_for_xml_wrap(result),
-                        );
+                        let wrapped =
+                            format!("<tool_output>{}</tool_output>", escape_for_xml_wrap(result),);
                         messages.push(serde_json::json!({
                             "role": "tool",
                             "tool_call_id": tc.id,
@@ -388,7 +404,9 @@ pub fn agent_loop(
 
                 if state.limit_reached(config) {
                     return force_final_turn(
-                        reviewer, &mut messages, model,
+                        reviewer,
+                        &mut messages,
+                        model,
                         "Limit reached. Produce your findings JSON array now based on what you have seen so far.",
                     );
                 }
@@ -398,7 +416,9 @@ pub fn agent_loop(
 
     eprintln!("Agent: iteration limit ({}) reached", config.max_iterations);
     force_final_turn(
-        reviewer, &mut messages, model,
+        reviewer,
+        &mut messages,
+        model,
         "You've reached the investigation limit. Produce your findings JSON array now.",
     )
 }
@@ -477,8 +497,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::test_support::fakes::{FakeReviewer, FakeAgentReviewer};
     use crate::llm_client::{LlmTurnResult, ToolCall};
+    use crate::test_support::fakes::{FakeAgentReviewer, FakeReviewer};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -529,7 +549,10 @@ mod tests {
             max_tool_calls: 5,
             ..AgentConfig::default()
         };
-        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let mut state = AgentState {
+            total_bytes_read: 0,
+            total_tool_calls: 0,
+        };
         let tc = ToolCall {
             id: "1".into(),
             name: "read_file".into(),
@@ -639,7 +662,8 @@ mod tests {
             .next()
             .expect("wrapper must close");
         assert!(
-            body.contains("&lt;/code_under_review&gt;") || body.contains("&#60;/code_under_review&#62;"),
+            body.contains("&lt;/code_under_review&gt;")
+                || body.contains("&#60;/code_under_review&#62;"),
             "inner </code_under_review> must be HTML-escaped inside the wrapper; body was:\n{body}"
         );
 
@@ -676,7 +700,8 @@ mod tests {
             max_bytes_read: 100,
             ..AgentConfig::default()
         };
-        let prompt = render_review_prompt_with_budget_for_test("src/main.rs", &oversized, "x = 1", &config);
+        let prompt =
+            render_review_prompt_with_budget_for_test("src/main.rs", &oversized, "x = 1", &config);
 
         let body = prompt
             .split(LISTING_OPEN_TAG)
@@ -840,8 +865,16 @@ mod tests {
         let payload = "a".repeat(200);
         std::fs::write(dir.path().join("big.txt"), &payload).unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 1, max_bytes_read: 100, ..AgentConfig::default() };
-        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let config = AgentConfig {
+            max_iterations: 1,
+            max_tool_calls: 1,
+            max_bytes_read: 100,
+            ..AgentConfig::default()
+        };
+        let mut state = AgentState {
+            total_bytes_read: 0,
+            total_tool_calls: 0,
+        };
         let tc = ToolCall {
             id: "t".into(),
             name: "read_file".into(),
@@ -879,7 +912,15 @@ mod tests {
             ),
         ]);
 
-        let result = agent_loop("eval(input())", "test.py", &reviewer, "gpt-5.4", &tools, &config).unwrap();
+        let result = agent_loop(
+            "eval(input())",
+            "test.py",
+            &reviewer,
+            "gpt-5.4",
+            &tools,
+            &config,
+        )
+        .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Dangerous eval");
     }
@@ -887,7 +928,11 @@ mod tests {
     #[test]
     fn agent_loop_single_tool_round() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("auth.py"), "SECRET = 'hunter2'\ndef login(): pass\n").unwrap();
+        std::fs::write(
+            dir.path().join("auth.py"),
+            "SECRET = 'hunter2'\ndef login(): pass\n",
+        )
+        .unwrap();
         let tools = ToolRegistry::new(dir.path());
         let config = AgentConfig::default();
 
@@ -904,8 +949,13 @@ mod tests {
 
         let result = agent_loop(
             "SECRET = 'hunter2'\ndef login(): pass\n",
-            "auth.py", &reviewer, "gpt-5.4", &tools, &config,
-        ).unwrap();
+            "auth.py",
+            &reviewer,
+            "gpt-5.4",
+            &tools,
+            &config,
+        )
+        .unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].title.contains("secret") || result[0].title.contains("Secret"));
     }
@@ -922,19 +972,27 @@ mod tests {
             captured_messages: Mutex<Vec<Vec<serde_json::Value>>>,
         }
         impl AgentReviewer for CapturingReviewer {
-            fn chat_turn(&self, messages: &[serde_json::Value], _tools: &serde_json::Value, _model: &str)
-                -> anyhow::Result<LlmTurnResult>
-            {
-                self.captured_messages.lock().unwrap().push(messages.to_vec());
+            fn chat_turn(
+                &self,
+                messages: &[serde_json::Value],
+                _tools: &serde_json::Value,
+                _model: &str,
+            ) -> anyhow::Result<LlmTurnResult> {
+                self.captured_messages
+                    .lock()
+                    .unwrap()
+                    .push(messages.to_vec());
                 let mut q = self.turns.lock().unwrap();
-                Ok(q.pop_front().unwrap_or(LlmTurnResult::FinalContent("[]".into())))
+                Ok(q.pop_front()
+                    .unwrap_or(LlmTurnResult::FinalContent("[]".into())))
             }
         }
 
         let reviewer = CapturingReviewer {
             turns: Mutex::new(VecDeque::from([
                 LlmTurnResult::ToolCalls(vec![ToolCall {
-                    id: "call_1".into(), name: "read_file".into(),
+                    id: "call_1".into(),
+                    name: "read_file".into(),
                     arguments: r#"{"path": "test.py"}"#.into(),
                 }]),
                 LlmTurnResult::FinalContent("[]".into()),
@@ -949,9 +1007,15 @@ mod tests {
 
         // Second turn should have: system, user, assistant(tool_calls), tool(result)
         let turn2 = &captures[1];
-        assert!(turn2.len() >= 4, "Turn 2 should have system + user + assistant + tool messages");
+        assert!(
+            turn2.len() >= 4,
+            "Turn 2 should have system + user + assistant + tool messages"
+        );
 
-        let tool_msg = turn2.iter().find(|m| m["role"] == "tool").expect("Should have tool role message");
+        let tool_msg = turn2
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("Should have tool role message");
         assert_eq!(tool_msg["tool_call_id"], "call_1");
         assert!(tool_msg["content"].as_str().unwrap().contains("x = 1"));
     }
@@ -1006,9 +1070,17 @@ mod tests {
         // Capture what the reviewer sees
         struct CapturingReviewer(std::sync::Mutex<String>);
         impl crate::pipeline::LlmReviewer for CapturingReviewer {
-            fn review(&self, prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(
+                &self,
+                prompt: &str,
+                _model: &str,
+                _system_prompt: &str,
+            ) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 *self.0.lock().unwrap() = prompt.to_string();
-                Ok(crate::llm_client::LlmResponse { content: "[]".into(), usage: None })
+                Ok(crate::llm_client::LlmResponse {
+                    content: "[]".into(),
+                    usage: None,
+                })
             }
         }
 
@@ -1018,8 +1090,14 @@ mod tests {
         agent_review("x = 1", "main.py", &reviewer, "m", &tools, &config).unwrap();
 
         let captured = reviewer.0.lock().unwrap().clone();
-        assert!(captured.contains("main.py"), "Prompt should contain file listing");
-        assert!(captured.contains("deep code review"), "Prompt should mention deep review");
+        assert!(
+            captured.contains("main.py"),
+            "Prompt should contain file listing"
+        );
+        assert!(
+            captured.contains("deep code review"),
+            "Prompt should mention deep review"
+        );
     }
 
     #[test]
@@ -1027,11 +1105,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.py"), "x = 1").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000, ..AgentConfig::default() };
+        let config = AgentConfig {
+            max_iterations: 1,
+            max_tool_calls: 10,
+            max_bytes_read: 50_000,
+            ..AgentConfig::default()
+        };
 
         let reviewer = FakeAgentReviewer::new(vec![
             LlmTurnResult::ToolCalls(vec![ToolCall {
-                id: "c1".into(), name: "read_file".into(),
+                id: "c1".into(),
+                name: "read_file".into(),
                 arguments: r#"{"path":"test.py"}"#.into(),
             }]),
             // This turn is the forced "produce findings" turn after limit
@@ -1047,14 +1131,31 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.py"), "x").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 5, max_tool_calls: 2, max_bytes_read: 50_000, ..AgentConfig::default() };
+        let config = AgentConfig {
+            max_iterations: 5,
+            max_tool_calls: 2,
+            max_bytes_read: 50_000,
+            ..AgentConfig::default()
+        };
 
         let reviewer = FakeAgentReviewer::new(vec![
             // 3 tool calls in one turn — exceeds limit of 2
             LlmTurnResult::ToolCalls(vec![
-                ToolCall { id: "c1".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
-                ToolCall { id: "c2".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
-                ToolCall { id: "c3".into(), name: "read_file".into(), arguments: r#"{"path":"a.py"}"#.into() },
+                ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"a.py"}"#.into(),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"a.py"}"#.into(),
+                },
+                ToolCall {
+                    id: "c3".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"a.py"}"#.into(),
+                },
             ]),
             LlmTurnResult::FinalContent("[]".into()),
         ]);
@@ -1072,7 +1173,8 @@ mod tests {
 
         let reviewer = FakeAgentReviewer::new(vec![
             LlmTurnResult::ToolCalls(vec![ToolCall {
-                id: "c1".into(), name: "read_file".into(),
+                id: "c1".into(),
+                name: "read_file".into(),
                 arguments: "not valid json{{{".into(),
             }]),
             LlmTurnResult::FinalContent("[]".into()),
@@ -1090,7 +1192,8 @@ mod tests {
 
         let reviewer = FakeAgentReviewer::new(vec![
             LlmTurnResult::ToolCalls(vec![ToolCall {
-                id: "c1".into(), name: "read_file".into(),
+                id: "c1".into(),
+                name: "read_file".into(),
                 arguments: r#"{"path":"nonexistent.py"}"#.into(),
             }]),
             LlmTurnResult::FinalContent("[]".into()),
@@ -1108,7 +1211,12 @@ mod tests {
         // max_bytes_read=8 => /2=4 => slices at byte 4 (mid-UTF-8 of é)
         std::fs::write(dir.path().join("café.py"), "x = 1").unwrap();
         let tools = ToolRegistry::new(dir.path());
-        let config = AgentConfig { max_iterations: 3, max_tool_calls: 10, max_bytes_read: 8, ..AgentConfig::default() };
+        let config = AgentConfig {
+            max_iterations: 3,
+            max_tool_calls: 10,
+            max_bytes_read: 8,
+            ..AgentConfig::default()
+        };
         let reviewer = FakeReviewer::always("[]");
         // Should not panic on truncation at mid-multibyte boundary
         let result = agent_review("x = 1", "test.py", &reviewer, "m", &tools, &config);
@@ -1121,21 +1229,30 @@ mod tests {
         std::fs::write(dir.path().join("t.py"), "x").unwrap();
         let tools = ToolRegistry::new(dir.path());
         // Config with max_iterations=1 to force the final turn path
-        let config = AgentConfig { max_iterations: 1, max_tool_calls: 10, max_bytes_read: 50_000, ..AgentConfig::default() };
+        let config = AgentConfig {
+            max_iterations: 1,
+            max_tool_calls: 10,
+            max_bytes_read: 50_000,
+            ..AgentConfig::default()
+        };
 
         struct FailingAgentReviewer {
             call_count: Mutex<usize>,
         }
         impl AgentReviewer for FailingAgentReviewer {
-            fn chat_turn(&self, _messages: &[serde_json::Value], _tools: &serde_json::Value, _model: &str)
-                -> anyhow::Result<LlmTurnResult>
-            {
+            fn chat_turn(
+                &self,
+                _messages: &[serde_json::Value],
+                _tools: &serde_json::Value,
+                _model: &str,
+            ) -> anyhow::Result<LlmTurnResult> {
                 let mut count = self.call_count.lock().unwrap();
                 *count += 1;
                 if *count == 1 {
                     // First call: request a tool call to consume the iteration
                     Ok(LlmTurnResult::ToolCalls(vec![ToolCall {
-                        id: "c1".into(), name: "read_file".into(),
+                        id: "c1".into(),
+                        name: "read_file".into(),
                         arguments: r#"{"path":"t.py"}"#.into(),
                     }]))
                 } else {
@@ -1145,10 +1262,15 @@ mod tests {
             }
         }
 
-        let reviewer = FailingAgentReviewer { call_count: Mutex::new(0) };
+        let reviewer = FailingAgentReviewer {
+            call_count: Mutex::new(0),
+        };
         let result = agent_loop("x", "t.py", &reviewer, "m", &tools, &config);
         // Should propagate the error, not silently return empty
-        assert!(result.is_err(), "API error should propagate, not be swallowed");
+        assert!(
+            result.is_err(),
+            "API error should propagate, not be swallowed"
+        );
     }
 
     #[test]
@@ -1189,17 +1311,26 @@ mod tests {
         let code = "fn main() {}";
         let budget = 5;
         let result = wrap_code_with_budget(code, budget);
-        assert!(result.is_empty(), "should return empty when budget can't fit tags");
+        assert!(
+            result.is_empty(),
+            "should return empty when budget can't fit tags"
+        );
     }
 
     #[test]
     fn execute_tool_call_multi_call_budget_accounting() {
-        let config = AgentConfig { max_bytes_read: 100, ..AgentConfig::default() };
+        let config = AgentConfig {
+            max_bytes_read: 100,
+            ..AgentConfig::default()
+        };
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a".repeat(60)).unwrap();
         std::fs::write(dir.path().join("b.txt"), "b".repeat(60)).unwrap();
         let tools = crate::tools::ToolRegistry::new(dir.path());
-        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let mut state = AgentState {
+            total_bytes_read: 0,
+            total_tool_calls: 0,
+        };
         let tc1 = crate::llm_client::ToolCall {
             id: "1".into(),
             name: "read_file".into(),
@@ -1213,7 +1344,10 @@ mod tests {
         let r1 = state.execute_tool_call(&tc1, &tools, &config);
         assert!(r1.is_some(), "first call should succeed");
         let r2 = state.execute_tool_call(&tc2, &tools, &config);
-        assert!(r2.is_some(), "second call should succeed (may be truncated)");
+        assert!(
+            r2.is_some(),
+            "second call should succeed (may be truncated)"
+        );
         assert!(
             state.total_bytes_read <= config.max_bytes_read,
             "total_bytes_read {} exceeds max {}",
@@ -1234,7 +1368,10 @@ mod tests {
             max_bytes_read: 100,
             ..AgentConfig::default()
         };
-        let mut state = AgentState { total_bytes_read: 0, total_tool_calls: 0 };
+        let mut state = AgentState {
+            total_bytes_read: 0,
+            total_tool_calls: 0,
+        };
 
         let tc = crate::llm_client::ToolCall {
             id: "call_1".into(),
@@ -1275,7 +1412,10 @@ mod tests {
                 _tools: &serde_json::Value,
                 _model: &str,
             ) -> anyhow::Result<LlmTurnResult> {
-                self.captured_messages.lock().unwrap().push(messages.to_vec());
+                self.captured_messages
+                    .lock()
+                    .unwrap()
+                    .push(messages.to_vec());
                 Ok(self
                     .turns
                     .lock()
@@ -1308,7 +1448,9 @@ mod tests {
             .iter()
             .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("tool"))
             .expect("tool role message exists in second turn");
-        let content = tool_msg["content"].as_str().expect("tool content is string");
+        let content = tool_msg["content"]
+            .as_str()
+            .expect("tool content is string");
 
         // Three independent assertions — but they're all aspects of ONE behavior:
         // "the tool output is sandbox-wrapped, not raw". Per testing antipatterns
@@ -1345,15 +1487,26 @@ mod tests {
         let target_trunc_room = prefix.len() + 4 + 2; // 25, mid-2nd 🦀
         let body_budget = target_trunc_room + trunc_note_len;
         let share_budget = body_budget + wrapper_overhead;
-        assert!(listing.len() > body_budget, "listing must exceed body_budget to trigger truncation");
+        assert!(
+            listing.len() > body_budget,
+            "listing must exceed body_budget to trigger truncation"
+        );
 
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             wrap_listing_with_budget(&listing, share_budget)
         }));
-        assert!(res.is_ok(), "wrap_listing_with_budget panicked at multi-byte boundary");
+        assert!(
+            res.is_ok(),
+            "wrap_listing_with_budget panicked at multi-byte boundary"
+        );
         let out = res.unwrap();
         // Real behavior assertion: rendered ≤ share_budget AND tags wrap intact.
-        assert!(out.len() <= share_budget, "rendered={} > budget={}", out.len(), share_budget);
+        assert!(
+            out.len() <= share_budget,
+            "rendered={} > budget={}",
+            out.len(),
+            share_budget
+        );
         assert!(out.starts_with("<file_listing>"));
         assert!(out.ends_with("</file_listing>"));
     }

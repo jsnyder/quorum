@@ -45,7 +45,9 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
     }
 
     merged.sort_by(|a, b| {
-        b.severity.cmp(&a.severity).then(a.line_start.cmp(&b.line_start))
+        b.severity
+            .cmp(&a.severity)
+            .then(a.line_start.cmp(&b.line_start))
     });
 
     merged
@@ -220,7 +222,11 @@ mod tests {
             .lines(150, 150)
             .build();
         let result = merge_findings(vec![vec![f1], vec![f2], vec![f3]], 0.8);
-        assert_eq!(result.len(), 1, "exact title+category matches must collapse");
+        assert_eq!(
+            result.len(),
+            1,
+            "exact title+category matches must collapse"
+        );
         assert_eq!(result[0].line_start, 10);
         assert_eq!(result[0].line_end, 150);
         let joined = result[0].evidence.join(" ");

@@ -94,8 +94,9 @@ fn apply_filters(
     let allowed_ids: std::collections::HashSet<String> = if no_filters {
         rows.iter().map(|(id, _)| id.clone()).collect()
     } else {
-        let id_placeholders =
-            std::iter::repeat_n("?", rows.len()).collect::<Vec<_>>().join(",");
+        let id_placeholders = std::iter::repeat_n("?", rows.len())
+            .collect::<Vec<_>>()
+            .join(",");
 
         let mut sql = format!("SELECT id FROM chunks WHERE id IN ({id_placeholders})");
 

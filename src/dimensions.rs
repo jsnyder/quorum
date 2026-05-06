@@ -50,15 +50,28 @@ fn aggregate(key: String, records: &[&ReviewRecord]) -> DimensionSlice {
         sev.info += r.findings_by_severity.info;
         n_findings += r.findings_by_severity.total();
         files_reviewed += r.files_reviewed as u64;
-        suppressed += r.suppressed_by_rule.values().map(|v| *v as u64).sum::<u64>();
+        suppressed += r
+            .suppressed_by_rule
+            .values()
+            .map(|v| *v as u64)
+            .sum::<u64>();
         duration_total_ms += r.duration_ms as u128;
         tokens_in += r.tokens_in;
         tokens_out += r.tokens_out;
         tokens_cache_read += r.tokens_cache_read;
         match (r.lines_added, r.lines_removed) {
-            (Some(a), Some(d)) => { lines_touched += a as u64 + d as u64; has_any_lines = true; }
-            (Some(a), None) => { lines_touched += a as u64; has_any_lines = true; }
-            (None, Some(d)) => { lines_touched += d as u64; has_any_lines = true; }
+            (Some(a), Some(d)) => {
+                lines_touched += a as u64 + d as u64;
+                has_any_lines = true;
+            }
+            (Some(a), None) => {
+                lines_touched += a as u64;
+                has_any_lines = true;
+            }
+            (None, Some(d)) => {
+                lines_touched += d as u64;
+                has_any_lines = true;
+            }
             (None, None) => {}
         }
     }
@@ -140,7 +153,11 @@ fn sparkline_buckets(records: &[&ReviewRecord], n_buckets: usize) -> Vec<f64> {
             findings += r.findings_by_severity.total();
             files += r.files_reviewed as u64;
         }
-        let fpf = if files == 0 { 0.0 } else { findings as f64 / files as f64 };
+        let fpf = if files == 0 {
+            0.0
+        } else {
+            findings as f64 / files as f64
+        };
         out.push(fpf);
     }
     out
@@ -160,7 +177,11 @@ pub fn group_by_repo(records: &[ReviewRecord]) -> Vec<DimensionSlice> {
         .into_iter()
         .map(|(k, v)| aggregate(k.unwrap_or_else(|| NO_REPO_KEY.to_string()), &v))
         .collect();
-    slices.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
+    slices.sort_by(|a, b| {
+        b.n_reviews
+            .cmp(&a.n_reviews)
+            .then_with(|| a.key.cmp(&b.key))
+    });
     slices
 }
 
@@ -169,11 +190,12 @@ pub fn group_by_caller(records: &[ReviewRecord]) -> Vec<DimensionSlice> {
     for r in records {
         buckets.entry(r.invoked_from.clone()).or_default().push(r);
     }
-    let mut slices: Vec<_> = buckets
-        .into_iter()
-        .map(|(k, v)| aggregate(k, &v))
-        .collect();
-    slices.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
+    let mut slices: Vec<_> = buckets.into_iter().map(|(k, v)| aggregate(k, &v)).collect();
+    slices.sort_by(|a, b| {
+        b.n_reviews
+            .cmp(&a.n_reviews)
+            .then_with(|| a.key.cmp(&b.key))
+    });
     slices
 }
 
@@ -215,8 +237,12 @@ fn aggregate_context_slice(key: String, records: &[&ReviewRecord]) -> ContextDim
     for r in records {
         sum_chunks += r.context.injected_chunk_count as u64;
         sum_tokens += r.context.injected_tokens as u64;
-        if r.context.retriever_errored { errored += 1; }
-        if r.context.adaptive_threshold_applied { adaptive += 1; }
+        if r.context.retriever_errored {
+            errored += 1;
+        }
+        if r.context.adaptive_threshold_applied {
+            adaptive += 1;
+        }
     }
 
     let denom = n_reviews.max(1) as f64;
@@ -247,7 +273,10 @@ fn context_sparkline_buckets(records: &[&ReviewRecord], n_buckets: usize) -> Vec
     for b in 0..n_buckets {
         let start = b * total / n_buckets;
         let end = ((b + 1) * total / n_buckets).max(start + 1).min(total);
-        if start >= end { out.push(0.0); continue; }
+        if start >= end {
+            out.push(0.0);
+            continue;
+        }
         let mut sum = 0u64;
         for r in &records[start..end] {
             sum += r.context.injected_chunk_count as u64;
@@ -270,7 +299,9 @@ fn context_sparkline_buckets(records: &[&ReviewRecord], n_buckets: usize) -> Vec
 pub fn aggregate_by_source(records: &[ReviewRecord]) -> Vec<ContextDimensionSlice> {
     let mut buckets: HashMap<String, Vec<&ReviewRecord>> = HashMap::new();
     for r in records {
-        if !r.context.injector_available { continue; }
+        if !r.context.injector_available {
+            continue;
+        }
         // Defensive dedup: the injector already dedups injected_sources,
         // but legacy or externally-written records could contain
         // duplicates. Counting the same review twice in the same source
@@ -286,7 +317,11 @@ pub fn aggregate_by_source(records: &[ReviewRecord]) -> Vec<ContextDimensionSlic
         .into_iter()
         .map(|(k, v)| aggregate_context_slice(k, &v))
         .collect();
-    out.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
+    out.sort_by(|a, b| {
+        b.n_reviews
+            .cmp(&a.n_reviews)
+            .then_with(|| a.key.cmp(&b.key))
+    });
     out
 }
 
@@ -299,14 +334,20 @@ pub fn aggregate_by_source(records: &[ReviewRecord]) -> Vec<ContextDimensionSlic
 pub fn aggregate_by_reviewed_repo(records: &[ReviewRecord]) -> Vec<ContextDimensionSlice> {
     let mut buckets: HashMap<Option<String>, Vec<&ReviewRecord>> = HashMap::new();
     for r in records {
-        if !r.context.injector_available { continue; }
+        if !r.context.injector_available {
+            continue;
+        }
         buckets.entry(r.repo.clone()).or_default().push(r);
     }
     let mut out: Vec<_> = buckets
         .into_iter()
         .map(|(k, v)| aggregate_context_slice(k.unwrap_or_else(|| NO_REPO_KEY.to_string()), &v))
         .collect();
-    out.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews).then_with(|| a.key.cmp(&b.key)));
+    out.sort_by(|a, b| {
+        b.n_reviews
+            .cmp(&a.n_reviews)
+            .then_with(|| a.key.cmp(&b.key))
+    });
     out
 }
 
@@ -340,10 +381,14 @@ pub fn aggregate_misleading(records: &[ReviewRecord]) -> Vec<ContextDimensionSli
     let mut total: Vec<&ReviewRecord> = Vec::new();
     for r in records {
         let is_err = r.context.retriever_errored;
-        let is_phantom = r.context.rendered_prompt_hash.is_some()
-            && r.context.injected_chunk_count == 0;
-        if is_err { errored.push(r); }
-        if is_phantom { phantom.push(r); }
+        let is_phantom =
+            r.context.rendered_prompt_hash.is_some() && r.context.injected_chunk_count == 0;
+        if is_err {
+            errored.push(r);
+        }
+        if is_phantom {
+            phantom.push(r);
+        }
         if (is_err || is_phantom) && total_seen.insert(r.run_id.as_str()) {
             total.push(r);
         }
@@ -357,7 +402,11 @@ pub fn aggregate_misleading(records: &[ReviewRecord]) -> Vec<ContextDimensionSli
 
 /// Rolling N-record windows over the chronologically-last `n * max_windows` records.
 /// Returns: [last N, prev N, prev 2N, ...]. Records assumed in chronological insertion order.
-pub fn rolling_window(records: &[ReviewRecord], n: usize, max_windows: usize) -> Vec<DimensionSlice> {
+pub fn rolling_window(
+    records: &[ReviewRecord],
+    n: usize,
+    max_windows: usize,
+) -> Vec<DimensionSlice> {
     if n == 0 || max_windows == 0 || records.is_empty() {
         return Vec::new();
     }
@@ -366,7 +415,9 @@ pub fn rolling_window(records: &[ReviewRecord], n: usize, max_windows: usize) ->
     for w in 0..max_windows {
         let offset = w.saturating_mul(n);
         let end = total.saturating_sub(offset);
-        if end == 0 { break; }
+        if end == 0 {
+            break;
+        }
         let start = end.saturating_sub(n);
         let slice: Vec<&ReviewRecord> = records[start..end].iter().collect();
         let label = match w {
@@ -396,7 +447,13 @@ mod tests {
             files_reviewed: files,
             lines_added: None,
             lines_removed: None,
-            findings_by_severity: SeverityCounts { critical: 0, high: findings, medium: 0, low: 0, info: 0 },
+            findings_by_severity: SeverityCounts {
+                critical: 0,
+                high: findings,
+                medium: 0,
+                low: 0,
+                info: 0,
+            },
             suppressed_by_rule: Default::default(),
             tokens_in: 1000,
             tokens_out: 100,
@@ -405,7 +462,7 @@ mod tests {
             flags: Flags::default(),
             mode: None,
             context: Default::default(),
-        finding_ids: Vec::new(),
+            finding_ids: Vec::new(),
         }
     }
 
@@ -441,9 +498,13 @@ mod tests {
         let mut r_none = rec("ignored", "tty", 1, 5);
         r_none.repo = None;
         let slices = group_by_repo(&[r_real, r_none]);
-        let none_slice = slices.iter().find(|s| s.key == "(no repo)")
+        let none_slice = slices
+            .iter()
+            .find(|s| s.key == "(no repo)")
             .expect("None repo should produce a '(no repo)' sentinel, got keys: {:?}");
-        let real_slice = slices.iter().find(|s| s.key == "unknown")
+        let real_slice = slices
+            .iter()
+            .find(|s| s.key == "unknown")
             .expect("real 'unknown' repo must remain addressable by its name");
         assert_eq!(none_slice.n_findings, 5);
         assert_eq!(real_slice.n_findings, 3);
@@ -458,7 +519,11 @@ mod tests {
         let mut r_none = rec("ignored", "tty", 1, 5);
         r_none.repo = None;
         let slices = group_by_repo(&[r_real, r_none]);
-        assert_eq!(slices.len(), 2, "None and real '(no repo)' must bucket separately");
+        assert_eq!(
+            slices.len(),
+            2,
+            "None and real '(no repo)' must bucket separately"
+        );
         let none_total: u32 = slices.iter().map(|s| s.n_findings).sum();
         assert_eq!(none_total, 8);
     }
@@ -475,7 +540,10 @@ mod tests {
         // findings_per_kloc = 1 * 1000 / (2 * u32::MAX) -- tiny but well-defined.
         let fpk = slices[0].findings_per_kloc.expect("kloc set when lines>0");
         let expected = 1000.0 / (2.0 * u32::MAX as f64);
-        assert!((fpk - expected).abs() < 1e-12, "got {fpk}, expected {expected}");
+        assert!(
+            (fpk - expected).abs() < 1e-12,
+            "got {fpk}, expected {expected}"
+        );
     }
 
     #[test]
@@ -504,7 +572,10 @@ mod tests {
     fn low_sample_flagged_below_min_sample() {
         let records: Vec<_> = (0..MIN_SAMPLE - 1).map(|_| rec("x", "tty", 1, 0)).collect();
         let slices = group_by_repo(&records);
-        assert!(slices[0].low_sample, "n < MIN_SAMPLE should set low_sample=true");
+        assert!(
+            slices[0].low_sample,
+            "n < MIN_SAMPLE should set low_sample=true"
+        );
     }
 
     #[test]
@@ -604,7 +675,7 @@ mod tests {
         // returns 0.0 instead of the correct 1.0. Reproduces the bug exactly.
         let mut r = rec("r", "tty", 0, 0);
         r.suppressed_by_rule.insert("a".into(), u32::MAX); // 2^32 - 1
-        r.suppressed_by_rule.insert("b".into(), 1);        // +1 = 2^32 (truncates to 0 as u32)
+        r.suppressed_by_rule.insert("b".into(), 1); // +1 = 2^32 (truncates to 0 as u32)
         let slices = group_by_repo(&[r]);
         assert!(
             (slices[0].suppression_rate - 1.0).abs() < 1e-9,
@@ -672,7 +743,16 @@ mod tests {
         // Verify unique-source row count and per-source review counts.
         let records = vec![
             ctx_rec("r", true, &["mini-rust"], 2, 100, false, false, Some("h1")),
-            ctx_rec("r", true, &["mini-rust", "mini-py"], 4, 200, false, false, Some("h2")),
+            ctx_rec(
+                "r",
+                true,
+                &["mini-rust", "mini-py"],
+                4,
+                200,
+                false,
+                false,
+                Some("h2"),
+            ),
             ctx_rec("r", true, &["mini-py"], 1, 50, false, false, Some("h3")),
             ctx_rec("r", true, &["mini-rust"], 3, 150, false, false, Some("h4")),
         ];
@@ -749,7 +829,16 @@ mod tests {
             records.push(ctx_rec("A", false, &[], 0, 0, false, false, None));
         }
         for _ in 0..2 {
-            records.push(ctx_rec("A", true, &["src"], 2, 100, false, false, Some("h")));
+            records.push(ctx_rec(
+                "A",
+                true,
+                &["src"],
+                2,
+                100,
+                false,
+                false,
+                Some("h"),
+            ));
         }
         let slices = aggregate_by_reviewed_repo(&records);
         assert_eq!(slices.len(), 1, "only repo A with injector-wired reviews");
@@ -787,9 +876,7 @@ mod tests {
         // A single record that is both errored AND phantom must only be
         // counted once in the "total" row (set-union semantics), even
         // though it contributes to both breakdown rows.
-        let records = vec![
-            ctx_rec("r", true, &[], 0, 0, true, false, Some("dual")),
-        ];
+        let records = vec![ctx_rec("r", true, &[], 0, 0, true, false, Some("dual"))];
         let slices = aggregate_misleading(&records);
         assert_eq!(slices[0].n_reviews, 1, "total must dedupe on run_id");
         assert_eq!(slices[1].n_reviews, 1);
@@ -846,7 +933,16 @@ mod tests {
         }
         // 5 recent records with source "new"
         for _ in 0..5 {
-            records.push(ctx_rec("r", true, &["new"], 2, 100, false, false, Some("h")));
+            records.push(ctx_rec(
+                "r",
+                true,
+                &["new"],
+                2,
+                100,
+                false,
+                false,
+                Some("h"),
+            ));
         }
         let recent: Vec<_> = records[records.len() - 5..].to_vec();
         let slices = aggregate_by_source(&recent);

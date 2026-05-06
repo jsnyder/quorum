@@ -1,5 +1,4 @@
 /// Numeric formatting: human-readable k/M suffixes per DESIGN.md section 11.
-
 use std::time::Duration;
 
 pub fn format_count(n: u64) -> String {
@@ -95,7 +94,11 @@ mod tests {
             (Duration::from_secs(62), "62.0s"),
         ];
         for (input, expected) in cases {
-            assert_eq!(format_duration(input), expected, "format_duration({input:?})");
+            assert_eq!(
+                format_duration(input),
+                expected,
+                "format_duration({input:?})"
+            );
         }
     }
 

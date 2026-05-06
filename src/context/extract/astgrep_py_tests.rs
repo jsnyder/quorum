@@ -19,11 +19,7 @@ def verify_token(token: str) -> bool:
         .unwrap();
     assert_eq!(vt.kind, super::super::types::ChunkKind::Symbol);
     assert!(vt.content.contains("Validate the JWT"));
-    assert!(vt
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("def verify_token"));
+    assert!(vt.signature.as_ref().unwrap().contains("def verify_token"));
     assert!(vt.metadata.is_exported);
     assert_eq!(vt.metadata.language.as_deref(), Some("python"));
     assert_eq!(vt.provenance.extractor, "ast-grep-python");
@@ -41,11 +37,12 @@ class AuthError(Exception):
         .find(|c| c.qualified_name.as_deref() == Some("AuthError"))
         .unwrap();
     assert!(ae.content.contains("Raised when"));
-    assert!(ae
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("class AuthError(Exception)"));
+    assert!(
+        ae.signature
+            .as_ref()
+            .unwrap()
+            .contains("class AuthError(Exception)")
+    );
 }
 
 #[test]
@@ -149,7 +146,10 @@ def foo(
         sig.contains("foo(x: int, y: int) -> int"),
         "signature should collapse to single line, got: {sig}"
     );
-    assert!(!sig.contains('\n'), "signature must not contain newlines: {sig}");
+    assert!(
+        !sig.contains('\n'),
+        "signature must not contain newlines: {sig}"
+    );
 }
 
 #[test]
@@ -284,7 +284,11 @@ def foo():
         foo.content
     );
     // Content should just be the signature in this case.
-    assert!(foo.content.contains("def foo()"), "content = {:?}", foo.content);
+    assert!(
+        foo.content.contains("def foo()"),
+        "content = {:?}",
+        foo.content
+    );
 }
 
 #[test]
@@ -321,4 +325,3 @@ fn signature_survives_colon_in_triple_quoted_default() {
         "triple-quoted default was truncated: {sig}"
     );
 }
-

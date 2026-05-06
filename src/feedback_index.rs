@@ -75,11 +75,8 @@ impl FeedbackIndex {
                 let texts: Vec<String> = entries
                     .iter()
                     .map(|e| {
-                        let pattern = patterns::classify_pattern(
-                            &e.finding_title,
-                            "",
-                            &e.finding_category,
-                        );
+                        let pattern =
+                            patterns::classify_pattern(&e.finding_title, "", &e.finding_category);
                         patterns::embedding_text_enriched(
                             &e.finding_title,
                             &e.finding_category,
@@ -183,9 +180,14 @@ impl FeedbackIndex {
         {
             match crate::embeddings::LocalEmbedder::new() {
                 Ok(mut embedder) => {
-                    let texts: Vec<String> = entries.iter()
+                    let texts: Vec<String> = entries
+                        .iter()
                         .map(|e| {
-                            let pattern = patterns::classify_pattern(&e.finding_title, "", &e.finding_category);
+                            let pattern = patterns::classify_pattern(
+                                &e.finding_title,
+                                "",
+                                &e.finding_category,
+                            );
                             patterns::embedding_text_enriched(
                                 &e.finding_title,
                                 &e.finding_category,
@@ -219,11 +221,22 @@ impl FeedbackIndex {
                         entries.len(),
                         vectors.len(),
                     );
-                    tracing::debug!(entries = entries.len(), "FeedbackIndex: embedded with bge-small-en-v1.5");
-                    return Ok(Self { entries, vectors, embedder: Some(embedder), bm25_engine });
+                    tracing::debug!(
+                        entries = entries.len(),
+                        "FeedbackIndex: embedded with bge-small-en-v1.5"
+                    );
+                    return Ok(Self {
+                        entries,
+                        vectors,
+                        embedder: Some(embedder),
+                        bm25_engine,
+                    });
                 }
                 Err(e) => {
-                    eprintln!("FeedbackIndex: embedding model unavailable ({}), falling back to BM25+Jaccard", e);
+                    eprintln!(
+                        "FeedbackIndex: embedding model unavailable ({}), falling back to BM25+Jaccard",
+                        e
+                    );
                 }
             }
         }
@@ -256,7 +269,8 @@ impl FeedbackIndex {
         // Build an enriched query once. Downstream methods that need plain title
         // (e.g. BM25 tokenization) accept the whole string; BM25 tokenizes and
         // IDF self-weights so the extra tokens don't hurt rare-title matches.
-        let extras: Vec<&str> = discriminators.iter()
+        let extras: Vec<&str> = discriminators
+            .iter()
             .copied()
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -268,13 +282,15 @@ impl FeedbackIndex {
         self.find_similar(&enriched_query, category, top_k)
     }
 
-    pub fn find_similar(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+    pub fn find_similar(
+        &mut self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
         // Hybrid path: both BM25 and embeddings present → RRF fuse.
         #[cfg(feature = "embeddings")]
-        if self.bm25_engine.is_some()
-            && self.embedder.is_some()
-            && !self.vectors.is_empty()
-        {
+        if self.bm25_engine.is_some() && self.embedder.is_some() && !self.vectors.is_empty() {
             return self.find_similar_hybrid_rrf(finding_title, category, top_k);
         }
 
@@ -295,7 +311,12 @@ impl FeedbackIndex {
     /// the tail of each retriever gets a chance to surface items the other
     /// missed.
     #[cfg(feature = "embeddings")]
-    fn find_similar_hybrid_rrf(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+    fn find_similar_hybrid_rrf(
+        &mut self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
         const K: f32 = 60.0;
         let pool = (top_k * 3).max(20);
 
@@ -344,7 +365,12 @@ impl FeedbackIndex {
             .collect()
     }
 
-    fn find_similar_bm25(&self, finding_title: &str, _category: &str, top_k: usize) -> Vec<SimilarEntry> {
+    fn find_similar_bm25(
+        &self,
+        finding_title: &str,
+        _category: &str,
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
         let engine = match &self.bm25_engine {
             Some(e) => e,
             None => return Vec::new(),
@@ -372,11 +398,19 @@ impl FeedbackIndex {
             .collect()
     }
 
-    fn find_similar_jaccard(&self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+    fn find_similar_jaccard(
+        &self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
         self.jaccard_rank_indices(finding_title, category, top_k)
             .into_iter()
             .filter_map(|(idx, sim)| {
-                self.entries.get(idx).map(|e| SimilarEntry { entry: e.clone(), similarity: sim })
+                self.entries.get(idx).map(|e| SimilarEntry {
+                    entry: e.clone(),
+                    similarity: sim,
+                })
             })
             .collect()
     }
@@ -384,11 +418,24 @@ impl FeedbackIndex {
     /// Rank entries by Jaccard + category match, returning (entry_index, sim).
     /// Index-preserving (mirrors `embed_rank_indices`) so duplicate-title
     /// entries stay distinct during RRF fusion.
-    fn jaccard_rank_indices(&self, finding_title: &str, category: &str, top_k: usize) -> Vec<(usize, f32)> {
-        let mut scored: Vec<(usize, f32)> = self.entries.iter().enumerate()
+    fn jaccard_rank_indices(
+        &self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self
+            .entries
+            .iter()
+            .enumerate()
             .map(|(i, e)| {
                 let title_sim = word_jaccard(finding_title, &e.finding_title);
-                let cat_match = if !e.finding_category.is_empty() && category == e.finding_category { 0.4 } else { 0.0 };
+                let cat_match = if !e.finding_category.is_empty() && category == e.finding_category
+                {
+                    0.4
+                } else {
+                    0.0
+                };
                 (i, (title_sim * 0.6 + cat_match) as f32)
             })
             .collect();
@@ -398,11 +445,19 @@ impl FeedbackIndex {
     }
 
     #[cfg(feature = "embeddings")]
-    fn find_similar_embedding(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<SimilarEntry> {
+    fn find_similar_embedding(
+        &mut self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<SimilarEntry> {
         self.embed_rank_indices(finding_title, category, top_k)
             .into_iter()
             .filter_map(|(idx, sim)| {
-                self.entries.get(idx).map(|e| SimilarEntry { entry: e.clone(), similarity: sim })
+                self.entries.get(idx).map(|e| SimilarEntry {
+                    entry: e.clone(),
+                    similarity: sim,
+                })
             })
             .collect()
     }
@@ -412,7 +467,12 @@ impl FeedbackIndex {
     /// later) is load-bearing for RRF: duplicate (title, category, timestamp)
     /// entries would otherwise collapse to the first match.
     #[cfg(feature = "embeddings")]
-    fn embed_rank_indices(&mut self, finding_title: &str, category: &str, top_k: usize) -> Vec<(usize, f32)> {
+    fn embed_rank_indices(
+        &mut self,
+        finding_title: &str,
+        category: &str,
+        top_k: usize,
+    ) -> Vec<(usize, f32)> {
         let pattern = patterns::classify_pattern(finding_title, "", category);
         let query_text = patterns::embedding_text(finding_title, category, pattern.as_deref());
 
@@ -441,7 +501,9 @@ impl FeedbackIndex {
 }
 
 fn word_jaccard(a: &str, b: &str) -> f64 {
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     // Lowercase so equivalent titles like "SQL Injection" / "sql injection"
     // don't split into disjoint token sets.
     let al = a.to_lowercase();
@@ -456,9 +518,9 @@ fn word_jaccard(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feedback::{FeedbackStore, Verdict, Provenance};
-    use tempfile::TempDir;
+    use crate::feedback::{FeedbackStore, Provenance, Verdict};
     use chrono::Utc;
+    use tempfile::TempDir;
 
     fn make_entry(title: &str, category: &str, verdict: Verdict) -> FeedbackEntry {
         FeedbackEntry {
@@ -484,7 +546,13 @@ mod tests {
         // shipped as the default.
         let dir = TempDir::new().unwrap();
         let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
-        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
+        store
+            .record(&make_entry(
+                "SQL injection in auth",
+                "security",
+                Verdict::Tp,
+            ))
+            .unwrap();
         let index = FeedbackIndex::build(&store).unwrap();
         assert!(
             index.embedder.is_some(),
@@ -581,14 +649,20 @@ mod tests {
             2,
         );
         assert_eq!(similar.len(), 2);
-        assert_eq!(similar[0].entry.reason, e_b.reason,
+        assert_eq!(
+            similar[0].entry.reason, e_b.reason,
             "JWT-reason entry must rank ahead despite being inserted second; \
              if you see the API-body reason here, the corpus is not enriched with reason text. \
-             got top reason: {:?}", similar[0].entry.reason);
+             got top reason: {:?}",
+            similar[0].entry.reason
+        );
         // And B's similarity should exceed A's, not tie.
-        assert!(similar[0].similarity > similar[1].similarity,
+        assert!(
+            similar[0].similarity > similar[1].similarity,
             "top sim {} must exceed second {}, else the ranking was an insertion-order tie",
-            similar[0].similarity, similar[1].similarity);
+            similar[0].similarity,
+            similar[1].similarity
+        );
     }
 
     #[test]
@@ -618,9 +692,11 @@ mod tests {
             2,
         );
         assert_eq!(with_jwt.len(), 2);
-        assert_eq!(with_jwt[0].entry.reason, e_jwt.reason,
+        assert_eq!(
+            with_jwt[0].entry.reason, e_jwt.reason,
             "JWT discriminators must rank JWT-reason first; got: {:?}",
-            with_jwt[0].entry.reason);
+            with_jwt[0].entry.reason
+        );
 
         // API-flavored discriminators must flip the ranking — API-reason first.
         // Proves the discriminators are actually steering retrieval, not just
@@ -632,9 +708,11 @@ mod tests {
             2,
         );
         assert_eq!(with_api.len(), 2);
-        assert_eq!(with_api[0].entry.reason, e_api.reason,
+        assert_eq!(
+            with_api[0].entry.reason, e_api.reason,
             "API discriminators must rank API-reason first; got: {:?}",
-            with_api[0].entry.reason);
+            with_api[0].entry.reason
+        );
     }
 
     #[test]
@@ -642,7 +720,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
         for t in &["SQL injection in query", "Unused import"] {
-            store.record(&make_entry(t, "security", Verdict::Fp)).unwrap();
+            store
+                .record(&make_entry(t, "security", Verdict::Fp))
+                .unwrap();
         }
         let mut index = FeedbackIndex::build_bm25(&store).unwrap();
         let plain = index.find_similar("SQL injection risk", "security", 2);
@@ -669,7 +749,11 @@ mod tests {
         let mut index = FeedbackIndex::build_bm25(&store).unwrap();
         let similar = index.find_similar("SQL injection risk", "security", 2);
         assert!(similar[0].similarity > 0.0);
-        assert!(similar[0].similarity <= 1.0, "similarity must be <= 1.0, got {}", similar[0].similarity);
+        assert!(
+            similar[0].similarity <= 1.0,
+            "similarity must be <= 1.0, got {}",
+            similar[0].similarity
+        );
     }
 
     #[test]
@@ -678,12 +762,21 @@ mod tests {
         // and ~100x startup-time reduction for single-shot CLI use.
         let dir = TempDir::new().unwrap();
         let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
-        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
+        store
+            .record(&make_entry(
+                "SQL injection in auth",
+                "security",
+                Verdict::Tp,
+            ))
+            .unwrap();
         let index = FeedbackIndex::build_jaccard_only(&store).unwrap();
         #[cfg(feature = "embeddings")]
         {
             assert!(index.embedder.is_none(), "fast mode must not load embedder");
-            assert!(index.vectors.is_empty(), "fast mode must not compute vectors");
+            assert!(
+                index.vectors.is_empty(),
+                "fast mode must not compute vectors"
+            );
         }
         assert_eq!(index.entries.len(), 1);
     }
@@ -692,8 +785,16 @@ mod tests {
     fn build_jaccard_only_retrieval_works() {
         let dir = TempDir::new().unwrap();
         let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
-        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
-        store.record(&make_entry("Unused import os", "style", Verdict::Fp)).unwrap();
+        store
+            .record(&make_entry(
+                "SQL injection in auth",
+                "security",
+                Verdict::Tp,
+            ))
+            .unwrap();
+        store
+            .record(&make_entry("Unused import os", "style", Verdict::Fp))
+            .unwrap();
         let mut index = FeedbackIndex::build_jaccard_only(&store).unwrap();
         let similar = index.find_similar("SQL injection in query", "security", 2);
         assert!(!similar.is_empty());
@@ -704,9 +805,23 @@ mod tests {
     fn jaccard_retrieval_finds_similar() {
         let dir = TempDir::new().unwrap();
         let store = FeedbackStore::new(dir.path().join("fb.jsonl"));
-        store.record(&make_entry("SQL injection in auth", "security", Verdict::Tp)).unwrap();
-        store.record(&make_entry("Unused import os", "style", Verdict::Fp)).unwrap();
-        store.record(&make_entry("SQL injection via f-string", "security", Verdict::Tp)).unwrap();
+        store
+            .record(&make_entry(
+                "SQL injection in auth",
+                "security",
+                Verdict::Tp,
+            ))
+            .unwrap();
+        store
+            .record(&make_entry("Unused import os", "style", Verdict::Fp))
+            .unwrap();
+        store
+            .record(&make_entry(
+                "SQL injection via f-string",
+                "security",
+                Verdict::Tp,
+            ))
+            .unwrap();
 
         let mut index = FeedbackIndex::build(&store).unwrap();
         let similar = index.find_similar("SQL injection in query", "security", 2);
@@ -747,20 +862,36 @@ mod tests {
             finding_id: None,
             rule_id: None,
         };
-        let e_fp = FeedbackEntry { verdict: Verdict::Fp, reason: "false alarm".into(), ..e_tp.clone() };
+        let e_fp = FeedbackEntry {
+            verdict: Verdict::Fp,
+            reason: "false alarm".into(),
+            ..e_tp.clone()
+        };
         store.record(&e_tp).unwrap();
         store.record(&e_fp).unwrap();
         // Unrelated filler
-        store.record(&make_entry("Unused import", "style", Verdict::Fp)).unwrap();
+        store
+            .record(&make_entry("Unused import", "style", Verdict::Fp))
+            .unwrap();
 
         let mut index = FeedbackIndex::build(&store).unwrap();
         let similar = index.find_similar("SQL injection risk", "security", 5);
         // Both near-duplicate rows should survive RRF, not collapse to one.
-        let sql_count = similar.iter().filter(|s| s.entry.finding_title.contains("SQL")).count();
-        assert_eq!(sql_count, 2,
-            "duplicate-title entries with opposite verdicts must both be returned; got {}", sql_count);
-        let has_tp = similar.iter().any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Tp);
-        let has_fp = similar.iter().any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Fp);
+        let sql_count = similar
+            .iter()
+            .filter(|s| s.entry.finding_title.contains("SQL"))
+            .count();
+        assert_eq!(
+            sql_count, 2,
+            "duplicate-title entries with opposite verdicts must both be returned; got {}",
+            sql_count
+        );
+        let has_tp = similar
+            .iter()
+            .any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Tp);
+        let has_fp = similar
+            .iter()
+            .any(|s| s.entry.finding_title.contains("SQL") && s.entry.verdict == Verdict::Fp);
         assert!(has_tp && has_fp, "both TP and FP copies must be preserved");
     }
 
@@ -787,6 +918,10 @@ mod tests {
         // Retrieval must treat title casing as equivalent; "SQL Injection" and
         // "sql injection" represent the same finding and should fully overlap.
         let sim = word_jaccard("SQL Injection in auth", "sql injection in auth");
-        assert!((sim - 1.0).abs() < 1e-6, "case-insensitive overlap expected, got {}", sim);
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "case-insensitive overlap expected, got {}",
+            sim
+        );
     }
 }

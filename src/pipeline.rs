@@ -99,7 +99,12 @@ async fn acquire_llm_permit(
 
 /// Trait for LLM review — allows testing with fake implementations.
 pub trait LlmReviewer: Send + Sync {
-    fn review(&self, prompt: &str, model: &str, system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse>;
+    fn review(
+        &self,
+        prompt: &str,
+        model: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<crate::llm_client::LlmResponse>;
 }
 
 /// Result of reviewing a single file.
@@ -625,41 +630,41 @@ pub async fn review_file(
                 None
             } else {
                 match pipeline_config.context_injector.as_ref() {
-                Some(inj) => {
-                    let mut identifiers: Vec<String> = redacted_ctx
-                        .callee_signatures
-                        .iter()
-                        .filter_map(|sig| extract_ident_from_signature(sig))
-                        .collect();
-                    identifiers.extend(redacted_ctx.import_targets.iter().cloned());
-                    identifiers.sort();
-                    identifiers.dedup();
-                    let text_sample: String = redacted_code.chars().take(400).collect();
-                    // Structural retrieval keys: bare qualified names of
-                    // callees + imports, drawn from AST hydration. Redact for
-                    // parity with the rest of the request surface.
-                    let structural_names: Vec<String> = {
-                        let mut v: Vec<String> = redacted_ctx
-                            .qualified_names
+                    Some(inj) => {
+                        let mut identifiers: Vec<String> = redacted_ctx
+                            .callee_signatures
                             .iter()
-                            .map(|s| redact::redact_secrets(s))
+                            .filter_map(|sig| extract_ident_from_signature(sig))
                             .collect();
-                        v.sort();
-                        v.dedup();
-                        v
-                    };
-                    let req = crate::context::inject::InjectionRequest {
-                        file_path: file_str.clone(),
-                        language: Some(lang_name(lang).to_string()),
-                        identifiers,
-                        structural_names,
-                        text: text_sample,
-                    };
-                    let outcome = inj.inject(&req);
-                    context_telemetry = Some(outcome.telemetry);
-                    outcome.rendered
-                }
-                None => None,
+                        identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+                        identifiers.sort();
+                        identifiers.dedup();
+                        let text_sample: String = redacted_code.chars().take(400).collect();
+                        // Structural retrieval keys: bare qualified names of
+                        // callees + imports, drawn from AST hydration. Redact for
+                        // parity with the rest of the request surface.
+                        let structural_names: Vec<String> = {
+                            let mut v: Vec<String> = redacted_ctx
+                                .qualified_names
+                                .iter()
+                                .map(|s| redact::redact_secrets(s))
+                                .collect();
+                            v.sort();
+                            v.dedup();
+                            v
+                        };
+                        let req = crate::context::inject::InjectionRequest {
+                            file_path: file_str.clone(),
+                            language: Some(lang_name(lang).to_string()),
+                            identifiers,
+                            structural_names,
+                            text: text_sample,
+                        };
+                        let outcome = inj.inject(&req);
+                        context_telemetry = Some(outcome.telemetry);
+                        outcome.rendered
+                    }
+                    None => None,
                 }
             };
 
@@ -1845,7 +1850,12 @@ mod tests {
 
         struct EmptyReviewer;
         impl LlmReviewer for EmptyReviewer {
-            fn review(&self, _: &str, _: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(
+                &self,
+                _: &str,
+                _: &str,
+                _system_prompt: &str,
+            ) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 Ok(crate::llm_client::LlmResponse {
                     content: "[]".into(),
                     usage: None,
@@ -2000,10 +2010,7 @@ mod tests {
             ..Default::default()
         };
         let reason = context7_skip_reason(&cfg);
-        assert_eq!(
-            reason,
-            Some("prose review mode (use --context7 to enable)"),
-        );
+        assert_eq!(reason, Some("prose review mode (use --context7 to enable)"),);
     }
 
     #[test]
@@ -2015,10 +2022,7 @@ mod tests {
             ..Default::default()
         };
         let reason = context7_skip_reason(&cfg);
-        assert_eq!(
-            reason,
-            Some("prose review mode (use --context7 to enable)"),
-        );
+        assert_eq!(reason, Some("prose review mode (use --context7 to enable)"),);
     }
 
     /// Prose mode (Plan) must skip local AST analysis and ast-grep scanning.

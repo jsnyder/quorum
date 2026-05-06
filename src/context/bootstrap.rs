@@ -152,27 +152,29 @@ pub fn build_production_injector(
 
     let retriever: Arc<RetrieverFn> = {
         let embedder = std::sync::Arc::clone(&embedder);
-        Arc::new(move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
-            // Every invocation is a fresh process-safe open; the vec0 hook
-            // must be registered before `Connection::open*` or the vector
-            // leg of retrieval errors with `no such module: vec0`.
-            ensure_vec_loaded();
-            let conn = Connection::open_with_flags(
-                &db_path_owned,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?;
-            let clock = SystemClock;
-            let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
-            // Constrain to the specific source we picked so multi-source
-            // layouts don't accidentally leak hits from other indexes.
-            let mut q = q.clone();
-            q.filters = Filters {
-                sources: vec![src_for_filter.clone()],
-                kinds: q.filters.kinds,
-                exclude_source_paths: q.filters.exclude_source_paths,
-            };
-            retriever.query(q)
-        })
+        Arc::new(
+            move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
+                // Every invocation is a fresh process-safe open; the vec0 hook
+                // must be registered before `Connection::open*` or the vector
+                // leg of retrieval errors with `no such module: vec0`.
+                ensure_vec_loaded();
+                let conn = Connection::open_with_flags(
+                    &db_path_owned,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
+                let clock = SystemClock;
+                let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
+                // Constrain to the specific source we picked so multi-source
+                // layouts don't accidentally leak hits from other indexes.
+                let mut q = q.clone();
+                q.filters = Filters {
+                    sources: vec![src_for_filter.clone()],
+                    kinds: q.filters.kinds,
+                    exclude_source_paths: q.filters.exclude_source_paths,
+                };
+                retriever.query(q)
+            },
+        )
     };
 
     let calibrator = Calibrator::from_feedback(cfg.context.inject_min_score, feedback);
@@ -235,7 +237,7 @@ path = "/tmp/demo"
         // Build a real minimal index so the bootstrap finds `index.db` and
         // can open it. We don't care whether the retriever returns hits for
         // an empty query — only that the injector is wired and dispatchable.
-        use crate::context::extract::dispatch::{extract_source, ExtractConfig};
+        use crate::context::extract::dispatch::{ExtractConfig, extract_source};
         use crate::context::index::builder::IndexBuilder;
         use crate::context::index::traits::FixedClock;
         use crate::context::store::ChunkStore;

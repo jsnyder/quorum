@@ -50,10 +50,11 @@ impl Language {
             Language::Dockerfile => {
                 // Grammar is vendored and compiled via build.rs to avoid
                 // linking tree-sitter 0.20 (which the crate depends on).
-                unsafe extern "C" { fn tree_sitter_dockerfile() -> *const (); }
-                let lang_fn = unsafe {
-                    tree_sitter_language::LanguageFn::from_raw(tree_sitter_dockerfile)
-                };
+                unsafe extern "C" {
+                    fn tree_sitter_dockerfile() -> *const ();
+                }
+                let lang_fn =
+                    unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_dockerfile) };
                 lang_fn.into()
             }
             Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
@@ -64,10 +65,7 @@ impl Language {
         match self {
             Language::Rust => &["function_item"],
             Language::Python => &["function_definition"],
-            Language::TypeScript | Language::Tsx => &[
-                "function_declaration",
-                "method_definition",
-            ],
+            Language::TypeScript | Language::Tsx => &["function_declaration", "method_definition"],
             Language::Yaml => &[],
             Language::Bash => &["function_definition"],
             Language::Dockerfile => &[],
@@ -219,7 +217,11 @@ mod tests {
 
     #[test]
     fn parse_valid_typescript() {
-        let tree = parse("function hello(): void { console.log('hi'); }", Language::TypeScript).unwrap();
+        let tree = parse(
+            "function hello(): void { console.log('hi'); }",
+            Language::TypeScript,
+        )
+        .unwrap();
         assert_eq!(tree.root_node().kind(), "program");
         assert!(!tree.root_node().has_error());
     }
@@ -292,7 +294,10 @@ mod tests {
         let tree = parse(source, Language::Python).unwrap();
         let fns = extract_functions(&tree, source, Language::Python);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"fetch"), "async functions should be extracted");
+        assert!(
+            names.contains(&"fetch"),
+            "async functions should be extracted"
+        );
         assert!(names.contains(&"sync"));
     }
 
@@ -302,17 +307,24 @@ mod tests {
         let tree = parse(source, Language::TypeScript).unwrap();
         let fns = extract_functions(&tree, source, Language::TypeScript);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"greet"), "arrow functions assigned to const should be extracted");
+        assert!(
+            names.contains(&"greet"),
+            "arrow functions assigned to const should be extracted"
+        );
         assert!(names.contains(&"foo"));
     }
 
     #[test]
     fn extract_functions_typescript_method() {
-        let source = "class Greeter {\n  greet() { return 'hi'; }\n  farewell() { return 'bye'; }\n}";
+        let source =
+            "class Greeter {\n  greet() { return 'hi'; }\n  farewell() { return 'bye'; }\n}";
         let tree = parse(source, Language::TypeScript).unwrap();
         let fns = extract_functions(&tree, source, Language::TypeScript);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"greet"), "class methods should be extracted");
+        assert!(
+            names.contains(&"greet"),
+            "class methods should be extracted"
+        );
         assert!(names.contains(&"farewell"));
     }
 
@@ -337,7 +349,10 @@ mod tests {
 
     #[test]
     fn detect_language_bash_from_path() {
-        assert_eq!(Language::from_path(std::path::Path::new("deploy.sh")), Some(Language::Bash));
+        assert_eq!(
+            Language::from_path(std::path::Path::new("deploy.sh")),
+            Some(Language::Bash)
+        );
     }
 
     #[test]
@@ -357,7 +372,8 @@ mod tests {
 
     #[test]
     fn extract_functions_bash() {
-        let source = "#!/bin/bash\nmy_func() {\n  echo \"inside\"\n}\n\nanother() {\n  return 1\n}\n";
+        let source =
+            "#!/bin/bash\nmy_func() {\n  echo \"inside\"\n}\n\nanother() {\n  return 1\n}\n";
         let tree = parse(source, Language::Bash).unwrap();
         let fns = extract_functions(&tree, source, Language::Bash);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
@@ -368,19 +384,32 @@ mod tests {
 
     #[test]
     fn detect_language_dockerfile_from_path() {
-        assert_eq!(Language::from_path(std::path::Path::new("Dockerfile")), Some(Language::Dockerfile));
-        assert_eq!(Language::from_path(std::path::Path::new("Dockerfile.prod")), Some(Language::Dockerfile));
-        assert_eq!(Language::from_path(std::path::Path::new("dockerfile")), Some(Language::Dockerfile));
+        assert_eq!(
+            Language::from_path(std::path::Path::new("Dockerfile")),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("Dockerfile.prod")),
+            Some(Language::Dockerfile)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("dockerfile")),
+            Some(Language::Dockerfile)
+        );
     }
 
     #[test]
     fn detect_language_dockerfile_extension() {
-        assert_eq!(Language::from_extension("dockerfile"), Some(Language::Dockerfile));
+        assert_eq!(
+            Language::from_extension("dockerfile"),
+            Some(Language::Dockerfile)
+        );
     }
 
     #[test]
     fn parse_valid_dockerfile() {
-        let source = "FROM node:18-alpine\nRUN npm install\nCOPY . /app\nCMD [\"node\", \"server.js\"]\n";
+        let source =
+            "FROM node:18-alpine\nRUN npm install\nCOPY . /app\nCMD [\"node\", \"server.js\"]\n";
         let tree = parse(source, Language::Dockerfile).unwrap();
         assert_eq!(tree.root_node().kind(), "source_file");
         assert!(!tree.root_node().has_error());
@@ -448,7 +477,10 @@ mod tests {
     #[test]
     fn detect_language_terraform() {
         assert_eq!(Language::from_extension("tf"), Some(Language::Terraform));
-        assert_eq!(Language::from_extension("tfvars"), Some(Language::Terraform));
+        assert_eq!(
+            Language::from_extension("tfvars"),
+            Some(Language::Terraform)
+        );
         assert_eq!(Language::from_extension("TF"), Some(Language::Terraform));
     }
 

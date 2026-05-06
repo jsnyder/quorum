@@ -34,7 +34,10 @@ fn review_writes_reviews_jsonl_record() {
 
     let rec: Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(rec["files_reviewed"], 1);
-    assert!(rec["run_id"].as_str().unwrap().len() == 26, "run_id must be 26-char ULID");
+    assert!(
+        rec["run_id"].as_str().unwrap().len() == 26,
+        "run_id must be 26-char ULID"
+    );
     assert!(rec["timestamp"].is_string());
     assert!(rec["quorum_version"].is_string());
     assert!(rec["findings_by_severity"].is_object());
@@ -76,8 +79,14 @@ fn second_review_appends() {
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 2, "second run should append, not replace");
 
-    let ids: Vec<String> = lines.iter()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap()["run_id"].as_str().unwrap().to_string())
+    let ids: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["run_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
         .collect();
     assert_ne!(ids[0], ids[1], "each run gets a unique ULID");
 }
