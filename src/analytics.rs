@@ -503,7 +503,7 @@ pub fn precision_trend_per_finding(
                 let prev_rank = match &prev.provenance {
                     Provenance::Human => 0,
                     Provenance::PostFix => 1,
-                    _ => 2,
+                    _ => unreachable!("only Human/PostFix enter the map"),
                 };
                 if tier_rank < prev_rank
                     || (tier_rank == prev_rank && e.timestamp < prev.timestamp)
@@ -1030,6 +1030,28 @@ mod tests {
         // Precision: (Partial + TP) / (Partial + TP + FP) = (1+7) / (1+7+1) = 8/9.
         assert_eq!(trend[0].count, 10);
         assert!((trend[0].precision - (8.0 / 9.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_same_tier_keeps_earliest_timestamp() {
+        use crate::feedback::Provenance;
+        // Two Human entries for F1: earlier is TP, later is FP.
+        // Earliest timestamp wins, so F1 resolves to TP.
+        let mut later = fb_with_id_and_provenance("F1", Verdict::Fp, Provenance::Human);
+        later.timestamp = Utc::now() - chrono::Duration::hours(1);
+        let mut earlier = fb_with_id_and_provenance("F1", Verdict::Tp, Provenance::Human);
+        earlier.timestamp = Utc::now() - chrono::Duration::hours(3);
+        let mut all = vec![later, earlier];
+        for i in 0..9 {
+            all.push(fb_with_id_and_provenance(
+                &format!("P{}", i),
+                Verdict::Tp,
+                Provenance::Human,
+            ));
+        }
+        let trend = precision_trend_per_finding(&all, 7);
+        assert_eq!(trend.len(), 1);
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
     }
 
     // ─── Stats redesign Task 8: channel attribution table ───

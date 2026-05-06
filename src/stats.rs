@@ -655,6 +655,23 @@ pub fn format_compact(report: &StatsReport) -> String {
         parts.push(format!("cost:{}", formatting::format_cost(report.cost_7d)));
     }
 
+    parts.push(format!("linkage:{:.0}%", report.linkage_rate * 100.0));
+    parts.push(format!("capture:{:.0}%", report.capture_rate * 100.0));
+
+    if !report.external_overlap.per_agent.is_empty() {
+        let agent_parts: Vec<String> = report.external_overlap.per_agent.iter()
+            .map(|a| format!("{}:{}/{}", a.agent, a.agree, a.overlap))
+            .collect();
+        parts.push(format!("external:{}", agent_parts.join(",")));
+    }
+
+    if !report.precision_trend_per_finding.is_empty() {
+        let pf: Vec<String> = report.precision_trend_per_finding.iter()
+            .map(|w| formatting::format_pct(w.precision))
+            .collect();
+        parts.push(format!("per-finding:{}", pf.join(">")));
+    }
+
     format!("{}\n", parts.join(" "))
 }
 
@@ -811,6 +828,31 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
         "top_repos": report.top_repos,
         "top_callers": report.top_callers,
         "rolling_windows": report.rolling_windows,
+        "linkage_rate": report.linkage_rate,
+        "linkage_linked": report.linkage_linked,
+        "linkage_unlinked": report.linkage_unlinked,
+        "capture_rate": report.capture_rate,
+        "capture_labeled": report.capture_labeled,
+        "capture_total": report.capture_total,
+        "headline_trend_uses_finding_id": report.headline_trend_uses_finding_id,
+        "external_overlap": {
+            "agents": report.external_overlap.per_agent.iter().map(|a| {
+                serde_json::json!({
+                    "agent": a.agent,
+                    "findings": a.findings,
+                    "overlap": a.overlap,
+                    "agree": a.agree,
+                    "agreement_rate": a.agreement_rate(),
+                })
+            }).collect::<Vec<_>>()
+        },
+        "precision_trend_per_finding": report.precision_trend_per_finding.iter().map(|w| {
+            serde_json::json!({
+                "week_start": w.week_start.to_rfc3339(),
+                "precision": w.precision,
+                "count": w.count,
+            })
+        }).collect::<Vec<_>>(),
     });
     Ok(serde_json::to_string_pretty(&json)?)
 }
@@ -1170,6 +1212,11 @@ mod tests {
         assert!(v["top_repos"].is_array());
         assert!(v["top_callers"].is_array());
         assert!(v["rolling_windows"].is_array());
+        assert!(v["linkage_rate"].is_f64());
+        assert!(v["capture_rate"].is_f64());
+        assert!(v["headline_trend_uses_finding_id"].is_boolean());
+        assert!(v["external_overlap"]["agents"].is_array());
+        assert!(v["precision_trend_per_finding"].is_array());
     }
 
     #[test]
@@ -1210,6 +1257,53 @@ mod tests {
         assert!(out.contains("tp:60"));
         assert!(out.contains("fp:20"));
         assert!(out.contains("reviews_7d:5"));
+        assert!(out.contains("linkage:0%"));
+        assert!(out.contains("capture:0%"));
+    }
+
+    #[test]
+    fn format_compact_includes_external_overlap_when_present() {
+        let report = StatsReport {
+            feedback_count: 100,
+            precision: 0.75,
+            tp: 60,
+            fp: 20,
+            partial: 10,
+            wontfix: 10,
+            precision_trend: vec![],
+            reviews_7d: 5,
+            findings_per_review: 3.2,
+            suppression_rate: 0.1,
+            tokens_in_7d: 0,
+            tokens_out_7d: 0,
+            cost_7d: 0.0,
+            tokens_per_finding: 0.0,
+            model: String::new(),
+            top_repos: Vec::new(),
+            top_callers: Vec::new(),
+            rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.92,
+            linkage_linked: 46,
+            linkage_unlinked: 4,
+            capture_rate: 0.6,
+            capture_labeled: 3,
+            capture_total: 5,
+            headline_trend_uses_finding_id: true,
+            external_overlap: analytics::ExternalOverlap {
+                per_agent: vec![analytics::AgentOverlap {
+                    agent: "pal".into(),
+                    findings: 10,
+                    overlap: 8,
+                    agree: 6,
+                }],
+            },
+            precision_trend_per_finding: Vec::new(),
+        };
+        let out = format_compact(&report);
+        assert!(out.contains("linkage:92%"));
+        assert!(out.contains("capture:60%"));
+        assert!(out.contains("external:pal:6/8"));
     }
 
     #[test]
