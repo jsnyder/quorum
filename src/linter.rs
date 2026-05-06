@@ -890,6 +890,7 @@ mod tests {
         assert!(findings[0].title.contains("F401"));
         assert_eq!(findings[0].line_start, 1);
         assert_eq!(findings[0].source, Source::Linter("ruff".into()));
+        assert!(!findings[0].id.is_empty(), "linter findings must carry a non-empty id for linkage");
     }
 
     #[test]

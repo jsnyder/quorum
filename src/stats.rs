@@ -655,8 +655,8 @@ pub fn format_compact(report: &StatsReport) -> String {
         parts.push(format!("cost:{}", formatting::format_cost(report.cost_7d)));
     }
 
-    parts.push(format!("linkage:{:.0}%", report.linkage_rate * 100.0));
-    parts.push(format!("capture:{:.0}%", report.capture_rate * 100.0));
+    parts.push(format!("linkage:{}", formatting::format_pct(report.linkage_rate)));
+    parts.push(format!("capture:{}", formatting::format_pct(report.capture_rate)));
 
     if !report.external_overlap.per_agent.is_empty() {
         let agent_parts: Vec<String> = report.external_overlap.per_agent.iter()

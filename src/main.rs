@@ -2587,8 +2587,8 @@ mod join_health_tests {
             r#"{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":["FID-LINKED"]}"#,
         ]);
         write_jsonl(dir.path(), "feedback.jsonl", &[
-            r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-LINKED"}"#,
-            r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#,
+            r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-LINKED"}"#,
+            r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#,
         ]);
 
         let out = format_join_health(dir.path());
@@ -2632,10 +2632,10 @@ mod join_health_tests {
             &format!(r#"{{"run_id":"R1","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{{"critical":0,"high":0,"medium":0,"low":0,"info":0}},"tokens_in":0,"tokens_out":0,"duration_ms":0,"finding_ids":{}}}"#, id_array),
         ]);
         let mut fb_lines: Vec<String> = (0..169).map(|i| {
-            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-{}"}}"#, i)
+            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-{}"}}"#, i)
         }).collect();
         for _ in 0..31 {
-            fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#.to_string());
+            fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#.to_string());
         }
         let fb_refs: Vec<&str> = fb_lines.iter().map(|s| s.as_str()).collect();
         write_jsonl(dir.path(), "feedback.jsonl", &fb_refs);
@@ -2662,9 +2662,9 @@ mod join_health_tests {
         ]);
 
         let mut fb_lines: Vec<String> = (0..9).map(|i| {
-            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":"FID-{}"}}"#, i)
+            format!(r#"{{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human","finding_id":"FID-{}"}}"#, i)
         }).collect();
-        fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#.to_string());
+        fb_lines.push(r#"{"file_path":"y.rs","finding_title":"t","finding_category":"c","verdict":"fp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#.to_string());
         let fb_refs: Vec<&str> = fb_lines.iter().map(|s| s.as_str()).collect();
         write_jsonl(dir.path(), "feedback.jsonl", &fb_refs);
 

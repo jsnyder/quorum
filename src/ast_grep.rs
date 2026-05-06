@@ -917,6 +917,10 @@ rule:
             !findings.is_empty(),
             "should flag setHeader('Access-Control-Allow-Origin', '*')"
         );
+        assert!(
+            findings.iter().all(|f| !f.id.is_empty()),
+            "ast-grep findings must carry a non-empty id for linkage"
+        );
 
         let header_fn = "res.header('Access-Control-Allow-Origin', '*');";
         let findings2 = scan_file(header_fn, "ts", &rules);

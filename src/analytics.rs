@@ -38,6 +38,8 @@ impl LinkageStats {
 /// entries. Builds a HashSet of known finding_ids so duplicate IDs in the
 /// review log don't inflate the linked count.
 pub fn linkage_stats(reviews: &[ReviewRecord], feedback: &[FeedbackEntry]) -> LinkageStats {
+    use crate::feedback::Provenance;
+
     let known: HashSet<&str> = reviews
         .iter()
         .flat_map(|r| r.finding_ids.iter().map(String::as_str))
@@ -45,6 +47,9 @@ pub fn linkage_stats(reviews: &[ReviewRecord], feedback: &[FeedbackEntry]) -> Li
 
     let mut stats = LinkageStats::default();
     for entry in feedback {
+        if !matches!(&entry.provenance, Provenance::Human | Provenance::PostFix) {
+            continue;
+        }
         match &entry.finding_id {
             Some(fid) if known.contains(fid.as_str()) => stats.linked += 1,
             _ => stats.unlinked += 1,
@@ -345,18 +350,6 @@ pub fn format_channel_attribution(summary: &TierSummary) -> String {
             wfix = cell(s.wontfix),
         )
         .unwrap();
-    }
-
-    // Per-agent External rollup.
-    if !summary.external.per_agent.is_empty() {
-        let top: Vec<String> = summary
-            .external
-            .per_agent
-            .iter()
-            .take(3)
-            .map(|(name, s)| format!("{name} ({})", s.total()))
-            .collect();
-        writeln!(out, "    top agents: {}", top.join(", ")).unwrap();
     }
 
     if summary.unknown.total() > 0 {
@@ -834,7 +827,7 @@ mod tests {
     }
 
     fn fb_with_finding_id(id: &str) -> FeedbackEntry {
-        let mut e = entry("model", Verdict::Tp);
+        let mut e = entry_with(crate::feedback::Provenance::Human, Verdict::Tp);
         e.finding_id = Some(id.into());
         e
     }
@@ -860,7 +853,7 @@ mod tests {
     #[test]
     fn linkage_partial_with_legacy_entries_in_corpus() {
         let reviews = vec![review_with_finding_ids(&["A", "B"])];
-        let mut legacy = entry("model", Verdict::Tp);
+        let mut legacy = entry_with(crate::feedback::Provenance::Human, Verdict::Tp);
         legacy.finding_id = None;
         let feedback = vec![fb_with_finding_id("A"), legacy];
         let stats = linkage_stats(&reviews, &feedback);
@@ -1223,5 +1216,23 @@ mod tests {
         let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("A")];
         let stats = linkage_stats(&reviews, &feedback);
         assert_eq!(stats.linked, 2);
+    }
+
+    #[test]
+    fn linkage_excludes_non_human_provenance() {
+        use crate::feedback::Provenance;
+        let reviews = vec![review_with_finding_ids(&["A", "B", "C"])];
+        let feedback = vec![
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("B", Verdict::Tp, Provenance::PostFix),
+            fb_with_id_and_provenance("C", Verdict::Tp, Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            }),
+        ];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2, "only Human + PostFix should count");
+        assert_eq!(stats.unlinked, 0);
     }
 }
