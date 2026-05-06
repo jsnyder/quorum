@@ -1,5 +1,9 @@
 use crate::parser::Language;
 
+/// Per-file changed line ranges extracted from a unified diff.
+/// Each entry maps a file path to a list of `(start_line, end_line)` ranges.
+pub type DiffRanges = Vec<(String, Vec<(u32, u32)>)>;
+
 /// Context gathered from AST for lines within a changed region.
 #[derive(Debug, Clone, Default)]
 pub struct HydrationContext {
@@ -178,6 +182,7 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_definitions(
     node: &tree_sitter::Node,
     source: &str,
@@ -397,6 +402,7 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     names
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_calls_in_range(
     node: &tree_sitter::Node,
     source: &str,
@@ -460,6 +466,7 @@ fn collect_calls_in_range(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_type_refs_in_range(
     node: &tree_sitter::Node,
     source: &str,
@@ -597,19 +604,19 @@ fn collect_import_refs_in_range(
 
 /// Parse a unified diff to extract changed line ranges per file.
 /// Returns Vec<(file_path, Vec<(start_line, end_line)>)>
-pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
+pub fn parse_unified_diff(diff: &str) -> DiffRanges {
     let mut results = Vec::new();
     let mut current_file: Option<String> = None;
     let mut current_ranges: Vec<(u32, u32)> = Vec::new();
 
     for line in diff.lines() {
-        if line.starts_with("+++ b/") {
+        if let Some(path) = line.strip_prefix("+++ b/") {
             // Save previous file
             if let Some(file) = current_file.take()
                 && !current_ranges.is_empty() {
                     results.push((file, std::mem::take(&mut current_ranges)));
                 }
-            current_file = Some(line[6..].to_string());
+            current_file = Some(path.to_string());
         } else if line.starts_with("@@ ") {
             // Parse @@ -old,count +new,count @@ format
             if let Some(plus_part) = line.split('+').nth(1) {

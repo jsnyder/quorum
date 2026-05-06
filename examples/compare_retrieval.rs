@@ -12,6 +12,7 @@ use std::time::Instant;
 struct Entry {
     finding_title: String,
     #[serde(default)]
+    #[allow(dead_code)]
     finding_category: String,
 }
 

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 struct Entry {
     finding_title: String,
     #[serde(default)]
+    #[allow(dead_code)]
     finding_category: String,
     #[serde(default)]
     verdict: Option<String>,
@@ -222,7 +223,6 @@ fn main() -> anyhow::Result<()> {
     let top_k = 10;
     let pool = 30;
 
-    let mut diffs = 0;
     let mut action_agreement = 0;
     let mut only_e: std::collections::HashMap<&'static str, usize> = Default::default();
     let mut only_r: std::collections::HashMap<&'static str, usize> = Default::default();
@@ -258,7 +258,6 @@ fn main() -> anyhow::Result<()> {
         if act_e == act_r {
             action_agreement += 1;
         } else {
-            diffs += 1;
             *only_e.entry(act_e).or_insert(0) += 1;
             *only_r.entry(act_r).or_insert(0) += 1;
             println!("\nDIVERGE: {}", qt);

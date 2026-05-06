@@ -471,7 +471,7 @@ pub struct ReviewOpts {
 }
 
 /// CLI surface for `--fp-kind` (#123 Layer 1). Variants map onto
-/// `feedback::FpKind` via `FeedbackOpts::into_fp_kind`. Only meaningful
+/// `feedback::FpKind` via `FeedbackOpts::to_fp_kind`. Only meaningful
 /// when `--verdict fp`; ignored (with `tracing::warn`) on other verdicts.
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum FpKindArg {
@@ -551,7 +551,7 @@ pub struct FeedbackOpts {
     // `--fp-kind` is meaningful only when `--verdict fp`. On other verdicts
     // it's silently dropped with a `tracing::warn` (composability with
     // shell pipelines). Cross-field validation (compensating-control needs
-    // a reference) lives in `into_fp_kind`, NOT in clap, because clap can't
+    // a reference) lives in `to_fp_kind`, NOT in clap, because clap can't
     // see cross-arg requirements at parse time.
     /// Discriminate FP verdict by reason: hallucination | trust-model |
     /// compensating-control | pattern-overgeneralization | out-of-scope.
@@ -585,7 +585,7 @@ impl FeedbackOpts {
     /// - `--fp-kind compensating-control` without `--fp-reference` → Err.
     /// - `--fp-kind out-of-scope` without `--fp-tracked-in` → Ok(Some(..))
     ///   with `tracing::warn` (orphaned deferral discouraged but legal).
-    pub fn into_fp_kind(&self) -> anyhow::Result<Option<crate::feedback::FpKind>> {
+    pub fn to_fp_kind(&self) -> anyhow::Result<Option<crate::feedback::FpKind>> {
         use crate::feedback::FpKind;
 
         // Drop fp_kind silently when verdict != fp. Caller logs the warn
@@ -740,14 +740,14 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind");
+        let kind = opts.to_fp_kind().expect("to_fp_kind");
         assert_eq!(kind, Some(crate::feedback::FpKind::TrustModelAssumption));
     }
 
     #[test]
-    fn cli_fp_kind_compensating_control_requires_reference_in_into_fp_kind() {
+    fn cli_fp_kind_compensating_control_requires_reference_in_to_fp_kind() {
         // PINNED: clap parses successfully because cross-field validation
-        // can't happen at parse time. The error surfaces in into_fp_kind().
+        // can't happen at parse time. The error surfaces in to_fp_kind().
         // If a future refactor moves validation to clap, this test fails at
         // parse_args() — that's the signal to update the test, not to silently
         // rely on a different error path.
@@ -763,8 +763,8 @@ mod tests {
             "--reason",
             "r",
         ])
-        .expect("clap parses; cross-field validation lives in into_fp_kind");
-        let result = opts.into_fp_kind();
+        .expect("clap parses; cross-field validation lives in to_fp_kind");
+        let result = opts.to_fp_kind();
         assert!(
             result.is_err(),
             "compensating-control without --fp-reference must error"
@@ -794,7 +794,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
+        let kind = opts.to_fp_kind().expect("to_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::CompensatingControl { reference } => {
                 assert_eq!(reference, "PR #99 line 42");
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn cli_fp_kind_on_tp_verdict_silently_dropped() {
         // Composability: a shell pipeline can pipe `--verdict tp --fp-kind X`
-        // without the CLI failing. into_fp_kind returns Ok(None); the call
+        // without the CLI failing. to_fp_kind returns Ok(None); the call
         // site is responsible for emitting a tracing::warn. Test the dropped-
         // kind contract here.
         let opts = parse_args(&[
@@ -839,7 +839,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("must not fail on tp+kind");
+        let kind = opts.to_fp_kind().expect("must not fail on tp+kind");
         assert_eq!(kind, None, "fp_kind must be dropped when verdict != fp");
     }
 
@@ -860,7 +860,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
+        let kind = opts.to_fp_kind().expect("to_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::PatternOvergeneralization { discriminator_hint } => {
                 assert_eq!(
@@ -887,7 +887,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
+        let kind = opts.to_fp_kind().expect("to_fp_kind").unwrap();
         assert!(matches!(
             kind,
             crate::feedback::FpKind::OutOfScope { tracked_in: None }
@@ -911,7 +911,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
+        let kind = opts.to_fp_kind().expect("to_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::OutOfScope { tracked_in } => {
                 assert_eq!(tracked_in.as_deref(), Some("#456"));
@@ -933,7 +933,7 @@ mod tests {
             "r",
         ])
         .expect("parse");
-        let kind = opts.into_fp_kind().expect("into_fp_kind");
+        let kind = opts.to_fp_kind().expect("to_fp_kind");
         assert_eq!(kind, None, "no --fp-kind flag = no kind");
     }
 

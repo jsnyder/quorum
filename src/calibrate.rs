@@ -193,6 +193,7 @@ pub fn join_feedback_and_traces(
 /// - `disable_fuzzy`: when `true`, skips tiers 2-4 (normalized exact, fuzzy
 ///   same-file, normalized title-only). Only tier 1 (raw exact) and the raw
 ///   title-only fallback are used.
+#[allow(clippy::type_complexity)]
 pub fn join_feedback_and_traces_with_options(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],

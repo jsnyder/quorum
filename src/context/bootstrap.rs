@@ -9,8 +9,8 @@
 //! The retriever closure opens the SQLite db read-only on every call and
 //! owns a fresh `HashEmbedder` / `SystemClock`. This keeps it `Send + Sync
 //! + 'static` without threading a shared connection through the pipeline;
-//! review workloads query once per file so the per-call open is negligible
-//! relative to the LLM round-trip.
+//!   review workloads query once per file so the per-call open is negligible
+//!   relative to the LLM round-trip.
 //!
 //! NOTE: the current wiring picks the first registered source that has an
 //! index on disk. Cross-source fanout (merging hits across multiple dbs) is

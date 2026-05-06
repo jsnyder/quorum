@@ -1,6 +1,5 @@
 /// Context7 integration: fetch framework-specific docs for LLM review enrichment.
 /// Detected frameworks are mapped to library queries, docs fetched, and injected into prompts.
-
 /// A document fetched from Context7 for a specific library/framework.
 #[derive(Debug, Clone)]
 pub struct ContextDoc {

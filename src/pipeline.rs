@@ -131,7 +131,7 @@ pub struct PipelineConfig {
     pub calibrate: bool,
     pub feedback_store: Option<std::path::PathBuf>,
     /// Per-file changed line ranges from a unified diff (overrides full-file hydration)
-    pub diff_ranges: Option<Vec<(String, Vec<(u32, u32)>)>>,
+    pub diff_ranges: Option<hydration::DiffRanges>,
     /// Maximum number of lines to send to the LLM for review
     pub max_review_lines: usize,
     /// Framework overrides from CLI --framework flags
@@ -592,7 +592,7 @@ pub async fn review_file(
                     Some(
                         docs.iter()
                             .map(|d| {
-                                crate::context_enrichment::format_context_section(&[d.clone()])
+                                crate::context_enrichment::format_context_section(std::slice::from_ref(d))
                             })
                             .collect(),
                     )
@@ -1060,7 +1060,7 @@ pub async fn review_file_llm_only(
                     Some(
                         docs.iter()
                             .map(|d| {
-                                crate::context_enrichment::format_context_section(&[d.clone()])
+                                crate::context_enrichment::format_context_section(std::slice::from_ref(d))
                             })
                             .collect(),
                     )

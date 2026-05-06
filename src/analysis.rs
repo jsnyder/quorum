@@ -27,7 +27,7 @@ pub fn analyze_complexity(
     for (start, end) in &func_nodes {
         let node = tree.root_node().descendant_for_byte_range(*start, *end);
         if let Some(node) = node {
-            let cc = cyclomatic_complexity(&node, source, lang);
+            let cc = cyclomatic_complexity(&node, source);
             if cc >= threshold {
                 // Extract name directly from the function node
                 let name = node
@@ -101,13 +101,13 @@ fn collect_nodes_by_kind(
     }
 }
 
-pub fn cyclomatic_complexity(node: &tree_sitter::Node, source: &str, lang: Language) -> u32 {
+pub fn cyclomatic_complexity(node: &tree_sitter::Node, source: &str) -> u32 {
     let mut complexity = 1u32; // baseline path
-    count_decisions(node, source, lang, &mut complexity);
+    count_decisions(node, source, &mut complexity);
     complexity
 }
 
-fn count_decisions(node: &tree_sitter::Node, source: &str, lang: Language, complexity: &mut u32) {
+fn count_decisions(node: &tree_sitter::Node, source: &str, complexity: &mut u32) {
     let kind = node.kind();
 
     match kind {
@@ -144,7 +144,7 @@ fn count_decisions(node: &tree_sitter::Node, source: &str, lang: Language, compl
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            count_decisions(&child, source, lang, complexity);
+            count_decisions(&child, source, complexity);
         }
     }
 }
@@ -2974,7 +2974,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let root = tree.root_node();
         let func = root.child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 1);
+        assert_eq!(cyclomatic_complexity(&func, source), 1);
     }
 
     #[test]
@@ -2982,7 +2982,7 @@ mod tests {
         let source = "fn check(x: bool) { if x { return; } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -2991,7 +2991,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if adds 1 path, else doesn't add (it's the other branch of existing decision)
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -2999,7 +2999,7 @@ mod tests {
         let source = "fn nested(a: bool, b: bool) { if a { if b { return; } } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 3);
+        assert_eq!(cyclomatic_complexity(&func, source), 3);
     }
 
     #[test]
@@ -3008,7 +3008,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // 4 match arms = base(1) + 4 arms = 5
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 5);
+        assert_eq!(cyclomatic_complexity(&func, source), 5);
     }
 
     #[test]
@@ -3016,7 +3016,7 @@ mod tests {
         let source = "fn loopy(items: &[i32]) { for x in items { println!(\"{}\", x); } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3024,7 +3024,7 @@ mod tests {
         let source = "fn loopy() { while true { break; } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3033,7 +3033,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if=1, &&=1, ||=1, base=1 => 4
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 4);
+        assert_eq!(cyclomatic_complexity(&func, source), 4);
     }
 
     // -- Python --
@@ -3043,7 +3043,7 @@ mod tests {
         let source = "def simple():\n    return 42\n";
         let tree = parse(source, Language::Python).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Python), 1);
+        assert_eq!(cyclomatic_complexity(&func, source), 1);
     }
 
     #[test]
@@ -3052,7 +3052,7 @@ mod tests {
         let tree = parse(source, Language::Python).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if + elif = 3
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Python), 3);
+        assert_eq!(cyclomatic_complexity(&func, source), 3);
     }
 
     // -- TypeScript --
@@ -3063,7 +3063,7 @@ mod tests {
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
         assert_eq!(
-            cyclomatic_complexity(&func, source, Language::TypeScript),
+            cyclomatic_complexity(&func, source),
             1
         );
     }
@@ -3074,7 +3074,7 @@ mod tests {
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
         assert_eq!(
-            cyclomatic_complexity(&func, source, Language::TypeScript),
+            cyclomatic_complexity(&func, source),
             2
         );
     }

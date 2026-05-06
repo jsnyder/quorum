@@ -178,6 +178,7 @@ struct ExtractedSymbol {
 /// - type_alias_declaration: truncate at the first `;` only; `{` is legal on
 ///   the RHS (object type) and must be preserved.
 /// - any other kind: fall back to the first `{` or `;`.
+///
 /// Runs of whitespace collapse to a single space.
 fn item_signature(item_text: &str, kind: &str) -> String {
     let end = match kind {

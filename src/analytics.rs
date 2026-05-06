@@ -611,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn tier_stats_format_shows_external_and_top_agents_stable() {
         use crate::feedback::Provenance;
         let fb = vec![
@@ -658,6 +659,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn format_tier_report_handles_zero_external_entries() {
         use crate::feedback::Provenance;
         let fb = vec![entry_with(Provenance::Human, Verdict::Tp)];
@@ -712,16 +714,20 @@ mod tests {
 
     #[test]
     fn stats_precision_calculation() {
-        let mut s = SourceStats::default();
-        s.tp = 8;
-        s.fp = 2;
+        let s = SourceStats {
+            tp: 8,
+            fp: 2,
+            ..Default::default()
+        };
         assert!((s.precision() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
     fn stats_precision_all_fp() {
-        let mut s = SourceStats::default();
-        s.fp = 5;
+        let s = SourceStats {
+            fp: 5,
+            ..Default::default()
+        };
         assert!((s.precision() - 0.0).abs() < f64::EPSILON);
     }
 
@@ -733,10 +739,12 @@ mod tests {
 
     #[test]
     fn stats_partial_counts_as_relevant() {
-        let mut s = SourceStats::default();
-        s.tp = 3;
-        s.partial = 2;
-        s.fp = 5;
+        let s = SourceStats {
+            tp: 3,
+            partial: 2,
+            fp: 5,
+            ..Default::default()
+        };
         // precision = (3+2) / (3+2+5) = 0.5
         assert!((s.precision() - 0.5).abs() < f64::EPSILON);
     }

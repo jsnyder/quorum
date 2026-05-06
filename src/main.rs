@@ -913,8 +913,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     };
 
     // Build calibrator config, loading data-driven thresholds if available.
-    let mut calibrator_config = calibrator::CalibratorConfig::default();
-    calibrator_config.trace_provenance = Some(trace_provenance);
+    let mut calibrator_config = calibrator::CalibratorConfig {
+        trace_provenance: Some(trace_provenance),
+        ..Default::default()
+    };
     let thresholds_path = qhome.join("calibrator_thresholds.toml");
     if let Some(tc) =
         quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
@@ -1940,7 +1942,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         // a kind was specified that requires associated data (e.g.
         // compensating-control needs --fp-reference). Returns None silently
         // when verdict != fp; warn the user so the dropped flag is visible.
-        let fp_kind = match opts.into_fp_kind() {
+        let fp_kind = match opts.to_fp_kind() {
             Ok(k) => {
                 if opts.fp_kind.is_some() && k.is_none() {
                     tracing::warn!(
@@ -2217,9 +2219,11 @@ mod threshold_loading_tests {
         assert!(tc.is_some(), "TOML should load successfully");
         let tc = tc.unwrap();
 
-        let mut calibrator_config = calibrator::CalibratorConfig::default();
-        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
-        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+        let calibrator_config = calibrator::CalibratorConfig {
+            suppress_threshold: tc.suppress.map(|p| p.threshold),
+            boost_threshold: tc.boost.map(|p| p.threshold),
+            ..Default::default()
+        };
 
         assert!(
             (calibrator_config.suppress_threshold.unwrap() - 0.30).abs() < 1e-9,

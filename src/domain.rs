@@ -391,7 +391,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn detect_ha_from_subdirectory_layout() {
         // Real HA repos use configuration/ subdirectory
         let dir = tempfile::tempdir().unwrap();
