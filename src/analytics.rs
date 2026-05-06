@@ -276,6 +276,92 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
     windows
 }
 
+/// External-agent corpus overlap with quorum's own verdicts.
+///
+/// `per_agent[i].findings`  — total External entries for that agent in the corpus
+/// `per_agent[i].overlap`   — entries whose finding_id is also in `quorum_verdicts`
+/// `per_agent[i].agree`     — overlap entries where the External verdict matches
+///                            the quorum verdict on the same finding
+///
+/// Surfaced in the External corpus block so users can read agent
+/// contribution without it polluting headline precision.
+#[derive(Debug, Clone, Default)]
+pub struct ExternalOverlap {
+    pub per_agent: Vec<AgentOverlap>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentOverlap {
+    pub agent: String,
+    pub findings: usize,
+    pub overlap: usize,
+    pub agree: usize,
+}
+
+impl AgentOverlap {
+    /// Fraction of overlap entries where External and quorum agreed.
+    /// Returns 0.0 (not NaN) when there's no overlap to compute on.
+    pub fn agreement_rate(&self) -> f64 {
+        if self.overlap == 0 {
+            0.0
+        } else {
+            self.agree as f64 / self.overlap as f64
+        }
+    }
+}
+
+/// Compute External-agent overlap against a map of quorum verdicts keyed
+/// by finding_id. The quorum-side map is provided externally so callers
+/// can build it however suits them (e.g. the Human path for headline
+/// math, or PostFix-confirmed for stricter ground truth). The function
+/// itself is verdict-source-agnostic.
+pub fn compute_external_overlap(
+    entries: &[FeedbackEntry],
+    quorum_verdicts: &HashMap<String, Verdict>,
+) -> ExternalOverlap {
+    use crate::feedback::Provenance;
+    let mut per_agent: HashMap<String, AgentOverlap> = HashMap::new();
+    for e in entries {
+        let Provenance::External { agent, .. } = &e.provenance else {
+            continue;
+        };
+        let row = per_agent.entry(agent.clone()).or_insert_with(|| AgentOverlap {
+            agent: agent.clone(),
+            ..Default::default()
+        });
+        row.findings += 1;
+        if let Some(fid) = &e.finding_id {
+            if let Some(qv) = quorum_verdicts.get(fid) {
+                row.overlap += 1;
+                if verdict_eq(qv, &e.verdict) {
+                    row.agree += 1;
+                }
+            }
+        }
+    }
+    let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
+    agents.sort_by(|a, b| b.findings.cmp(&a.findings).then_with(|| a.agent.cmp(&b.agent)));
+    ExternalOverlap { per_agent: agents }
+}
+
+/// Verdict equivalence for agreement counting. Treats Tp/Partial as
+/// "real" and Fp as "not real" — Wontfix and ContextMisleading are
+/// counted as not-equal to anything since they're not finding-quality
+/// verdicts.
+fn verdict_eq(a: &Verdict, b: &Verdict) -> bool {
+    fn category(v: &Verdict) -> Option<u8> {
+        match v {
+            Verdict::Tp | Verdict::Partial => Some(0),
+            Verdict::Fp => Some(1),
+            Verdict::Wontfix | Verdict::ContextMisleading { .. } => None,
+        }
+    }
+    match (category(a), category(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// Per-finding precision trend with disposition precedence.
 ///
 /// Same window-bucketing as `precision_trend`, but feedback entries that
@@ -845,6 +931,99 @@ mod tests {
         // Precision: (Partial + TP) / (Partial + TP + FP) = (1+7) / (1+7+1) = 8/9.
         assert_eq!(trend[0].count, 10);
         assert!((trend[0].precision - (8.0 / 9.0)).abs() < 1e-9);
+    }
+
+    // ─── Stats redesign Task 9: external corpus overlap ───
+    //
+    // For each external agent, count how many of its findings overlap
+    // with quorum's own verdicts (linked by finding_id) and what fraction
+    // agree on the disposition. Used by the External corpus block to
+    // surface "this agent flags things quorum also flags X% of the time"
+    // without conflating the External channel into Human precision.
+
+    fn external_fb(id: &str, verdict: Verdict, agent: &str) -> FeedbackEntry {
+        use crate::feedback::Provenance;
+        fb_with_id_and_provenance(
+            id,
+            verdict,
+            Provenance::External {
+                agent: agent.into(),
+                model: None,
+                confidence: None,
+            },
+        )
+    }
+
+    #[test]
+    fn external_overlap_empty_for_no_external_entries() {
+        let entries: Vec<FeedbackEntry> = vec![];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        assert!(overlap.per_agent.is_empty());
+    }
+
+    #[test]
+    fn external_overlap_counts_findings_per_agent() {
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("B", Verdict::Fp, "pal"),
+            external_fb("C", Verdict::Tp, "third-opinion"),
+        ];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        assert_eq!(overlap.per_agent.len(), 2);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.findings, 2);
+    }
+
+    #[test]
+    fn external_overlap_agreement_rate_against_quorum() {
+        // pal flagged A as TP, B as FP. Quorum independently has A=TP and
+        // B=TP. Agreement: A matches (1/2), B disagrees (Quorum says TP,
+        // pal says FP). Overlap considers the 2 findings pal also has on
+        // a quorum-known finding_id; agreement_rate = 1/2.
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("B", Verdict::Fp, "pal"),
+        ];
+        let mut quorum: HashMap<String, Verdict> = HashMap::new();
+        quorum.insert("A".into(), Verdict::Tp);
+        quorum.insert("B".into(), Verdict::Tp);
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.overlap, 2);
+        assert_eq!(pal.agree, 1);
+        assert!((pal.agreement_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn external_overlap_skips_external_entries_quorum_did_not_flag() {
+        // pal flagged A and Z, but quorum only has A. The Z verdict has no
+        // overlap to compute against — count it in `findings` but exclude
+        // from `overlap` / `agree`.
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("Z", Verdict::Tp, "pal"),
+        ];
+        let mut quorum: HashMap<String, Verdict> = HashMap::new();
+        quorum.insert("A".into(), Verdict::Tp);
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.findings, 2);
+        assert_eq!(pal.overlap, 1);
+        assert_eq!(pal.agree, 1);
+        assert!((pal.agreement_rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn external_overlap_agreement_rate_zero_for_no_overlap() {
+        // No quorum overlap at all → agreement_rate is 0.0 (not NaN).
+        let entries = vec![external_fb("Z", Verdict::Tp, "pal")];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.overlap, 0);
+        assert_eq!(pal.agreement_rate(), 0.0);
     }
 
     #[test]

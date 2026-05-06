@@ -39,6 +39,29 @@ pub struct StatsReport {
     /// Provenance-tier breakdown (Human / PostFix / External / AutoCalib /
     /// Unknown). Computed from the same feedback store as `precision`.
     pub tier_summary: analytics::TierSummary,
+
+    // ─── Stats redesign Phase A: linkage / capture / external overlap ───
+    //
+    /// Fraction of feedback entries whose finding_id matches some review's
+    /// finding_ids. Gates whether per-finding precision math is shown.
+    pub linkage_rate: f64,
+    pub linkage_linked: usize,
+    pub linkage_unlinked: usize,
+    /// Fraction of recent (7d) findings that received any feedback. Used
+    /// inline with the headline trend so trend footing is visible.
+    pub capture_rate: f64,
+    pub capture_labeled: usize,
+    pub capture_total: usize,
+    /// True iff `linkage_rate >= 0.85`. Drives the headline-trend
+    /// rendering between per-finding (`precision_trend_per_finding`) and
+    /// the entry-level fallback with banner.
+    pub headline_trend_uses_finding_id: bool,
+    /// Per-agent overlap with quorum's own (Human-tier) verdicts. Surfaced
+    /// in the External corpus block.
+    pub external_overlap: analytics::ExternalOverlap,
+    /// Per-finding precision trend (None when linkage rate is below the
+    /// per-finding gate so renderers don't have to recompute the cutoff).
+    pub precision_trend_per_finding: Vec<analytics::PrecisionWindow>,
 }
 
 /// Take top-N slices by review volume. Ties resolved by insertion order
@@ -123,6 +146,44 @@ pub fn compute_report(
     let top_callers = take_top(dimensions::group_by_caller(&review_records), HIGHLIGHT_TOP_N);
     let rolling_windows = dimensions::rolling_window(&review_records, ROLLING_N, ROLLING_WINDOWS);
 
+    // Linkage / capture / external overlap (Phase A).
+    let link = analytics::linkage_stats(&review_records, &feedback);
+    let linkage_rate = link.rate();
+    let headline_trend_uses_finding_id = linkage_rate >= 0.85;
+
+    let capture_total = total_findings_7d;
+    // Capture-labeled = feedback entries timestamped in the 7d window.
+    // Coarse but useful — exact would require joining each feedback row
+    // to a review timestamp, which we deliberately don't do here.
+    let capture_labeled = feedback.iter()
+        .filter(|e| e.timestamp >= since_7d)
+        .count();
+    let capture_rate = if capture_total > 0 {
+        (capture_labeled as f64 / capture_total as f64).min(1.0)
+    } else {
+        0.0
+    };
+
+    // Build a quorum verdict map (Human-tier) keyed by finding_id for
+    // External overlap computation.
+    let mut quorum_verdicts: std::collections::HashMap<String, crate::feedback::Verdict> =
+        std::collections::HashMap::new();
+    for e in &feedback {
+        if !matches!(e.provenance, crate::feedback::Provenance::Human) {
+            continue;
+        }
+        if let Some(fid) = &e.finding_id {
+            quorum_verdicts.insert(fid.clone(), e.verdict.clone());
+        }
+    }
+    let external_overlap = analytics::compute_external_overlap(&feedback, &quorum_verdicts);
+
+    let precision_trend_per_finding = if headline_trend_uses_finding_id {
+        analytics::precision_trend_per_finding(&feedback, 7)
+    } else {
+        Vec::new()
+    };
+
     Ok(StatsReport {
         feedback_count,
         precision,
@@ -143,6 +204,15 @@ pub fn compute_report(
         top_callers,
         rolling_windows,
         tier_summary,
+        linkage_rate,
+        linkage_linked: link.linked,
+        linkage_unlinked: link.unlinked,
+        capture_rate,
+        capture_labeled,
+        capture_total,
+        headline_trend_uses_finding_id,
+        external_overlap,
+        precision_trend_per_finding,
     })
 }
 
@@ -656,6 +726,73 @@ mod tests {
         }
     }
 
+    // ─── Stats redesign Task 6: extended StatsReport fields ───
+
+    #[test]
+    fn compute_report_populates_linkage_and_capture_metadata() {
+        // Empty stores still expose the new fields with safe defaults so
+        // callers don't have to None-check or panic on missing data.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let rl = crate::review_log::ReviewLog::new(dir.path().join("reviews.jsonl"));
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        assert!(report.linkage_rate >= 0.0 && report.linkage_rate <= 1.0);
+        assert_eq!(report.linkage_linked, 0);
+        assert_eq!(report.linkage_unlinked, 0);
+        assert!(report.capture_rate >= 0.0 && report.capture_rate <= 1.0);
+        assert_eq!(report.capture_labeled, 0);
+        assert_eq!(report.capture_total, 0);
+        assert!(!report.headline_trend_uses_finding_id, "no data → false");
+        assert!(report.external_overlap.per_agent.is_empty());
+    }
+
+    #[test]
+    fn headline_trend_uses_finding_id_flips_on_at_85_percent_linkage() {
+        // 17 linked + 3 unlinked = 85% — clears the threshold exactly.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+
+        let mut record = rec("alpha", "tty", 1);
+        record.finding_ids = (0..17).map(|i| format!("FID-{i}")).collect();
+        let rl = make_review_log(&dir, &[record]);
+
+        for i in 0..17 {
+            fb.record(&crate::feedback::FeedbackEntry {
+                file_path: "x.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: crate::feedback::Verdict::Tp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: crate::feedback::Provenance::Human,
+                fp_kind: None,
+                finding_id: Some(format!("FID-{i}")),
+                rule_id: None,
+            }).unwrap();
+        }
+        for _ in 0..3 {
+            fb.record(&crate::feedback::FeedbackEntry {
+                file_path: "y.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: crate::feedback::Verdict::Fp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: crate::feedback::Provenance::Human,
+                fp_kind: None,
+                finding_id: None,
+                rule_id: None,
+            }).unwrap();
+        }
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        assert!((report.linkage_rate - 0.85).abs() < 1e-9);
+        assert!(report.headline_trend_uses_finding_id, "85% must flip the gate");
+    }
+
     #[test]
     fn compute_report_empty_stores() {
         let dir = TempDir::new().unwrap();
@@ -794,6 +931,15 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let out = format_compact(&report);
         assert!(out.contains("feedback:100"));
@@ -825,6 +971,15 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
@@ -961,6 +1116,15 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let json = format_json(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
