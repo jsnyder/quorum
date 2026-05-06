@@ -109,7 +109,7 @@ pub fn format_stats_report(stats: &HashMap<String, SourceStats>) -> String {
     lines.push("-".repeat(65));
 
     let mut sources: Vec<_> = stats.iter().collect();
-    sources.sort_by(|a, b| b.1.total().cmp(&a.1.total()));
+    sources.sort_by_key(|item| std::cmp::Reverse(item.1.total()));
 
     for (source, s) in &sources {
         lines.push(format!(
