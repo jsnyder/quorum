@@ -27,7 +27,7 @@ pub fn analyze_complexity(
     for (start, end) in &func_nodes {
         let node = tree.root_node().descendant_for_byte_range(*start, *end);
         if let Some(node) = node {
-            let cc = cyclomatic_complexity(&node, source, lang);
+            let cc = cyclomatic_complexity(&node, source);
             if cc >= threshold {
                 // Extract name directly from the function node
                 let name = node
@@ -101,13 +101,13 @@ fn collect_nodes_by_kind(
     }
 }
 
-pub fn cyclomatic_complexity(node: &tree_sitter::Node, source: &str, lang: Language) -> u32 {
+pub fn cyclomatic_complexity(node: &tree_sitter::Node, source: &str) -> u32 {
     let mut complexity = 1u32; // baseline path
-    count_decisions(node, source, lang, &mut complexity);
+    count_decisions(node, source, &mut complexity);
     complexity
 }
 
-fn count_decisions(node: &tree_sitter::Node, source: &str, lang: Language, complexity: &mut u32) {
+fn count_decisions(node: &tree_sitter::Node, source: &str, complexity: &mut u32) {
     let kind = node.kind();
 
     match kind {
@@ -144,7 +144,7 @@ fn count_decisions(node: &tree_sitter::Node, source: &str, lang: Language, compl
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            count_decisions(&child, source, lang, complexity);
+            count_decisions(&child, source, complexity);
         }
     }
 }
@@ -193,17 +193,15 @@ fn is_in_test_context(node: &tree_sitter::Node, source: &str) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         // Check for #[cfg(test)] on mod items
-        if parent.kind() == "mod_item" {
-            if has_attribute(&parent, source, "cfg(test)") {
+        if parent.kind() == "mod_item"
+            && has_attribute(&parent, source, "cfg(test)") {
                 return true;
             }
-        }
         // Check for #[test] on function items
-        if parent.kind() == "function_item" {
-            if has_attribute(&parent, source, "test") {
+        if parent.kind() == "function_item"
+            && has_attribute(&parent, source, "test") {
                 return true;
             }
-        }
         current = parent.parent();
     }
     false
@@ -254,10 +252,10 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
     // .unwrap() calls — tree-sitter-rust: call_expression with function=field_expression
     // Skip unwrap in test code (#[cfg(test)] modules, #[test] functions)
-    if node.kind() == "call_expression" && !is_in_test_context(node, source) {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "field_expression" {
-                if let Some(field) = func.child_by_field_name("field") {
+    if node.kind() == "call_expression" && !is_in_test_context(node, source)
+        && let Some(func) = node.child_by_field_name("function")
+            && func.kind() == "field_expression"
+                && let Some(field) = func.child_by_field_name("field") {
                     let field_name = &source[field.byte_range()];
                     if field_name == "unwrap" {
                         findings.push(Finding {
@@ -282,9 +280,6 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         });
                     }
                 }
-            }
-        }
-    }
 }
 
 fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
@@ -374,8 +369,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         // SQL injection: .execute() with f-string or .format() argument
         if let Some(func) = node.child_by_field_name("function") {
             let func_text = &source[func.byte_range()];
-            if func_text.ends_with(".execute") || func_text.ends_with(".executemany") {
-                if let Some(args) = node.child_by_field_name("arguments") {
+            if (func_text.ends_with(".execute") || func_text.ends_with(".executemany"))
+                && let Some(args) = node.child_by_field_name("arguments") {
                     // Check first argument for f-string or .format()
                     if let Some(first_arg) = args.named_child(0) {
                         let arg_kind = first_arg.kind();
@@ -427,14 +422,13 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         }
                     }
                 }
-            }
         }
 
         // open() without explicit encoding
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
-            if func_name == "open" {
-                if let Some(args) = node.child_by_field_name("arguments") {
+            if func_name == "open"
+                && let Some(args) = node.child_by_field_name("arguments") {
                     let args_text = &source[args.byte_range()];
                     let binary_modes = [
                         "'rb'", "\"rb\"", "'wb'", "\"wb\"", "'ab'", "\"ab\"", "'xb'", "\"xb\"",
@@ -468,7 +462,6 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         });
                     }
                 }
-            }
         }
     }
 
@@ -501,8 +494,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             None => true, // bare `except:`
             Some(t) => t == "Exception" || t == "BaseException",
         };
-        if is_catch_all {
-            if let Some(body) = body_node {
+        if is_catch_all
+            && let Some(body) = body_node {
                 let body_has_only_pass = body.named_child_count() == 1
                     && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
                 if body_has_only_pass {
@@ -528,12 +521,11 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     });
                 }
             }
-        }
     }
 
     // Hardcoded secrets: SECRET_KEY = "...", PASSWORD = "...", API_KEY = "..."
-    if node.kind() == "assignment" {
-        if let Some(left) = node.child_by_field_name("left") {
+    if node.kind() == "assignment"
+        && let Some(left) = node.child_by_field_name("left") {
             let var_name = source[left.byte_range()].to_uppercase();
             let secret_names = [
                 "SECRET_KEY",
@@ -546,8 +538,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 "TOKEN",
                 "PRIVATE_KEY",
             ];
-            if secret_names.iter().any(|s| var_name.contains(s)) {
-                if let Some(right) = node.child_by_field_name("right") {
+            if secret_names.iter().any(|s| var_name.contains(s))
+                && let Some(right) = node.child_by_field_name("right") {
                     let right_kind = right.kind();
                     let right_text = &source[right.byte_range()];
                     // Only flag string literals that look like real secrets:
@@ -602,9 +594,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         });
                     }
                 }
-            }
         }
-    }
 
     // Mutating collection while iterating
     if node.kind() == "for_statement" {
@@ -614,8 +604,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             // Only match when iterating directly over an identifier (not list(items) or other call)
             if right.kind() == "identifier" {
                 let iterable_name = &source[right.byte_range()];
-                if let Some(body) = node.child_by_field_name("body") {
-                    if has_mutating_call(&body, source, iterable_name) {
+                if let Some(body) = node.child_by_field_name("body")
+                    && has_mutating_call(&body, source, iterable_name) {
                         findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: format!("Mutating `{}` while iterating over it", iterable_name),
@@ -637,7 +627,6 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                         });
                     }
-                }
             }
         }
     }
@@ -648,23 +637,19 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         // Tree structure: except_clause > as_pattern > as_pattern_target > identifier
         let mut exc_var: Option<&str> = None;
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "as_pattern" {
+            if let Some(child) = node.child(i as u32)
+                && child.kind() == "as_pattern" {
                     // Look for as_pattern_target child which contains the identifier
                     for j in 0..child.child_count() {
-                        if let Some(target) = child.child(j as u32) {
-                            if target.kind() == "as_pattern_target" {
-                                if let Some(ident) = target.child(0) {
-                                    if ident.kind() == "identifier" {
+                        if let Some(target) = child.child(j as u32)
+                            && target.kind() == "as_pattern_target"
+                                && let Some(ident) = target.child(0)
+                                    && ident.kind() == "identifier" {
                                         exc_var = Some(&source[ident.byte_range()]);
                                     }
-                                }
-                            }
-                        }
                     }
                     break;
                 }
-            }
         }
         if let Some(var_name) = exc_var {
             // Look for return statements that expose the exception
@@ -702,8 +687,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         // In tree-sitter-python, async functions have "async" as a preceding sibling or
         // the node text starts with "async"
         let func_text = &source[node.byte_range()];
-        if func_text.starts_with("async ") {
-            if has_result_call(node, source) {
+        if func_text.starts_with("async ")
+            && has_result_call(node, source) {
                 findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: "Blocking `.result()` call in async function".into(),
@@ -725,12 +710,11 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                 });
             }
-        }
     }
 
     // Mutable default arguments: def foo(x=[], y={})
-    if node.kind() == "default_parameter" {
-        if let Some(value) = node.child_by_field_name("value") {
+    if node.kind() == "default_parameter"
+        && let Some(value) = node.child_by_field_name("value") {
             let val_kind = value.kind();
             if val_kind == "list" || val_kind == "dictionary" || val_kind == "set" {
                 let param_name = node
@@ -759,36 +743,29 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 });
             }
         }
-    }
 }
 
 /// Check if a node tree contains a mutating method call on the given identifier.
 fn has_mutating_call(node: &tree_sitter::Node, source: &str, target: &str) -> bool {
     let mutating_methods = ["append", "remove", "pop", "insert", "extend", "clear"];
 
-    if node.kind() == "call" {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "attribute" {
-                if let Some(obj) = func.child_by_field_name("object") {
-                    if obj.kind() == "identifier" && &source[obj.byte_range()] == target {
-                        if let Some(attr) = func.child_by_field_name("attribute") {
+    if node.kind() == "call"
+        && let Some(func) = node.child_by_field_name("function")
+            && func.kind() == "attribute"
+                && let Some(obj) = func.child_by_field_name("object")
+                    && obj.kind() == "identifier" && &source[obj.byte_range()] == target
+                        && let Some(attr) = func.child_by_field_name("attribute") {
                             let method = &source[attr.byte_range()];
                             if mutating_methods.contains(&method) {
                                 return true;
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if has_mutating_call(&child, source, target) {
+        if let Some(child) = node.child(i as u32)
+            && has_mutating_call(&child, source, target) {
                 return true;
             }
-        }
     }
     false
 }
@@ -810,35 +787,29 @@ fn has_exception_in_return(node: &tree_sitter::Node, source: &str, var_name: &st
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if has_exception_in_return(&child, source, var_name) {
+        if let Some(child) = node.child(i as u32)
+            && has_exception_in_return(&child, source, var_name) {
                 return true;
             }
-        }
     }
     false
 }
 
 /// Check if a function body contains a .result() call.
 fn has_result_call(node: &tree_sitter::Node, source: &str) -> bool {
-    if node.kind() == "call" {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "attribute" {
-                if let Some(attr) = func.child_by_field_name("attribute") {
-                    if &source[attr.byte_range()] == "result" {
+    if node.kind() == "call"
+        && let Some(func) = node.child_by_field_name("function")
+            && func.kind() == "attribute"
+                && let Some(attr) = func.child_by_field_name("attribute")
+                    && &source[attr.byte_range()] == "result" {
                         return true;
                     }
-                }
-            }
-        }
-    }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if has_result_call(&child, source) {
+        if let Some(child) = node.child(i as u32)
+            && has_result_call(&child, source) {
                 return true;
             }
-        }
     }
     false
 }
@@ -908,8 +879,8 @@ fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool
             }
             // Recurse one more level (flow_node may contain tag)
             for j in 0..child.child_count() {
-                if let Some(gc) = child.child(j as u32) {
-                    if gc.kind() == "tag" {
+                if let Some(gc) = child.child(j as u32)
+                    && gc.kind() == "tag" {
                         let tag_text = &source[gc.byte_range()];
                         if tag_text.starts_with("!secret")
                             || tag_text.starts_with("!include")
@@ -918,7 +889,6 @@ fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool
                             return true;
                         }
                     }
-                }
             }
         }
     }
@@ -955,12 +925,11 @@ fn is_in_automation_context(node: &tree_sitter::Node, source: &str) -> bool {
             candidate = c.parent();
             continue;
         }
-        if c.kind() == "block_mapping_pair" {
-            if let Some(key) = c.child_by_field_name("key") {
+        if c.kind() == "block_mapping_pair"
+            && let Some(key) = c.child_by_field_name("key") {
                 let key_text = source[key.byte_range()].trim();
                 return key_text == "automation" || key_text == "automation!";
             }
-        }
         break;
     }
     false
@@ -970,13 +939,11 @@ fn is_in_automation_context(node: &tree_sitter::Node, source: &str) -> bool {
 fn collect_mapping_keys<'a>(node: &tree_sitter::Node, source: &'a str) -> Vec<&'a str> {
     let mut keys = Vec::new();
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if child.kind() == "block_mapping_pair" {
-                if let Some(key) = child.child_by_field_name("key") {
+        if let Some(child) = node.child(i as u32)
+            && child.kind() == "block_mapping_pair"
+                && let Some(key) = child.child_by_field_name("key") {
                     keys.push(source[key.byte_range()].trim());
                 }
-            }
-        }
     }
     keys
 }
@@ -990,20 +957,18 @@ fn yaml_value_is_empty(pair_node: &tree_sitter::Node, source: &str) -> bool {
         }
         // Check if value has a block_sequence child with items
         for i in 0..value.child_count() {
-            if let Some(child) = value.child(i as u32) {
-                if child.kind() == "block_sequence" {
+            if let Some(child) = value.child(i as u32)
+                && child.kind() == "block_sequence" {
                     let mut has_items = false;
                     for j in 0..child.child_count() {
-                        if let Some(item) = child.child(j as u32) {
-                            if item.kind() == "block_sequence_item" {
+                        if let Some(item) = child.child(j as u32)
+                            && item.kind() == "block_sequence_item" {
                                 has_items = true;
                                 break;
                             }
-                        }
                     }
                     return !has_items;
                 }
-            }
         }
         false
     } else {
@@ -1056,18 +1021,14 @@ fn find_value_mapping<'a>(
     key_name: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     for i in 0..mapping_node.child_count() {
-        if let Some(child) = mapping_node.child(i as u32) {
-            if child.kind() == "block_mapping_pair" {
-                if let Some(key) = child.child_by_field_name("key") {
-                    if source[key.byte_range()].trim() == key_name {
-                        if let Some(value) = child.child_by_field_name("value") {
+        if let Some(child) = mapping_node.child(i as u32)
+            && child.kind() == "block_mapping_pair"
+                && let Some(key) = child.child_by_field_name("key")
+                    && source[key.byte_range()].trim() == key_name
+                        && let Some(value) = child.child_by_field_name("value") {
                             // Walk through block_node wrappers to find block_mapping
                             return find_block_mapping_in(&value);
                         }
-                    }
-                }
-            }
-        }
     }
     None
 }
@@ -1082,11 +1043,10 @@ fn find_block_mapping_in<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter
             if child.kind() == "block_mapping" {
                 return Some(child);
             }
-            if child.kind() == "block_node" {
-                if let Some(found) = find_block_mapping_in(&child) {
+            if child.kind() == "block_node"
+                && let Some(found) = find_block_mapping_in(&child) {
                     return Some(found);
                 }
-            }
         }
     }
     None
@@ -1100,9 +1060,9 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     if node.kind() == "block_mapping" {
         let mut seen_keys: Vec<(&str, u32)> = Vec::new();
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "block_mapping_pair" {
-                    if let Some(key) = child.child_by_field_name("key") {
+            if let Some(child) = node.child(i as u32)
+                && child.kind() == "block_mapping_pair"
+                    && let Some(key) = child.child_by_field_name("key") {
                         let key_text = source[key.byte_range()].trim();
                         let key_line = key.start_position().row as u32 + 1;
                         if let Some((_, first_line)) =
@@ -1135,8 +1095,6 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             seen_keys.push((key_text, key_line));
                         }
                     }
-                }
-            }
         }
 
         // --- Tier 2: Automation-level checks ---
@@ -1230,9 +1188,9 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
             // 6. Empty triggers or actions
             for i in 0..node.child_count() {
-                if let Some(child) = node.child(i as u32) {
-                    if child.kind() == "block_mapping_pair" {
-                        if let Some(key) = child.child_by_field_name("key") {
+                if let Some(child) = node.child(i as u32)
+                    && child.kind() == "block_mapping_pair"
+                        && let Some(key) = child.child_by_field_name("key") {
                             let key_text = source[key.byte_range()].trim();
                             if (key_text == "triggers" || key_text == "actions")
                                 && yaml_value_is_empty(&child, source)
@@ -1262,8 +1220,6 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 });
                             }
                         }
-                    }
-                }
             }
         }
 
@@ -1342,12 +1298,12 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             // --- Tier 5b: Docker Compose checks ---
             // Detect docker-compose files by presence of top-level `services:` key.
             // Skip if `apiVersion` is present (excludes Kubernetes, CloudFormation, etc.).
-            if keys.contains(&"services") && !keys.contains(&"apiVersion") {
-                if let Some(services_mapping) = find_value_mapping(node, source, "services") {
+            if keys.contains(&"services") && !keys.contains(&"apiVersion")
+                && let Some(services_mapping) = find_value_mapping(node, source, "services") {
                     // Iterate over each service defined under `services:`
                     for i in 0..services_mapping.child_count() {
-                        if let Some(child) = services_mapping.child(i as u32) {
-                            if child.kind() == "block_mapping_pair" {
+                        if let Some(child) = services_mapping.child(i as u32)
+                            && child.kind() == "block_mapping_pair" {
                                 let svc_line = child.start_position().row as u32 + 1;
                                 let svc_end = child.end_position().row as u32 + 1;
                                 let svc_name = if let Some(key) = child.child_by_field_name("key") {
@@ -1427,24 +1383,21 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     }
                                 }
                             }
-                        }
                     }
                 }
-            }
         }
     }
 
     // --- Tier 1: Hardcoded secrets (on block_mapping_pair nodes) ---
-    if node.kind() == "block_mapping_pair" {
-        if let Some(key) = node.child_by_field_name("key") {
+    if node.kind() == "block_mapping_pair"
+        && let Some(key) = node.child_by_field_name("key") {
             let key_text = source[key.byte_range()].trim().to_lowercase();
 
             if YAML_SECRET_KEY_PATTERNS
                 .iter()
                 .any(|p| key_text.contains(p))
-            {
-                if let Some(value) = node.child_by_field_name("value") {
-                    if !yaml_value_has_safe_tag(&value, source) {
+                && let Some(value) = node.child_by_field_name("value")
+                    && !yaml_value_has_safe_tag(&value, source) {
                         let val_text = source[value.byte_range()].trim();
                         if !val_text.is_empty() {
                             findings.push(Finding {
@@ -1477,21 +1430,19 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             });
                         }
                     }
-                }
-            }
 
             // --- Tier 3: entity_id without domain ---
-            if key_text == "entity_id" {
-                if let Some(value) = node.child_by_field_name("value") {
+            if key_text == "entity_id"
+                && let Some(value) = node.child_by_field_name("value") {
                     let val_text = source[value.byte_range()].trim();
                     let mut is_list = false;
                     for i in 0..value.child_count() {
-                        if let Some(child) = value.child(i as u32) {
-                            if child.kind() == "block_sequence" {
+                        if let Some(child) = value.child(i as u32)
+                            && child.kind() == "block_sequence" {
                                 is_list = true;
                                 for j in 0..child.child_count() {
-                                    if let Some(item) = child.child(j as u32) {
-                                        if item.kind() == "block_sequence_item" {
+                                    if let Some(item) = child.child(j as u32)
+                                        && item.kind() == "block_sequence_item" {
                                             let item_text = source[item.byte_range()]
                                                 .trim()
                                                 .trim_start_matches("- ")
@@ -1522,11 +1473,9 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                                 });
                                             }
                                         }
-                                    }
                                 }
                                 break;
                             }
-                        }
                     }
                     if !is_list && !val_text.is_empty() && !val_text.contains('.') {
                         findings.push(Finding {
@@ -1554,11 +1503,10 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         });
                     }
                 }
-            }
 
             // --- Tier 3: service without domain ---
-            if key_text == "service" {
-                if let Some(value) = node.child_by_field_name("value") {
+            if key_text == "service"
+                && let Some(value) = node.child_by_field_name("value") {
                     let val_text = source[value.byte_range()].trim();
                     if !val_text.is_empty() && !val_text.contains('.') {
                         findings.push(Finding {
@@ -1586,11 +1534,10 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         });
                     }
                 }
-            }
 
             // --- Tier 4: Exposed 0.0.0.0 binding ---
-            if key_text == "host" || key_text == "server_host" || key_text == "server" {
-                if let Some(value) = node.child_by_field_name("value") {
+            if (key_text == "host" || key_text == "server_host" || key_text == "server")
+                && let Some(value) = node.child_by_field_name("value") {
                     let val_text = source[value.byte_range()].trim();
                     if val_text.contains("0.0.0.0") {
                         findings.push(Finding {
@@ -1615,13 +1562,12 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         });
                     }
                 }
-            }
 
             // --- Tier 4: URL with embedded credentials ---
             if let Some(value) = node.child_by_field_name("value") {
                 let val_text = source[value.byte_range()].trim();
-                if !val_text.starts_with("!secret") && !val_text.starts_with("!include") {
-                    if val_text.contains("://") && yaml_url_has_credentials(val_text) {
+                if !val_text.starts_with("!secret") && !val_text.starts_with("!include")
+                    && val_text.contains("://") && yaml_url_has_credentials(val_text) {
                         findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: "URL contains embedded credentials".into(),
@@ -1643,10 +1589,8 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                         });
                     }
-                }
             }
         }
-    }
 
     // --- Tier 6: Jinja2 template patterns (on scalar values) ---
     if node.kind() == "plain_scalar"
@@ -1750,8 +1694,8 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     let end_line = node.end_position().row as u32 + 1;
 
     // eval(), document.write(), console.log/debug calls
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             if func_name == "eval" {
                 findings.push(Finding {
@@ -1826,11 +1770,10 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 });
             }
         }
-    }
 
     // Hardcoded secrets in variable declarations
-    if node.kind() == "variable_declarator" {
-        if let Some(name_node) = node.child_by_field_name("name") {
+    if node.kind() == "variable_declarator"
+        && let Some(name_node) = node.child_by_field_name("name") {
             let var_name = source[name_node.byte_range()].to_uppercase();
             let secret_names = [
                 "SECRET_KEY",
@@ -1843,8 +1786,8 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 "TOKEN",
                 "PRIVATE_KEY",
             ];
-            if secret_names.iter().any(|s| var_name.contains(s)) {
-                if let Some(value) = node.child_by_field_name("value") {
+            if secret_names.iter().any(|s| var_name.contains(s))
+                && let Some(value) = node.child_by_field_name("value") {
                     let val_kind = value.kind();
                     let val_text = &source[value.byte_range()];
                     // Only flag string literals that look like real secrets
@@ -1880,13 +1823,11 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                         }
                     }
                 }
-            }
         }
-    }
 
     // innerHTML / outerHTML XSS
-    if node.kind() == "assignment_expression" {
-        if let Some(left) = node.child_by_field_name("left") {
+    if node.kind() == "assignment_expression"
+        && let Some(left) = node.child_by_field_name("left") {
             let left_text = &source[left.byte_range()];
             if left_text.ends_with(".innerHTML") || left_text.ends_with(".outerHTML") {
                 let prop = if left_text.ends_with(".innerHTML") {
@@ -1916,7 +1857,6 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 });
             }
         }
-    }
 
     // `any` type annotation
     if node.kind() == "type_annotation" {
@@ -1947,8 +1887,8 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     }
 
     // Empty catch blocks that silently swallow errors
-    if node.kind() == "catch_clause" {
-        if let Some(body) = node.child_by_field_name("body") {
+    if node.kind() == "catch_clause"
+        && let Some(body) = node.child_by_field_name("body") {
             let has_statements = (0..body.named_child_count()).any(|i| {
                 body.named_child(i as u32)
                     .map(|c| c.kind() != "comment" && c.kind() != "empty_statement")
@@ -1979,11 +1919,10 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 });
             }
         }
-    }
 
     // Sync Node.js APIs inside async functions
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             let sync_apis = [
                 "readFileSync",
@@ -1999,8 +1938,8 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 "accessSync",
             ];
             for api in &sync_apis {
-                if func_name.ends_with(api) {
-                    if is_in_async_function(node, source) {
+                if func_name.ends_with(api)
+                    && is_in_async_function(node, source) {
                         findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: format!("`{}` blocks the event loop in async function", api),
@@ -2026,18 +1965,16 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                         });
                         break;
                     }
-                }
             }
         }
-    }
 
     // Tautological .length >= 0 (always true for arrays/strings)
-    if node.kind() == "binary_expression" {
-        if let Some(op) = node.child_by_field_name("operator") {
+    if node.kind() == "binary_expression"
+        && let Some(op) = node.child_by_field_name("operator") {
             let op_text = &source[op.byte_range()];
-            if op_text == ">=" {
-                if let Some(left) = node.child_by_field_name("left") {
-                    if let Some(right) = node.child_by_field_name("right") {
+            if op_text == ">="
+                && let Some(left) = node.child_by_field_name("left")
+                    && let Some(right) = node.child_by_field_name("right") {
                         let right_text = &source[right.byte_range()];
                         let is_length_access = left.kind() == "member_expression"
                             && left
@@ -2067,10 +2004,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             });
                         }
                     }
-                }
-            }
         }
-    }
 
     // Non-null assertion operator (!)
     if node.kind() == "non_null_expression" {
@@ -2103,8 +2037,8 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     let end_line = node.end_position().row as u32 + 1;
 
     // B11: Missing shebang (root program node only)
-    if kind == "program" {
-        if !source.starts_with("#!") {
+    if kind == "program"
+        && !source.starts_with("#!") {
             findings.push(Finding {
                 id: crate::finding::new_finding_ulid(),
                 title: "Script has no shebang line".into(),
@@ -2126,22 +2060,20 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
             });
         }
-    }
 
     // B4: Missing set -e (root program node only)
     if kind == "program" {
         let mut found_set_e = false;
         let limit = node.child_count().min(10);
         for i in 0..limit {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "command" {
+            if let Some(child) = node.child(i as u32)
+                && child.kind() == "command" {
                     let text = &source[child.byte_range()];
                     if text.contains("set") && (text.contains("-e") || text.contains("errexit")) {
                         found_set_e = true;
                         break;
                     }
                 }
-            }
         }
         if !found_set_e {
             findings.push(Finding {
@@ -2169,8 +2101,8 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     }
 
     // B2: eval usage
-    if kind == "command" {
-        if let Some(name_node) = node.child_by_field_name("name") {
+    if kind == "command"
+        && let Some(name_node) = node.child_by_field_name("name") {
             let name = &source[name_node.byte_range()];
             if name == "eval" {
                 findings.push(Finding {
@@ -2230,15 +2162,14 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 }
             }
         }
-    }
 
     // B3: curl|bash piping
     if kind == "pipeline" {
         let mut saw_curl = false;
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "command" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
+            if let Some(child) = node.child(i as u32)
+                && child.kind() == "command"
+                    && let Some(name_node) = child.child_by_field_name("name") {
                         let name = &source[name_node.byte_range()];
                         if name == "curl" || name == "wget" {
                             saw_curl = true;
@@ -2270,14 +2201,12 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             break;
                         }
                     }
-                }
-            }
         }
     }
 
     // B5: Hardcoded secrets
-    if kind == "variable_assignment" {
-        if let Some(name_node) = node.child_by_field_name("name") {
+    if kind == "variable_assignment"
+        && let Some(name_node) = node.child_by_field_name("name") {
             let var_name = &source[name_node.byte_range()];
             let upper = var_name.to_uppercase();
             let is_secret_name = upper.contains("PASSWORD")
@@ -2286,8 +2215,8 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 || upper.contains("TOKEN")
                 || upper.contains("APIKEY")
                 || upper.contains("PRIVATE_KEY");
-            if is_secret_name {
-                if let Some(value_node) = node.child_by_field_name("value") {
+            if is_secret_name
+                && let Some(value_node) = node.child_by_field_name("value") {
                     let vkind = value_node.kind();
                     // Skip command substitutions and expansions
                     if vkind != "command_substitution"
@@ -2320,9 +2249,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         }
                     }
                 }
-            }
         }
-    }
 }
 
 fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
@@ -2461,38 +2388,34 @@ const TF_SECRET_PATTERNS: &[&str] = &[
 fn tf_expr_is_variable_ref(attr_node: &tree_sitter::Node) -> bool {
     // attribute children: identifier, =, expression
     // expression child(0) is variable_expr for `var.xxx`
-    if let Some(expr) = attr_node.child(2) {
-        if expr.kind() == "expression" {
-            if let Some(first) = expr.child(0) {
+    if let Some(expr) = attr_node.child(2)
+        && expr.kind() == "expression"
+            && let Some(first) = expr.child(0) {
                 return first.kind() == "variable_expr";
             }
-        }
-    }
     false
 }
 
 /// Extract the string content of a Terraform attribute's expression value.
 /// Returns the inner text (without quotes) if the value is a string literal.
 fn tf_expr_string_inner<'a>(attr_node: &tree_sitter::Node, source: &'a str) -> Option<&'a str> {
-    if let Some(expr) = attr_node.child(2) {
-        if expr.kind() == "expression" {
+    if let Some(expr) = attr_node.child(2)
+        && expr.kind() == "expression" {
             let text = source[expr.byte_range()].trim();
             if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
                 return Some(&text[1..text.len() - 1]);
             }
         }
-    }
     None
 }
 
 /// Extract the numeric value from a Terraform attribute's expression.
 fn tf_expr_numeric(attr_node: &tree_sitter::Node, source: &str) -> Option<u16> {
-    if let Some(expr) = attr_node.child(2) {
-        if expr.kind() == "expression" {
+    if let Some(expr) = attr_node.child(2)
+        && expr.kind() == "expression" {
             let text = source[expr.byte_range()].trim();
             return text.parse::<u16>().ok();
         }
-    }
     None
 }
 
@@ -2503,15 +2426,15 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
 
     // T1: Hardcoded secrets in attributes
     // AST: attribute > identifier, =, expression > literal_value > string_lit
-    if kind == "attribute" {
-        if let Some(name_node) = node.child(0) {
-            if name_node.kind() == "identifier" {
+    if kind == "attribute"
+        && let Some(name_node) = node.child(0)
+            && name_node.kind() == "identifier" {
                 let attr_name = source[name_node.byte_range()].to_uppercase();
                 if TF_SECRET_PATTERNS.iter().any(|p| attr_name.contains(p)) {
                     // Only flag if value is a non-empty string literal (not a variable ref)
-                    if !tf_expr_is_variable_ref(node) {
-                        if let Some(inner) = tf_expr_string_inner(node, source) {
-                            if !inner.is_empty()
+                    if !tf_expr_is_variable_ref(node)
+                        && let Some(inner) = tf_expr_string_inner(node, source)
+                            && !inner.is_empty()
                                 && !inner.starts_with("${var.")
                                 && !inner.starts_with("${")
                             {
@@ -2536,24 +2459,20 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                                 });
                             }
-                        }
-                    }
                 }
             }
-        }
-    }
 
     // T2: Wildcard IAM actions in object_elem (jsonencode-style HCL objects)
     // AST: object_elem > expression(variable_expr "Action"), =, expression(literal_value "\"*\"")
     if kind == "object_elem" {
         // Check if the key expression is "Action" (case-insensitive)
-        if let Some(key_expr) = node.child(0) {
-            if key_expr.kind() == "expression" {
+        if let Some(key_expr) = node.child(0)
+            && key_expr.kind() == "expression" {
                 let key_text = source[key_expr.byte_range()].trim();
                 if key_text.eq_ignore_ascii_case("Action") {
                     // Check if value expression is "*"
-                    if let Some(val_expr) = node.child(2) {
-                        if val_expr.kind() == "expression" {
+                    if let Some(val_expr) = node.child(2)
+                        && val_expr.kind() == "expression" {
                             let val_text = source[val_expr.byte_range()].trim();
                             let inner = val_text.trim_matches('"');
                             if inner == "*" {
@@ -2579,30 +2498,28 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                 });
                             }
                         }
-                    }
                 }
             }
-        }
     }
 
     // T3: Open security groups on sensitive ports
     // AST: block > identifier("ingress"), block_start, body > attribute(from_port), attribute(cidr_blocks), block_end
-    if kind == "block" {
-        if let Some(first_child) = node.child(0) {
-            if first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress"
+    if kind == "block"
+        && let Some(first_child) = node.child(0)
+            && first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress"
             {
                 let mut has_open_cidr = false;
                 let mut port_is_sensitive = true;
                 let mut found_port = false;
 
                 for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i as u32) {
-                        if child.kind() == "body" {
+                    if let Some(child) = node.child(i as u32)
+                        && child.kind() == "body" {
                             for j in 0..child.child_count() {
-                                if let Some(attr) = child.child(j as u32) {
-                                    if attr.kind() == "attribute" {
-                                        if let Some(attr_name) = attr.child(0) {
-                                            if attr_name.kind() == "identifier" {
+                                if let Some(attr) = child.child(j as u32)
+                                    && attr.kind() == "attribute"
+                                        && let Some(attr_name) = attr.child(0)
+                                            && attr_name.kind() == "identifier" {
                                                 let name = &source[attr_name.byte_range()];
                                                 if name == "cidr_blocks" {
                                                     let attr_text = &source[attr.byte_range()];
@@ -2612,8 +2529,8 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                                         has_open_cidr = true;
                                                     }
                                                 }
-                                                if name == "from_port" {
-                                                    if let Some(port) =
+                                                if name == "from_port"
+                                                    && let Some(port) =
                                                         tf_expr_numeric(&attr, source)
                                                     {
                                                         found_port = true;
@@ -2621,14 +2538,9 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                                             port_is_sensitive = false;
                                                         }
                                                     }
-                                                }
                                             }
-                                        }
-                                    }
-                                }
                             }
                         }
-                    }
                 }
 
                 if has_open_cidr && port_is_sensitive && found_port {
@@ -2654,8 +2566,6 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     });
                 }
             }
-        }
-    }
 }
 
 fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Finding> {
@@ -2703,24 +2613,20 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
                         let Some(attr_or_block) = tbody.child(j as u32) else {
                             continue;
                         };
-                        if attr_or_block.kind() == "attribute" {
-                            if let Some(id) = attr_or_block.child(0) {
-                                if id.kind() == "identifier"
+                        if attr_or_block.kind() == "attribute"
+                            && let Some(id) = attr_or_block.child(0)
+                                && id.kind() == "identifier"
                                     && &source[id.byte_range()] == "required_version"
                                 {
                                     has_required_version = true;
                                 }
-                            }
-                        }
 
                         // S2: Check required_providers block
-                        if attr_or_block.kind() == "block" {
-                            if hcl_block_type(attr_or_block, source) == Some("required_providers") {
-                                if let Some(rp_body) = hcl_block_body(attr_or_block) {
+                        if attr_or_block.kind() == "block"
+                            && hcl_block_type(attr_or_block, source) == Some("required_providers")
+                                && let Some(rp_body) = hcl_block_body(attr_or_block) {
                                     check_required_providers(rp_body, source, &mut findings);
                                 }
-                            }
-                        }
                     }
                 }
             }
@@ -2758,11 +2664,10 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
 /// Get the first child identifier text from an HCL block node.
 fn hcl_block_type<'a>(block: tree_sitter::Node, source: &'a str) -> Option<&'a str> {
     for i in 0..block.child_count() {
-        if let Some(c) = block.child(i as u32) {
-            if c.kind() == "identifier" {
+        if let Some(c) = block.child(i as u32)
+            && c.kind() == "identifier" {
                 return Some(&source[c.byte_range()]);
             }
-        }
     }
     None
 }
@@ -2770,11 +2675,10 @@ fn hcl_block_type<'a>(block: tree_sitter::Node, source: &'a str) -> Option<&'a s
 /// Get the body child node from an HCL block.
 fn hcl_block_body(block: tree_sitter::Node) -> Option<tree_sitter::Node> {
     for i in 0..block.child_count() {
-        if let Some(c) = block.child(i as u32) {
-            if c.kind() == "body" {
+        if let Some(c) = block.child(i as u32)
+            && c.kind() == "body" {
                 return Some(c);
             }
-        }
     }
     None
 }
@@ -2885,11 +2789,10 @@ fn extract_identifier_from_expr<'a>(node: tree_sitter::Node, source: &'a str) ->
         return Some(&source[node.byte_range()]);
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if let Some(result) = extract_identifier_from_expr(child, source) {
+        if let Some(child) = node.child(i as u32)
+            && let Some(result) = extract_identifier_from_expr(child, source) {
                 return Some(result);
             }
-        }
     }
     None
 }
@@ -3071,7 +2974,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let root = tree.root_node();
         let func = root.child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 1);
+        assert_eq!(cyclomatic_complexity(&func, source), 1);
     }
 
     #[test]
@@ -3079,7 +2982,7 @@ mod tests {
         let source = "fn check(x: bool) { if x { return; } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3088,7 +2991,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if adds 1 path, else doesn't add (it's the other branch of existing decision)
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3096,7 +2999,7 @@ mod tests {
         let source = "fn nested(a: bool, b: bool) { if a { if b { return; } } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 3);
+        assert_eq!(cyclomatic_complexity(&func, source), 3);
     }
 
     #[test]
@@ -3105,7 +3008,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // 4 match arms = base(1) + 4 arms = 5
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 5);
+        assert_eq!(cyclomatic_complexity(&func, source), 5);
     }
 
     #[test]
@@ -3113,7 +3016,7 @@ mod tests {
         let source = "fn loopy(items: &[i32]) { for x in items { println!(\"{}\", x); } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3121,7 +3024,7 @@ mod tests {
         let source = "fn loopy() { while true { break; } }";
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 2);
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     #[test]
@@ -3130,7 +3033,7 @@ mod tests {
         let tree = parse(source, Language::Rust).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if=1, &&=1, ||=1, base=1 => 4
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Rust), 4);
+        assert_eq!(cyclomatic_complexity(&func, source), 4);
     }
 
     // -- Python --
@@ -3140,7 +3043,7 @@ mod tests {
         let source = "def simple():\n    return 42\n";
         let tree = parse(source, Language::Python).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Python), 1);
+        assert_eq!(cyclomatic_complexity(&func, source), 1);
     }
 
     #[test]
@@ -3149,7 +3052,7 @@ mod tests {
         let tree = parse(source, Language::Python).unwrap();
         let func = tree.root_node().child(0).unwrap();
         // if + elif = 3
-        assert_eq!(cyclomatic_complexity(&func, source, Language::Python), 3);
+        assert_eq!(cyclomatic_complexity(&func, source), 3);
     }
 
     // -- TypeScript --
@@ -3160,7 +3063,7 @@ mod tests {
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
         assert_eq!(
-            cyclomatic_complexity(&func, source, Language::TypeScript),
+            cyclomatic_complexity(&func, source),
             1
         );
     }
@@ -3171,7 +3074,7 @@ mod tests {
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
         assert_eq!(
-            cyclomatic_complexity(&func, source, Language::TypeScript),
+            cyclomatic_complexity(&func, source),
             2
         );
     }

@@ -12,6 +12,7 @@ use std::time::Instant;
 struct Entry {
     finding_title: String,
     #[serde(default)]
+    #[allow(dead_code)]
     finding_category: String,
 }
 
@@ -22,11 +23,10 @@ fn load_entries(path: &std::path::Path) -> anyhow::Result<Vec<Entry>> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(e) = serde_json::from_str::<Entry>(line) {
-            if !e.finding_title.is_empty() {
+        if let Ok(e) = serde_json::from_str::<Entry>(line)
+            && !e.finding_title.is_empty() {
                 out.push(e);
             }
-        }
     }
     Ok(out)
 }

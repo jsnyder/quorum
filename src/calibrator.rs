@@ -2200,7 +2200,7 @@ mod tests {
         let config = CalibratorConfig::default();
         let result1 = calibrate(
             findings.clone(),
-            &vec![human_fp.clone(), auto_fp.clone()],
+            &[human_fp.clone(), auto_fp.clone()],
             &config,
             "",
         );
@@ -2209,7 +2209,7 @@ mod tests {
         // 2 auto only: 0.5 + 0.5 = 1.0 < 1.5 threshold -> NOT suppress
         let result2 = calibrate(
             findings.clone(),
-            &vec![auto_fp.clone(), auto_fp],
+            &[auto_fp.clone(), auto_fp],
             &config,
             "",
         );
@@ -2258,14 +2258,14 @@ mod tests {
         // 2 recent human FPs: 1.0 + 1.0 = 2.0 >= 1.5 -> suppress
         let result1 = calibrate(
             findings.clone(),
-            &vec![recent_fp.clone(), recent_fp],
+            &[recent_fp.clone(), recent_fp],
             &config,
             "",
         );
         assert_eq!(result1.suppressed, 1);
 
         // 2 old FPs: exp(-90/60) ~= 0.22 each, total ~0.44 < 1.5 -> NOT suppress
-        let result2 = calibrate(findings.clone(), &vec![old_fp.clone(), old_fp], &config, "");
+        let result2 = calibrate(findings.clone(), &[old_fp.clone(), old_fp], &config, "");
         assert!(result2.suppressed <= 1);
     }
 
@@ -2292,7 +2292,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![tp], &config, "");
+        let result = calibrate(findings, &[tp], &config, "");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(
             result.findings[0].calibrator_action,
@@ -2347,7 +2347,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_tp], &config, "");
+        let result = calibrate(findings, &[postfix_tp], &config, "");
         assert_eq!(
             result.findings[0].calibrator_action,
             Some(CalibratorAction::Confirmed)
@@ -2576,7 +2576,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_fp], &config, "");
+        let result = calibrate(findings, &[postfix_fp], &config, "");
         assert_eq!(
             result.suppressed, 1,
             "Single PostFix FP should suppress (weight 1.5 >= threshold)"
@@ -3028,7 +3028,7 @@ mod tests {
         eprintln!("action: {:?}", trace.action);
         eprintln!(
             "output severity: {:?} (input High)\n",
-            result.findings.get(0).map(|f| f.severity.clone())
+            result.findings.first().map(|f| f.severity.clone())
         );
 
         // Core assertion: JWT finding must not be suppressed (output or disputed).
@@ -3097,9 +3097,11 @@ mod tests {
             .category("security".into())
             .severity(crate::finding::Severity::High)
             .build();
-        let mut config = CalibratorConfig::default();
         // Lower threshold for this test so the sub-1.0 Jaccard similarity clears the gate.
-        config.embedding_similarity_threshold = 0.3;
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
         let result = calibrate_with_index(vec![finding], &mut index, &config, "");
         let trace = &result.traces[0];
         let prec = trace
@@ -3873,8 +3875,10 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::High)
             .build();
-        let mut config = CalibratorConfig::default();
-        config.suppress_threshold = Some(0.05);
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.05),
+            ..Default::default()
+        };
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
@@ -3903,8 +3907,10 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::Medium)
             .build();
-        let mut config = CalibratorConfig::default();
-        config.boost_threshold = Some(0.90);
+        let config = CalibratorConfig {
+            boost_threshold: Some(0.90),
+            ..Default::default()
+        };
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
@@ -3957,8 +3963,10 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::High)
             .build();
-        let mut config = CalibratorConfig::default();
-        config.force_threshold = Some(0.05);
+        let config = CalibratorConfig {
+            force_threshold: Some(0.05),
+            ..Default::default()
+        };
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
@@ -3986,8 +3994,10 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::Medium)
             .build();
-        let mut config = CalibratorConfig::default();
-        config.suppress_threshold = Some(0.5);
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.5),
+            ..Default::default()
+        };
         // tp=0.5, fp=0.5 -> score = 0.5
         let decision = calibrate_core_decision(
             &mut finding,
@@ -4011,8 +4021,10 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::Medium)
             .build();
-        let mut config2 = CalibratorConfig::default();
-        config2.boost_threshold = Some(0.5);
+        let config2 = CalibratorConfig {
+            boost_threshold: Some(0.5),
+            ..Default::default()
+        };
         let decision2 = calibrate_core_decision(
             &mut finding2,
             &config2,
@@ -4040,9 +4052,11 @@ mod tests {
             .category(Category::Security)
             .severity(Severity::Medium)
             .build();
-        let mut config = CalibratorConfig::default();
-        config.suppress_threshold = Some(0.4);
-        config.boost_threshold = Some(0.6);
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.4),
+            boost_threshold: Some(0.6),
+            ..Default::default()
+        };
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
@@ -4086,8 +4100,10 @@ mod tests {
             run_id: Some("01JTEST_CAL".into()),
             ..Default::default()
         };
-        let mut config = CalibratorConfig::default();
-        config.trace_provenance = Some(prov.clone());
+        let config = CalibratorConfig {
+            trace_provenance: Some(prov.clone()),
+            ..Default::default()
+        };
         // Empty feedback: all traces take the NoMatch path.
         let result = calibrate(findings, &[], &config, "test.rs");
         assert_eq!(result.traces.len(), 2, "one trace per finding");
@@ -4120,8 +4136,10 @@ mod tests {
             commit_sha: Some("deadbeef".into()),
             ..Default::default()
         };
-        let mut config = CalibratorConfig::default();
-        config.trace_provenance = Some(prov.clone());
+        let config = CalibratorConfig {
+            trace_provenance: Some(prov.clone()),
+            ..Default::default()
+        };
         let result = calibrate_with_index(findings, &mut index, &config, "buf.c");
         assert_eq!(result.traces.len(), 1, "one trace per finding");
         assert_eq!(
@@ -4148,8 +4166,10 @@ mod tests {
             run_id: Some("01JTEST_DECISION".into()),
             ..Default::default()
         };
-        let mut config = CalibratorConfig::default();
-        config.trace_provenance = Some(prov.clone());
+        let config = CalibratorConfig {
+            trace_provenance: Some(prov.clone()),
+            ..Default::default()
+        };
         let result = calibrate(findings, &feedback, &config, "src/db.rs");
         assert_eq!(result.traces.len(), 1);
         assert_eq!(

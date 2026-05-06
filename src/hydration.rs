@@ -1,5 +1,9 @@
 use crate::parser::Language;
 
+/// Per-file changed line ranges extracted from a unified diff.
+/// Each entry maps a file path to a list of `(start_line, end_line)` ranges.
+pub type DiffRanges = Vec<(String, Vec<(u32, u32)>)>;
+
 /// Context gathered from AST for lines within a changed region.
 #[derive(Debug, Clone, Default)]
 pub struct HydrationContext {
@@ -178,6 +182,7 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_definitions(
     node: &tree_sitter::Node,
     source: &str,
@@ -192,23 +197,21 @@ fn collect_definitions(
     let line1 = node.start_position().row as u32 + 1;
     let line2 = node.end_position().row as u32 + 1;
 
-    if func_kinds.contains(&kind) {
-        if let Some(name_node) = node.child_by_field_name("name") {
+    if func_kinds.contains(&kind)
+        && let Some(name_node) = node.child_by_field_name("name") {
             let name = source[name_node.byte_range()].to_string();
             // Extract first line as signature
             let text = &source[node.byte_range()];
             let sig = text.lines().next().unwrap_or(text).to_string();
             funcs.push((name, sig, line1, line2));
         }
-    }
 
-    if type_kinds.contains(&kind) {
-        if let Some(name_node) = node.child_by_field_name("name") {
+    if type_kinds.contains(&kind)
+        && let Some(name_node) = node.child_by_field_name("name") {
             let name = source[name_node.byte_range()].to_string();
             let text = source[node.byte_range()].to_string();
             types.push((name, text));
         }
-    }
 
     if import_kinds_list.contains(&kind) {
         let text = source[node.byte_range()].to_string();
@@ -244,8 +247,8 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
 
     if text.starts_with("use ") {
         // Rust: handle grouped `use std::collections::{HashMap, BTreeSet}` first.
-        if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}')) {
-            if open < close {
+        if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}'))
+            && open < close {
                 let inner = &text[open + 1..close];
                 for part in inner.split(',') {
                     let part = part.trim();
@@ -275,7 +278,6 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
                 }
                 return names;
             }
-        }
         // Rust: last segment after ::, handle `as` aliases
         if let Some(last) = text.rsplit("::").next() {
             let name = last.trim().trim_end_matches(';');
@@ -390,7 +392,7 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             let name = if let Some(after_as) = part.split(" as ").nth(1) {
                 after_as.trim()
             } else {
-                part.split('.').last().unwrap_or(part).trim()
+                part.split('.').next_back().unwrap_or(part).trim()
             };
             if !name.is_empty() {
                 names.push(name.to_string());
@@ -400,6 +402,7 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     names
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_calls_in_range(
     node: &tree_sitter::Node,
     source: &str,
@@ -463,6 +466,7 @@ fn collect_calls_in_range(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_type_refs_in_range(
     node: &tree_sitter::Node,
     source: &str,
@@ -600,20 +604,19 @@ fn collect_import_refs_in_range(
 
 /// Parse a unified diff to extract changed line ranges per file.
 /// Returns Vec<(file_path, Vec<(start_line, end_line)>)>
-pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
+pub fn parse_unified_diff(diff: &str) -> DiffRanges {
     let mut results = Vec::new();
     let mut current_file: Option<String> = None;
     let mut current_ranges: Vec<(u32, u32)> = Vec::new();
 
     for line in diff.lines() {
-        if line.starts_with("+++ b/") {
+        if let Some(path) = line.strip_prefix("+++ b/") {
             // Save previous file
-            if let Some(file) = current_file.take() {
-                if !current_ranges.is_empty() {
+            if let Some(file) = current_file.take()
+                && !current_ranges.is_empty() {
                     results.push((file, std::mem::take(&mut current_ranges)));
                 }
-            }
-            current_file = Some(line[6..].to_string());
+            current_file = Some(path.to_string());
         } else if line.starts_with("@@ ") {
             // Parse @@ -old,count +new,count @@ format
             if let Some(plus_part) = line.split('+').nth(1) {
@@ -621,8 +624,8 @@ pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
                     .split(|c: char| !c.is_ascii_digit())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if let Some(start_str) = nums.first() {
-                    if let Ok(s) = start_str.parse::<u32>() {
+                if let Some(start_str) = nums.first()
+                    && let Ok(s) = start_str.parse::<u32>() {
                         // Count is optional in unified diff format (defaults to 1).
                         // "@@ -10 +10 @@" means a single-line change at line 10.
                         let count = nums.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(1);
@@ -633,16 +636,14 @@ pub fn parse_unified_diff(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
                             current_ranges.push((s, s + count - 1));
                         }
                     }
-                }
             }
         }
     }
     // Save last file
-    if let Some(file) = current_file {
-        if !current_ranges.is_empty() {
+    if let Some(file) = current_file
+        && !current_ranges.is_empty() {
             results.push((file, current_ranges));
         }
-    }
 
     results
 }
@@ -656,8 +657,8 @@ fn find_callers_of(
     all_funcs: &[(String, String, u32, u32)],
     callers: &mut Vec<String>,
 ) {
-    if call_kinds.contains(&node.kind()) {
-        if let Some(func_node) = node.child_by_field_name("function") {
+    if call_kinds.contains(&node.kind())
+        && let Some(func_node) = node.child_by_field_name("function") {
             let func_text = &source[func_node.byte_range()];
             let call_name = func_text
                 .rsplit('.')
@@ -672,15 +673,13 @@ fn find_callers_of(
                 // Find which function this call is inside
                 let call_line = node.start_position().row as u32 + 1;
                 for (fname, _, fstart, fend) in all_funcs {
-                    if fname != target_name && call_line >= *fstart && call_line <= *fend {
-                        if !callers.contains(fname) {
+                    if fname != target_name && call_line >= *fstart && call_line <= *fend
+                        && !callers.contains(fname) {
                             callers.push(fname.clone());
                         }
-                    }
                 }
             }
         }
-    }
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {

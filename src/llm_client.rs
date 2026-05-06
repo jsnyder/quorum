@@ -42,8 +42,8 @@ pub fn parse_chat_response(json: &serde_json::Value) -> anyhow::Result<LlmTurnRe
         .and_then(|f| f.as_str())
         .unwrap_or("stop");
 
-    if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array()) {
-        if !tool_calls.is_empty() {
+    if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array())
+        && !tool_calls.is_empty() {
             // Error on any malformed entry rather than silently dropping it
             // via filter_map. A partial tool_calls vec leaves orphaned
             // assistant calls without matching tool responses, which most
@@ -80,7 +80,6 @@ pub fn parse_chat_response(json: &serde_json::Value) -> anyhow::Result<LlmTurnRe
             }
             return Ok(LlmTurnResult::ToolCalls(calls));
         }
-    }
 
     if finish_reason == "length" {
         anyhow::bail!("Response truncated (finish_reason=length)");
@@ -747,7 +746,7 @@ impl OpenAiClient {
     }
 
     fn needs_responses_api(model: &str) -> bool {
-        RESPONSES_API_MODELS.iter().any(|m| *m == model)
+        RESPONSES_API_MODELS.contains(&model)
     }
 
     async fn call_model(
@@ -995,17 +994,15 @@ impl OpenAiClient {
 
         let mut texts = Vec::new();
         for item in output {
-            if item["type"].as_str() == Some("message") {
-                if let Some(content) = item["content"].as_array() {
+            if item["type"].as_str() == Some("message")
+                && let Some(content) = item["content"].as_array() {
                     for block in content {
-                        if block["type"].as_str() == Some("output_text") {
-                            if let Some(text) = block["text"].as_str() {
+                        if block["type"].as_str() == Some("output_text")
+                            && let Some(text) = block["text"].as_str() {
                                 texts.push(text.to_string());
                             }
-                        }
                     }
                 }
-            }
         }
 
         if texts.is_empty() {
@@ -2391,7 +2388,7 @@ mod tests {
     #[test]
     fn jitter_unit_returns_value_in_zero_one() {
         let u = jitter_unit();
-        assert!(u >= 0.0 && u < 1.0, "got {u}");
+        assert!((0.0..1.0).contains(&u), "got {u}");
     }
 
     #[test]

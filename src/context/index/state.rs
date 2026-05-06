@@ -82,14 +82,13 @@ impl IndexState {
 
     /// Write the state atomically (write to temp file, rename).
     pub fn save(&self, path: &Path) -> Result<(), StateError> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|source| StateError::Io {
                     path: parent.to_path_buf(),
                     source,
                 })?;
             }
-        }
         let json = serde_json::to_string_pretty(self)?;
         let tmp = {
             let mut t = path.as_os_str().to_os_string();

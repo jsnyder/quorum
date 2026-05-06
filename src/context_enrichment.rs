@@ -1,6 +1,5 @@
 /// Context7 integration: fetch framework-specific docs for LLM review enrichment.
 /// Detected frameworks are mapped to library queries, docs fetched, and injected into prompts.
-
 /// A document fetched from Context7 for a specific library/framework.
 #[derive(Debug, Clone)]
 pub struct ContextDoc {
@@ -209,11 +208,10 @@ pub fn enrich_for_review(
     let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
-            if let Some(dep) = deps.iter().find(|d| d.name == name) {
-                if !import_matched.iter().any(|d| d.name == dep.name) {
+            if let Some(dep) = deps.iter().find(|d| d.name == name)
+                && !import_matched.iter().any(|d| d.name == dep.name) {
                     import_matched.push(dep);
                 }
-            }
         }
     }
 
@@ -458,13 +456,11 @@ impl<'a> CachedContextFetcher<'a> {
 impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn resolve_library(&self, name: &str) -> Option<String> {
         let now = (self.now)();
-        if let Ok(mut cache) = self.resolve_cache.lock() {
-            if let Some(entry) = cache.get(name) {
-                if now.duration_since(entry.cached_at) < self.resolve_ttl {
+        if let Ok(mut cache) = self.resolve_cache.lock()
+            && let Some(entry) = cache.get(name)
+                && now.duration_since(entry.cached_at) < self.resolve_ttl {
                     return entry.result.clone();
                 }
-            }
-        }
         let result = self.inner.resolve_library(name);
         if let Ok(mut cache) = self.resolve_cache.lock() {
             // LruCache::put auto-evicts the LRU entry at capacity — preserves
@@ -484,11 +480,10 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
         let key = (library_id.to_string(), query.to_string(), max_tokens);
 
-        if let Ok(mut cache) = self.query_cache.lock() {
-            if let Some(cached) = cache.get(&key) {
+        if let Ok(mut cache) = self.query_cache.lock()
+            && let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
-        }
 
         let result = self.inner.query_docs(library_id, query, max_tokens);
 
@@ -632,11 +627,10 @@ impl ContextFetcher for Context7HttpFetcher {
 
         // Context7 API may return plain text/markdown or JSON
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
-            if let Some(content) = json["content"].as_str() {
-                if !content.is_empty() {
+            if let Some(content) = json["content"].as_str()
+                && !content.is_empty() {
                     return Some(content.to_string());
                 }
-            }
             if let Some(snippets) = json["snippets"].as_array() {
                 let combined: String = snippets
                     .iter()

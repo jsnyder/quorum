@@ -239,10 +239,7 @@ fn mismatched_dim_returns_error_or_empty() {
     let q = vec![0.1f32; 128];
     let result = vec_search(&conn, &q, &Filters::default(), 3);
 
-    match result {
-        Ok(hits) => assert!(hits.is_empty()),
-        Err(_) => {}
-    }
+    if let Ok(hits) = result { assert!(hits.is_empty()) }
 }
 
 #[test]

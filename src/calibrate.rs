@@ -193,6 +193,7 @@ pub fn join_feedback_and_traces(
 /// - `disable_fuzzy`: when `true`, skips tiers 2-4 (normalized exact, fuzzy
 ///   same-file, normalized title-only). Only tier 1 (raw exact) and the raw
 ///   title-only fallback are used.
+#[allow(clippy::type_complexity)]
 pub fn join_feedback_and_traces_with_options(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],
@@ -344,27 +345,24 @@ pub fn join_feedback_and_traces_with_options(
         let norm = normalize_title(&title);
 
         // Tier 1: raw exact (title, file_path)
-        if let Some(weights) = raw_map.get(&(title.clone(), fp.clone())) {
-            if push_sample(&mut samples, weights, is_positive) {
+        if let Some(weights) = raw_map.get(&(title.clone(), fp.clone()))
+            && push_sample(&mut samples, weights, is_positive) {
                 stats.exact_raw += 1;
                 continue;
             }
-        }
 
         // Tier 2: normalized exact (norm_title, file_path) -- skipped when fuzzy disabled
-        if !disable_fuzzy && !norm.is_empty() {
-            if let Some(weights) = norm_map.get(&(norm.clone(), fp.clone())) {
-                if push_sample(&mut samples, weights, is_positive) {
+        if !disable_fuzzy && !norm.is_empty()
+            && let Some(weights) = norm_map.get(&(norm.clone(), fp.clone()))
+                && push_sample(&mut samples, weights, is_positive) {
                     stats.exact_normalized += 1;
                     continue;
                 }
-            }
-        }
 
         // Tier 3: fuzzy same-file -- skipped when fuzzy disabled
         let mut fuzzy_below_threshold = false;
-        if !disable_fuzzy && !norm.is_empty() && !fp.is_empty() {
-            if let Some(candidates) = file_traces.get(&fp) {
+        if !disable_fuzzy && !norm.is_empty() && !fp.is_empty()
+            && let Some(candidates) = file_traces.get(&fp) {
                 let mut best_score = 0.0_f64;
                 let mut second_best = 0.0_f64;
                 let mut best_weights: Option<&(f64, f64)> = None;
@@ -383,12 +381,11 @@ pub fn join_feedback_and_traces_with_options(
                 if best_score >= FUZZY_THRESHOLD {
                     let margin = best_score - second_best;
                     if margin >= FUZZY_AMBIGUITY_MARGIN {
-                        if let Some(weights) = best_weights {
-                            if push_sample(&mut samples, weights, is_positive) {
+                        if let Some(weights) = best_weights
+                            && push_sample(&mut samples, weights, is_positive) {
                                 stats.fuzzy_same_file += 1;
                                 continue;
                             }
-                        }
                     } else {
                         stats.ambiguous_skipped += 1;
                         continue;
@@ -397,23 +394,19 @@ pub fn join_feedback_and_traces_with_options(
                     fuzzy_below_threshold = true;
                 }
             }
-        }
 
         // Title-only fallback (raw first, then normalized -- normalized skipped when fuzzy disabled)
-        if let Some(weights) = raw_title_only.get(&title) {
-            if push_sample(&mut samples, weights, is_positive) {
+        if let Some(weights) = raw_title_only.get(&title)
+            && push_sample(&mut samples, weights, is_positive) {
                 stats.raw_title_only += 1;
                 continue;
             }
-        }
-        if !disable_fuzzy && !norm.is_empty() {
-            if let Some(weights) = norm_title_only.get(&norm) {
-                if push_sample(&mut samples, weights, is_positive) {
+        if !disable_fuzzy && !norm.is_empty()
+            && let Some(weights) = norm_title_only.get(&norm)
+                && push_sample(&mut samples, weights, is_positive) {
                     stats.normalized_title_only += 1;
                     continue;
                 }
-            }
-        }
 
         if fuzzy_below_threshold {
             stats.below_threshold += 1;
@@ -581,29 +574,26 @@ pub fn backfill_file_paths(
         }
 
         // Tier 1: exact title match
-        if let Some(files) = exact_map.get(&title) {
-            if files.len() == 1 {
+        if let Some(files) = exact_map.get(&title)
+            && files.len() == 1 {
                 let fp = files.iter().next().unwrap().clone();
                 trace["file_path"] = serde_json::Value::String(fp);
                 stats.feedback_exact += 1;
                 stats.total_backfilled += 1;
                 continue;
             }
-        }
 
         // Tier 2: normalized title match
         let norm = normalize_title(&title);
-        if !norm.is_empty() {
-            if let Some(files) = norm_map.get(&norm) {
-                if files.len() == 1 {
+        if !norm.is_empty()
+            && let Some(files) = norm_map.get(&norm)
+                && files.len() == 1 {
                     let fp = files.iter().next().unwrap().clone();
                     trace["file_path"] = serde_json::Value::String(fp);
                     stats.feedback_normalized += 1;
                     stats.total_backfilled += 1;
                     continue;
                 }
-            }
-        }
 
         // Tier 3: precedent inference
         if let Some(precs) = trace.get("matched_precedents").and_then(|v| v.as_array()) {

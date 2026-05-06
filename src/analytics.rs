@@ -109,7 +109,7 @@ pub fn format_stats_report(stats: &HashMap<String, SourceStats>) -> String {
     lines.push("-".repeat(65));
 
     let mut sources: Vec<_> = stats.iter().collect();
-    sources.sort_by(|a, b| b.1.total().cmp(&a.1.total()));
+    sources.sort_by_key(|item| std::cmp::Reverse(item.1.total()));
 
     for (source, s) in &sources {
         lines.push(format!(
@@ -370,11 +370,9 @@ pub fn format_channel_attribution(summary: &TierSummary) -> String {
         let s = &summary.unknown;
         writeln!(
             out,
-            "  {label:<10}  {total:>6}  {dim}(legacy rows, no provenance field){reset}",
+            "  {label:<10}  {total:>6}  (legacy rows, no provenance field)",
             label = "Unknown",
             total = s.total(),
-            dim = "",
-            reset = "",
         )
         .unwrap();
     }
@@ -438,14 +436,13 @@ pub fn compute_external_overlap(
                 ..Default::default()
             });
         row.findings += 1;
-        if let Some(fid) = &e.finding_id {
-            if let Some(qv) = quorum_verdicts.get(fid) {
+        if let Some(fid) = &e.finding_id
+            && let Some(qv) = quorum_verdicts.get(fid) {
                 row.overlap += 1;
                 if verdict_eq(qv, &e.verdict) {
                     row.agree += 1;
                 }
             }
-        }
     }
     let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
     agents.sort_by(|a, b| {
@@ -614,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn tier_stats_format_shows_external_and_top_agents_stable() {
         use crate::feedback::Provenance;
         let fb = vec![
@@ -661,6 +659,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn format_tier_report_handles_zero_external_entries() {
         use crate::feedback::Provenance;
         let fb = vec![entry_with(Provenance::Human, Verdict::Tp)];
@@ -715,16 +714,20 @@ mod tests {
 
     #[test]
     fn stats_precision_calculation() {
-        let mut s = SourceStats::default();
-        s.tp = 8;
-        s.fp = 2;
+        let s = SourceStats {
+            tp: 8,
+            fp: 2,
+            ..Default::default()
+        };
         assert!((s.precision() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
     fn stats_precision_all_fp() {
-        let mut s = SourceStats::default();
-        s.fp = 5;
+        let s = SourceStats {
+            fp: 5,
+            ..Default::default()
+        };
         assert!((s.precision() - 0.0).abs() < f64::EPSILON);
     }
 
@@ -736,10 +739,12 @@ mod tests {
 
     #[test]
     fn stats_partial_counts_as_relevant() {
-        let mut s = SourceStats::default();
-        s.tp = 3;
-        s.partial = 2;
-        s.fp = 5;
+        let s = SourceStats {
+            tp: 3,
+            partial: 2,
+            fp: 5,
+            ..Default::default()
+        };
         // precision = (3+2) / (3+2+5) = 0.5
         assert!((s.precision() - 0.5).abs() < f64::EPSILON);
     }

@@ -266,12 +266,11 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
     }
 
     fn open_with_vec(db_path: &Path) -> rusqlite::Result<Connection> {
-        if let Some(parent) = db_path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = db_path.parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             }
-        }
         ensure_vec_loaded();
         let conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;

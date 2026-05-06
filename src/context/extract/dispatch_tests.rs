@@ -101,16 +101,16 @@ fn extracts_mini_terraform_source() {
         .collect();
 
     assert!(
-        qn.iter().any(|n| *n == "aws_vpc.this"),
+        qn.contains(&"aws_vpc.this"),
         "expected resource aws_vpc.this, got {qn:?}"
     );
     assert!(
-        qn.iter().any(|n| *n == "vpc_id"),
+        qn.contains(&"vpc_id"),
         "expected output vpc_id, got {qn:?}"
     );
-    assert!(qn.iter().any(|n| *n == "name"), "expected variable name");
+    assert!(qn.contains(&"name"), "expected variable name");
     assert!(
-        qn.iter().any(|n| *n == "cidr_block"),
+        qn.contains(&"cidr_block"),
         "expected variable cidr_block"
     );
     assert!(

@@ -63,11 +63,10 @@ use pipeline::{LlmReviewer, PipelineConfig};
 /// override so integration tests can be hermetic. Falls back to
 /// `$HOME/.quorum`. Returns None if neither can be resolved.
 fn quorum_dir() -> Option<std::path::PathBuf> {
-    if let Ok(override_path) = std::env::var("QUORUM_HOME") {
-        if !override_path.is_empty() {
+    if let Ok(override_path) = std::env::var("QUORUM_HOME")
+        && !override_path.is_empty() {
             return Some(std::path::PathBuf::from(override_path));
         }
-    }
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".quorum"))
@@ -601,11 +600,10 @@ fn unicode_ok() -> bool {
     if std::env::var_os("NO_UNICODE").is_some() {
         return false;
     }
-    if let Some(term) = std::env::var_os("TERM") {
-        if term == "dumb" {
+    if let Some(term) = std::env::var_os("TERM")
+        && term == "dumb" {
             return false;
         }
-    }
     if let Ok(lang) = std::env::var("LANG") {
         return lang.to_uppercase().contains("UTF-8") || lang.to_uppercase().contains("UTF8");
     }
@@ -915,8 +913,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     };
 
     // Build calibrator config, loading data-driven thresholds if available.
-    let mut calibrator_config = calibrator::CalibratorConfig::default();
-    calibrator_config.trace_provenance = Some(trace_provenance);
+    let mut calibrator_config = calibrator::CalibratorConfig {
+        trace_provenance: Some(trace_provenance),
+        ..Default::default()
+    };
     let thresholds_path = qhome.join("calibrator_thresholds.toml");
     if let Some(tc) =
         quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
@@ -1078,8 +1078,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             progress.start_file(&file_display);
 
             // Deep review: agent loop with tool calling
-            if opts.deep {
-                if let Some(client) = llm_client.as_deref() {
+            if opts.deep
+                && let Some(client) = llm_client.as_deref() {
                     let project_root = deep_tool_root(file_path);
                     let tool_reg = tools::ToolRegistry::new(&project_root);
                     let agent_cfg = agent::AgentConfig::default();
@@ -1139,7 +1139,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         }
                     }
                 }
-            }
 
             // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
             let review_result = if let Some(l) = lang {
@@ -1237,8 +1236,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let file_display = file_path.to_string_lossy().to_string();
 
                 // Deep review path
-                if deep {
-                    if let Some(ref client) = llm_client {
+                if deep
+                    && let Some(ref client) = llm_client {
                         let project_root = deep_tool_root(&file_path);
                         let tool_reg = tools::ToolRegistry::new(&project_root);
                         let agent_cfg = agent::AgentConfig::default();
@@ -1280,7 +1279,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             }
                         }
                     }
-                }
 
                 // Standard review path
                 let llm_reviewer: Option<&dyn pipeline::LlmReviewer> =
@@ -1358,34 +1356,32 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
 
         // Output in file order (sequential -- no interleaving)
-        for result_opt in indexed_results.into_iter() {
-            if let Some((result, suppressed_findings)) = result_opt {
-                if !suppressed_findings.is_empty() {
-                    eprintln!(
-                        "Suppressed {} finding(s) in {}",
-                        suppressed_findings.len(),
-                        result.file_path
-                    );
-                }
-                if opts.show_suppressed {
-                    for (f, rule) in &suppressed_findings {
-                        eprint!("{}", suppress::format_suppressed_finding(f, rule));
-                    }
-                }
-                if use_compact {
-                    println!(
-                        "{}",
-                        output::format_compact_review(&result.file_path, &result.findings)
-                    );
-                } else if !use_json {
-                    print!(
-                        "{}",
-                        output::format_review(&result.file_path, &result.findings, &style)
-                    );
-                }
-                all_findings.extend(result.findings.clone());
-                file_results.push(result);
+        for (result, suppressed_findings) in indexed_results.into_iter().flatten() {
+            if !suppressed_findings.is_empty() {
+                eprintln!(
+                    "Suppressed {} finding(s) in {}",
+                    suppressed_findings.len(),
+                    result.file_path
+                );
             }
+            if opts.show_suppressed {
+                for (f, rule) in &suppressed_findings {
+                    eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                }
+            }
+            if use_compact {
+                println!(
+                    "{}",
+                    output::format_compact_review(&result.file_path, &result.findings)
+                );
+            } else if !use_json {
+                print!(
+                    "{}",
+                    output::format_review(&result.file_path, &result.findings, &style)
+                );
+            }
+            all_findings.extend(result.findings.clone());
+            file_results.push(result);
         }
 
         if opts.parallel > 1 && file_results.len() > 1 {
@@ -1946,7 +1942,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
         // a kind was specified that requires associated data (e.g.
         // compensating-control needs --fp-reference). Returns None silently
         // when verdict != fp; warn the user so the dropped flag is visible.
-        let fp_kind = match opts.into_fp_kind() {
+        let fp_kind = match opts.to_fp_kind() {
             Ok(k) => {
                 if opts.fp_kind.is_some() && k.is_none() {
                     tracing::warn!(
@@ -2223,9 +2219,11 @@ mod threshold_loading_tests {
         assert!(tc.is_some(), "TOML should load successfully");
         let tc = tc.unwrap();
 
-        let mut calibrator_config = calibrator::CalibratorConfig::default();
-        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
-        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+        let calibrator_config = calibrator::CalibratorConfig {
+            suppress_threshold: tc.suppress.map(|p| p.threshold),
+            boost_threshold: tc.boost.map(|p| p.threshold),
+            ..Default::default()
+        };
 
         assert!(
             (calibrator_config.suppress_threshold.unwrap() - 0.30).abs() < 1e-9,

@@ -97,7 +97,7 @@ pub fn extract_python(
             let sig_start_line = (node.start_pos().line() as u32) + 1;
             let end_line = (node.end_pos().line() as u32) + 1;
 
-            let docstring = extract_docstring(src, &node);
+            let docstring = extract_docstring(src, node);
 
             let content = match &docstring {
                 Some(d) if !d.is_empty() => d.clone(),
@@ -426,13 +426,11 @@ fn item_signature(item_text: &str) -> String {
             i += 2;
             continue;
         }
-        if b == b' ' {
-            if let Some(&next) = bytes.get(i + 1) {
-                if matches!(next, b')' | b']' | b'}' | b',') {
+        if b == b' '
+            && let Some(&next) = bytes.get(i + 1)
+                && matches!(next, b')' | b']' | b'}' | b',') {
                     tidied.pop();
                 }
-            }
-        }
         i += 1;
     }
     tidied

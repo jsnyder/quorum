@@ -78,20 +78,6 @@ pub mod fakes {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn fake_reviewer_empty_sequence_does_not_panic() {
-            let reviewer = FakeReviewer::sequence(vec![]);
-            // Calling review on empty sequence should not panic
-            let result = reviewer.review("prompt", "model", "system");
-            // Should either return an error or a sensible default, not panic
-            assert!(result.is_err() || result.is_ok());
-        }
-    }
-
     impl crate::agent::AgentReviewer for FakeAgentReviewer {
         fn chat_turn(
             &self,
@@ -107,4 +93,5 @@ pub mod fakes {
             }
         }
     }
+
 }

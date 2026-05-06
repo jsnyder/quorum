@@ -104,7 +104,7 @@ fn strip_python_dep_spec(raw: &str) -> Option<String> {
     // whitespace): `name @ url`, `name[extra] @ url`, and the no-space
     // `name@url` / `name[extra]@url` forms all yield the bare name.
     let name_end = no_extras
-        .find(|c: char| matches!(c, '<' | '>' | '=' | '!' | '~' | ' ' | ';' | '@'))
+        .find(['<', '>', '=', '!', '~', ' ', ';', '@'])
         .unwrap_or(no_extras.len());
     let name = no_extras[..name_end].trim();
     if name.is_empty() {

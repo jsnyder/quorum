@@ -1,6 +1,5 @@
 /// Canonical pattern vocabulary for normalizing findings.
 /// Maps diverse finding titles/descriptions to standard pattern names.
-
 /// Known patterns with keywords that identify them.
 const PATTERN_RULES: &[(&str, &[&str])] = &[
     (

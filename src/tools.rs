@@ -230,8 +230,8 @@ impl ToolRegistry {
             if path.is_dir() {
                 self.grep_recursive(&path, pattern, glob, acc)?;
             } else if path.is_file() {
-                if let Some(g) = glob {
-                    if g != "*" {
+                if let Some(g) = glob
+                    && g != "*" {
                         let ext_match = g.trim_start_matches("*.");
                         if let Some(ext) = path.extension() {
                             if ext.to_string_lossy() != ext_match {
@@ -241,7 +241,6 @@ impl ToolRegistry {
                             continue;
                         }
                     }
-                }
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                     for (i, line) in content.lines().enumerate() {
@@ -323,8 +322,8 @@ impl ToolRegistry {
                 self.list_recursive(&path, glob, acc)?;
             } else {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
-                if let Some(g) = glob {
-                    if g != "*" {
+                if let Some(g) = glob
+                    && g != "*" {
                         let ext = g.trim_start_matches("*.");
                         if let Some(file_ext) = path.extension() {
                             if file_ext.to_string_lossy() != ext {
@@ -334,7 +333,6 @@ impl ToolRegistry {
                             continue;
                         }
                     }
-                }
                 acc.push(rel.display().to_string());
             }
         }

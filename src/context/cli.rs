@@ -41,7 +41,7 @@ use crate::context::index::traits::{Clock, Embedder, SystemClock};
 /// fallback at runtime.
 pub enum ProdEmbedder {
     #[cfg(feature = "embeddings")]
-    Fast(FastEmbedEmbedder),
+    Fast(Box<FastEmbedEmbedder>),
     Hash(HashEmbedder),
 }
 
@@ -193,7 +193,7 @@ pub(crate) fn new_prod_embedder() -> ProdEmbedder {
     #[cfg(feature = "embeddings")]
     {
         match FastEmbedEmbedder::new() {
-            Ok(e) => ProdEmbedder::Fast(e),
+            Ok(e) => ProdEmbedder::Fast(Box::new(e)),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -231,7 +231,7 @@ pub(crate) fn new_prod_embedder_strict() -> anyhow::Result<ProdEmbedder> {
                  HashEmbedder fallback — retry once the model is available"
             )
         })?;
-        Ok(ProdEmbedder::Fast(e))
+        Ok(ProdEmbedder::Fast(Box::new(e)))
     }
     #[cfg(not(feature = "embeddings"))]
     {
@@ -1736,7 +1736,7 @@ fn check_state_json<D: ContextDeps>(deps: &D, name: &str) -> CheckResult {
             name: "per_source_state_json_valid",
             scope: Some(name.to_string()),
             status: CheckStatus::Fail { fixable: true },
-            detail: format!("empty state.json"),
+            detail: "empty state.json".to_string(),
         },
         Err(e) => CheckResult {
             name: "per_source_state_json_valid",

@@ -391,11 +391,10 @@ pub fn unicode_ok_default() -> bool {
     if std::env::var_os("NO_UNICODE").is_some() {
         return false;
     }
-    if let Some(term) = std::env::var_os("TERM") {
-        if term == "dumb" {
+    if let Some(term) = std::env::var_os("TERM")
+        && term == "dumb" {
             return false;
         }
-    }
     if let Ok(lang) = std::env::var("LANG") {
         return lang.to_uppercase().contains("UTF-8") || lang.to_uppercase().contains("UTF8");
     }
