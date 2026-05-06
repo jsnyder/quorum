@@ -937,7 +937,7 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    
     use tempfile::TempDir;
 
     fn make_review_log(

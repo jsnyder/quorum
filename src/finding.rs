@@ -137,6 +137,12 @@ pub struct FindingBuilder {
     inner: Finding,
 }
 
+impl Default for FindingBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FindingBuilder {
     pub fn new() -> Self {
         Self {

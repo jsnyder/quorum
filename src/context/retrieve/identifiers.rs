@@ -79,7 +79,7 @@ fn is_path_noise(s: &str) -> bool {
 /// Keeps tokens with len >= 3 that aren't path noise.
 fn split_token(token: &str, out: &mut Vec<String>) {
     // First split on _ and -
-    for piece in token.split(|c: char| c == '_' || c == '-') {
+    for piece in token.split(['_', '-']) {
         if piece.is_empty() {
             continue;
         }
@@ -89,12 +89,11 @@ fn split_token(token: &str, out: &mut Vec<String>) {
         for (i, ch) in chars.iter().enumerate() {
             if i > 0 && ch.is_ascii_uppercase() {
                 let prev = chars[i - 1];
-                if prev.is_ascii_lowercase() || prev.is_ascii_digit() {
-                    if !current.is_empty() {
+                if (prev.is_ascii_lowercase() || prev.is_ascii_digit())
+                    && !current.is_empty() {
                         push_if_valid(&current, out);
                         current.clear();
                     }
-                }
             }
             current.push(*ch);
         }
@@ -114,7 +113,7 @@ fn push_if_valid(tok: &str, out: &mut Vec<String>) {
 /// the filename's extension, splitting on `_`/`-`/camelCase, filtering noise.
 fn path_segments(path: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let parts: Vec<&str> = path.split(|c: char| c == '/' || c == '\\').collect();
+    let parts: Vec<&str> = path.split(['/', '\\']).collect();
     let last_idx = parts.len().saturating_sub(1);
     for (i, part) in parts.iter().enumerate() {
         if part.is_empty() {

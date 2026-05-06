@@ -313,13 +313,12 @@ impl ReviewLog {
     /// Append one record as a JSON line. Creates the file (and parent dir) if missing.
     pub fn record(&self, entry: &ReviewRecord) -> anyhow::Result<()> {
         use std::io::Write;
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).with_context(|| {
                     format!("Failed to create review log dir: {}", parent.display())
                 })?;
             }
-        }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -363,11 +362,10 @@ impl Iterator for ReviewLogIter {
 /// compact-mode sniffing in telemetry.rs. Priority order matters: more specific
 /// signals beat generic `AGENT`.
 pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
-    if let Some(name) = caller_override {
-        if !name.is_empty() {
+    if let Some(name) = caller_override
+        && !name.is_empty() {
             return name.to_string();
         }
-    }
     if std::env::var_os("CLAUDE_CODE").is_some() {
         return "claude_code".to_string();
     }
@@ -377,13 +375,11 @@ pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
     if std::env::var_os("GEMINI_CLI").is_some() {
         return "gemini_cli".to_string();
     }
-    if let Some(v) = std::env::var_os("AGENT") {
-        if let Some(s) = v.to_str() {
-            if !s.is_empty() {
+    if let Some(v) = std::env::var_os("AGENT")
+        && let Some(s) = v.to_str()
+            && !s.is_empty() {
                 return s.to_string();
             }
-        }
-    }
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() {
         "tty".to_string()
@@ -684,7 +680,7 @@ mod tests {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "{}", serde_json::to_string(&sample_record()).unwrap()).unwrap();
             writeln!(f, "{{ this is not json").unwrap();
-            writeln!(f, "").unwrap();
+            writeln!(f).unwrap();
             writeln!(f, "{}", serde_json::to_string(&sample_record()).unwrap()).unwrap();
         }
         let log = ReviewLog::new(path);

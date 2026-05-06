@@ -489,7 +489,7 @@ impl ServerHandler for QuorumHandler {
             _ => return Err(CallToolError::unknown_tool(params.name)),
         };
 
-        result.map_err(|e| CallToolError::from_message(e))
+        result.map_err(CallToolError::from_message)
     }
 }
 

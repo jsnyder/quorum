@@ -36,8 +36,8 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
     }
 
     // Framework detection from package.json — exact key matching
-    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json")) {
-        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+    if let Ok(content) = std::fs::read_to_string(project_dir.join("package.json"))
+        && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
             let deps = collect_dep_keys(&pkg);
             if deps.contains("next") {
                 frameworks.insert("nextjs".into());
@@ -55,7 +55,6 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
                 frameworks.insert("fastify".into());
             }
         }
-    }
 
     // Framework detection from pyproject.toml
     if let Ok(content) = std::fs::read_to_string(project_dir.join("pyproject.toml")) {
@@ -72,13 +71,11 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
     }
 
     // Django detection from manage.py
-    if project_dir.join("manage.py").exists() {
-        if let Ok(content) = std::fs::read_to_string(project_dir.join("manage.py")) {
-            if content.contains("django") {
+    if project_dir.join("manage.py").exists()
+        && let Ok(content) = std::fs::read_to_string(project_dir.join("manage.py"))
+            && content.contains("django") {
                 frameworks.insert("django".into());
             }
-        }
-    }
 
     // Terraform detection
     if project_dir.join(".terraform.lock.hcl").exists()
@@ -114,12 +111,11 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
             project_dir.join("configuration.yaml"),
             project_dir.join("configuration/configuration.yaml"),
         ] {
-            if let Ok(content) = std::fs::read_to_string(config_path) {
-                if has_yaml_top_level_key(&content, "homeassistant") {
+            if let Ok(content) = std::fs::read_to_string(config_path)
+                && has_yaml_top_level_key(&content, "homeassistant") {
                     frameworks.insert("home-assistant".into());
                     break;
                 }
-            }
         }
     }
 
@@ -152,33 +148,28 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
         if let Ok(entries) = std::fs::read_dir(project_dir.join("esphome")) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if content.starts_with("esphome:") || content.contains("\nesphome:") {
+                if path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                        && (content.starts_with("esphome:") || content.contains("\nesphome:")) {
                             frameworks.insert("esphome".into());
                             break;
                         }
-                    }
-                }
             }
         }
     }
     // Also check root-level YAML files (flat layout)
-    if !frameworks.contains("esphome") {
-        if let Ok(entries) = std::fs::read_dir(project_dir) {
+    if !frameworks.contains("esphome")
+        && let Ok(entries) = std::fs::read_dir(project_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if content.starts_with("esphome:") || content.contains("\nesphome:") {
+                if path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                        && (content.starts_with("esphome:") || content.contains("\nesphome:")) {
                             frameworks.insert("esphome".into());
                             break;
                         }
-                    }
-                }
             }
         }
-    }
 
     let mut langs: Vec<String> = languages.into_iter().collect();
     let mut fws: Vec<String> = frameworks.into_iter().collect();

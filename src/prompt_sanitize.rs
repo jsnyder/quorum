@@ -61,7 +61,7 @@ pub fn defang_sandbox_tags(s: &str) -> String {
                 }
                 if k < bytes.len() && bytes[k] == b'>' {
                     let lower_name = name.to_ascii_lowercase();
-                    if SANDBOX_TAGS.iter().any(|t| *t == lower_name.as_str()) {
+                    if SANDBOX_TAGS.contains(&lower_name.as_str()) {
                         out.push_str("</\u{200B}");
                         out.push_str(name);
                         out.push('>');

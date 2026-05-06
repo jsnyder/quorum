@@ -77,8 +77,7 @@ impl From<String> for Category {
         match s
             .to_lowercase()
             .trim()
-            .replace(' ', "-")
-            .replace('_', "-")
+            .replace([' ', '_'], "-")
             .as_str()
         {
             "security" | "safety" => Category::Security,

@@ -1018,8 +1018,8 @@ pub async fn review_file_llm_only(
     // No local AST analysis — unsupported language
 
     // LLM review (if configured)
-    if let Some(reviewer) = llm {
-        if !pipeline_config.models.is_empty() {
+    if let Some(reviewer) = llm
+        && !pipeline_config.models.is_empty() {
             let redacted_code = redact::redact_secrets(source);
             let (review_code, truncation_notice) =
                 truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
@@ -1134,7 +1134,6 @@ pub async fn review_file_llm_only(
                 }
             }
         }
-    }
 
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 

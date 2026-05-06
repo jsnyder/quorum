@@ -2200,7 +2200,7 @@ mod tests {
         let config = CalibratorConfig::default();
         let result1 = calibrate(
             findings.clone(),
-            &vec![human_fp.clone(), auto_fp.clone()],
+            &[human_fp.clone(), auto_fp.clone()],
             &config,
             "",
         );
@@ -2209,7 +2209,7 @@ mod tests {
         // 2 auto only: 0.5 + 0.5 = 1.0 < 1.5 threshold -> NOT suppress
         let result2 = calibrate(
             findings.clone(),
-            &vec![auto_fp.clone(), auto_fp],
+            &[auto_fp.clone(), auto_fp],
             &config,
             "",
         );
@@ -2258,14 +2258,14 @@ mod tests {
         // 2 recent human FPs: 1.0 + 1.0 = 2.0 >= 1.5 -> suppress
         let result1 = calibrate(
             findings.clone(),
-            &vec![recent_fp.clone(), recent_fp],
+            &[recent_fp.clone(), recent_fp],
             &config,
             "",
         );
         assert_eq!(result1.suppressed, 1);
 
         // 2 old FPs: exp(-90/60) ~= 0.22 each, total ~0.44 < 1.5 -> NOT suppress
-        let result2 = calibrate(findings.clone(), &vec![old_fp.clone(), old_fp], &config, "");
+        let result2 = calibrate(findings.clone(), &[old_fp.clone(), old_fp], &config, "");
         assert!(result2.suppressed <= 1);
     }
 
@@ -2292,7 +2292,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![tp], &config, "");
+        let result = calibrate(findings, &[tp], &config, "");
         assert_eq!(result.findings.len(), 1);
         assert_eq!(
             result.findings[0].calibrator_action,
@@ -2347,7 +2347,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_tp], &config, "");
+        let result = calibrate(findings, &[postfix_tp], &config, "");
         assert_eq!(
             result.findings[0].calibrator_action,
             Some(CalibratorAction::Confirmed)
@@ -2576,7 +2576,7 @@ mod tests {
         };
 
         let config = CalibratorConfig::default();
-        let result = calibrate(findings, &vec![postfix_fp], &config, "");
+        let result = calibrate(findings, &[postfix_fp], &config, "");
         assert_eq!(
             result.suppressed, 1,
             "Single PostFix FP should suppress (weight 1.5 >= threshold)"
@@ -3028,7 +3028,7 @@ mod tests {
         eprintln!("action: {:?}", trace.action);
         eprintln!(
             "output severity: {:?} (input High)\n",
-            result.findings.get(0).map(|f| f.severity.clone())
+            result.findings.first().map(|f| f.severity.clone())
         );
 
         // Core assertion: JWT finding must not be suppressed (output or disputed).

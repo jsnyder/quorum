@@ -26,6 +26,7 @@ pub enum Verdict {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Provenance {
     Human,
     PostFix,               // verdict recorded after applying a fix (strongest signal)
@@ -46,14 +47,10 @@ pub enum Provenance {
         #[serde(default)]
         confidence: Option<f32>,
     },
+    #[default]
     Unknown,
 }
 
-impl Default for Provenance {
-    fn default() -> Self {
-        Provenance::Unknown
-    }
-}
 
 /// Discriminates `Verdict::Fp` entries by reason. Calibrator applies
 /// different decay/scope rules per kind. `Option<FpKind> = None` ↔
@@ -1369,7 +1366,7 @@ mod tests {
         // `confidence: None` may serialize as `null` OR be absent (if serde is
         // later configured with skip_serializing_if). Both are valid wire forms.
         assert!(
-            inner.get("confidence").map_or(true, |c| c.is_null()),
+            inner.get("confidence").is_none_or(|c| c.is_null()),
             "confidence must be null or absent, got {:?}",
             inner.get("confidence")
         );
@@ -2184,8 +2181,7 @@ mod tests {
                         // Padding inside `reason` keeps the JSON valid;
                         // distinct chars per thread make truncation
                         // detectable in failure messages.
-                        let pad: String = std::iter::repeat(if tid == 0 { 'A' } else { 'B' })
-                            .take(PAD_BYTES)
+                        let pad: String = std::iter::repeat_n(if tid == 0 { 'A' } else { 'B' }, PAD_BYTES)
                             .collect();
                         e.reason = format!("t{tid}-i{i}-{pad}");
                         store.record(&e).unwrap();

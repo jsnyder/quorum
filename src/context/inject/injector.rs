@@ -371,7 +371,7 @@ fn score_distribution(hits: &[ScoredChunk]) -> Option<ScoreDist> {
     };
     let p10 = scores[pct_idx(0.10)];
     // Proper median: average the two middle values for even n.
-    let median = if n % 2 == 0 {
+    let median = if n.is_multiple_of(2) {
         (scores[n / 2 - 1] + scores[n / 2]) / 2.0
     } else {
         scores[n / 2]

@@ -9,7 +9,7 @@ use super::config::{ContextConfig, SourceEntry, SourceKind, SourceLocation};
 use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
-use super::inject::plan::{InjectionPlan, plan_injection};
+use super::inject::plan::plan_injection;
 use super::inject::render::render_context_block;
 use super::inject::stale::NoStaleness;
 use super::retrieve::{

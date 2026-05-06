@@ -1,4 +1,3 @@
-use std::io::Write;
 
 /// Integration test for `quorum calibrate --backfill-paths --dry-run`.
 #[test]

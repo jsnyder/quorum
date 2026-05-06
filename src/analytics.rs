@@ -370,11 +370,9 @@ pub fn format_channel_attribution(summary: &TierSummary) -> String {
         let s = &summary.unknown;
         writeln!(
             out,
-            "  {label:<10}  {total:>6}  {dim}(legacy rows, no provenance field){reset}",
+            "  {label:<10}  {total:>6}  (legacy rows, no provenance field)",
             label = "Unknown",
             total = s.total(),
-            dim = "",
-            reset = "",
         )
         .unwrap();
     }
@@ -438,14 +436,13 @@ pub fn compute_external_overlap(
                 ..Default::default()
             });
         row.findings += 1;
-        if let Some(fid) = &e.finding_id {
-            if let Some(qv) = quorum_verdicts.get(fid) {
+        if let Some(fid) = &e.finding_id
+            && let Some(qv) = quorum_verdicts.get(fid) {
                 row.overlap += 1;
                 if verdict_eq(qv, &e.verdict) {
                     row.agree += 1;
                 }
             }
-        }
     }
     let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
     agents.sort_by(|a, b| {

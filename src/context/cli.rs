@@ -1736,7 +1736,7 @@ fn check_state_json<D: ContextDeps>(deps: &D, name: &str) -> CheckResult {
             name: "per_source_state_json_valid",
             scope: Some(name.to_string()),
             status: CheckStatus::Fail { fixable: true },
-            detail: format!("empty state.json"),
+            detail: "empty state.json".to_string(),
         },
         Err(e) => CheckResult {
             name: "per_source_state_json_valid",

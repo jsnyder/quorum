@@ -30,7 +30,7 @@ impl LocalEmbedder {
     }
 
     pub fn embed_batch(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        Ok(self.model.embed(texts.to_vec(), None)?)
+        self.model.embed(texts, None)
     }
 }
 
