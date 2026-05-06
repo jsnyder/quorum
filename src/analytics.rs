@@ -276,6 +276,63 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
     windows
 }
 
+/// Per-finding precision trend with disposition precedence.
+///
+/// Same window-bucketing as `precision_trend`, but feedback entries that
+/// share a `finding_id` collapse to a single row using the precedence
+/// `Human > PostFix > drop`. External and AutoCalibrate are excluded
+/// from the pool entirely (they're a different channel — see Tier
+/// breakdown). Legacy entries (`finding_id == None`) cannot be
+/// deduplicated against and are skipped.
+///
+/// This is the headline trend once linkage rate ≥85%; below that, the
+/// dashboard falls back to entry-level `precision_trend` with a banner.
+pub fn precision_trend_per_finding(
+    entries: &[FeedbackEntry],
+    window_days: i64,
+) -> Vec<PrecisionWindow> {
+    use crate::feedback::Provenance;
+
+    if entries.is_empty() || window_days <= 0 {
+        return vec![];
+    }
+
+    // Filter to Human/PostFix entries with a finding_id, then dedup by
+    // finding_id with Human winning over PostFix. Earliest timestamp wins
+    // among same-tier entries so the resulting row sits in a stable window.
+    let mut keep: HashMap<String, FeedbackEntry> = HashMap::new();
+    for e in entries {
+        let Some(fid) = &e.finding_id else { continue };
+        let tier_rank = match &e.provenance {
+            Provenance::Human => 0,
+            Provenance::PostFix => 1,
+            Provenance::External { .. } | Provenance::AutoCalibrate(_) | Provenance::Unknown => {
+                continue;
+            }
+        };
+        match keep.get(fid) {
+            None => {
+                keep.insert(fid.clone(), e.clone());
+            }
+            Some(prev) => {
+                let prev_rank = match &prev.provenance {
+                    Provenance::Human => 0,
+                    Provenance::PostFix => 1,
+                    _ => 2,
+                };
+                if tier_rank < prev_rank
+                    || (tier_rank == prev_rank && e.timestamp < prev.timestamp)
+                {
+                    keep.insert(fid.clone(), e.clone());
+                }
+            }
+        }
+    }
+
+    let deduped: Vec<FeedbackEntry> = keep.into_values().collect();
+    precision_trend(&deduped, window_days)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +706,145 @@ mod tests {
         let stats = linkage_stats(&reviews, &feedback);
         assert_eq!(stats.linked, 1);
         assert_eq!(stats.unlinked, 0);
+    }
+
+    // ─── Stats redesign Task 7: per-finding precision trend ───
+    //
+    // Same window-bucketing as `precision_trend`, but feedback entries that
+    // share a finding_id are deduplicated under a fixed precedence:
+    // Human > PostFix > drop. External and AutoCalibrate are excluded
+    // (different channel; counted separately under Tier breakdown). Legacy
+    // entries (finding_id == None) cannot be deduplicated against and are
+    // skipped entirely so per-finding precision reflects only linkable data.
+
+    fn fb_with_id_and_provenance(
+        id: &str,
+        verdict: Verdict,
+        provenance: crate::feedback::Provenance,
+    ) -> FeedbackEntry {
+        let mut e = entry_with(provenance, verdict);
+        e.finding_id = Some(id.into());
+        e
+    }
+
+    #[test]
+    fn per_finding_dedups_human_plus_postfix_on_same_finding_id() {
+        use crate::feedback::Provenance;
+        // Same finding gets a Human TP and a PostFix TP — Human wins, count
+        // once. (Without dedup, the trend over-counts confirmed findings
+        // because every TP gets a "yes I fixed it" PostFix companion.)
+        let entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::PostFix),
+            fb_with_id_and_provenance("B", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("C", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("D", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("E", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("F", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("G", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("H", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("I", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("J", Verdict::Tp, Provenance::Human),
+        ];
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // 10 distinct findings (A..J), all TP after dedup. Clears the
+        // min_entries=10 gate inherited from precision_trend.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_human_takes_precedence_over_postfix() {
+        use crate::feedback::Provenance;
+        // Human FP on finding A; PostFix TP on finding A. Human wins —
+        // resulting verdict for A is FP. (PostFix without prior Human is a
+        // weak signal; if Human says FP, that overrides the auto-fix
+        // confirmation.)
+        let mut entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Fp, Provenance::Human),
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::PostFix),
+        ];
+        // Pad to clear the min_entries=10 gate.
+        for i in 0..9 {
+            let id = format!("PAD-{i}");
+            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+        }
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // 1 FP + 9 TP = 10 distinct findings; 9/10 = 0.9 precision.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_excludes_external_and_auto_calibrate() {
+        use crate::feedback::Provenance;
+        // External and AutoCalibrate are different channels — they should
+        // not enter the per-finding precision pool. Only Human and PostFix
+        // count.
+        let mut entries: Vec<FeedbackEntry> = (0..10)
+            .map(|i| {
+                let id = format!("H-{i}");
+                fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human)
+            })
+            .collect();
+        entries.push(fb_with_id_and_provenance(
+            "EXT-1",
+            Verdict::Fp,
+            Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+        ));
+        entries.push(fb_with_id_and_provenance(
+            "AC-1",
+            Verdict::Fp,
+            Provenance::AutoCalibrate("gpt-5.4".into()),
+        ));
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].count, 10, "External + AutoCalibrate excluded");
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_skips_legacy_entries_without_finding_id() {
+        use crate::feedback::Provenance;
+        let mut entries: Vec<FeedbackEntry> = (0..10)
+            .map(|i| {
+                let id = format!("ID-{i}");
+                fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human)
+            })
+            .collect();
+        // Legacy: no finding_id. Cannot be deduplicated, so excluded.
+        entries.push(entry_with(Provenance::Human, Verdict::Fp));
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].count, 10);
+    }
+
+    #[test]
+    fn per_finding_partial_counts_as_relevant_in_precision() {
+        use crate::feedback::Provenance;
+        // Mirror precision_trend semantics: Partial is "relevant" — it
+        // counts in the numerator. Wontfix counts in neither.
+        let mut entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Partial, Provenance::Human),
+            fb_with_id_and_provenance("B", Verdict::Wontfix, Provenance::Human),
+            fb_with_id_and_provenance("C", Verdict::Fp, Provenance::Human),
+        ];
+        for i in 0..7 {
+            let id = format!("TP-{i}");
+            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+        }
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // Distinct findings: A (Partial), B (Wontfix), C (FP), TP-0..6 (TP) = 10.
+        // Precision: (Partial + TP) / (Partial + TP + FP) = (1+7) / (1+7+1) = 8/9.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - (8.0 / 9.0)).abs() < 1e-9);
     }
 
     #[test]
