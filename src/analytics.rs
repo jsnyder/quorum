@@ -829,6 +829,7 @@ mod tests {
             flags: crate::review_log::Flags::default(),
             context: crate::review_log::ContextTelemetry::default(),
             finding_ids: ids.iter().map(|s| s.to_string()).collect(),
+            mode: None,
         }
     }
 

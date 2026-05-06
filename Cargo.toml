@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.18.4"
+version = "0.19.0"
 edition = "2024"
 # `str::floor_char_boundary` (used in src/agent.rs and src/tools.rs to
 # truncate UTF-8 safely) stabilized in Rust 1.93. Older constraints —
