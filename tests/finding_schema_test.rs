@@ -4,6 +4,7 @@ use quorum::finding::{Finding, FindingBuilder, GroundingStatus, Severity, Source
 #[test]
 fn finding_with_new_fields_roundtrips() {
     let finding = Finding {
+        id: quorum::finding::new_finding_ulid(),
         title: "SQL injection".into(),
         description: "Unsanitized input".into(),
         severity: Severity::High,
@@ -54,6 +55,7 @@ fn old_json_without_new_fields_deserializes() {
 #[test]
 fn new_fields_omitted_from_json_when_none() {
     let finding = Finding {
+        id: quorum::finding::new_finding_ulid(),
         title: "Test".into(),
         description: "Test".into(),
         severity: Severity::Info,
@@ -82,6 +84,7 @@ fn new_fields_omitted_from_json_when_none() {
 #[test]
 fn category_serializes_as_kebab_case_in_finding() {
     let finding = Finding {
+        id: quorum::finding::new_finding_ulid(),
         title: "Test".into(),
         description: "Test".into(),
         severity: Severity::Info,

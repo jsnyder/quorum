@@ -108,6 +108,18 @@ pub struct FeedbackEntry {
     /// ContextMisleading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fp_kind: Option<FpKind>,
+
+    /// Stable identifier for the source finding (ULID). Forward-only — None on
+    /// legacy entries (pre stats-redesign rollout). Used for per-finding
+    /// deduplication when computing precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
+
+    /// AST rule that produced the finding, if any (e.g. "python/md5-usage").
+    /// Forward-only — None on legacy entries and on findings from non-rule
+    /// sources (LLM, linter, custom AST patterns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
 }
 
 /// Input for recording a verdict from an external review agent.
@@ -798,6 +810,8 @@ impl FeedbackStore {
                 confidence,
             },
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         };
         self.record(&entry)
     }
@@ -823,6 +837,8 @@ impl FeedbackStore {
             timestamp: Utc::now(),
             provenance: Provenance::Human,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         };
         self.record(&entry)
     }
@@ -909,6 +925,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: Provenance::Human,
             fp_kind,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -1052,6 +1070,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: Provenance::Unknown,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -1125,6 +1145,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: Provenance::Human,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         };
         assert_eq!(entry.provenance, Provenance::Human);
     }
@@ -1285,6 +1307,8 @@ mod tests {
                 confidence: Some(0.9),
             },
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         };
         store.record(&entry).unwrap();
         let all = store.load_all().unwrap();
@@ -2152,6 +2176,119 @@ mod tests {
         let msg = report.errors[0].message.to_lowercase();
         assert!(msg.contains("tp") || msg.contains("verdict") || msg.contains("unknown variant"),
             "error must reference the bad verdict: {}", report.errors[0].message);
+    }
+
+    // ─── Stats redesign Phase 0: finding_id / rule_id schema additions ───
+    //
+    // FeedbackEntry is persisted JSONL. These tests pin the migration contract:
+    //   - legacy rows (pre-rollout) must still deserialize cleanly,
+    //   - None values must NOT serialize as `"finding_id":null` (disk bloat),
+    //   - the field types stay String, not arbitrary JSON values.
+
+    #[test]
+    fn legacy_jsonl_row_loads_with_none_finding_id_and_rule_id() {
+        // A row written before the schema bump — no finding_id or rule_id keys.
+        let legacy_json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":"gpt","timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(legacy_json)
+            .expect("legacy row must still deserialize");
+        assert_eq!(entry.finding_id, None);
+        assert_eq!(entry.rule_id, None);
+    }
+
+    #[test]
+    fn entry_with_none_finding_id_serializes_without_null_pollution() {
+        // Disk-bloat regression: with ~1,470 historical rows in feedback.jsonl,
+        // injecting `"finding_id":null` on every legacy row would bloat the file
+        // by ~30 KB. skip_serializing_if must omit the key entirely.
+        let entry = FeedbackEntry {
+            file_path: "f.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(!json.contains("\"finding_id\""), "json must not contain finding_id key when None: {json}");
+        assert!(!json.contains("\"rule_id\""), "json must not contain rule_id key when None: {json}");
+    }
+
+    #[test]
+    fn entry_with_some_finding_id_round_trips_losslessly() {
+        let entry = FeedbackEntry {
+            file_path: "f.rs".into(),
+            finding_title: "t".into(),
+            finding_category: "c".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: Some("01HXYZ1234567890ABCDEFGHJK".into()),
+            rule_id: Some("python/eval-non-literal".into()),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.finding_id.as_deref(), Some("01HXYZ1234567890ABCDEFGHJK"));
+        assert_eq!(back.rule_id.as_deref(), Some("python/eval-non-literal"));
+    }
+
+    #[test]
+    fn entry_round_trips_with_only_rule_id_no_finding_id() {
+        // Forward-only AST-rule scoring case: ast-grep rule fires, but the
+        // finding wasn't given a stable identity yet (e.g. legacy review path).
+        let entry = FeedbackEntry {
+            file_path: "f.py".into(),
+            finding_title: "t".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "r".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: Some("python/md5-usage".into()),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(!json.contains("\"finding_id\""), "finding_id should be omitted: {json}");
+        assert!(json.contains("\"rule_id\":\"python/md5-usage\""),
+            "rule_id must be present in json: {json}");
+        let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.finding_id, None);
+        assert_eq!(back.rule_id.as_deref(), Some("python/md5-usage"));
+    }
+
+    #[test]
+    fn entry_rejects_nonstring_finding_id() {
+        // Defensive contract: finding_id is a String, not arbitrary JSON.
+        // Catches accidental refactors to Option<serde_json::Value>.
+        let bad_json = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"c","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z","finding_id":42}"#;
+        let result: Result<FeedbackEntry, _> = serde_json::from_str(bad_json);
+        assert!(result.is_err(), "non-string finding_id must fail to deserialize");
+    }
+
+    #[test]
+    fn legacy_row_resave_does_not_introduce_finding_id_or_rule_id_keys() {
+        // The actual disk-bloat regression test: read a legacy row, serialize
+        // it back, and assert no new keys appeared. This guards the
+        // read/modify/write path used by FeedbackStore and the daemon — if
+        // either silently injected `"finding_id":null` on rewrite, the entire
+        // feedback.jsonl would gradually accumulate ~30 KB of null pollution
+        // on full corpus rewrites.
+        let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":"gpt","timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
+        let resaved = serde_json::to_string(&entry).expect("resave");
+        assert!(!resaved.contains("\"finding_id\""),
+            "resave must not introduce finding_id key: {resaved}");
+        assert!(!resaved.contains("\"rule_id\""),
+            "resave must not introduce rule_id key: {resaved}");
     }
 }
 

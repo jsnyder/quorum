@@ -359,6 +359,7 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
         flags: Flags::default(),
         mode: None,
         context: tele.clone(),
+        finding_ids: Vec::new(),
     };
     log.record(&record).unwrap();
 

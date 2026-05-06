@@ -20,6 +20,7 @@ fn lib_exports_are_reachable_from_integration_tests() {
 
     // Finding must be constructible.
     let finding = Finding {
+        id: quorum::finding::new_finding_ulid(),
         title: "smoke".into(),
         description: String::new(),
         severity: Severity::Low,

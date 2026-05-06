@@ -1,9 +1,62 @@
 /// Per-source TP/FP analytics computed from the feedback store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::feedback::{FeedbackEntry, Verdict};
+use crate::review_log::ReviewRecord;
+
+/// Reviews ↔ feedback linkage health.
+///
+/// Counts feedback entries that have a `finding_id` matching some review's
+/// `finding_ids` list. Used by the headline trend to decide whether
+/// per-finding precision math is trustworthy (≥85% linked) or should
+/// fall back to entry-level math with a banner. Also surfaced directly
+/// via `quorum stats --join-health`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkageStats {
+    pub linked: usize,
+    pub unlinked: usize,
+}
+
+impl LinkageStats {
+    /// Fraction of feedback entries that join back to a known finding.
+    /// Returns 0.0 for an empty corpus rather than NaN.
+    pub fn rate(&self) -> f64 {
+        let total = self.linked + self.unlinked;
+        if total == 0 {
+            0.0
+        } else {
+            self.linked as f64 / total as f64
+        }
+    }
+}
+
+/// Compute reviews ↔ feedback linkage statistics.
+///
+/// O(R + F) where R = total finding_ids across reviews and F = feedback
+/// entries. Builds a HashSet of known finding_ids so duplicate IDs in the
+/// review log don't inflate the linked count.
+pub fn linkage_stats(reviews: &[ReviewRecord], feedback: &[FeedbackEntry]) -> LinkageStats {
+    use crate::feedback::Provenance;
+
+    let known: HashSet<&str> = reviews
+        .iter()
+        .flat_map(|r| r.finding_ids.iter().map(String::as_str))
+        .collect();
+
+    let mut stats = LinkageStats::default();
+    for entry in feedback {
+        if !matches!(&entry.provenance, Provenance::Human | Provenance::PostFix) {
+            continue;
+        }
+        match &entry.finding_id {
+            Some(fid) if known.contains(fid.as_str()) => stats.linked += 1,
+            _ => stats.unlinked += 1,
+        }
+    }
+    stats
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct SourceStats {
@@ -81,6 +134,7 @@ pub struct PrecisionWindow {
     pub week_start: DateTime<Utc>,
     pub precision: f64,
     pub count: usize,
+    pub precision_denom: usize,
 }
 
 /// Tier-level aggregation by `Provenance`. Parallel to (and does not replace)
@@ -140,6 +194,10 @@ pub fn compute_tier_stats(entries: &[FeedbackEntry]) -> TierSummary {
     summary
 }
 
+#[deprecated(
+    since = "0.19.0",
+    note = "Use `format_channel_attribution` instead. Tier-precision rollups are misleading: External and AutoCalibrate aren't comparable to Human/PostFix on a precision axis."
+)]
 pub fn format_tier_report(summary: &TierSummary) -> String {
     let mut lines = Vec::new();
     lines.push("Feedback by provenance tier:".into());
@@ -219,6 +277,7 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
                 week_start: window_start,
                 precision,
                 count: window_entries.len(),
+                precision_denom: total,
             });
         }
 
@@ -226,6 +285,232 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
     }
 
     windows
+}
+
+/// Channel attribution table — replaces format_tier_report.
+///
+/// Reports counts only (no precision column) per provenance channel.
+/// Precision belongs on the headline trend, not the channel rollup —
+/// External and AutoCalibrate aren't comparable to Human/PostFix on a
+/// precision axis (different sampling distributions, different signal
+/// quality).
+///
+/// Layout per DESIGN.md §4.x: thin dim `─` rule under header only;
+/// numeric columns right-aligned; empty cells render as em-dash.
+pub fn format_channel_attribution(summary: &TierSummary) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+
+    let rows: [(&str, &SourceStats); 4] = [
+        ("Human", &summary.human),
+        ("PostFix", &summary.post_fix),
+        ("External", &summary.external.total),
+        ("AutoCalib", &summary.auto_calibrate),
+    ];
+
+    // Header.
+    writeln!(
+        out,
+        "  {label:<10}  {total:>6}  {tp:>5}  {fp:>5}  {part:>5}  {wfix:>5}",
+        label = "Channel",
+        total = "Total",
+        tp = "TP",
+        fp = "FP",
+        part = "Part",
+        wfix = "Wfix",
+    )
+    .unwrap();
+    // Single dim rule under header only.
+    writeln!(
+        out,
+        "  {}",
+        "─".repeat(10 + 2 + 6 + 2 + 5 + 2 + 5 + 2 + 5 + 2 + 5)
+    )
+    .unwrap();
+
+    fn cell(n: usize) -> String {
+        if n == 0 {
+            "—".to_string()
+        } else {
+            n.to_string()
+        }
+    }
+
+    for (label, s) in rows {
+        let total = s.total();
+        if total == 0 && label != "Human" {
+            continue; // hide empty channels except Human (always shown)
+        }
+        writeln!(
+            out,
+            "  {label:<10}  {total:>6}  {tp:>5}  {fp:>5}  {part:>5}  {wfix:>5}",
+            label = label,
+            total = if total == 0 { "—".to_string() } else { total.to_string() },
+            tp = cell(s.tp),
+            fp = cell(s.fp),
+            part = cell(s.partial),
+            wfix = cell(s.wontfix),
+        )
+        .unwrap();
+    }
+
+    if summary.unknown.total() > 0 {
+        let s = &summary.unknown;
+        writeln!(
+            out,
+            "  {label:<10}  {total:>6}  {dim}(legacy rows, no provenance field){reset}",
+            label = "Unknown",
+            total = s.total(),
+            dim = "",
+            reset = "",
+        )
+        .unwrap();
+    }
+
+    out
+}
+
+/// External-agent corpus overlap with quorum's own verdicts.
+///
+/// `per_agent[i].findings`  — total External entries for that agent in the corpus
+/// `per_agent[i].overlap`   — entries whose finding_id is also in `quorum_verdicts`
+/// `per_agent[i].agree`     — overlap entries where the External verdict matches
+///                            the quorum verdict on the same finding
+///
+/// Surfaced in the External corpus block so users can read agent
+/// contribution without it polluting headline precision.
+#[derive(Debug, Clone, Default)]
+pub struct ExternalOverlap {
+    pub per_agent: Vec<AgentOverlap>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentOverlap {
+    pub agent: String,
+    pub findings: usize,
+    pub overlap: usize,
+    pub agree: usize,
+}
+
+impl AgentOverlap {
+    /// Fraction of overlap entries where External and quorum agreed.
+    /// Returns 0.0 (not NaN) when there's no overlap to compute on.
+    pub fn agreement_rate(&self) -> f64 {
+        if self.overlap == 0 {
+            0.0
+        } else {
+            self.agree as f64 / self.overlap as f64
+        }
+    }
+}
+
+/// Compute External-agent overlap against a map of quorum verdicts keyed
+/// by finding_id. The quorum-side map is provided externally so callers
+/// can build it however suits them (e.g. the Human path for headline
+/// math, or PostFix-confirmed for stricter ground truth). The function
+/// itself is verdict-source-agnostic.
+pub fn compute_external_overlap(
+    entries: &[FeedbackEntry],
+    quorum_verdicts: &HashMap<String, Verdict>,
+) -> ExternalOverlap {
+    use crate::feedback::Provenance;
+    let mut per_agent: HashMap<String, AgentOverlap> = HashMap::new();
+    for e in entries {
+        let Provenance::External { agent, .. } = &e.provenance else {
+            continue;
+        };
+        let row = per_agent.entry(agent.clone()).or_insert_with(|| AgentOverlap {
+            agent: agent.clone(),
+            ..Default::default()
+        });
+        row.findings += 1;
+        if let Some(fid) = &e.finding_id {
+            if let Some(qv) = quorum_verdicts.get(fid) {
+                row.overlap += 1;
+                if verdict_eq(qv, &e.verdict) {
+                    row.agree += 1;
+                }
+            }
+        }
+    }
+    let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
+    agents.sort_by(|a, b| b.findings.cmp(&a.findings).then_with(|| a.agent.cmp(&b.agent)));
+    ExternalOverlap { per_agent: agents }
+}
+
+/// Verdict equivalence for agreement counting. Treats Tp/Partial as
+/// "real" and Fp as "not real" — Wontfix and ContextMisleading are
+/// counted as not-equal to anything since they're not finding-quality
+/// verdicts.
+fn verdict_eq(a: &Verdict, b: &Verdict) -> bool {
+    fn category(v: &Verdict) -> Option<u8> {
+        match v {
+            Verdict::Tp | Verdict::Partial => Some(0),
+            Verdict::Fp => Some(1),
+            Verdict::Wontfix | Verdict::ContextMisleading { .. } => None,
+        }
+    }
+    match (category(a), category(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Per-finding precision trend with disposition precedence.
+///
+/// Same window-bucketing as `precision_trend`, but feedback entries that
+/// share a `finding_id` collapse to a single row using the precedence
+/// `Human > PostFix > drop`. External and AutoCalibrate are excluded
+/// from the pool entirely (they're a different channel — see Tier
+/// breakdown). Legacy entries (`finding_id == None`) cannot be
+/// deduplicated against and are skipped.
+///
+/// This is the headline trend once linkage rate ≥85%; below that, the
+/// dashboard falls back to entry-level `precision_trend` with a banner.
+pub fn precision_trend_per_finding(
+    entries: &[FeedbackEntry],
+    window_days: i64,
+) -> Vec<PrecisionWindow> {
+    use crate::feedback::Provenance;
+
+    if entries.is_empty() || window_days <= 0 {
+        return vec![];
+    }
+
+    // Filter to Human/PostFix entries with a finding_id, then dedup by
+    // finding_id with Human winning over PostFix. Earliest timestamp wins
+    // among same-tier entries so the resulting row sits in a stable window.
+    let mut keep: HashMap<String, FeedbackEntry> = HashMap::new();
+    for e in entries {
+        let Some(fid) = &e.finding_id else { continue };
+        let tier_rank = match &e.provenance {
+            Provenance::Human => 0,
+            Provenance::PostFix => 1,
+            Provenance::External { .. } | Provenance::AutoCalibrate(_) | Provenance::Unknown => {
+                continue;
+            }
+        };
+        match keep.get(fid) {
+            None => {
+                keep.insert(fid.clone(), e.clone());
+            }
+            Some(prev) => {
+                let prev_rank = match &prev.provenance {
+                    Provenance::Human => 0,
+                    Provenance::PostFix => 1,
+                    _ => unreachable!("only Human/PostFix enter the map"),
+                };
+                if tier_rank < prev_rank
+                    || (tier_rank == prev_rank && e.timestamp < prev.timestamp)
+                {
+                    keep.insert(fid.clone(), e.clone());
+                }
+            }
+        }
+    }
+
+    let deduped: Vec<FeedbackEntry> = keep.into_values().collect();
+    precision_trend(&deduped, window_days)
 }
 
 #[cfg(test)]
@@ -244,6 +529,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance: crate::feedback::Provenance::Unknown,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -258,6 +545,8 @@ mod tests {
             timestamp: Utc::now(),
             provenance,
             fp_kind: None,
+            finding_id: None,
+            rule_id: None,
         }
     }
 
@@ -506,5 +795,473 @@ mod tests {
         let entries = vec![entry("model", Verdict::Tp)]; // only 1 entry
         let trend = precision_trend(&entries, 7);
         assert!(trend.is_empty()); // not enough data
+    }
+
+    #[test]
+    fn precision_denom_excludes_wontfix() {
+        let now = Utc::now();
+        let mut entries = Vec::new();
+        for _ in 0..8 {
+            let mut e = entry("model", Verdict::Tp);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        for _ in 0..2 {
+            let mut e = entry("model", Verdict::Fp);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        for _ in 0..5 {
+            let mut e = entry("model", Verdict::Wontfix);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        let trend = precision_trend(&entries, 7);
+        assert!(!trend.is_empty());
+        let w = &trend[0];
+        assert_eq!(w.count, 15, "count includes all entries");
+        assert_eq!(w.precision_denom, 10, "precision_denom excludes wontfix");
+        assert!((w.precision - 0.8).abs() < 1e-9);
+    }
+
+    // ─── Stats redesign Phase 0: linkage_stats ───
+    //
+    // Counts feedback entries that have a finding_id matching some review's
+    // finding_ids list. The linkage rate gates whether the headline trend
+    // can compute per-finding precision (≥85%) or must fall back to entry-
+    // level math with a banner.
+
+    fn review_with_finding_ids(ids: &[&str]) -> crate::review_log::ReviewRecord {
+        crate::review_log::ReviewRecord {
+            run_id: crate::review_log::ReviewRecord::new_ulid(),
+            timestamp: Utc::now(),
+            quorum_version: "0.1".into(),
+            repo: None,
+            invoked_from: "tty".into(),
+            model: "test".into(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: crate::review_log::SeverityCounts::default(),
+            suppressed_by_rule: HashMap::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
+            duration_ms: 0,
+            flags: crate::review_log::Flags::default(),
+            context: crate::review_log::ContextTelemetry::default(),
+            finding_ids: ids.iter().map(|s| s.to_string()).collect(),
+            mode: None,
+        }
+    }
+
+    fn fb_with_finding_id(id: &str) -> FeedbackEntry {
+        let mut e = entry_with(crate::feedback::Provenance::Human, Verdict::Tp);
+        e.finding_id = Some(id.into());
+        e
+    }
+
+    #[test]
+    fn linkage_with_zero_reviews_and_zero_feedback_returns_zero_rate() {
+        let stats = linkage_stats(&[], &[]);
+        assert_eq!(stats.linked, 0);
+        assert_eq!(stats.unlinked, 0);
+        assert_eq!(stats.rate(), 0.0);
+    }
+
+    #[test]
+    fn linkage_full_when_every_feedback_has_matching_finding_id() {
+        let reviews = vec![review_with_finding_ids(&["A", "B"])];
+        let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("B")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2);
+        assert_eq!(stats.unlinked, 0);
+        assert!((stats.rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn linkage_partial_with_legacy_entries_in_corpus() {
+        let reviews = vec![review_with_finding_ids(&["A", "B"])];
+        let mut legacy = entry_with(crate::feedback::Provenance::Human, Verdict::Tp);
+        legacy.finding_id = None;
+        let feedback = vec![fb_with_finding_id("A"), legacy];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 1);
+        assert_eq!(stats.unlinked, 1);
+        assert!((stats.rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn linkage_dangling_finding_id_counts_as_unlinked() {
+        // A feedback entry references a finding_id not present in any
+        // review's finding_ids — counts as unlinked, not as match-error.
+        let reviews = vec![review_with_finding_ids(&["A"])];
+        let feedback = vec![fb_with_finding_id("Z-NONEXISTENT")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 0);
+        assert_eq!(stats.unlinked, 1);
+    }
+
+    #[test]
+    fn linkage_duplicate_finding_id_in_reviews_does_not_double_count() {
+        // Pathological case: the same finding_id appears in two reviews.
+        // The HashSet lookup means we count the feedback entry once.
+        let reviews = vec![
+            review_with_finding_ids(&["A"]),
+            review_with_finding_ids(&["A"]),
+        ];
+        let feedback = vec![fb_with_finding_id("A")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 1);
+        assert_eq!(stats.unlinked, 0);
+    }
+
+    // ─── Stats redesign Task 7: per-finding precision trend ───
+    //
+    // Same window-bucketing as `precision_trend`, but feedback entries that
+    // share a finding_id are deduplicated under a fixed precedence:
+    // Human > PostFix > drop. External and AutoCalibrate are excluded
+    // (different channel; counted separately under Tier breakdown). Legacy
+    // entries (finding_id == None) cannot be deduplicated against and are
+    // skipped entirely so per-finding precision reflects only linkable data.
+
+    fn fb_with_id_and_provenance(
+        id: &str,
+        verdict: Verdict,
+        provenance: crate::feedback::Provenance,
+    ) -> FeedbackEntry {
+        let mut e = entry_with(provenance, verdict);
+        e.finding_id = Some(id.into());
+        e
+    }
+
+    #[test]
+    fn per_finding_dedups_human_plus_postfix_on_same_finding_id() {
+        use crate::feedback::Provenance;
+        // Same finding gets a Human TP and a PostFix TP — Human wins, count
+        // once. (Without dedup, the trend over-counts confirmed findings
+        // because every TP gets a "yes I fixed it" PostFix companion.)
+        let entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::PostFix),
+            fb_with_id_and_provenance("B", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("C", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("D", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("E", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("F", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("G", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("H", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("I", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("J", Verdict::Tp, Provenance::Human),
+        ];
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // 10 distinct findings (A..J), all TP after dedup. Clears the
+        // min_entries=10 gate inherited from precision_trend.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_human_takes_precedence_over_postfix() {
+        use crate::feedback::Provenance;
+        // Human FP on finding A; PostFix TP on finding A. Human wins —
+        // resulting verdict for A is FP. (PostFix without prior Human is a
+        // weak signal; if Human says FP, that overrides the auto-fix
+        // confirmation.)
+        let mut entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Fp, Provenance::Human),
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::PostFix),
+        ];
+        // Pad to clear the min_entries=10 gate.
+        for i in 0..9 {
+            let id = format!("PAD-{i}");
+            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+        }
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // 1 FP + 9 TP = 10 distinct findings; 9/10 = 0.9 precision.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_excludes_external_and_auto_calibrate() {
+        use crate::feedback::Provenance;
+        // External and AutoCalibrate are different channels — they should
+        // not enter the per-finding precision pool. Only Human and PostFix
+        // count.
+        let mut entries: Vec<FeedbackEntry> = (0..10)
+            .map(|i| {
+                let id = format!("H-{i}");
+                fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human)
+            })
+            .collect();
+        entries.push(fb_with_id_and_provenance(
+            "EXT-1",
+            Verdict::Fp,
+            Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+        ));
+        entries.push(fb_with_id_and_provenance(
+            "AC-1",
+            Verdict::Fp,
+            Provenance::AutoCalibrate("gpt-5.4".into()),
+        ));
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].count, 10, "External + AutoCalibrate excluded");
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_skips_legacy_entries_without_finding_id() {
+        use crate::feedback::Provenance;
+        let mut entries: Vec<FeedbackEntry> = (0..10)
+            .map(|i| {
+                let id = format!("ID-{i}");
+                fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human)
+            })
+            .collect();
+        // Legacy: no finding_id. Cannot be deduplicated, so excluded.
+        entries.push(entry_with(Provenance::Human, Verdict::Fp));
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].count, 10);
+    }
+
+    #[test]
+    fn per_finding_partial_counts_as_relevant_in_precision() {
+        use crate::feedback::Provenance;
+        // Mirror precision_trend semantics: Partial is "relevant" — it
+        // counts in the numerator. Wontfix counts in neither.
+        let mut entries = vec![
+            fb_with_id_and_provenance("A", Verdict::Partial, Provenance::Human),
+            fb_with_id_and_provenance("B", Verdict::Wontfix, Provenance::Human),
+            fb_with_id_and_provenance("C", Verdict::Fp, Provenance::Human),
+        ];
+        for i in 0..7 {
+            let id = format!("TP-{i}");
+            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+        }
+        let trend = precision_trend_per_finding(&entries, 7);
+        assert_eq!(trend.len(), 1);
+        // Distinct findings: A (Partial), B (Wontfix), C (FP), TP-0..6 (TP) = 10.
+        // Precision: (Partial + TP) / (Partial + TP + FP) = (1+7) / (1+7+1) = 8/9.
+        assert_eq!(trend[0].count, 10);
+        assert!((trend[0].precision - (8.0 / 9.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_finding_same_tier_keeps_earliest_timestamp() {
+        use crate::feedback::Provenance;
+        // Two Human entries for F1: earlier is TP, later is FP.
+        // Earliest timestamp wins, so F1 resolves to TP.
+        let mut later = fb_with_id_and_provenance("F1", Verdict::Fp, Provenance::Human);
+        later.timestamp = Utc::now() - chrono::Duration::hours(1);
+        let mut earlier = fb_with_id_and_provenance("F1", Verdict::Tp, Provenance::Human);
+        earlier.timestamp = Utc::now() - chrono::Duration::hours(3);
+        let mut all = vec![later, earlier];
+        for i in 0..9 {
+            all.push(fb_with_id_and_provenance(
+                &format!("P{}", i),
+                Verdict::Tp,
+                Provenance::Human,
+            ));
+        }
+        let trend = precision_trend_per_finding(&all, 7);
+        assert_eq!(trend.len(), 1);
+        assert!((trend[0].precision - 1.0).abs() < 1e-9);
+    }
+
+    // ─── Stats redesign Task 8: channel attribution table ───
+
+    #[test]
+    fn channel_attribution_header_lists_count_columns_only() {
+        // No precision column on the channel rollup; precision lives on
+        // the headline trend instead.
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        assert!(out.contains("Total"));
+        assert!(out.contains("TP"));
+        assert!(out.contains("FP"));
+        assert!(out.contains("Part"));
+        assert!(out.contains("Wfix"));
+        assert!(!out.contains("prec"), "no precision column expected");
+        assert!(!out.contains('%'), "no percent rendering expected");
+    }
+
+    #[test]
+    fn channel_attribution_renders_em_dash_for_zero_cells() {
+        // Counts of 0 render as `—` so the eye lands on actual signal,
+        // not on rows of zeros.
+        let summary = TierSummary::default(); // all zero
+        let out = format_channel_attribution(&summary);
+        // Human row is always rendered, even when all-zero — its zero
+        // cells should be em-dashes.
+        let human_line = out.lines().find(|l| l.contains("Human")).unwrap();
+        assert!(
+            human_line.contains("—"),
+            "Human row with zeros should use em-dash: {human_line}"
+        );
+    }
+
+    #[test]
+    fn channel_attribution_uses_single_dim_rule_under_header() {
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        let rule_count = out.matches("──").count();
+        assert!(
+            rule_count >= 1,
+            "expected at least one box-rule run under header, got {rule_count}"
+        );
+        // Sanity: no double rule below data rows
+        let line_count = out.lines().count();
+        assert!(line_count < 12, "too many lines for an empty summary");
+    }
+
+    #[test]
+    fn channel_attribution_hides_empty_postfix_external_autocalib() {
+        // Empty channels (other than Human) are hidden — keeps the table
+        // tight before the user has any non-Human verdicts.
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        assert!(!out.contains("PostFix"));
+        assert!(!out.contains("External"));
+        assert!(!out.contains("AutoCalib"));
+    }
+
+    #[test]
+    fn channel_attribution_shows_postfix_when_any_postfix_entries_exist() {
+        use crate::feedback::Provenance;
+        let entries = vec![entry_with(Provenance::PostFix, Verdict::Tp)];
+        let summary = compute_tier_stats(&entries);
+        let out = format_channel_attribution(&summary);
+        assert!(out.contains("PostFix"), "PostFix should appear: {out}");
+    }
+
+    // ─── Stats redesign Task 9: external corpus overlap ───
+    //
+    // For each external agent, count how many of its findings overlap
+    // with quorum's own verdicts (linked by finding_id) and what fraction
+    // agree on the disposition. Used by the External corpus block to
+    // surface "this agent flags things quorum also flags X% of the time"
+    // without conflating the External channel into Human precision.
+
+    fn external_fb(id: &str, verdict: Verdict, agent: &str) -> FeedbackEntry {
+        use crate::feedback::Provenance;
+        fb_with_id_and_provenance(
+            id,
+            verdict,
+            Provenance::External {
+                agent: agent.into(),
+                model: None,
+                confidence: None,
+            },
+        )
+    }
+
+    #[test]
+    fn external_overlap_empty_for_no_external_entries() {
+        let entries: Vec<FeedbackEntry> = vec![];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        assert!(overlap.per_agent.is_empty());
+    }
+
+    #[test]
+    fn external_overlap_counts_findings_per_agent() {
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("B", Verdict::Fp, "pal"),
+            external_fb("C", Verdict::Tp, "third-opinion"),
+        ];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        assert_eq!(overlap.per_agent.len(), 2);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.findings, 2);
+    }
+
+    #[test]
+    fn external_overlap_agreement_rate_against_quorum() {
+        // pal flagged A as TP, B as FP. Quorum independently has A=TP and
+        // B=TP. Agreement: A matches (1/2), B disagrees (Quorum says TP,
+        // pal says FP). Overlap considers the 2 findings pal also has on
+        // a quorum-known finding_id; agreement_rate = 1/2.
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("B", Verdict::Fp, "pal"),
+        ];
+        let mut quorum: HashMap<String, Verdict> = HashMap::new();
+        quorum.insert("A".into(), Verdict::Tp);
+        quorum.insert("B".into(), Verdict::Tp);
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.overlap, 2);
+        assert_eq!(pal.agree, 1);
+        assert!((pal.agreement_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn external_overlap_skips_external_entries_quorum_did_not_flag() {
+        // pal flagged A and Z, but quorum only has A. The Z verdict has no
+        // overlap to compute against — count it in `findings` but exclude
+        // from `overlap` / `agree`.
+        let entries = vec![
+            external_fb("A", Verdict::Tp, "pal"),
+            external_fb("Z", Verdict::Tp, "pal"),
+        ];
+        let mut quorum: HashMap<String, Verdict> = HashMap::new();
+        quorum.insert("A".into(), Verdict::Tp);
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.findings, 2);
+        assert_eq!(pal.overlap, 1);
+        assert_eq!(pal.agree, 1);
+        assert!((pal.agreement_rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn external_overlap_agreement_rate_zero_for_no_overlap() {
+        // No quorum overlap at all → agreement_rate is 0.0 (not NaN).
+        let entries = vec![external_fb("Z", Verdict::Tp, "pal")];
+        let quorum: HashMap<String, Verdict> = HashMap::new();
+        let overlap = compute_external_overlap(&entries, &quorum);
+        let pal = overlap.per_agent.iter().find(|a| a.agent == "pal").unwrap();
+        assert_eq!(pal.overlap, 0);
+        assert_eq!(pal.agreement_rate(), 0.0);
+    }
+
+    #[test]
+    fn linkage_two_feedback_for_same_finding_each_count_separately() {
+        // Both entries reference the same finding (e.g. Human + PostFix on
+        // the same finding) — each is a linked entry. Per-finding dedup
+        // happens later in Task 7, not here.
+        let reviews = vec![review_with_finding_ids(&["A"])];
+        let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("A")];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2);
+    }
+
+    #[test]
+    fn linkage_excludes_non_human_provenance() {
+        use crate::feedback::Provenance;
+        let reviews = vec![review_with_finding_ids(&["A", "B", "C"])];
+        let feedback = vec![
+            fb_with_id_and_provenance("A", Verdict::Tp, Provenance::Human),
+            fb_with_id_and_provenance("B", Verdict::Tp, Provenance::PostFix),
+            fb_with_id_and_provenance("C", Verdict::Tp, Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            }),
+        ];
+        let stats = linkage_stats(&reviews, &feedback);
+        assert_eq!(stats.linked, 2, "only Human + PostFix should count");
+        assert_eq!(stats.unlinked, 0);
     }
 }

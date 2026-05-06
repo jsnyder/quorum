@@ -167,6 +167,28 @@ Dim, fixed-width, left-aligned:
 
 The label is dim. The value is default color. Two spaces of indent.
 
+### Tables
+
+Use a single dim `─` rule beneath the column header row only. Never above,
+beside, or below data rows. No box characters, no vertical separators —
+horizontal whitespace already conveys column boundaries in monospace.
+
+Numeric columns right-align to the value, not the header. Empty cells
+render as `—` (em-dash) so the eye lands on real signal instead of
+visually identical zero values:
+
+```
+  Channel      Total     TP     FP   Part   Wfix
+  ──────────────────────────────────────────────
+  Human         2052   1062    434    353    203
+  PostFix         45     45      —      —      —
+  External       117    100      4     13      —
+```
+
+For per-row pluralization, prefer "1 entry / N entries" over a fixed
+"entries" suffix — but the rule is informative, not strict, and not
+worth contorting the format string for.
+
 ---
 
 ## 5. Finding Display
@@ -400,6 +422,32 @@ To make trends meaningful:
 - Require minimum 10 feedback entries per window to report
 - Show the trend line, not point estimates ("0.71 -> 0.74 -> 0.77")
 - Don't extrapolate or forecast -- just show what happened
+
+### Trend interpretation
+
+Trends label **scope** (what's rolled in) and **unit** (`7d windows × N`
+or `50 reviews × N`) explicitly so a glance can tell what the line
+measures. The headline trend includes a 95% Wilson confidence interval
+on the most recent window when n ≥ 30 (`74% [69-79]`); below 30 the
+window is replaced with `n<30` because the sample is too small for the
+percent to be informative.
+
+**Channel attribution, not channel-precision**: the dashboard shows
+**counts** per provenance channel (Human / PostFix / External /
+AutoCalibrate), never precision-per-channel. External and AutoCalibrate
+aren't comparable to Human/PostFix on a precision axis — they sample
+from different distributions and carry different signal quality.
+Per-channel precision rollups invite false comparisons.
+
+**Per-finding precision** (`Human > PostFix > drop`) is the headline
+trend once reviews↔feedback `finding_id` linkage rate ≥ 85%. Below that
+threshold the headline falls back to entry-level precision with a
+`entry-level pending finding-id rollout` banner so users know the
+denominator is feedback-rows rather than findings.
+
+**Capture rate** (labeled findings / total findings in 7d) is shown
+inline with the headline so trend footing is visible — a 90% precision
+trend on 5% capture is a different signal than 90% on 80% capture.
 
 ### Data sources
 

@@ -1235,6 +1235,8 @@ mod tests {
             timestamp: chrono::Utc::now(),
             provenance: Provenance::Human,
             fp_kind,
+            finding_id: None,
+            rule_id: None,
         }
     }
 

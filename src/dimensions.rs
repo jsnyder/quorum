@@ -405,6 +405,7 @@ mod tests {
             flags: Flags::default(),
             mode: None,
             context: Default::default(),
+        finding_ids: Vec::new(),
         }
     }
 

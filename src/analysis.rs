@@ -44,6 +44,7 @@ pub fn analyze_complexity(
                     Severity::Low
                 };
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("Function `{}` has cyclomatic complexity {}", name, cc),
                     description: format!(
                         "Cyclomatic complexity of {} exceeds threshold of {}. Consider refactoring.",
@@ -230,6 +231,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     // unsafe blocks
     if node.kind() == "unsafe_block" {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "Use of `unsafe` block".into(),
             description: "Unsafe code bypasses Rust's safety guarantees. Ensure this is necessary and correct.".into(),
             severity: Severity::Info,
@@ -259,6 +261,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     let field_name = &source[field.byte_range()];
                     if field_name == "unwrap" {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "Use of `.unwrap()` may panic at runtime".into(),
                             description: "Consider using `.expect()` with a message or proper error handling.".into(),
                             severity: Severity::Low,
@@ -294,6 +297,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             let func_name = &source[func.byte_range()];
             if func_name == "eval" || func_name == "exec" {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("Use of `{}()` is a code injection risk", func_name),
                     description: format!(
                         "`{}()` executes arbitrary code. Avoid using it with untrusted input.",
@@ -323,6 +327,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             let args_text = &source[args.byte_range()];
             if args_text.contains("debug=True") || args_text.contains("debug = True") {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Server running with debug=True".into(),
                     description: "Debug mode exposes detailed error pages and may enable a debugger. Disable in production.".into(),
                     severity: Severity::High,
@@ -344,6 +349,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Server binding to 0.0.0.0 exposes all network interfaces".into(),
                     description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
                     severity: Severity::Medium,
@@ -378,6 +384,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             && (arg_text.starts_with("f\"") || arg_text.starts_with("f'"))
                         {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "Potential SQL injection via f-string in execute()".into(),
                                 description: "String interpolation in SQL queries allows injection. Use parameterized queries instead.".into(),
                                 severity: Severity::Critical,
@@ -398,6 +405,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             });
                         } else if arg_text.contains(".format(") {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "Potential SQL injection via .format() in execute()".into(),
                                 description: "String formatting in SQL queries allows injection. Use parameterized queries instead.".into(),
                                 severity: Severity::Critical,
@@ -439,6 +447,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         args_text.contains("encoding=") || args_text.contains("encoding =");
                     if !is_binary && !has_encoding {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "`open()` without explicit `encoding` parameter".into(),
                             description: "Without `encoding=`, open() uses the system default which varies by platform. Specify `encoding='utf-8'` for portable behavior.".into(),
                             severity: Severity::Low,
@@ -498,6 +507,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
                 if body_has_only_pass {
                     findings.push(Finding {
+                        id: crate::finding::new_finding_ulid(),
                         title: "Catch-all `except: pass` silently swallows errors".into(),
                         description: "Catching all exceptions with `pass` hides bugs. Log the error or catch a specific exception type.".into(),
                         severity: Severity::Medium,
@@ -571,6 +581,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         && !inner.starts_with("https://")
                     {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: format!("Hardcoded secret in `{}`", &source[left.byte_range()]),
                             description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
                             severity: Severity::High,
@@ -606,6 +617,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 if let Some(body) = node.child_by_field_name("body") {
                     if has_mutating_call(&body, source, iterable_name) {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: format!("Mutating `{}` while iterating over it", iterable_name),
                             description: "Modifying a collection while iterating over it leads to skipped elements or RuntimeError. Iterate over a copy instead.".into(),
                             severity: Severity::High,
@@ -658,6 +670,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             // Look for return statements that expose the exception
             if has_exception_in_return(node, source, var_name) {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Exception details disclosed in API response".into(),
                     description: format!(
                         "Returning `str({0})` or `repr({0})` in an API response leaks internal details to clients. Log the exception and return a generic error message.",
@@ -692,6 +705,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if func_text.starts_with("async ") {
             if has_result_call(node, source) {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Blocking `.result()` call in async function".into(),
                     description: "Calling `.result()` on a future inside an async function blocks the event loop. Use `await` or run in an executor.".into(),
                     severity: Severity::High,
@@ -724,6 +738,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     .map(|n| &source[n.byte_range()])
                     .unwrap_or("parameter");
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("Mutable default argument `{}`", param_name),
                     description: "Mutable default arguments are shared across calls and cause subtle bugs. Use None and initialize inside the function.".into(),
                     severity: Severity::Medium,
@@ -1094,6 +1109,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             seen_keys.iter().find(|(k, _)| *k == key_text)
                         {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: format!("Duplicate key `{}` in mapping", key_text),
                                 description: format!(
                                     "Key `{}` appears multiple times in the same mapping (first at line {}). The last value silently wins.",
@@ -1130,6 +1146,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             // 3. Missing id
             if !keys.contains(&"id") {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Automation missing `id` -- UI management and debug traces are disabled"
                         .into(),
                     description:
@@ -1156,6 +1173,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             // 4. Missing mode
             if !keys.contains(&"mode") {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Automation has no explicit `mode` (defaults to `single`)".into(),
                     description: "Automation has no explicit `mode` (defaults to `single`)".into(),
                     severity: Severity::Info,
@@ -1185,6 +1203,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             for (singular, plural) in &deprecated {
                 if keys.contains(singular) && !keys.contains(plural) {
                     findings.push(Finding {
+                        id: crate::finding::new_finding_ulid(),
                         title: format!("Deprecated singular `{}:` -- use `{}:` instead", singular, plural),
                         description: format!(
                             "Home Assistant deprecated the singular `{}:` key. Use `{}:` (plural) for forward compatibility.",
@@ -1219,6 +1238,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 && yaml_value_is_empty(&child, source)
                             {
                                 findings.push(Finding {
+                                    id: crate::finding::new_finding_ulid(),
                                     title: format!("Empty `{}:` in automation", key_text),
                                     description: format!(
                                         "The `{}:` key has no items. This automation will not function correctly.",
@@ -1263,6 +1283,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         };
                     if !has_password {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "ESPHome OTA section has no password -- firmware updates are unprotected".into(),
                             description: "ESPHome OTA section has no password -- firmware updates are unprotected. Add a password to prevent unauthorized firmware uploads.".into(),
                             severity: Severity::Medium,
@@ -1295,6 +1316,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         };
                     if !has_encryption {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "ESPHome API has no encryption configured".into(),
                             description: "ESPHome API has no encryption configured. Add an encryption key to secure communication.".into(),
                             severity: Severity::Medium,
@@ -1359,6 +1381,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     };
                                     if !has_no_new_privs {
                                         findings.push(Finding {
+                                            id: crate::finding::new_finding_ulid(),
                                             title: format!("Docker Compose service `{}` missing `no-new-privileges` security option", svc_name),
                                             description: "Without `security_opt: [no-new-privileges:true]`, containers can escalate privileges via setuid binaries.".into(),
                                             severity: Severity::Medium,
@@ -1382,6 +1405,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     // Pattern: Docker Compose service missing read_only
                                     if !svc_keys.contains(&"read_only") {
                                         findings.push(Finding {
+                                            id: crate::finding::new_finding_ulid(),
                                             title: format!("Docker Compose service `{}` has writable root filesystem", svc_name),
                                             description: "Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.".into(),
                                             severity: Severity::Low,
@@ -1424,6 +1448,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         let val_text = source[value.byte_range()].trim();
                         if !val_text.is_empty() {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: format!(
                                     "Hardcoded secret in `{}`",
                                     source[key.byte_range()].trim()
@@ -1473,6 +1498,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                                 .trim();
                                             if !item_text.is_empty() && !item_text.contains('.') {
                                                 findings.push(Finding {
+                                                    id: crate::finding::new_finding_ulid(),
                                                     title: "entity_id without domain prefix".into(),
                                                     description: format!(
                                                         "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
@@ -1504,6 +1530,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     }
                     if !is_list && !val_text.is_empty() && !val_text.contains('.') {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "entity_id without domain prefix".into(),
                             description: format!(
                                 "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
@@ -1535,6 +1562,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     let val_text = source[value.byte_range()].trim();
                     if !val_text.is_empty() && !val_text.contains('.') {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "service without domain prefix".into(),
                             description: format!(
                                 "`{}` is missing a domain prefix (e.g. `light.{}`)",
@@ -1566,6 +1594,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     let val_text = source[value.byte_range()].trim();
                     if val_text.contains("0.0.0.0") {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "Server binding to 0.0.0.0 exposes all interfaces".into(),
                             description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
                             severity: Severity::Medium,
@@ -1594,6 +1623,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 if !val_text.starts_with("!secret") && !val_text.starts_with("!include") {
                     if val_text.contains("://") && yaml_url_has_credentials(val_text) {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "URL contains embedded credentials".into(),
                             description: "URLs with embedded user:password credentials are a security risk. Use environment variables or secret references.".into(),
                             severity: Severity::High,
@@ -1633,6 +1663,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     val_text.contains("unavailable") || val_text.contains("unknown");
                 if !has_availability {
                     findings.push(Finding {
+                        id: crate::finding::new_finding_ulid(),
                         title: "Template uses `states()` without availability check".into(),
                         description: "Templates using states() should check for 'unavailable' and 'unknown' to avoid errors when entities are offline".into(),
                         severity: Severity::Info,
@@ -1689,6 +1720,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             ];
             if dot_domains.iter().any(|d| val_text.contains(d)) {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Deprecated dot-notation state access".into(),
                     description: "Use states('sensor.xxx') instead of states.sensor.xxx.state"
                         .into(),
@@ -1723,6 +1755,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             let func_name = &source[func.byte_range()];
             if func_name == "eval" {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Use of `eval()` is a code injection risk".into(),
                     description:
                         "`eval()` executes arbitrary code. Avoid using it with untrusted input."
@@ -1748,6 +1781,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             // document.write XSS
             if func_name == "document.write" {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Use of `document.write()` is an XSS risk".into(),
                     description: "`document.write()` injects raw HTML into the page. Use DOM APIs or a framework's safe rendering instead.".into(),
                     severity: Severity::Critical,
@@ -1771,6 +1805,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             // console.log / console.debug debug artifacts
             if func_name == "console.log" || func_name == "console.debug" {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("`{}` debug artifact left in code", func_name),
                     description: "Debug logging should be removed or replaced with a proper logging framework before production.".into(),
                     severity: Severity::Info,
@@ -1823,6 +1858,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             (has_upper || has_digit || has_special) && inner_len > 8;
                         if looks_like_secret && !val_text.contains("process.env") {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
                                 description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
                                 severity: Severity::High,
@@ -1859,6 +1895,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     "outerHTML"
                 };
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: format!("Direct `{}` assignment is an XSS risk", prop),
                     description: format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop),
                     severity: Severity::High,
@@ -1886,6 +1923,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
         let text = &source[node.byte_range()];
         if text.contains(": any") {
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: "Use of `any` type defeats TypeScript's type safety".into(),
                 description: "Prefer `unknown`, generics, or a specific type instead of `any`."
                     .into(),
@@ -1918,6 +1956,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             });
             if !has_statements {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Empty `catch` block silently swallows errors".into(),
                     description:
                         "An empty catch block hides failures. Log the error, handle it, or rethrow."
@@ -1963,6 +2002,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 if func_name.ends_with(api) {
                     if is_in_async_function(node, source) {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: format!("`{}` blocks the event loop in async function", api),
                             description: format!(
                                 "Calling synchronous `{}` inside an async function blocks the event loop. Use the async equivalent from `fs/promises`.",
@@ -2006,6 +2046,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                                 .unwrap_or(false);
                         if is_length_access && right_text.trim() == "0" {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "`.length >= 0` is always true".into(),
                                 description: "Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?".into(),
                                 severity: Severity::Medium,
@@ -2034,6 +2075,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     // Non-null assertion operator (!)
     if node.kind() == "non_null_expression" {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "Use of non-null assertion operator `!` bypasses type safety".into(),
             description: "The non-null assertion operator tells TypeScript to ignore possible null/undefined. Use proper null checks instead.".into(),
             severity: Severity::Info,
@@ -2064,6 +2106,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     if kind == "program" {
         if !source.starts_with("#!") {
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: "Script has no shebang line".into(),
                 description: "Add a shebang (e.g. #!/usr/bin/env bash) so the script runs with the intended interpreter.".into(),
                 severity: Severity::Low,
@@ -2102,6 +2145,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         }
         if !found_set_e {
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: "Script has no `set -e` -- errors will be silently ignored".into(),
                 description:
                     "Add `set -euo pipefail` near the top of the script to fail on errors.".into(),
@@ -2130,6 +2174,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             let name = &source[name_node.byte_range()];
             if name == "eval" {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Use of `eval` is a code injection risk".into(),
                     description: "Avoid `eval` -- use arrays, printf, or parameter expansion instead.".into(),
                     severity: Severity::High,
@@ -2157,6 +2202,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         let text = &source[arg.byte_range()];
                         if text == "777" {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "`chmod 777` grants world-writable permissions".into(),
                                 description: "Use more restrictive permissions (e.g. 755 or 700)."
                                     .into(),
@@ -2198,6 +2244,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             saw_curl = true;
                         } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "Piping curl/wget to shell executes untrusted remote code"
                                     .into(),
                                 description: "Download to a file first, inspect it, then execute."
@@ -2251,6 +2298,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         // Skip if value contains $ (env var reference)
                         if !val_text.contains('$') {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: format!("Hardcoded secret in shell variable `{}`", var_name),
                                 description: "Use environment variables or a secrets manager instead of hardcoded values.".into(),
                                 severity: Severity::High,
@@ -2286,6 +2334,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
             let text = &source[node.byte_range()];
             if !text.contains("http://") && !text.contains("https://") {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "Use COPY instead of ADD for local files".into(),
                     description: "ADD has extra functionality (tar extraction, remote URLs) that can be surprising. Use COPY for simple file copies.".into(),
                     severity: Severity::Medium,
@@ -2330,6 +2379,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                         let value = line[eq_pos + 1..].trim().trim_matches('"');
                         if !value.is_empty() && !value.starts_with('$') {
                             findings.push(Finding {
+                                id: crate::finding::new_finding_ulid(),
                                 title: "Secret hardcoded in Dockerfile ENV/ARG".into(),
                                 description: "Secrets should not be hardcoded in Dockerfiles. Use build secrets (--mount=type=secret) or runtime environment variables instead.".into(),
                                 severity: Severity::High,
@@ -2363,6 +2413,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
             let has_shell = text.contains("bash") || text.contains("/sh") || text.contains("| sh");
             if has_downloader && has_pipe && has_shell {
                 findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
                     title: "RUN pipes curl/wget to shell -- executes untrusted remote code".into(),
                     description: "Piping downloaded scripts directly to a shell is dangerous. Download the script first, verify its checksum, then execute.".into(),
                     severity: Severity::Critical,
@@ -2465,6 +2516,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                 && !inner.starts_with("${")
                             {
                                 findings.push(Finding {
+                                    id: crate::finding::new_finding_ulid(),
                                     title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
                                     description: "Secrets should be loaded from variables or a secrets manager, not hardcoded in Terraform files.".into(),
                                     severity: Severity::High,
@@ -2506,6 +2558,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                             let inner = val_text.trim_matches('"');
                             if inner == "*" {
                                 findings.push(Finding {
+                                    id: crate::finding::new_finding_ulid(),
                                     title: "Wildcard IAM action grants unrestricted permissions".into(),
                                     description: "Using `Action = \"*\"` grants all permissions. Follow the principle of least privilege.".into(),
                                     severity: Severity::High,
@@ -2580,6 +2633,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
 
                 if has_open_cidr && port_is_sensitive && found_port {
                     findings.push(Finding {
+                        id: crate::finding::new_finding_ulid(),
                         title: "Security group open to 0.0.0.0/0 on sensitive port".into(),
                         description: "Allowing ingress from 0.0.0.0/0 on non-HTTP(S) ports exposes the service to the internet. Restrict to specific CIDR ranges.".into(),
                         severity: Severity::High,
@@ -2677,6 +2731,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
     // S1: Missing required_version
     if (!has_terraform_block || !has_required_version) && has_resource_or_data {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "Missing required_version in terraform block".into(),
             description: "Add a `terraform { required_version = \">= X.Y\" }` block to pin the Terraform version and prevent unexpected upgrades.".into(),
             severity: Severity::Medium,
@@ -2766,6 +2821,7 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
 
         if has_source && !has_version {
             findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
                 title: format!(
                     "Provider `{}` in required_providers has no version constraint",
                     provider_name.unwrap_or("unknown")
@@ -2868,6 +2924,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     let uses_latest = image_ref.ends_with(":latest");
                     if !has_tag || uses_latest {
                         findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
                             title: "FROM uses `latest` or untagged image -- builds are not reproducible".into(),
                             description: format!("Pin the image to a specific tag or digest: {}", image_ref),
                             severity: Severity::Medium,
@@ -2901,6 +2958,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
     // D6: No USER instruction
     if !has_user {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "No USER instruction -- container runs as root".into(),
             description: "Add a USER instruction to run the container as a non-root user.".into(),
             severity: Severity::Medium,
@@ -2924,6 +2982,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
     // D8: No HEALTHCHECK
     if !has_healthcheck {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "No HEALTHCHECK instruction".into(),
             description: "Add a HEALTHCHECK instruction so the container runtime can detect unhealthy containers.".into(),
             severity: Severity::Low,
@@ -2947,6 +3006,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
     // D11: Multiple CMD/ENTRYPOINT
     if cmd_count > 1 {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "Multiple CMD instructions -- only the last one takes effect".into(),
             description: format!(
                 "Found {} CMD instructions; only the last one will be used.",
@@ -2971,6 +3031,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
     }
     if entrypoint_count > 1 {
         findings.push(Finding {
+            id: crate::finding::new_finding_ulid(),
             title: "Multiple ENTRYPOINT instructions -- only the last one takes effect".into(),
             description: format!(
                 "Found {} ENTRYPOINT instructions; only the last one will be used.",

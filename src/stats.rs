@@ -39,6 +39,29 @@ pub struct StatsReport {
     /// Provenance-tier breakdown (Human / PostFix / External / AutoCalib /
     /// Unknown). Computed from the same feedback store as `precision`.
     pub tier_summary: analytics::TierSummary,
+
+    // ─── Stats redesign Phase A: linkage / capture / external overlap ───
+    //
+    /// Fraction of feedback entries whose finding_id matches some review's
+    /// finding_ids. Gates whether per-finding precision math is shown.
+    pub linkage_rate: f64,
+    pub linkage_linked: usize,
+    pub linkage_unlinked: usize,
+    /// Fraction of recent (7d) findings that received any feedback. Used
+    /// inline with the headline trend so trend footing is visible.
+    pub capture_rate: f64,
+    pub capture_labeled: usize,
+    pub capture_total: usize,
+    /// True iff `linkage_rate >= 0.85`. Drives the headline-trend
+    /// rendering between per-finding (`precision_trend_per_finding`) and
+    /// the entry-level fallback with banner.
+    pub headline_trend_uses_finding_id: bool,
+    /// Per-agent overlap with quorum's own (Human-tier) verdicts. Surfaced
+    /// in the External corpus block.
+    pub external_overlap: analytics::ExternalOverlap,
+    /// Per-finding precision trend (None when linkage rate is below the
+    /// per-finding gate so renderers don't have to recompute the cutoff).
+    pub precision_trend_per_finding: Vec<analytics::PrecisionWindow>,
 }
 
 /// Take top-N slices by review volume. Ties resolved by insertion order
@@ -123,6 +146,44 @@ pub fn compute_report(
     let top_callers = take_top(dimensions::group_by_caller(&review_records), HIGHLIGHT_TOP_N);
     let rolling_windows = dimensions::rolling_window(&review_records, ROLLING_N, ROLLING_WINDOWS);
 
+    // Linkage / capture / external overlap (Phase A).
+    let link = analytics::linkage_stats(&review_records, &feedback);
+    let linkage_rate = link.rate();
+    let headline_trend_uses_finding_id = linkage_rate >= 0.85;
+
+    let capture_total = total_findings_7d;
+    // Capture-labeled = feedback entries timestamped in the 7d window.
+    // Coarse but useful — exact would require joining each feedback row
+    // to a review timestamp, which we deliberately don't do here.
+    let capture_labeled = feedback.iter()
+        .filter(|e| e.timestamp >= since_7d)
+        .count();
+    let capture_rate = if capture_total > 0 {
+        (capture_labeled as f64 / capture_total as f64).min(1.0)
+    } else {
+        0.0
+    };
+
+    // Build a quorum verdict map (Human-tier) keyed by finding_id for
+    // External overlap computation.
+    let mut quorum_verdicts: std::collections::HashMap<String, crate::feedback::Verdict> =
+        std::collections::HashMap::new();
+    for e in &feedback {
+        if !matches!(e.provenance, crate::feedback::Provenance::Human) {
+            continue;
+        }
+        if let Some(fid) = &e.finding_id {
+            quorum_verdicts.insert(fid.clone(), e.verdict.clone());
+        }
+    }
+    let external_overlap = analytics::compute_external_overlap(&feedback, &quorum_verdicts);
+
+    let precision_trend_per_finding = if headline_trend_uses_finding_id {
+        analytics::precision_trend_per_finding(&feedback, 7)
+    } else {
+        Vec::new()
+    };
+
     Ok(StatsReport {
         feedback_count,
         precision,
@@ -143,6 +204,15 @@ pub fn compute_report(
         top_callers,
         rolling_windows,
         tier_summary,
+        linkage_rate,
+        linkage_linked: link.linked,
+        linkage_unlinked: link.unlinked,
+        capture_rate,
+        capture_labeled,
+        capture_total,
+        headline_trend_uses_finding_id,
+        external_overlap,
+        precision_trend_per_finding,
     })
 }
 
@@ -152,17 +222,149 @@ pub fn format_human_minimal(report: &StatsReport, style: &Style) -> String {
     format_human_core(report, style)
 }
 
+/// Minimum window count for showing a precision percentage. Below this
+/// the window is rendered as `n<30` to flag low-N noise — matches the
+/// design doc's stability cutoff.
+const MIN_TREND_WINDOW_N: usize = 30;
+
+/// Render the External corpus block — per-agent contribution and
+/// agreement rate against quorum's Human-tier verdicts.
+pub fn format_external_corpus(overlap: &analytics::ExternalOverlap) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "\nExternal corpus").unwrap();
+    for agent in &overlap.per_agent {
+        if agent.overlap == 0 {
+            writeln!(
+                out,
+                "  {agent}: {findings} entries (no overlap with quorum verdicts)",
+                agent = agent.agent,
+                findings = agent.findings,
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                "  {agent}: {findings} entries, {overlap} overlap, {pct}% agreement",
+                agent = agent.agent,
+                findings = agent.findings,
+                overlap = agent.overlap,
+                pct = (agent.agreement_rate() * 100.0).round() as u32,
+            )
+            .unwrap();
+        }
+    }
+    out
+}
+
+/// Render the headline precision trend with Wilson CI on the most recent
+/// window. Uses `precision_trend_per_finding` when the linkage gate is
+/// open; otherwise falls back to entry-level `precision_trend` with a
+/// "entry-level pending finding-id rollout" banner.
+pub fn format_headline_trend(report: &StatsReport) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+
+    let (windows, banner) = if report.headline_trend_uses_finding_id {
+        (&report.precision_trend_per_finding, None)
+    } else {
+        (
+            &report.precision_trend,
+            Some("entry-level pending finding-id rollout"),
+        )
+    };
+
+    if windows.is_empty() {
+        if let Some(b) = banner {
+            writeln!(out, "  Trend: (no data) — {b}").unwrap();
+        } else {
+            writeln!(out, "  Trend: (no data)").unwrap();
+        }
+        return out;
+    }
+
+    // Build "77 → 81 → 78 → 76%" chain — tail window keeps `%` to anchor
+    // the eye on the current value.
+    let mut chain = String::new();
+    for (i, w) in windows.iter().enumerate() {
+        let is_last = i == windows.len() - 1;
+        let cell = if w.count < MIN_TREND_WINDOW_N {
+            "n<30".to_string()
+        } else if is_last {
+            format!("{}%", (w.precision * 100.0).round() as u32)
+        } else {
+            format!("{}", (w.precision * 100.0).round() as u32)
+        };
+        if i > 0 {
+            chain.push_str(" → ");
+        }
+        chain.push_str(&cell);
+    }
+
+    let tail = windows.last().unwrap();
+    let ci = if tail.count >= MIN_TREND_WINDOW_N && tail.precision_denom > 0 {
+        let successes = (tail.precision * tail.precision_denom as f64).round() as usize;
+        let (lo, hi) = crate::stats_math::wilson_interval(
+            successes,
+            tail.precision_denom,
+            0.95,
+        );
+        format!(
+            " [{lo}-{hi}]",
+            lo = (lo * 100.0).round() as u32,
+            hi = (hi * 100.0).round() as u32,
+        )
+    } else {
+        String::new()
+    };
+
+    let n_annotation = format!(" n={}", tail.count);
+    let capture = if report.capture_total > 0 {
+        format!(
+            ", capture: {}% ({}/{})",
+            (report.capture_rate * 100.0).round() as u32,
+            report.capture_labeled,
+            report.capture_total,
+        )
+    } else {
+        String::new()
+    };
+
+    if let Some(b) = banner {
+        writeln!(out, "  Trend: {chain}{ci}{n_annotation}{capture} — {b}").unwrap();
+    } else {
+        writeln!(out, "  Trend: {chain}{ci}{n_annotation}{capture}").unwrap();
+    }
+    out
+}
+
 pub fn format_human(report: &StatsReport, style: &Style) -> String {
+    // Default = !full: hide By caller and Rolling, keep By repo. See
+    // format_human_with_full for the full-fat variant.
+    format_human_with_full(report, style, false)
+}
+
+/// Render the dashboard, gating dimensional drill-downs (By caller,
+/// Rolling N) on `full`. By repo stays in default — it's the most
+/// scannable orientation.
+pub fn format_human_with_full(report: &StatsReport, style: &Style, full: bool) -> String {
     let mut out = format_human_core(report, style);
     let unicode = crate::output::unicode_ok_default();
     if !report.top_repos.is_empty() {
         out.push_str(&format_highlight_block("By repo (top)", &report.top_repos, style, unicode));
     }
-    if !report.top_callers.is_empty() {
-        out.push_str(&format_highlight_block("By caller (top)", &report.top_callers, style, unicode));
-    }
-    if !report.rolling_windows.is_empty() {
-        out.push_str(&format_highlight_block("Rolling 50 reviews", &report.rolling_windows, style, unicode));
+    if full {
+        if !report.top_callers.is_empty() {
+            out.push_str(&format_highlight_block("By caller (top)", &report.top_callers, style, unicode));
+        }
+        if !report.rolling_windows.is_empty() {
+            out.push_str(&format_highlight_block(
+                "Rolling windows (50 reviews each)",
+                &report.rolling_windows,
+                style,
+                unicode,
+            ));
+        }
     }
     out
 }
@@ -224,28 +426,23 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         report.tp, report.fp, report.partial, report.wontfix,
     ));
 
-    // Tier breakdown is only interesting once at least one non-Human entry
-    // exists — otherwise it's redundant with the TP/FP line above.
-    let ts = &report.tier_summary;
-    let has_tier_data = ts.post_fix.total() > 0
-        || ts.external.total.total() > 0
-        || ts.auto_calibrate.total() > 0
-        || ts.unknown.total() > 0;
-    if has_tier_data {
-        out.push('\n');
-        out.push_str(&analytics::format_tier_report(ts));
-        out.push('\n');
-    }
+    // Channel attribution table — counts only, no precision column.
+    // Always rendered (even all-zero Human) so the dashboard shape is
+    // stable; format_channel_attribution hides empty non-Human channels.
+    out.push('\n');
+    out.push_str(&analytics::format_channel_attribution(&report.tier_summary));
 
-    if !report.precision_trend.is_empty() {
-        let trend_str: Vec<String> = report.precision_trend.iter()
-            .map(|w| formatting::format_pct(w.precision))
-            .collect();
-        out.push_str(&format!("  Trend: {}\n", trend_str.join(">")));
+    // Headline trend with Wilson CI on the most recent window, plus
+    // capture-rate inline so trend footing is visible.
+    out.push_str(&format_headline_trend(report));
+
+    // External corpus block — per-agent overlap + agreement rate.
+    if !report.external_overlap.per_agent.is_empty() {
+        out.push_str(&format_external_corpus(&report.external_overlap));
     }
 
     out.push_str(&format!(
-        "\n{bold}Activity (7d){reset}\n",
+        "\n{bold}Activity (last 7 days){reset}\n",
         bold = style.bold, reset = style.reset
     ));
     out.push_str(&format!(
@@ -256,7 +453,7 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
 
     if report.tokens_in_7d > 0 || report.tokens_out_7d > 0 {
         out.push_str(&format!(
-            "\n{bold}Spend (7d){reset}\n",
+            "\n{bold}Spend (last 7 days){reset}\n",
             bold = style.bold, reset = style.reset
         ));
         out.push_str(&format!(
@@ -459,6 +656,23 @@ pub fn format_compact(report: &StatsReport) -> String {
         parts.push(format!("cost:{}", formatting::format_cost(report.cost_7d)));
     }
 
+    parts.push(format!("linkage:{}", formatting::format_pct(report.linkage_rate)));
+    parts.push(format!("capture:{}", formatting::format_pct(report.capture_rate)));
+
+    if !report.external_overlap.per_agent.is_empty() {
+        let agent_parts: Vec<String> = report.external_overlap.per_agent.iter()
+            .map(|a| format!("{}:{}/{}", a.agent, a.agree, a.overlap))
+            .collect();
+        parts.push(format!("external:{}", agent_parts.join(",")));
+    }
+
+    if !report.precision_trend_per_finding.is_empty() {
+        let pf: Vec<String> = report.precision_trend_per_finding.iter()
+            .map(|w| formatting::format_pct(w.precision))
+            .collect();
+        parts.push(format!("per-finding:{}", pf.join(">")));
+    }
+
     format!("{}\n", parts.join(" "))
 }
 
@@ -615,6 +829,31 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
         "top_repos": report.top_repos,
         "top_callers": report.top_callers,
         "rolling_windows": report.rolling_windows,
+        "linkage_rate": report.linkage_rate,
+        "linkage_linked": report.linkage_linked,
+        "linkage_unlinked": report.linkage_unlinked,
+        "capture_rate": report.capture_rate,
+        "capture_labeled": report.capture_labeled,
+        "capture_total": report.capture_total,
+        "headline_trend_uses_finding_id": report.headline_trend_uses_finding_id,
+        "external_overlap": {
+            "agents": report.external_overlap.per_agent.iter().map(|a| {
+                serde_json::json!({
+                    "agent": a.agent,
+                    "findings": a.findings,
+                    "overlap": a.overlap,
+                    "agree": a.agree,
+                    "agreement_rate": a.agreement_rate(),
+                })
+            }).collect::<Vec<_>>()
+        },
+        "precision_trend_per_finding": report.precision_trend_per_finding.iter().map(|w| {
+            serde_json::json!({
+                "week_start": w.week_start.to_rfc3339(),
+                "precision": w.precision,
+                "count": w.count,
+            })
+        }).collect::<Vec<_>>(),
     });
     Ok(serde_json::to_string_pretty(&json)?)
 }
@@ -652,7 +891,213 @@ mod tests {
             flags: Flags { deep: false, parallel_n: 1, ensemble: false },
             mode: None,
             context: Default::default(),
+        finding_ids: Vec::new(),
         }
+    }
+
+    // ─── Stats redesign Task 11: section label normalization ───
+
+    #[test]
+    fn format_human_uses_normalized_section_labels() {
+        // The redesign explicitly states "(7d)" reads as jargon — replace
+        // with "(last 7 days)". Same for "Rolling 50 reviews" which is
+        // ambiguous about whether 50 is the window size or the count.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..6).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("(7d)"),
+            "old jargon label '(7d)' should be replaced: {out}"
+        );
+        assert!(
+            out.contains("last 7 days"),
+            "expected 'last 7 days' label: {out}"
+        );
+    }
+
+    // ─── Stats redesign Task 12: --full flag ───
+
+    #[test]
+    fn format_human_default_omits_by_caller_and_rolling() {
+        // The default dashboard hides the dimensional drill-downs (caller,
+        // rolling) — they live behind --full.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..120).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human_with_full(&report, &Style::plain(), false);
+        assert!(out.contains("By repo"), "By repo stays in default: {out}");
+        assert!(!out.contains("By caller"), "By caller hides without --full: {out}");
+        assert!(!out.contains("Rolling"), "Rolling hides without --full: {out}");
+    }
+
+    #[test]
+    fn format_human_full_shows_all_dimensional_views() {
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..120).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human_with_full(&report, &Style::plain(), true);
+        assert!(out.contains("By repo"));
+        assert!(out.contains("By caller"));
+        assert!(out.contains("Rolling"));
+    }
+
+    // ─── Stats redesign Task 10: headline trend rendering ───
+
+    fn pw(precision: f64, count: usize) -> analytics::PrecisionWindow {
+        analytics::PrecisionWindow {
+            week_start: chrono::Utc::now(),
+            precision,
+            count,
+            precision_denom: count,
+        }
+    }
+
+    fn make_report_for_trend(
+        trend_per_finding: Vec<analytics::PrecisionWindow>,
+        capture_labeled: usize,
+        capture_total: usize,
+        uses_finding_id: bool,
+    ) -> StatsReport {
+        StatsReport {
+            feedback_count: 0,
+            precision: 0.0,
+            tp: 0, fp: 0, partial: 0, wontfix: 0,
+            precision_trend: vec![],
+            reviews_7d: 0,
+            findings_per_review: 0.0,
+            suppression_rate: 0.0,
+            tokens_in_7d: 0, tokens_out_7d: 0,
+            cost_7d: 0.0, tokens_per_finding: 0.0,
+            model: String::new(),
+            top_repos: Vec::new(),
+            top_callers: Vec::new(),
+            rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: if capture_total > 0 { capture_labeled as f64 / capture_total as f64 } else { 0.0 },
+            capture_labeled,
+            capture_total,
+            headline_trend_uses_finding_id: uses_finding_id,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: trend_per_finding,
+        }
+    }
+
+    #[test]
+    fn headline_trend_renders_arrow_chain_with_ci_on_current_window() {
+        // 4-window trend, last window n=145 ≥ 30 → Wilson CI shown.
+        let report = make_report_for_trend(
+            vec![pw(0.77, 30), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
+            212, 1159, true,
+        );
+        let out = format_headline_trend(&report);
+        assert!(out.contains("77 → 81"), "trend chain missing: {out}");
+        assert!(out.contains("76%"), "current window pct missing: {out}");
+        assert!(out.contains("["), "expected CI bracket: {out}");
+        assert!(out.contains("n=145"), "expected sample-size annotation: {out}");
+        assert!(out.contains("capture"), "capture-rate inline missing: {out}");
+    }
+
+    #[test]
+    fn headline_trend_replaces_low_n_window_with_n_too_low() {
+        let report = make_report_for_trend(
+            vec![pw(0.77, 8), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
+            10, 100, true,
+        );
+        let out = format_headline_trend(&report);
+        assert!(
+            out.contains("n<30") || out.contains("n=8"),
+            "low-n window must be marked: {out}"
+        );
+    }
+
+    #[test]
+    fn headline_trend_shows_legacy_banner_when_finding_id_unused() {
+        let report = make_report_for_trend(vec![], 0, 0, false);
+        let out = format_headline_trend(&report);
+        assert!(
+            out.contains("entry-level") && out.contains("finding-id"),
+            "legacy banner should indicate the fallback: {out}"
+        );
+    }
+
+    // ─── Stats redesign Task 6: extended StatsReport fields ───
+
+    #[test]
+    fn compute_report_populates_linkage_and_capture_metadata() {
+        // Empty stores still expose the new fields with safe defaults so
+        // callers don't have to None-check or panic on missing data.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let rl = crate::review_log::ReviewLog::new(dir.path().join("reviews.jsonl"));
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        assert!(report.linkage_rate >= 0.0 && report.linkage_rate <= 1.0);
+        assert_eq!(report.linkage_linked, 0);
+        assert_eq!(report.linkage_unlinked, 0);
+        assert!(report.capture_rate >= 0.0 && report.capture_rate <= 1.0);
+        assert_eq!(report.capture_labeled, 0);
+        assert_eq!(report.capture_total, 0);
+        assert!(!report.headline_trend_uses_finding_id, "no data → false");
+        assert!(report.external_overlap.per_agent.is_empty());
+    }
+
+    #[test]
+    fn headline_trend_uses_finding_id_flips_on_at_85_percent_linkage() {
+        // 17 linked + 3 unlinked = 85% — clears the threshold exactly.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+
+        let mut record = rec("alpha", "tty", 1);
+        record.finding_ids = (0..17).map(|i| format!("FID-{i}")).collect();
+        let rl = make_review_log(&dir, &[record]);
+
+        for i in 0..17 {
+            fb.record(&crate::feedback::FeedbackEntry {
+                file_path: "x.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: crate::feedback::Verdict::Tp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: crate::feedback::Provenance::Human,
+                fp_kind: None,
+                finding_id: Some(format!("FID-{i}")),
+                rule_id: None,
+            }).unwrap();
+        }
+        for _ in 0..3 {
+            fb.record(&crate::feedback::FeedbackEntry {
+                file_path: "y.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: crate::feedback::Verdict::Fp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: crate::feedback::Provenance::Human,
+                fp_kind: None,
+                finding_id: None,
+                rule_id: None,
+            }).unwrap();
+        }
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        assert!((report.linkage_rate - 0.85).abs() < 1e-9);
+        assert!(report.headline_trend_uses_finding_id, "85% must flip the gate");
     }
 
     #[test]
@@ -716,7 +1161,9 @@ mod tests {
     }
 
     #[test]
-    fn format_human_default_includes_highlights_when_data_present() {
+    fn format_human_default_includes_by_repo_when_data_present() {
+        // After Task 12, default omits By caller / Rolling — only By repo
+        // is shown by default.
         let dir = TempDir::new().unwrap();
         let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
         let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
@@ -725,9 +1172,7 @@ mod tests {
         let report = compute_report(&fb, &tl, &rl).unwrap();
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("By repo"), "missing repo section: {}", out);
-        assert!(out.contains("By caller"), "missing caller section: {}", out);
         assert!(out.contains("alpha"));
-        assert!(out.contains("claude_code"));
     }
 
     #[test]
@@ -769,6 +1214,11 @@ mod tests {
         assert!(v["top_repos"].is_array());
         assert!(v["top_callers"].is_array());
         assert!(v["rolling_windows"].is_array());
+        assert!(v["linkage_rate"].is_f64());
+        assert!(v["capture_rate"].is_f64());
+        assert!(v["headline_trend_uses_finding_id"].is_boolean());
+        assert!(v["external_overlap"]["agents"].is_array());
+        assert!(v["precision_trend_per_finding"].is_array());
     }
 
     #[test]
@@ -793,6 +1243,15 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let out = format_compact(&report);
         assert!(out.contains("feedback:100"));
@@ -800,6 +1259,53 @@ mod tests {
         assert!(out.contains("tp:60"));
         assert!(out.contains("fp:20"));
         assert!(out.contains("reviews_7d:5"));
+        assert!(out.contains("linkage:0%"));
+        assert!(out.contains("capture:0%"));
+    }
+
+    #[test]
+    fn format_compact_includes_external_overlap_when_present() {
+        let report = StatsReport {
+            feedback_count: 100,
+            precision: 0.75,
+            tp: 60,
+            fp: 20,
+            partial: 10,
+            wontfix: 10,
+            precision_trend: vec![],
+            reviews_7d: 5,
+            findings_per_review: 3.2,
+            suppression_rate: 0.1,
+            tokens_in_7d: 0,
+            tokens_out_7d: 0,
+            cost_7d: 0.0,
+            tokens_per_finding: 0.0,
+            model: String::new(),
+            top_repos: Vec::new(),
+            top_callers: Vec::new(),
+            rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.92,
+            linkage_linked: 46,
+            linkage_unlinked: 4,
+            capture_rate: 0.6,
+            capture_labeled: 3,
+            capture_total: 5,
+            headline_trend_uses_finding_id: true,
+            external_overlap: analytics::ExternalOverlap {
+                per_agent: vec![analytics::AgentOverlap {
+                    agent: "pal".into(),
+                    findings: 10,
+                    overlap: 8,
+                    agree: 6,
+                }],
+            },
+            precision_trend_per_finding: Vec::new(),
+        };
+        let out = format_compact(&report);
+        assert!(out.contains("linkage:92%"));
+        assert!(out.contains("capture:60%"));
+        assert!(out.contains("external:pal:6/8"));
     }
 
     #[test]
@@ -824,11 +1330,20 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
-        assert!(out.contains("Activity (7d)"));
-        assert!(out.contains("Spend (7d)"));
+        assert!(out.contains("Activity (last 7 days)"));
+        assert!(out.contains("Spend (last 7 days)"));
         assert!(out.contains("2.0k"));  // feedback count
         assert!(out.contains("74%"));   // precision
     }
@@ -960,6 +1475,15 @@ mod tests {
             top_callers: Vec::new(),
             rolling_windows: Vec::new(),
             tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: 0.0,
+            capture_labeled: 0,
+            capture_total: 0,
+            headline_trend_uses_finding_id: false,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: Vec::new(),
         };
         let json = format_json(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
