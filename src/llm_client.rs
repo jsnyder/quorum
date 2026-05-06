@@ -2878,4 +2878,41 @@ mod tests {
             "system prompt must require backtick-quoted symbol names in finding titles"
         );
     }
+
+    #[test]
+    fn system_prompt_uses_open_ended_framing() {
+        let prompt = OpenAiClient::system_prompt();
+        assert!(
+            !prompt.contains("Prioritize, in this order:"),
+            "system prompt must not use ranked priority framing"
+        );
+        assert!(
+            prompt.contains("non-exhaustive"),
+            "system prompt must present categories as non-exhaustive"
+        );
+        assert!(
+            prompt.contains("style") && prompt.contains("Deprioritize"),
+            "system prompt must still deprioritize pure style issues"
+        );
+    }
+
+    #[test]
+    fn system_prompt_does_not_instruct_omission_of_theoretical_bugs() {
+        let prompt = OpenAiClient::system_prompt();
+        assert!(
+            !prompt.contains("or omit"),
+            "system prompt must not instruct omission of any reachable bugs"
+        );
+    }
+
+    #[test]
+    fn system_prompt_exceeds_caching_threshold() {
+        let prompt = OpenAiClient::system_prompt();
+        assert!(
+            prompt.len() >= 4096,
+            "system prompt must be >=4096 chars to trigger prompt caching (~1024 tokens). \
+             Current length: {} chars",
+            prompt.len()
+        );
+    }
 }
