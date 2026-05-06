@@ -250,6 +250,10 @@ pub struct ReviewRecord {
     pub duration_ms: u64,
     #[serde(default)]
     pub flags: Flags,
+    /// Review mode (plan, docs). Omitted for code reviews (the default)
+    /// so legacy records without this field deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// Context-injection telemetry for this invocation. Defaults to a
     /// semantic-zero [`ContextTelemetry`] when no injector was wired.
     /// Marked `#[serde(default)]` for backwards-compat with records
@@ -445,6 +449,7 @@ mod tests {
             tokens_cache_read: 8_000,
             duration_ms: 4_200,
             flags: Flags { deep: false, parallel_n: 4, ensemble: false },
+            mode: None,
             context: ContextTelemetry::default(),
         }
     }
@@ -831,5 +836,50 @@ mod tests {
             assert!(c.vector <= c.total_unique);
             assert!(c.structural <= c.total_unique);
         }
+    }
+
+    // ---- mode field (Task 6) -----------------------------------------------
+
+    #[test]
+    fn mode_serializes_when_present() {
+        let mut rec = sample_record();
+        rec.mode = Some("plan".into());
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains(r#""mode":"plan""#), "json: {json}");
+        let back: ReviewRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn mode_omitted_for_code_reviews() {
+        let rec = sample_record(); // mode is None
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(
+            !json.contains("\"mode\""),
+            "mode should be skip_serialized when None; json: {json}"
+        );
+    }
+
+    #[test]
+    fn mode_defaults_to_none_for_legacy_records() {
+        // Legacy JSON line written before the mode field existed.
+        let legacy = r#"{
+            "run_id":"01HX000000000000000000000X",
+            "timestamp":"2026-04-20T12:00:00Z",
+            "quorum_version":"0.15.0",
+            "repo":"legacy-repo",
+            "invoked_from":"tty",
+            "model":"gpt-5.4",
+            "files_reviewed":1,
+            "lines_added":null,
+            "lines_removed":null,
+            "findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},
+            "tokens_in":100,
+            "tokens_out":20,
+            "duration_ms":500
+        }"#;
+        let rec: ReviewRecord = serde_json::from_str(legacy)
+            .expect("legacy record without mode field must deserialize");
+        assert!(rec.mode.is_none(), "mode should default to None for legacy records");
     }
 }

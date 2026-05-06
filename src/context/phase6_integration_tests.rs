@@ -357,6 +357,7 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
         tokens_cache_read: 0,
         duration_ms: 0,
         flags: Flags::default(),
+        mode: None,
         context: tele.clone(),
     };
     log.record(&record).unwrap();

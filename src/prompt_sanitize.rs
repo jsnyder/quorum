@@ -9,6 +9,7 @@
 /// Untrusted text containing a literal `</tag>` for any of these is defanged
 /// via [`defang_sandbox_tags`] before interpolation.
 pub const SANDBOX_TAGS: &[&str] = &[
+    "document",
     "framework_docs",
     "hydration_context",
     "historical_findings",

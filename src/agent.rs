@@ -88,7 +88,8 @@ pub fn agent_review(
 
     let prompt = render_review_prompt(&safe_path_or_default(file_path), &file_listing, code, &tool_descriptions, config);
 
-    let resp = reviewer.review(&prompt, model)?;
+    let sys_prompt = crate::llm_client::OpenAiClient::system_prompt();
+    let resp = reviewer.review(&prompt, model, sys_prompt)?;
     crate::review::parse_llm_response(&resp.content, model)
 }
 
@@ -1005,7 +1006,7 @@ mod tests {
         // Capture what the reviewer sees
         struct CapturingReviewer(std::sync::Mutex<String>);
         impl crate::pipeline::LlmReviewer for CapturingReviewer {
-            fn review(&self, prompt: &str, _model: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(&self, prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 *self.0.lock().unwrap() = prompt.to_string();
                 Ok(crate::llm_client::LlmResponse { content: "[]".into(), usage: None })
             }

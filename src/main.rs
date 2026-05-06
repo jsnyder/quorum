@@ -20,7 +20,9 @@ pub use quorum::merge;
 pub use quorum::parser;
 pub use quorum::patterns;
 pub use quorum::prompt_sanitize;
+pub use quorum::prose_prompts;
 pub use quorum::redact;
+pub use quorum::review_mode;
 
 mod agent;
 mod analytics;
@@ -539,9 +541,43 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         None
     };
 
+    // Prose review modes are not yet supported with --daemon or --deep.
+    if opts.mode.is_prose() && (opts.daemon || opts.deep) {
+        eprintln!(
+            "error: --mode {} is not supported with {} yet",
+            opts.mode,
+            if opts.daemon { "--daemon" } else { "--deep" }
+        );
+        return 3;
+    }
+
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {
         return run_review_via_daemon(&opts);
+    }
+
+    // Warn on mode/extension mismatch (advisory, never blocks the review).
+    {
+        let prose_extensions = ["md", "txt", "adoc", "rst"];
+        for f in &opts.files {
+            if let Some(ext) = f.extension().and_then(|e| e.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                let is_prose_ext = prose_extensions.contains(&ext_lower.as_str());
+                if opts.mode == crate::review_mode::ReviewMode::Code && is_prose_ext {
+                    eprintln!(
+                        "warning: '{}' looks like a prose file. \
+                         Use --mode plan or --mode docs for non-code review.",
+                        f.display()
+                    );
+                } else if opts.mode.is_prose() && !is_prose_ext {
+                    eprintln!(
+                        "warning: '{}' does not look like a prose file but --mode {} was specified.",
+                        f.display(),
+                        opts.mode,
+                    );
+                }
+            }
+        }
     }
 
     // Load config
@@ -836,6 +872,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         context7_fetcher,
         context7_disabled,
         calibrator_config,
+        mode: opts.mode,
         ..Default::default()
     };
 
@@ -1439,6 +1476,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 deep: opts.deep,
                 parallel_n: opts.parallel as u32,
                 ensemble: opts.ensemble,
+            },
+            mode: if opts.mode == crate::review_mode::ReviewMode::Code {
+                None
+            } else {
+                Some(opts.mode.as_str().to_string())
             },
             context: context_telem,
         };

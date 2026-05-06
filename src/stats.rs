@@ -650,6 +650,7 @@ mod tests {
             tokens_in: 0, tokens_out: 0, tokens_cache_read: 0,
             duration_ms: 100,
             flags: Flags { deep: false, parallel_n: 1, ensemble: false },
+            mode: None,
             context: Default::default(),
         }
     }

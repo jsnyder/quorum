@@ -456,6 +456,10 @@ pub struct ReviewOpts {
     /// Label this invocation in reviews.jsonl (overrides env-based detection).
     #[arg(long)]
     pub caller: Option<String>,
+
+    /// Review mode: code (default), plan, docs
+    #[arg(long, default_value = "code")]
+    pub mode: crate::review_mode::ReviewMode,
 }
 
 /// CLI surface for `--fp-kind` (#123 Layer 1). Variants map onto
