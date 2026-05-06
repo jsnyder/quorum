@@ -35,13 +35,22 @@ pub fn sparkline(points: &[f64], unicode: bool) -> String {
     }
     // Scale over finite values only. NaN/±∞ render as the lowest level so they
     // don't swamp the scale and make real trends unreadable.
-    let (min, max) = points.iter().copied().filter(|p| p.is_finite())
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p), hi.max(p)));
+    let (min, max) = points
+        .iter()
+        .copied()
+        .filter(|p| p.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p), hi.max(p))
+        });
     let range = max - min;
 
     let unicode_levels: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let ascii_levels: [char; 5] = ['_', '.', '-', '=', '^'];
-    let levels: &[char] = if unicode { &unicode_levels } else { &ascii_levels };
+    let levels: &[char] = if unicode {
+        &unicode_levels
+    } else {
+        &ascii_levels
+    };
 
     let mut out = String::with_capacity(points.len() * 3);
     for &p in points {
@@ -154,8 +163,12 @@ mod tests {
         assert_eq!(chars.len(), 5);
         // Each char's unicode codepoint should be >= the previous (8 levels, monotone).
         for pair in chars.windows(2) {
-            assert!(pair[1] as u32 >= pair[0] as u32,
-                "non-monotone: {:?} -> {:?}", pair[0], pair[1]);
+            assert!(
+                pair[1] as u32 >= pair[0] as u32,
+                "non-monotone: {:?} -> {:?}",
+                pair[0],
+                pair[1]
+            );
         }
     }
 
@@ -167,8 +180,11 @@ mod tests {
         let s = sparkline(&[1.0, f64::NAN, 3.0, 5.0], true);
         assert_eq!(s.chars().count(), 4);
         let unique: std::collections::BTreeSet<char> = s.chars().collect();
-        assert!(unique.len() > 1,
-            "finite points 1,3,5 should produce >1 distinct levels even with NaN, got {:?}", s);
+        assert!(
+            unique.len() > 1,
+            "finite points 1,3,5 should produce >1 distinct levels even with NaN, got {:?}",
+            s
+        );
     }
 
     #[test]
@@ -176,8 +192,11 @@ mod tests {
         let s = sparkline(&[1.0, f64::INFINITY, 3.0, 5.0], true);
         assert_eq!(s.chars().count(), 4);
         let unique: std::collections::BTreeSet<char> = s.chars().collect();
-        assert!(unique.len() > 1,
-            "finite points 1,3,5 should produce >1 distinct levels even with ∞, got {:?}", s);
+        assert!(
+            unique.len() > 1,
+            "finite points 1,3,5 should produce >1 distinct levels even with ∞, got {:?}",
+            s
+        );
     }
 
     #[test]
@@ -186,8 +205,12 @@ mod tests {
         for c in s.chars() {
             // U+2581..=U+2588 are the 8 lower-block variants
             let cp = c as u32;
-            assert!((0x2581..=0x2588).contains(&cp),
-                "char {:?} codepoint {:04X} is outside U+2581-2588", c, cp);
+            assert!(
+                (0x2581..=0x2588).contains(&cp),
+                "char {:?} codepoint {:04X} is outside U+2581-2588",
+                c,
+                cp
+            );
         }
     }
 
@@ -197,7 +220,11 @@ mod tests {
         assert_eq!(s.chars().count(), 5);
         // Fallback chars must be printable ASCII
         for c in s.chars() {
-            assert!(c.is_ascii() && !c.is_ascii_control(), "{:?} not printable ascii", c);
+            assert!(
+                c.is_ascii() && !c.is_ascii_control(),
+                "{:?} not printable ascii",
+                c
+            );
         }
     }
 

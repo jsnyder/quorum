@@ -1,7 +1,6 @@
-/// Per-source TP/FP analytics computed from the feedback store.
-
-use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
+/// Per-source TP/FP analytics computed from the feedback store.
+use std::collections::{HashMap, HashSet};
 
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::review_log::ReviewRecord;
@@ -115,7 +114,12 @@ pub fn format_stats_report(stats: &HashMap<String, SourceStats>) -> String {
     for (source, s) in &sources {
         lines.push(format!(
             "{:<18} {:>3}  {:>3}  {:>7}  {:>7}  {:>5}  {:>6.0}%",
-            source, s.tp, s.fp, s.partial, s.wontfix, s.total(),
+            source,
+            s.tp,
+            s.fp,
+            s.partial,
+            s.wontfix,
+            s.total(),
             s.precision() * 100.0
         ));
     }
@@ -124,7 +128,10 @@ pub fn format_stats_report(stats: &HashMap<String, SourceStats>) -> String {
     let total_fp: usize = sources.iter().map(|(_, s)| s.fp).sum();
     let total: usize = sources.iter().map(|(_, s)| s.total()).sum();
     lines.push("-".repeat(65));
-    lines.push(format!("Total: {} entries ({} TP, {} FP)", total, total_tp, total_fp));
+    lines.push(format!(
+        "Total: {} entries ({} TP, {} FP)",
+        total, total_tp, total_fp
+    ));
 
     lines.join("\n")
 }
@@ -185,11 +192,7 @@ pub fn compute_tier_stats(entries: &[FeedbackEntry]) -> TierSummary {
     }
 
     let mut agents: Vec<(String, SourceStats)> = per_agent.into_iter().collect();
-    agents.sort_by(|a, b| {
-        b.1.total()
-            .cmp(&a.1.total())
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    agents.sort_by(|a, b| b.1.total().cmp(&a.1.total()).then_with(|| a.0.cmp(&b.0)));
     summary.external.per_agent = agents;
     summary
 }
@@ -252,7 +255,8 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
     let mut window_start = first_ts;
     while window_start <= last_ts {
         let window_end = window_start + chrono::Duration::days(window_days);
-        let window_entries: Vec<_> = sorted.iter()
+        let window_entries: Vec<_> = sorted
+            .iter()
             .filter(|e| e.timestamp >= window_start && e.timestamp < window_end)
             .collect();
 
@@ -272,7 +276,11 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
             }
             let relevant = tp + partial;
             let total = relevant + fp;
-            let precision = if total > 0 { relevant as f64 / total as f64 } else { 0.0 };
+            let precision = if total > 0 {
+                relevant as f64 / total as f64
+            } else {
+                0.0
+            };
             windows.push(PrecisionWindow {
                 week_start: window_start,
                 precision,
@@ -345,7 +353,11 @@ pub fn format_channel_attribution(summary: &TierSummary) -> String {
             out,
             "  {label:<10}  {total:>6}  {tp:>5}  {fp:>5}  {part:>5}  {wfix:>5}",
             label = label,
-            total = if total == 0 { "—".to_string() } else { total.to_string() },
+            total = if total == 0 {
+                "—".to_string()
+            } else {
+                total.to_string()
+            },
             tp = cell(s.tp),
             fp = cell(s.fp),
             part = cell(s.partial),
@@ -419,10 +431,12 @@ pub fn compute_external_overlap(
         let Provenance::External { agent, .. } = &e.provenance else {
             continue;
         };
-        let row = per_agent.entry(agent.clone()).or_insert_with(|| AgentOverlap {
-            agent: agent.clone(),
-            ..Default::default()
-        });
+        let row = per_agent
+            .entry(agent.clone())
+            .or_insert_with(|| AgentOverlap {
+                agent: agent.clone(),
+                ..Default::default()
+            });
         row.findings += 1;
         if let Some(fid) = &e.finding_id {
             if let Some(qv) = quorum_verdicts.get(fid) {
@@ -434,7 +448,11 @@ pub fn compute_external_overlap(
         }
     }
     let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
-    agents.sort_by(|a, b| b.findings.cmp(&a.findings).then_with(|| a.agent.cmp(&b.agent)));
+    agents.sort_by(|a, b| {
+        b.findings
+            .cmp(&a.findings)
+            .then_with(|| a.agent.cmp(&b.agent))
+    });
     ExternalOverlap { per_agent: agents }
 }
 
@@ -500,8 +518,7 @@ pub fn precision_trend_per_finding(
                     Provenance::PostFix => 1,
                     _ => unreachable!("only Human/PostFix enter the map"),
                 };
-                if tier_rank < prev_rank
-                    || (tier_rank == prev_rank && e.timestamp < prev.timestamp)
+                if tier_rank < prev_rank || (tier_rank == prev_rank && e.timestamp < prev.timestamp)
                 {
                     keep.insert(fid.clone(), e.clone());
                 }
@@ -558,11 +575,19 @@ mod tests {
             entry_with(Provenance::Human, Verdict::Fp),
             entry_with(Provenance::PostFix, Verdict::Tp),
             entry_with(
-                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Provenance::External {
+                    agent: "pal".into(),
+                    model: None,
+                    confidence: None,
+                },
                 Verdict::Tp,
             ),
             entry_with(
-                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Provenance::External {
+                    agent: "pal".into(),
+                    model: None,
+                    confidence: None,
+                },
                 Verdict::Fp,
             ),
             entry_with(
@@ -593,11 +618,19 @@ mod tests {
         use crate::feedback::Provenance;
         let fb = vec![
             entry_with(
-                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Provenance::External {
+                    agent: "pal".into(),
+                    model: None,
+                    confidence: None,
+                },
                 Verdict::Tp,
             ),
             entry_with(
-                Provenance::External { agent: "pal".into(), model: None, confidence: None },
+                Provenance::External {
+                    agent: "pal".into(),
+                    model: None,
+                    confidence: None,
+                },
                 Verdict::Tp,
             ),
             entry_with(
@@ -619,8 +652,8 @@ mod tests {
 
         // Format contract: sub-line lists agents with counts.
         let report = format_tier_report(&summary);
-        let re = regex::Regex::new(r"top agents:\s+pal\s*\(\d+\).*third-opinion\s*\(\d+\)")
-            .unwrap();
+        let re =
+            regex::Regex::new(r"top agents:\s+pal\s*\(\d+\).*third-opinion\s*\(\d+\)").unwrap();
         assert!(
             re.is_match(&report),
             "sub-line format must list agents with counts: {report}"
@@ -976,7 +1009,11 @@ mod tests {
         // Pad to clear the min_entries=10 gate.
         for i in 0..9 {
             let id = format!("PAD-{i}");
-            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+            entries.push(fb_with_id_and_provenance(
+                &id,
+                Verdict::Tp,
+                Provenance::Human,
+            ));
         }
         let trend = precision_trend_per_finding(&entries, 7);
         assert_eq!(trend.len(), 1);
@@ -1045,7 +1082,11 @@ mod tests {
         ];
         for i in 0..7 {
             let id = format!("TP-{i}");
-            entries.push(fb_with_id_and_provenance(&id, Verdict::Tp, Provenance::Human));
+            entries.push(fb_with_id_and_provenance(
+                &id,
+                Verdict::Tp,
+                Provenance::Human,
+            ));
         }
         let trend = precision_trend_per_finding(&entries, 7);
         assert_eq!(trend.len(), 1);
@@ -1254,11 +1295,15 @@ mod tests {
         let feedback = vec![
             fb_with_id_and_provenance("A", Verdict::Tp, Provenance::Human),
             fb_with_id_and_provenance("B", Verdict::Tp, Provenance::PostFix),
-            fb_with_id_and_provenance("C", Verdict::Tp, Provenance::External {
-                agent: "pal".into(),
-                model: None,
-                confidence: None,
-            }),
+            fb_with_id_and_provenance(
+                "C",
+                Verdict::Tp,
+                Provenance::External {
+                    agent: "pal".into(),
+                    model: None,
+                    confidence: None,
+                },
+            ),
         ];
         let stats = linkage_stats(&reviews, &feedback);
         assert_eq!(stats.linked, 2, "only Human + PostFix should count");

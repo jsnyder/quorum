@@ -300,7 +300,9 @@ impl ReviewLog {
         let file = File::open(&self.path)
             .with_context(|| format!("Failed to open review log: {}", self.path.display()))?;
         let reader: Box<dyn BufRead> = Box::new(BufReader::new(file));
-        Ok(ReviewLogIter { inner: Some(reader.lines()) })
+        Ok(ReviewLogIter {
+            inner: Some(reader.lines()),
+        })
     }
 
     /// Convenience: collect all records (suitable for small logs and tests).
@@ -456,10 +458,14 @@ mod tests {
             tokens_out: 678,
             tokens_cache_read: 8_000,
             duration_ms: 4_200,
-            flags: Flags { deep: false, parallel_n: 4, ensemble: false },
+            flags: Flags {
+                deep: false,
+                parallel_n: 4,
+                ensemble: false,
+            },
             mode: None,
             context: ContextTelemetry::default(),
-        finding_ids: Vec::new(),
+            finding_ids: Vec::new(),
         }
     }
 
@@ -505,8 +511,10 @@ mod tests {
         let rec = sample_record();
         assert!(rec.finding_ids.is_empty(), "fixture default must be empty");
         let json = serde_json::to_string(&rec).unwrap();
-        assert!(!json.contains("finding_ids"),
-            "empty finding_ids must not write the key: {json}");
+        assert!(
+            !json.contains("finding_ids"),
+            "empty finding_ids must not write the key: {json}"
+        );
     }
 
     #[test]
@@ -595,9 +603,15 @@ mod tests {
         let got = detect_invoked_from(None);
         // Restore
         unsafe {
-            if let Some(v) = prev_claude { std::env::set_var("CLAUDE_CODE", v); }
-            if let Some(v) = prev_codex { std::env::set_var("CODEX_CI", v); }
-            if let Some(v) = prev_gemini { std::env::set_var("GEMINI_CLI", v); }
+            if let Some(v) = prev_claude {
+                std::env::set_var("CLAUDE_CODE", v);
+            }
+            if let Some(v) = prev_codex {
+                std::env::set_var("CODEX_CI", v);
+            }
+            if let Some(v) = prev_gemini {
+                std::env::set_var("GEMINI_CLI", v);
+            }
             match prev_agent {
                 Some(v) => std::env::set_var("AGENT", v),
                 None => std::env::remove_var("AGENT"),
@@ -613,7 +627,13 @@ mod tests {
         let sub = dir.path().join("src/nested");
         std::fs::create_dir_all(&sub).unwrap();
         let got = detect_repo(&sub).unwrap();
-        let expected = dir.path().file_name().unwrap().to_str().unwrap().to_string();
+        let expected = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert_eq!(got, expected);
     }
 
@@ -622,7 +642,11 @@ mod tests {
         // Root has no parent with a .git directory (on any reasonable system).
         // Using "/" guarantees we exhaust the parent chain without a match.
         let got = detect_repo(Path::new("/"));
-        assert!(got.is_none(), "filesystem root should yield None, got {:?}", got);
+        assert!(
+            got.is_none(),
+            "filesystem root should yield None, got {:?}",
+            got
+        );
     }
 
     use std::sync::Mutex;
@@ -647,9 +671,7 @@ mod tests {
             ids.push(r.run_id.clone());
             log.record(&r).unwrap();
         }
-        let got: Vec<String> = log.iter().unwrap()
-            .map(|r| r.unwrap().run_id)
-            .collect();
+        let got: Vec<String> = log.iter().unwrap().map(|r| r.unwrap().run_id).collect();
         assert_eq!(got, ids);
     }
 
@@ -667,7 +689,11 @@ mod tests {
         }
         let log = ReviewLog::new(path);
         let records: Vec<_> = log.iter().unwrap().filter_map(|r| r.ok()).collect();
-        assert_eq!(records.len(), 2, "should skip malformed + blank, keep valid");
+        assert_eq!(
+            records.len(),
+            2,
+            "should skip malformed + blank, keep valid"
+        );
     }
 
     #[test]
@@ -722,7 +748,10 @@ mod tests {
         rec.context = populated_context_telemetry();
 
         let json = serde_json::to_string(&rec).unwrap();
-        assert!(json.contains("\"auto_inject_enabled\":true"), "json: {json}");
+        assert!(
+            json.contains("\"auto_inject_enabled\":true"),
+            "json: {json}"
+        );
         assert!(json.contains("\"injector_available\":true"));
         assert!(json.contains("\"retrieved_chunk_count\":5"));
         assert!(json.contains("\"injected_chunk_count\":2"));
@@ -839,7 +868,10 @@ mod tests {
             assert_eq!(c.bm25, 1);
             assert_eq!(c.vector, 1);
             assert_eq!(c.structural, 1);
-            assert_eq!(c.structural_only, 1, "lone Structural tag is structural_only");
+            assert_eq!(
+                c.structural_only, 1,
+                "lone Structural tag is structural_only"
+            );
             assert_eq!(c.total_unique, 3);
         }
 
@@ -850,8 +882,14 @@ mod tests {
             assert_eq!(c.bm25, 1);
             assert_eq!(c.vector, 0);
             assert_eq!(c.structural, 1);
-            assert_eq!(c.structural_only, 0, "Structural+Bm25 is NOT structural_only");
-            assert_eq!(c.total_unique, 1, "multi-leg chunk counts once toward total_unique");
+            assert_eq!(
+                c.structural_only, 0,
+                "Structural+Bm25 is NOT structural_only"
+            );
+            assert_eq!(
+                c.total_unique, 1,
+                "multi-leg chunk counts once toward total_unique"
+            );
         }
 
         #[test]
@@ -927,6 +965,9 @@ mod tests {
         }"#;
         let rec: ReviewRecord = serde_json::from_str(legacy)
             .expect("legacy record without mode field must deserialize");
-        assert!(rec.mode.is_none(), "mode should default to None for legacy records");
+        assert!(
+            rec.mode.is_none(),
+            "mode should default to None for legacy records"
+        );
     }
 }

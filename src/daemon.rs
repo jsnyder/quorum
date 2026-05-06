@@ -1,7 +1,6 @@
 /// Daemon mode: persistent background process with warm caches and file watching.
 /// Keeps ParseCache warm, invalidates on file changes, accepts review requests
 /// via the MCP server (stdio transport).
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -58,10 +57,7 @@ pub fn start_watcher(
 }
 
 /// Process daemon events: invalidate cache on file changes.
-pub async fn run_event_loop(
-    mut rx: mpsc::UnboundedReceiver<DaemonEvent>,
-    _cache: Arc<ParseCache>,
-) {
+pub async fn run_event_loop(mut rx: mpsc::UnboundedReceiver<DaemonEvent>, _cache: Arc<ParseCache>) {
     while let Some(event) = rx.recv().await {
         match event {
             DaemonEvent::FileChanged(path) => {
@@ -107,7 +103,8 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let cache = Arc::new(ParseCache::new(10));
 
-        tx.send(DaemonEvent::FileChanged(PathBuf::from("test.rs"))).unwrap();
+        tx.send(DaemonEvent::FileChanged(PathBuf::from("test.rs")))
+            .unwrap();
         tx.send(DaemonEvent::Shutdown).unwrap();
 
         run_event_loop(rx, cache).await;
@@ -134,15 +131,21 @@ mod tests {
         let v1 = "fn original() {}";
         let v2 = "fn modified() {}";
 
-        cache.get_or_parse(v1, crate::parser::Language::Rust).unwrap();
+        cache
+            .get_or_parse(v1, crate::parser::Language::Rust)
+            .unwrap();
         assert_eq!(cache.stats().misses, 1);
 
         // Same content = hit
-        cache.get_or_parse(v1, crate::parser::Language::Rust).unwrap();
+        cache
+            .get_or_parse(v1, crate::parser::Language::Rust)
+            .unwrap();
         assert_eq!(cache.stats().hits, 1);
 
         // Different content = miss (auto-invalidation)
-        cache.get_or_parse(v2, crate::parser::Language::Rust).unwrap();
+        cache
+            .get_or_parse(v2, crate::parser::Language::Rust)
+            .unwrap();
         assert_eq!(cache.stats().misses, 2);
     }
 }

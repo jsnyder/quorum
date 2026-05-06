@@ -6,13 +6,15 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::config::{ContextConfig, SourceEntry, SourceKind, SourceLocation};
-use super::extract::dispatch::{extract_source, ExtractConfig};
+use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
-use super::inject::plan::{plan_injection, InjectionPlan};
+use super::inject::plan::{InjectionPlan, plan_injection};
 use super::inject::render::render_context_block;
 use super::inject::stale::NoStaleness;
-use super::retrieve::{resolve_precedence, Filters, PrecedenceLog, RetrievalQuery, Retriever, SourceWeights};
+use super::retrieve::{
+    Filters, PrecedenceLog, RetrievalQuery, Retriever, SourceWeights, resolve_precedence,
+};
 use super::store::ChunkStore;
 use super::types::ChunkKind;
 
@@ -91,7 +93,10 @@ fn retrieve_plan_render_pipeline_produces_markdown_block() {
 
     let config = context_config_with_budget(50, 0.0);
     let plan = plan_injection(symbols, prose, &config, &token_count);
-    assert!(!plan.injected.is_empty(), "plan should inject at least one chunk");
+    assert!(
+        !plan.injected.is_empty(),
+        "plan should inject at least one chunk"
+    );
 
     let output = render_context_block(&plan, &NoStaleness, &PrecedenceLog::new());
     assert!(
@@ -102,7 +107,10 @@ fn retrieve_plan_render_pipeline_produces_markdown_block() {
         output.contains("# Context"),
         "output must contain # Context header, got: {output}"
     );
-    assert!(output.contains("verify_token"), "output should mention verify_token");
+    assert!(
+        output.contains("verify_token"),
+        "output should mention verify_token"
+    );
     assert!(
         output.contains("tokens across") && output.contains("chunks from"),
         "footer missing: {output}"

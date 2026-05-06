@@ -85,9 +85,8 @@ fn render_card(
             let _ = writeln!(out, "### Doc: {path}:{start}-{end}");
         }
         ChunkKind::Symbol | ChunkKind::Schema => {
-            let qname = sanitize_inline_metadata(
-                chunk.qualified_name.as_deref().unwrap_or("<anonymous>"),
-            );
+            let qname =
+                sanitize_inline_metadata(chunk.qualified_name.as_deref().unwrap_or("<anonymous>"));
             let label = if matches!(chunk.kind, ChunkKind::Schema) {
                 "Schema"
             } else {

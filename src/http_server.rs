@@ -1,14 +1,13 @@
 /// HTTP daemon: serves review requests over localhost.
 /// CLI clients can connect via `quorum review --daemon` instead of parsing locally.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
@@ -103,8 +102,12 @@ async fn review(
     State(state): State<Arc<DaemonState>>,
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<ReviewResponse>, (StatusCode, String)> {
-    let lang = Language::from_path(std::path::Path::new(&req.file_path))
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Unsupported file type: {}", req.file_path)))?;
+    let lang = Language::from_path(std::path::Path::new(&req.file_path)).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Unsupported file type: {}", req.file_path),
+        )
+    })?;
 
     let cache_before = state.parse_cache.stats().hits;
 
@@ -124,7 +127,12 @@ async fn review(
         Some(&state.parse_cache),
     )
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Review error: {}", e)))?;
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Review error: {}", e),
+        )
+    })?;
 
     let cache_hit = state.parse_cache.stats().hits > cache_before;
 
@@ -136,8 +144,7 @@ async fn review(
 
 /// Default socket path for the daemon.
 pub fn default_socket_path() -> PathBuf {
-    let dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/tmp".into());
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(dir).join("quorum.sock")
 }
 
@@ -194,7 +201,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let health: HealthResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(health.status, "ok");
     }
@@ -230,7 +239,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let review: ReviewResponse = serde_json::from_slice(&body).unwrap();
         assert!(!review.cache_hit, "First request should be a cache miss");
 
@@ -247,7 +258,9 @@ mod tests {
             .body(Body::from(serde_json::to_string(&body2).unwrap()))
             .unwrap();
         let resp2 = app2.oneshot(req2).await.unwrap();
-        let body2 = axum::body::to_bytes(resp2.into_body(), usize::MAX).await.unwrap();
+        let body2 = axum::body::to_bytes(resp2.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let review2: ReviewResponse = serde_json::from_slice(&body2).unwrap();
         assert!(review2.cache_hit, "Second request should be a cache hit");
     }
@@ -266,9 +279,14 @@ mod tests {
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let review: ReviewResponse = serde_json::from_slice(&body).unwrap();
-        assert!(!review.findings.is_empty(), "Should find issues in vulnerable Python");
+        assert!(
+            !review.findings.is_empty(),
+            "Should find issues in vulnerable Python"
+        );
     }
 
     #[tokio::test]

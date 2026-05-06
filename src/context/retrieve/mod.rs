@@ -29,7 +29,7 @@ pub mod vector;
 // Public re-exports for consumers of the retrieve module. Clippy's unused
 // analysis treats these as dead in a binary crate; suppress that noise.
 #[allow(unused_imports)]
-pub use precedence::{resolve_precedence, PrecedenceLog, SourceWeights};
+pub use precedence::{PrecedenceLog, SourceWeights, resolve_precedence};
 #[allow(unused_imports)]
 pub use rerank::{RerankConfig, ScoreBreakdown};
 #[allow(unused_imports)]

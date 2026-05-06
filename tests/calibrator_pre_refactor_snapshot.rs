@@ -25,9 +25,9 @@ use std::path::PathBuf;
 
 use chrono::{Duration as ChronoDuration, Utc};
 
-use quorum::calibrator::{calibrate, calibrate_with_index, CalibratorConfig};
+use quorum::calibrator::{CalibratorConfig, calibrate, calibrate_with_index};
 use quorum::calibrator_fingerprint::{
-    fingerprints_from_traces, sort_fingerprints, FromIndexPath, TraceFingerprint,
+    FromIndexPath, TraceFingerprint, fingerprints_from_traces, sort_fingerprints,
 };
 use quorum::feedback::{FeedbackEntry, FeedbackStore, FpKind, Provenance, Verdict};
 use quorum::feedback_index::FeedbackIndex;
@@ -70,7 +70,12 @@ fn human_fb(title: &str, category: &str, verdict: Verdict) -> FeedbackEntry {
     }
 }
 
-fn fb_with(title: &str, category: &str, verdict: Verdict, fp_kind: Option<FpKind>) -> FeedbackEntry {
+fn fb_with(
+    title: &str,
+    category: &str,
+    verdict: Verdict,
+    fp_kind: Option<FpKind>,
+) -> FeedbackEntry {
     let mut e = human_fb(title, category, verdict);
     e.fp_kind = fp_kind;
     e
@@ -129,7 +134,11 @@ fn build_scenarios() -> Vec<Scenario> {
     // 3. Single TP, weight below 1.5 boost threshold → BoostWeightTooLow.
     out.push(Scenario {
         name: "03_single_tp_human_no_boost",
-        findings: vec![finding("Race condition in shared HashMap", "concurrency", Severity::Medium)],
+        findings: vec![finding(
+            "Race condition in shared HashMap",
+            "concurrency",
+            Severity::Medium,
+        )],
         feedback: vec![human_fb(
             "Race condition in shared HashMap",
             "concurrency",
@@ -144,9 +153,19 @@ fn build_scenarios() -> Vec<Scenario> {
     //    category) so the gate permits the bump.
     out.push(Scenario {
         name: "04_multiple_tp_human_boost_to_high",
-        findings: vec![finding("Race condition in shared HashMap", "concurrency", Severity::Medium)],
+        findings: vec![finding(
+            "Race condition in shared HashMap",
+            "concurrency",
+            Severity::Medium,
+        )],
         feedback: (0..3)
-            .map(|_| human_fb("Race condition in shared HashMap", "concurrency", Verdict::Tp))
+            .map(|_| {
+                human_fb(
+                    "Race condition in shared HashMap",
+                    "concurrency",
+                    Verdict::Tp,
+                )
+            })
             .collect(),
         config: CalibratorConfig::default(),
         run_index_path: true,
@@ -268,7 +287,13 @@ fn build_scenarios() -> Vec<Scenario> {
             Severity::Medium,
         )],
         feedback: (0..3)
-            .map(|_| human_fb("Race condition in shared HashMap", "concurrency", Verdict::Tp))
+            .map(|_| {
+                human_fb(
+                    "Race condition in shared HashMap",
+                    "concurrency",
+                    Verdict::Tp,
+                )
+            })
             .collect(),
         config: CalibratorConfig::default(),
         run_index_path: true,
@@ -340,7 +365,12 @@ fn capture_scenario(scenario: &Scenario) -> Vec<TraceFingerprint> {
     let mut out = Vec::new();
 
     // Path A: in-memory calibrate()
-    let result_a = calibrate(scenario.findings.clone(), &scenario.feedback, &scenario.config, "");
+    let result_a = calibrate(
+        scenario.findings.clone(),
+        &scenario.feedback,
+        &scenario.config,
+        "",
+    );
     out.extend(fingerprints_from_traces(
         scenario.name,
         &result_a.traces,

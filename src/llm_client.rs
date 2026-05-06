@@ -750,7 +750,12 @@ impl OpenAiClient {
         RESPONSES_API_MODELS.iter().any(|m| *m == model)
     }
 
-    async fn call_model(&self, model: &str, prompt: &str, system_prompt: &str) -> anyhow::Result<LlmResponse> {
+    async fn call_model(
+        &self,
+        model: &str,
+        prompt: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<LlmResponse> {
         if Self::needs_responses_api(model) {
             self.responses_api(model, prompt, system_prompt).await
         } else {
@@ -866,7 +871,12 @@ impl OpenAiClient {
         unreachable!("send_with_retry loop invariant violated")
     }
 
-    async fn chat_completion(&self, model: &str, prompt: &str, system_prompt: &str) -> anyhow::Result<LlmResponse> {
+    async fn chat_completion(
+        &self,
+        model: &str,
+        prompt: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<LlmResponse> {
         let mut body = serde_json::json!({
             "model": model,
             "messages": [
@@ -929,7 +939,12 @@ impl OpenAiClient {
     }
 
     /// OpenAI Responses API (/v1/responses) for codex and other responses-only models.
-    async fn responses_api(&self, model: &str, prompt: &str, system_prompt: &str) -> anyhow::Result<LlmResponse> {
+    async fn responses_api(
+        &self,
+        model: &str,
+        prompt: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<LlmResponse> {
         let mut body = serde_json::json!({
             "model": model,
             "instructions": system_prompt,
@@ -1184,7 +1199,12 @@ where
 }
 
 impl LlmReviewer for OpenAiClient {
-    fn review(&self, prompt: &str, model: &str, system_prompt: &str) -> anyhow::Result<LlmResponse> {
+    fn review(
+        &self,
+        prompt: &str,
+        model: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<LlmResponse> {
         block_on_async(self.call_model(model, prompt, system_prompt))
     }
 }
@@ -2523,7 +2543,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(res.is_ok(), "expected success after retry, got {res:?}");
     }
 
@@ -2545,7 +2567,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(res.is_ok(), "expected success after 503 retry, got {res:?}");
     }
 
@@ -2561,7 +2585,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(res.is_err(), "400 should bail; got {res:?}");
         let received = server
             .received_requests()
@@ -2589,7 +2615,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(res.is_err(), "400 should bail; got {res:?}");
         let received = server
             .received_requests()
@@ -2616,7 +2644,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(
             res.is_ok(),
             "expected success after backoff retry, got {res:?}"
@@ -2641,7 +2671,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(
             res.is_ok(),
             "garbage Retry-After must not panic; expected success, got {res:?}"
@@ -2697,7 +2729,9 @@ mod tests {
 
         let mut client = build_test_client(&server.uri());
         client.set_overall_retry_deadline_for_test(Duration::from_secs(2));
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(
             res.is_err(),
             "expected error after retry budget exhausted, got {res:?}"
@@ -2724,7 +2758,9 @@ mod tests {
 
         let started = std::time::Instant::now();
         let client = build_test_client(&server.uri());
-        let res = client.chat_completion("gpt-5.4", "test prompt", "system").await;
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
         assert!(
             res.is_ok(),
             "expected success after Retry-After-honored retry, got {res:?}"

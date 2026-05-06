@@ -46,12 +46,7 @@ fn stats_drains_inbox_before_loading_feedback() {
     let remaining: Vec<_> = std::fs::read_dir(&inbox)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "jsonl")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
         .collect();
     assert_eq!(
         remaining.len(),
@@ -131,12 +126,7 @@ fn concurrent_drain_archives_exactly_once() {
     let leftover: Vec<_> = std::fs::read_dir(&inbox)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "jsonl")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
         .collect();
     assert!(
         leftover.is_empty(),

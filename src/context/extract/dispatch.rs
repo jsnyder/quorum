@@ -15,7 +15,7 @@ use super::astgrep_hcl::extract_hcl;
 use super::astgrep_py::extract_python;
 use super::astgrep_rust::extract_rust;
 use super::astgrep_ts::extract_typescript;
-use super::markdown::{split_markdown, DocSubtype};
+use super::markdown::{DocSubtype, split_markdown};
 use crate::context::config::{SourceEntry, SourceLocation};
 use crate::context::types::Chunk;
 
@@ -255,34 +255,18 @@ pub fn extract_source(
             };
 
             let result: anyhow::Result<Vec<Chunk>> = match dispatched {
-                FileKind::Rust => extract_rust(
-                    &src_text,
-                    &rel,
-                    &source.name,
-                    UNVERSIONED_SHA,
-                    indexed_at,
-                ),
-                FileKind::Typescript => extract_typescript(
-                    &src_text,
-                    &rel,
-                    &source.name,
-                    UNVERSIONED_SHA,
-                    indexed_at,
-                ),
-                FileKind::Python => extract_python(
-                    &src_text,
-                    &rel,
-                    &source.name,
-                    UNVERSIONED_SHA,
-                    indexed_at,
-                ),
-                FileKind::Hcl => extract_hcl(
-                    &src_text,
-                    &rel,
-                    &source.name,
-                    UNVERSIONED_SHA,
-                    indexed_at,
-                ),
+                FileKind::Rust => {
+                    extract_rust(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
+                }
+                FileKind::Typescript => {
+                    extract_typescript(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
+                }
+                FileKind::Python => {
+                    extract_python(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
+                }
+                FileKind::Hcl => {
+                    extract_hcl(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
+                }
                 FileKind::Markdown => {
                     let subtype = classify_markdown(&rel);
                     Ok(split_markdown(

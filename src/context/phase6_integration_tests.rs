@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::config::{ContextConfig, SourceEntry, SourceKind, SourceLocation, SourcesConfig};
-use super::extract::dispatch::{extract_source, ExtractConfig};
+use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
 use super::inject::{ContextInjectionSource, ContextInjector, InjectionRequest, RetrieverFn};
@@ -95,13 +95,15 @@ fn retriever_closure(harness: &Harness) -> Arc<RetrieverFn> {
         .conn
         .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
         .expect("database path");
-    Arc::new(move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
-        let conn = Connection::open(&path)?;
-        let embedder = HashEmbedder::new(384);
-        let clock = FixedClock::epoch();
-        let retriever = Retriever::new(&conn, &embedder, &clock);
-        retriever.query(q.clone())
-    })
+    Arc::new(
+        move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
+            let conn = Connection::open(&path)?;
+            let embedder = HashEmbedder::new(384);
+            let clock = FixedClock::epoch();
+            let retriever = Retriever::new(&conn, &embedder, &clock);
+            retriever.query(q.clone())
+        },
+    )
 }
 
 #[test]
@@ -114,7 +116,7 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -150,7 +152,7 @@ fn injector_returns_none_when_auto_inject_disabled() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -174,7 +176,7 @@ fn injector_returns_none_when_query_yields_no_hits() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: Vec::new(),
-            structural_names: vec![],
+        structural_names: vec![],
         text: String::new(),
     };
 
@@ -198,7 +200,7 @@ fn injector_returns_none_when_retriever_closure_returns_empty_vec() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -223,7 +225,7 @@ fn injector_returns_none_when_retriever_errors() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -256,7 +258,7 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -280,7 +282,7 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
     use tempfile::TempDir;
 
     use crate::parser::{self, Language};
-    use crate::pipeline::{review_file, PipelineConfig};
+    use crate::pipeline::{PipelineConfig, review_file};
     use crate::review_log::{Flags, ReviewLog, ReviewRecord, SeverityCounts};
     use crate::test_support::fakes::FakeReviewer;
 
@@ -325,7 +327,10 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
     assert!(tele.auto_inject_enabled, "auto_inject=true in config");
     assert!(tele.injector_available);
     assert!(!tele.retriever_errored);
-    assert!(tele.injected_chunk_count > 0, "retrieve+plan delivered chunks");
+    assert!(
+        tele.injected_chunk_count > 0,
+        "retrieve+plan delivered chunks"
+    );
     assert!(tele.rendered_prompt_hash.is_some(), "render hash present");
     assert!(!tele.injected_chunk_ids.is_empty(), "chunk ids recorded");
     assert!(
@@ -384,7 +389,7 @@ fn verify_token_request() -> InjectionRequest {
         file_path: "src/auth.rs".to_string(),
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         text: "jwt validation signing key".to_string(),
     }
 }
@@ -425,8 +430,8 @@ fn previously_retrieved_chunk_disappears_from_results_after_3_context_misleading
 
     // 3. Re-run retrieval with the same fixture but a calibrator-gated
     //    injector. The blamed chunks must be gone.
-    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
-        .with_calibrator(Arc::new(cal));
+    let gated =
+        ContextInjector::new(&sources, retriever_closure(&harness)).with_calibrator(Arc::new(cal));
     let gated_outcome = gated.inject(&verify_token_request());
 
     let gated_ids = &gated_outcome.telemetry.injected_chunk_ids;
@@ -488,8 +493,8 @@ fn telemetry_counts_chunks_suppressed_by_calibrator() {
         cal.record_misleading(id, "seal");
     }
 
-    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
-        .with_calibrator(Arc::new(cal));
+    let gated =
+        ContextInjector::new(&sources, retriever_closure(&harness)).with_calibrator(Arc::new(cal));
     let gated_outcome = gated.inject(&verify_token_request());
 
     // Every sealed chunk that was retrieved is suppressed at the gate, so
@@ -518,10 +523,7 @@ fn partially_raised_threshold_keeps_high_score_chunks_and_drops_low_ones() {
 
     let baseline = ContextInjector::new(&sources, retriever_closure(&harness));
     let baseline_outcome = baseline.inject(&verify_token_request());
-    let blamed_ids: Vec<String> = baseline_outcome
-        .telemetry
-        .injected_chunk_ids
-        .clone();
+    let blamed_ids: Vec<String> = baseline_outcome.telemetry.injected_chunk_ids.clone();
     assert!(!blamed_ids.is_empty());
 
     // Single confirmation per chunk -> raised but not sealed.
@@ -530,8 +532,8 @@ fn partially_raised_threshold_keeps_high_score_chunks_and_drops_low_ones() {
         cal.record_misleading(id, "one-shot");
     }
 
-    let gated = ContextInjector::new(&sources, retriever_closure(&harness))
-        .with_calibrator(Arc::new(cal));
+    let gated =
+        ContextInjector::new(&sources, retriever_closure(&harness)).with_calibrator(Arc::new(cal));
     let gated_outcome = gated.inject(&verify_token_request());
 
     // We don't assert exact survivorship here (score distribution is

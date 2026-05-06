@@ -66,9 +66,8 @@ const MAX_IDENTIFIERS: usize = 32;
 
 /// Path segments that are structural noise, not meaningful identifiers.
 const PATH_NOISE: &[&str] = &[
-    "src", "lib", "tests", "test", "mod", "main",
-    "rs", "py", "ts", "js", "tsx", "jsx", "mjs", "cjs",
-    "yaml", "yml", "sh", "bash", "zsh", "tf", "tfvars",
+    "src", "lib", "tests", "test", "mod", "main", "rs", "py", "ts", "js", "tsx", "jsx", "mjs",
+    "cjs", "yaml", "yml", "sh", "bash", "zsh", "tf", "tfvars",
 ];
 
 fn is_path_noise(s: &str) -> bool {
@@ -158,8 +157,7 @@ pub fn harvest_identifiers(
     }
 
     // 3. Decide augmentation.
-    let all_generic = !ref_names.is_empty()
-        && ref_names.iter().all(|n| stoplist.is_generic(n));
+    let all_generic = !ref_names.is_empty() && ref_names.iter().all(|n| stoplist.is_generic(n));
     let augment = ref_names.is_empty() || ref_names.len() < 2 || all_generic;
 
     if !augment {
@@ -198,18 +196,28 @@ fn cap(mut v: Vec<String>) -> Vec<String> {
 pub fn load_stoplist(language: &str) -> GenericStoplist {
     let names: &[&str] = match language.to_ascii_lowercase().as_str() {
         "rust" => &[
-            "Client", "Handler", "Error", "Builder", "Result", "Option",
-            "Default", "Config", "Context", "Service", "Manager", "Engine",
-            "State", "Request", "Response",
+            "Client", "Handler", "Error", "Builder", "Result", "Option", "Default", "Config",
+            "Context", "Service", "Manager", "Engine", "State", "Request", "Response",
         ],
         "typescript" | "javascript" | "ts" | "js" | "tsx" | "jsx" => &[
-            "Client", "Handler", "Error", "Builder", "Service", "Config",
-            "Manager", "Component", "Provider", "Context", "Props", "State",
-            "Request", "Response",
+            "Client",
+            "Handler",
+            "Error",
+            "Builder",
+            "Service",
+            "Config",
+            "Manager",
+            "Component",
+            "Provider",
+            "Context",
+            "Props",
+            "State",
+            "Request",
+            "Response",
         ],
         "python" | "py" => &[
-            "Client", "Handler", "Error", "Builder", "Manager", "Service",
-            "Config", "Base", "Context",
+            "Client", "Handler", "Error", "Builder", "Manager", "Service", "Config", "Base",
+            "Context",
         ],
         "terraform" | "tf" | "hcl" => &[
             "Resource", "Provider", "Module", "Variable", "Output", "Data",

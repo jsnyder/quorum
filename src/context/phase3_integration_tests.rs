@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::config::{SourceEntry, SourceKind, SourceLocation};
-use super::extract::dispatch::{extract_source, ExtractConfig};
+use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::state::{IndexState, StateCheck};
 use super::index::traits::{Embedder, FixedClock, HashEmbedder};
@@ -45,9 +45,7 @@ fn extracted_chunks_become_queryable_via_fts_and_vec() {
     let clock = FixedClock::epoch();
     let emb = HashEmbedder::new(384);
     let mut builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
-    let report = builder
-        .rebuild_from_jsonl("mini-rust", &jsonl)
-        .unwrap();
+    let report = builder.rebuild_from_jsonl("mini-rust", &jsonl).unwrap();
     assert_eq!(report.chunks_loaded, extracted.chunks.len());
     assert_eq!(report.chunks_inserted, extracted.chunks.len());
 
@@ -66,9 +64,7 @@ fn extracted_chunks_become_queryable_via_fts_and_vec() {
         .unwrap();
     assert!(!fts_rows.is_empty());
     assert!(
-        fts_rows
-            .iter()
-            .any(|(id, _)| id.contains("verify_token")),
+        fts_rows.iter().any(|(id, _)| id.contains("verify_token")),
         "expected FTS hit id containing verify_token, got {fts_rows:?}"
     );
     assert!(
@@ -95,7 +91,9 @@ fn extracted_chunks_become_queryable_via_fts_and_vec() {
              ORDER BY distance",
         )
         .unwrap()
-        .query_map([q_bytes], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?)))
+        .query_map([q_bytes], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
+        })
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();

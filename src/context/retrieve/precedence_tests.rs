@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::context::retrieve::precedence::{resolve_precedence, SourceWeights};
+use crate::context::retrieve::precedence::{SourceWeights, resolve_precedence};
 use crate::context::retrieve::{ScoreBreakdown, ScoredChunk};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -46,9 +46,7 @@ fn scored(
 }
 
 fn t(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .unwrap()
-        .with_timezone(&Utc)
+    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
 }
 
 #[test]
@@ -136,11 +134,7 @@ fn alphabetical_breaks_tie_when_weights_and_indexed_at_equal() {
 
 #[test]
 fn three_way_competition_picks_one_winner() {
-    let weights = SourceWeights::new([
-        ("A".into(), 10),
-        ("B".into(), 5),
-        ("C".into(), 1),
-    ]);
+    let weights = SourceWeights::new([("A".into(), 10), ("B".into(), 5), ("C".into(), 1)]);
     let ts = t("2025-01-01T00:00:00Z");
     let input = vec![
         scored("1", "A", Some("foo"), ts, 0.5),
@@ -239,7 +233,11 @@ fn precedence_log_entries_ordered_by_qualified_name() {
         scored("6", "B", Some("mu"), ts, 0.9),
     ];
     let (_, log) = resolve_precedence(input, &weights);
-    let names: Vec<_> = log.entries().iter().map(|e| e.qualified_name.as_str()).collect();
+    let names: Vec<_> = log
+        .entries()
+        .iter()
+        .map(|e| e.qualified_name.as_str())
+        .collect();
     assert_eq!(
         names,
         vec!["alpha", "mu", "zeta"],

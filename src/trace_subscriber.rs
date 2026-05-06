@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 /// Initialize the tracing subscriber if tracing is enabled.
 /// Returns the guard that must be held for the lifetime of the program.
-pub fn init_trace_subscriber(trace_path: Option<PathBuf>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+pub fn init_trace_subscriber(
+    trace_path: Option<PathBuf>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let path = trace_path?;
 
     if let Some(parent) = path.parent() {

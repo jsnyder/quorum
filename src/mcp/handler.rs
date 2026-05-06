@@ -1,5 +1,4 @@
 /// MCP server handler — dispatches tool calls to quorum pipeline.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,8 +6,7 @@ use async_trait::async_trait;
 use rust_mcp_sdk::McpServer;
 use rust_mcp_sdk::mcp_server::ServerHandler;
 use rust_mcp_sdk::schema::{
-    CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
-    RpcError,
+    CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams, RpcError,
 };
 
 use crate::cache::ParseCache;
@@ -16,9 +14,9 @@ use crate::config::{Config, EnvConfigSource};
 use crate::feedback::{FeedbackEntry, FeedbackStore, Verdict};
 use crate::llm_client::OpenAiClient;
 use crate::mcp::tools::{CatalogTool, ChatTool, DebugTool, FeedbackTool, ReviewTool, TestgenTool};
-use crate::redact;
 use crate::parser::Language;
 use crate::pipeline::{self, LlmReviewer, PipelineConfig};
+use crate::redact;
 
 pub struct QuorumHandler {
     config: Config,
@@ -37,11 +35,12 @@ impl QuorumHandler {
         let feedback_path = dirs_path()?.join("feedback.jsonl");
         let feedback_store = FeedbackStore::new(feedback_path);
 
-        let llm_reviewer: Option<Arc<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-            Some(Arc::new(OpenAiClient::new(&config.base_url, api_key)?))
-        } else {
-            None
-        };
+        let llm_reviewer: Option<Arc<dyn LlmReviewer>> =
+            if let Ok(api_key) = config.require_api_key() {
+                Some(Arc::new(OpenAiClient::new(&config.base_url, api_key)?))
+            } else {
+                None
+            };
 
         Ok(Self {
             config,
@@ -140,8 +139,7 @@ impl QuorumHandler {
         // fp_kind through ExternalVerdictInput yet — keeps the wire
         // contract uniform across ingestion surfaces).
         let fp_kind = if matches!(verdict, Verdict::Fp) {
-            if let Some(crate::feedback::FpKind::OutOfScope { tracked_in: None }) =
-                &params.fp_kind
+            if let Some(crate::feedback::FpKind::OutOfScope { tracked_in: None }) = &params.fp_kind
             {
                 tracing::warn!(
                     "MCP feedback: out_of_scope fp_kind recorded without tracked_in; \
@@ -212,7 +210,11 @@ impl QuorumHandler {
             .map_err(|e| format!("Failed to record feedback: {}", e))?;
 
         let count = self.feedback_store.count().unwrap_or(0);
-        let msg = format!("Recorded {} feedback. Total entries: {}", verdict_label(&entry), count);
+        let msg = format!(
+            "Recorded {} feedback. Total entries: {}",
+            verdict_label(&entry),
+            count
+        );
         Ok(CallToolResult::text_content(vec![msg.into()]))
     }
 
@@ -273,7 +275,9 @@ impl QuorumHandler {
         let mut prompt = format!("Question: {}\n\n", redact::redact_secrets(&params.question));
         if let Some(code) = &params.code {
             let redacted = redact::redact_secrets(code);
-            let lang = params.file_path.as_deref()
+            let lang = params
+                .file_path
+                .as_deref()
                 .and_then(|p| Language::from_path(std::path::Path::new(p)))
                 .map(|l| match l {
                     Language::Rust => "rust",
@@ -291,13 +295,14 @@ impl QuorumHandler {
 
         let model = self.config.model.clone();
         let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, tool = "chat", "blocking review task failed");
-                format!("review task failed: {}", e)
-            })?
-            .map_err(|e| format!("LLM error: {}", e))?;
+        let resp =
+            tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, tool = "chat", "blocking review task failed");
+                    format!("review task failed: {}", e)
+                })?
+                .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
@@ -318,13 +323,14 @@ impl QuorumHandler {
 
         let model = self.config.model.clone();
         let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, tool = "debug", "blocking review task failed");
-                format!("review task failed: {}", e)
-            })?
-            .map_err(|e| format!("LLM error: {}", e))?;
+        let resp =
+            tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, tool = "debug", "blocking review task failed");
+                    format!("review task failed: {}", e)
+                })?
+                .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
@@ -350,7 +356,11 @@ impl QuorumHandler {
             Language::Terraform => "terraform",
         };
 
-        let framework_hint = params.framework.as_deref().map(|f| format!(" using the {} framework", f)).unwrap_or_default();
+        let framework_hint = params
+            .framework
+            .as_deref()
+            .map(|f| format!(" using the {} framework", f))
+            .unwrap_or_default();
         let redacted_code = redact::redact_secrets(&params.code);
         let prompt = format!(
             "Generate comprehensive tests{} for this {} code from `{}`.\n\n```{}\n{}\n```\n\nInclude: happy path, edge cases, error cases. Return ONLY the test code.",
@@ -359,13 +369,14 @@ impl QuorumHandler {
 
         let model = self.config.model.clone();
         let sys_prompt = crate::llm_client::OpenAiClient::system_prompt().to_string();
-        let resp = tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, tool = "testgen", "blocking review task failed");
-                format!("review task failed: {}", e)
-            })?
-            .map_err(|e| format!("LLM error: {}", e))?;
+        let resp =
+            tokio::task::spawn_blocking(move || reviewer.review(&prompt, &model, &sys_prompt))
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, tool = "testgen", "blocking review task failed");
+                    format!("review task failed: {}", e)
+                })?
+                .map_err(|e| format!("LLM error: {}", e))?;
 
         Ok(CallToolResult::text_content(vec![resp.content.into()]))
     }
@@ -440,33 +451,39 @@ impl ServerHandler for QuorumHandler {
         let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
         let result = match params.name.as_str() {
             "review" => {
-                let tool: ReviewTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: ReviewTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_review(tool).await
             }
             "feedback" => {
-                let tool: FeedbackTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: FeedbackTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_feedback(tool)
             }
             "catalog" => {
-                let tool: CatalogTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: CatalogTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_catalog(tool)
             }
             "chat" => {
-                let tool: ChatTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: ChatTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_chat(tool).await
             }
             "debug" => {
-                let tool: DebugTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: DebugTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_debug(tool).await
             }
             "testgen" => {
-                let tool: TestgenTool = serde_json::from_value(args_value)
-                    .map_err(|e| CallToolError::from_message(format!("Invalid parameters: {}", e)))?;
+                let tool: TestgenTool = serde_json::from_value(args_value).map_err(|e| {
+                    CallToolError::from_message(format!("Invalid parameters: {}", e))
+                })?;
                 self.handle_testgen(tool).await
             }
             _ => return Err(CallToolError::unknown_tool(params.name)),
@@ -610,8 +627,10 @@ mod tests {
         assert_eq!(all.len(), 1);
         match &all[0].verdict {
             Verdict::ContextMisleading { blamed_chunk_ids } => {
-                assert_eq!(blamed_chunk_ids,
-                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]);
+                assert_eq!(
+                    blamed_chunk_ids,
+                    &vec!["chunk-abc".to_string(), "chunk-def".to_string()]
+                );
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
@@ -690,7 +709,11 @@ mod tests {
         let all = store.load_all().unwrap();
         assert_eq!(all.len(), 1);
         match &all[0].provenance {
-            crate::feedback::Provenance::External { agent, model, confidence } => {
+            crate::feedback::Provenance::External {
+                agent,
+                model,
+                confidence,
+            } => {
                 assert_eq!(agent, "pal");
                 assert_eq!(model.as_deref(), Some("gemini-3-pro-preview"));
                 assert_eq!(*confidence, Some(0.9));
@@ -804,7 +827,12 @@ mod tests {
 
         struct FakeLlm;
         impl LlmReviewer for FakeLlm {
-            fn review(&self, _prompt: &str, _model: &str, _system_prompt: &str) -> anyhow::Result<crate::llm_client::LlmResponse> {
+            fn review(
+                &self,
+                _prompt: &str,
+                _model: &str,
+                _system_prompt: &str,
+            ) -> anyhow::Result<crate::llm_client::LlmResponse> {
                 Ok(crate::llm_client::LlmResponse {
                     content: "This is a helpful response about the code.".into(),
                     usage: None,
@@ -989,9 +1017,8 @@ mod tests {
                 .expect("build runtime");
             rt.block_on(async move {
                 let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
-                let handler = std::sync::Arc::new(handler_with_barrier_llm(
-                    std::sync::Arc::clone(&barrier),
-                ));
+                let handler =
+                    std::sync::Arc::new(handler_with_barrier_llm(std::sync::Arc::clone(&barrier)));
 
                 let mut joins = Vec::new();
                 for _ in 0..N {
@@ -1173,7 +1200,11 @@ mod tests {
             focus: None,
         };
         handler.handle_review(params).await.unwrap();
-        assert_eq!(cache.stats().misses, 1, "First review should be a cache miss");
+        assert_eq!(
+            cache.stats().misses,
+            1,
+            "First review should be a cache miss"
+        );
 
         // Second review with same code should hit cache
         let params2 = ReviewTool {

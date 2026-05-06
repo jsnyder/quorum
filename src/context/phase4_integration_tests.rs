@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::config::{SourceEntry, SourceKind, SourceLocation};
-use super::extract::dispatch::{extract_source, ExtractConfig};
+use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
 use super::retrieve::{Filters, RetrievalQuery, Retriever};
@@ -27,7 +27,9 @@ fn fixture_source(name: &str) -> SourceEntry {
     }
 }
 
-fn build_retriever_for(source_name: &str) -> (tempfile::TempDir, Connection, HashEmbedder, FixedClock) {
+fn build_retriever_for(
+    source_name: &str,
+) -> (tempfile::TempDir, Connection, HashEmbedder, FixedClock) {
     let dir = tempdir().unwrap();
     let jsonl = dir.path().join("chunks.jsonl");
     let db = dir.path().join("index.db");
@@ -35,7 +37,10 @@ fn build_retriever_for(source_name: &str) -> (tempfile::TempDir, Connection, Has
     let source = fixture_source(source_name);
     let extracted =
         extract_source(&source, &ExtractConfig::default(), &FixedClock::epoch()).unwrap();
-    assert!(!extracted.chunks.is_empty(), "empty extraction for {source_name}");
+    assert!(
+        !extracted.chunks.is_empty(),
+        "empty extraction for {source_name}"
+    );
 
     let mut store = ChunkStore::new(&jsonl);
     for c in &extracted.chunks {
@@ -46,9 +51,7 @@ fn build_retriever_for(source_name: &str) -> (tempfile::TempDir, Connection, Has
     let emb = HashEmbedder::new(384);
     {
         let mut builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
-        builder
-            .rebuild_from_jsonl(source_name, &jsonl)
-            .unwrap();
+        builder.rebuild_from_jsonl(source_name, &jsonl).unwrap();
     }
     let conn = Connection::open(&db).unwrap();
     (dir, conn, emb, clock)
@@ -61,7 +64,7 @@ fn retrieval_over_mini_rust_returns_verify_token_for_jwt_query() {
     let q = RetrievalQuery {
         text: "jwt validation signing key".to_string(),
         identifiers: vec!["verify_token".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 0.0,
@@ -86,7 +89,7 @@ fn retrieval_over_mini_ts_finds_verify_token_export() {
     let q = RetrievalQuery {
         text: "jwt signing key verifier".to_string(),
         identifiers: vec!["verifyToken".to_string()],
-            structural_names: vec![],
+        structural_names: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 0.0,
@@ -111,7 +114,7 @@ fn kind_filter_restricts_to_docs() {
     let q = RetrievalQuery {
         text: "authentication design decision".to_string(),
         identifiers: Vec::new(),
-            structural_names: vec![],
+        structural_names: vec![],
         filters: Filters {
             sources: Vec::new(),
             kinds: vec![ChunkKind::Doc],
@@ -135,7 +138,7 @@ fn unrelated_query_respects_min_score_threshold() {
     let q = RetrievalQuery {
         text: "zzzzzzzzzz totally unrelated string".to_string(),
         identifiers: Vec::new(),
-            structural_names: vec![],
+        structural_names: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 2.0,

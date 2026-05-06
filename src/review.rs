@@ -105,7 +105,10 @@ where
         }
 
         fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            while map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+            while map
+                .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+                .is_some()
+            {}
             Ok(None)
         }
     }
@@ -1832,7 +1835,10 @@ mod tests {
     fn llm_finding_with_reasoning_and_confidence_parses() {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"reasoning":"The function lacks bounds checking","confidence":0.85}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert_eq!(findings[0].reasoning.as_deref(), Some("The function lacks bounds checking"));
+        assert_eq!(
+            findings[0].reasoning.as_deref(),
+            Some("The function lacks bounds checking")
+        );
         assert_eq!(findings[0].confidence, Some(0.85));
     }
 

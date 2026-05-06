@@ -104,10 +104,7 @@ pub fn validate_source_name(s: &str) -> Result<String, String> {
         return Err("--name must not be empty".into());
     }
     if s.len() > 64 {
-        return Err(format!(
-            "--name length must be 1..=64 (got {})",
-            s.len()
-        ));
+        return Err(format!("--name length must be 1..=64 (got {})", s.len()));
     }
     if s.starts_with('.') {
         return Err("--name must not start with '.'".into());
@@ -117,8 +114,7 @@ pub fn validate_source_name(s: &str) -> Result<String, String> {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return Err(
-            "--name may only contain [a-zA-Z0-9_-] (no path separators, spaces, or unicode)"
-                .into(),
+            "--name may only contain [a-zA-Z0-9_-] (no path separators, spaces, or unicode)".into(),
         );
     }
     Ok(s.to_string())
@@ -643,9 +639,7 @@ pub fn parse_confidence(s: &str) -> Result<f32, String> {
         return Err(format!("--confidence must be finite, got {v}"));
     }
     if !(0.0..=1.0).contains(&v) {
-        return Err(format!(
-            "--confidence must be in [0.0, 1.0], got {v}"
-        ));
+        return Err(format!("--confidence must be in [0.0, 1.0], got {v}"));
     }
     Ok(v)
 }
@@ -710,8 +704,14 @@ mod tests {
     fn parse_verdict_valid() {
         assert_eq!(parse_verdict("tp").unwrap(), crate::feedback::Verdict::Tp);
         assert_eq!(parse_verdict("fp").unwrap(), crate::feedback::Verdict::Fp);
-        assert_eq!(parse_verdict("partial").unwrap(), crate::feedback::Verdict::Partial);
-        assert_eq!(parse_verdict("wontfix").unwrap(), crate::feedback::Verdict::Wontfix);
+        assert_eq!(
+            parse_verdict("partial").unwrap(),
+            crate::feedback::Verdict::Partial
+        );
+        assert_eq!(
+            parse_verdict("wontfix").unwrap(),
+            crate::feedback::Verdict::Wontfix
+        );
     }
 
     // -----------------------------------------------------------------
@@ -728,9 +728,18 @@ mod tests {
     #[test]
     fn cli_fp_kind_trust_model_parses() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "trust-model", "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "trust-model",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind");
         assert_eq!(kind, Some(crate::feedback::FpKind::TrustModelAssumption));
     }
@@ -743,11 +752,23 @@ mod tests {
         // parse_args() — that's the signal to update the test, not to silently
         // rely on a different error path.
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "compensating-control", "--reason", "r",
-        ]).expect("clap parses; cross-field validation lives in into_fp_kind");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "compensating-control",
+            "--reason",
+            "r",
+        ])
+        .expect("clap parses; cross-field validation lives in into_fp_kind");
         let result = opts.into_fp_kind();
-        assert!(result.is_err(), "compensating-control without --fp-reference must error");
+        assert!(
+            result.is_err(),
+            "compensating-control without --fp-reference must error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("--fp-reference"),
@@ -759,11 +780,20 @@ mod tests {
     #[test]
     fn cli_fp_kind_compensating_control_with_reference_parses() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "compensating-control",
-            "--fp-reference", "PR #99 line 42",
-            "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "compensating-control",
+            "--fp-reference",
+            "PR #99 line 42",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::CompensatingControl { reference } => {
@@ -776,8 +806,16 @@ mod tests {
     #[test]
     fn cli_fp_kind_invalid_value_rejected_by_clap() {
         let result = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "bogus-kind", "--reason", "r",
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "bogus-kind",
+            "--reason",
+            "r",
         ]);
         assert!(result.is_err(), "clap must reject unknown --fp-kind value");
     }
@@ -789,9 +827,18 @@ mod tests {
         // site is responsible for emitting a tracing::warn. Test the dropped-
         // kind contract here.
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "tp",
-            "--fp-kind", "trust-model", "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "tp",
+            "--fp-kind",
+            "trust-model",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("must not fail on tp+kind");
         assert_eq!(kind, None, "fp_kind must be dropped when verdict != fp");
     }
@@ -799,15 +846,27 @@ mod tests {
     #[test]
     fn cli_fp_kind_pattern_overgeneralization_with_discriminator() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "pattern-overgeneralization",
-            "--fp-discriminator", "When in #[derive], ignore",
-            "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "pattern-overgeneralization",
+            "--fp-discriminator",
+            "When in #[derive], ignore",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::PatternOvergeneralization { discriminator_hint } => {
-                assert_eq!(discriminator_hint.as_deref(), Some("When in #[derive], ignore"));
+                assert_eq!(
+                    discriminator_hint.as_deref(),
+                    Some("When in #[derive], ignore")
+                );
             }
             other => panic!("expected PatternOvergeneralization, got {:?}", other),
         }
@@ -816,9 +875,18 @@ mod tests {
     #[test]
     fn cli_fp_kind_out_of_scope_optional_tracked_in() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "out-of-scope", "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "out-of-scope",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
         assert!(matches!(
             kind,
@@ -829,11 +897,20 @@ mod tests {
     #[test]
     fn cli_fp_kind_out_of_scope_with_tracked_in() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--fp-kind", "out-of-scope",
-            "--fp-tracked-in", "#456",
-            "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--fp-kind",
+            "out-of-scope",
+            "--fp-tracked-in",
+            "#456",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind").unwrap();
         match kind {
             crate::feedback::FpKind::OutOfScope { tracked_in } => {
@@ -846,9 +923,16 @@ mod tests {
     #[test]
     fn cli_fp_kind_omitted_means_none() {
         let opts = parse_args(&[
-            "--file", "f.rs", "--finding", "x", "--verdict", "fp",
-            "--reason", "r",
-        ]).expect("parse");
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "fp",
+            "--reason",
+            "r",
+        ])
+        .expect("parse");
         let kind = opts.into_fp_kind().expect("into_fp_kind");
         assert_eq!(kind, None, "no --fp-kind flag = no kind");
     }
@@ -954,11 +1038,16 @@ mod tests {
         use clap::Parser;
         for v in ["tp", "fp", "partial", "wontfix", "context_misleading"] {
             let res = Args::try_parse_from([
-                "quorum", "feedback",
-                "--file", "x.rs",
-                "--finding", "t",
-                "--verdict", v,
-                "--reason", "r",
+                "quorum",
+                "feedback",
+                "--file",
+                "x.rs",
+                "--finding",
+                "t",
+                "--verdict",
+                v,
+                "--reason",
+                "r",
             ]);
             assert!(res.is_ok(), "verdict {} should parse", v);
         }
@@ -968,12 +1057,18 @@ mod tests {
     fn feedback_parses_blamed_chunks_flag() {
         use clap::Parser;
         let args = Args::parse_from([
-            "quorum", "feedback",
-            "--file", "src/x.rs",
-            "--finding", "t",
-            "--verdict", "context_misleading",
-            "--reason", "r",
-            "--blamed-chunks", "chunk-abc,chunk-def",
+            "quorum",
+            "feedback",
+            "--file",
+            "src/x.rs",
+            "--finding",
+            "t",
+            "--verdict",
+            "context_misleading",
+            "--reason",
+            "r",
+            "--blamed-chunks",
+            "chunk-abc,chunk-def",
         ]);
         match args.command {
             Command::Feedback(opts) => {
@@ -988,11 +1083,16 @@ mod tests {
         // Plan is explicit: missing --blamed-chunks must NOT error at parse time.
         use clap::Parser;
         let res = Args::try_parse_from([
-            "quorum", "feedback",
-            "--file", "src/x.rs",
-            "--finding", "t",
-            "--verdict", "context_misleading",
-            "--reason", "r",
+            "quorum",
+            "feedback",
+            "--file",
+            "src/x.rs",
+            "--finding",
+            "t",
+            "--verdict",
+            "context_misleading",
+            "--reason",
+            "r",
         ]);
         assert!(res.is_ok(), "--blamed-chunks must remain optional");
         match res.unwrap().command {
@@ -1033,8 +1133,10 @@ mod tests {
         let v = parse_verdict("context_misleading").unwrap();
         match v {
             crate::feedback::Verdict::ContextMisleading { blamed_chunk_ids } => {
-                assert!(blamed_chunk_ids.is_empty(),
-                    "parse_verdict alone never fills chunks; caller merges --blamed-chunks");
+                assert!(
+                    blamed_chunk_ids.is_empty(),
+                    "parse_verdict alone never fills chunks; caller merges --blamed-chunks"
+                );
             }
             other => panic!("expected ContextMisleading, got {:?}", other),
         }
@@ -1107,7 +1209,9 @@ mod tests {
     fn review_with_no_files_yields_missing_required_argument() {
         use clap::Parser;
         let res = Args::try_parse_from(["quorum", "review"]);
-        let err = res.err().expect("review with zero files must fail to parse");
+        let err = res
+            .err()
+            .expect("review with zero files must fail to parse");
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::MissingRequiredArgument,
@@ -1149,10 +1253,10 @@ mod tests {
     #[test]
     fn regression_guard_79_index_rejects_source_and_all() {
         use clap::Parser;
-        let res = Args::try_parse_from([
-            "quorum", "context", "index", "--source", "foo", "--all",
-        ]);
-        let err = res.err().expect("index with both --source and --all must fail");
+        let res = Args::try_parse_from(["quorum", "context", "index", "--source", "foo", "--all"]);
+        let err = res
+            .err()
+            .expect("index with both --source and --all must fail");
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::ArgumentConflict,
@@ -1164,10 +1268,11 @@ mod tests {
     #[test]
     fn regression_guard_79_refresh_rejects_source_and_all() {
         use clap::Parser;
-        let res = Args::try_parse_from([
-            "quorum", "context", "refresh", "--source", "foo", "--all",
-        ]);
-        let err = res.err().expect("refresh with both --source and --all must fail");
+        let res =
+            Args::try_parse_from(["quorum", "context", "refresh", "--source", "foo", "--all"]);
+        let err = res
+            .err()
+            .expect("refresh with both --source and --all must fail");
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
@@ -1230,10 +1335,7 @@ mod tests {
     fn context_add_name_rejects_dotdot() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", "../etc",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", "../etc", "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err(), "../etc must be rejected at parse time");
     }
@@ -1242,10 +1344,15 @@ mod tests {
     fn context_add_name_rejects_absolute() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", "/etc/passwd",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum",
+            "context",
+            "add",
+            "--name",
+            "/etc/passwd",
+            "--kind",
+            "rust",
+            "--path",
+            "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1254,10 +1361,7 @@ mod tests {
     fn context_add_name_rejects_slash() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", "a/b",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", "a/b", "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1266,10 +1370,7 @@ mod tests {
     fn context_add_name_rejects_backslash() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", r"a\b",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", r"a\b", "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1278,10 +1379,7 @@ mod tests {
     fn context_add_name_rejects_leading_dot() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", ".hidden",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", ".hidden", "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1291,10 +1389,7 @@ mod tests {
         use clap::Parser;
         let long = "a".repeat(65);
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", &long,
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", &long, "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1303,10 +1398,7 @@ mod tests {
     fn context_add_name_rejects_empty() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", "",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", "", "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_err());
     }
@@ -1315,12 +1407,21 @@ mod tests {
     fn context_add_name_accepts_simple() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", "my-source_1",
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum",
+            "context",
+            "add",
+            "--name",
+            "my-source_1",
+            "--kind",
+            "rust",
+            "--path",
+            "/tmp/x",
         ]);
-        assert!(r.is_ok(), "simple alnum/dash/underscore must parse: {:?}", r.err().map(|e| e.to_string()));
+        assert!(
+            r.is_ok(),
+            "simple alnum/dash/underscore must parse: {:?}",
+            r.err().map(|e| e.to_string())
+        );
     }
 
     #[test]
@@ -1328,10 +1429,7 @@ mod tests {
         use clap::Parser;
         let max_len = "a".repeat(64);
         let r = Args::try_parse_from([
-            "quorum", "context", "add",
-            "--name", &max_len,
-            "--kind", "rust",
-            "--path", "/tmp/x",
+            "quorum", "context", "add", "--name", &max_len, "--kind", "rust", "--path", "/tmp/x",
         ]);
         assert!(r.is_ok(), "64-char name (max allowed) must parse");
     }
@@ -1346,54 +1444,45 @@ mod tests {
     #[test]
     fn context_query_k_rejects_zero() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "0",
-        ]);
-        assert!(r.is_err(), "--k 0 must be rejected (would produce empty results)");
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "0"]);
+        assert!(
+            r.is_err(),
+            "--k 0 must be rejected (would produce empty results)"
+        );
     }
 
     #[test]
     fn context_query_k_rejects_above_cap() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "101",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "101"]);
         assert!(r.is_err(), "--k 101 must be rejected (above 100 cap)");
     }
 
     #[test]
     fn context_query_k_rejects_negative() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "-1",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "-1"]);
         assert!(r.is_err(), "--k -1 must be rejected (not a usize)");
     }
 
     #[test]
     fn context_query_k_accepts_in_range() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "50",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "50"]);
         assert!(r.is_ok(), "--k 50 must parse");
     }
 
     #[test]
     fn context_query_k_accepts_one() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "1",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "1"]);
         assert!(r.is_ok(), "--k 1 must parse (lower bound)");
     }
 
     #[test]
     fn context_query_k_accepts_hundred() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--k", "100",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--k", "100"]);
         assert!(r.is_ok(), "--k 100 must parse (upper bound)");
     }
 
@@ -1417,9 +1506,12 @@ mod tests {
     fn calibrate_custom_precision_parses() {
         use clap::Parser;
         let args = Args::parse_from([
-            "quorum", "calibrate",
-            "--suppress-precision", "0.90",
-            "--boost-precision", "0.80",
+            "quorum",
+            "calibrate",
+            "--suppress-precision",
+            "0.90",
+            "--boost-precision",
+            "0.80",
         ]);
         match args.command {
             Command::Calibrate(opts) => {

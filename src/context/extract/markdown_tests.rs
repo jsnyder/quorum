@@ -19,7 +19,14 @@ fn main() { foo(); }
 ## Design
 some prose
 "#;
-    let chunks = split_markdown(md, "README.md", "test-src", DocSubtype::Readme, "abc", when());
+    let chunks = split_markdown(
+        md,
+        "README.md",
+        "test-src",
+        DocSubtype::Readme,
+        "abc",
+        when(),
+    );
     // Now: preamble ("# Project\nintro"), Usage, Design
     assert_eq!(chunks.len(), 3);
     assert_eq!(chunks[0].id, "test-src:README.md:__preamble__");
@@ -125,7 +132,14 @@ fn metadata_reflects_source_and_commit() {
     // Use H2-only doc so chunks[0] is the section (not a preamble).
     let md = "## A\nfoo\n";
     let when = DateTime::<Utc>::from_timestamp(1700000000, 0).unwrap();
-    let chunks = split_markdown(md, "docs/readme.md", "my-src", DocSubtype::Readme, "abc123", when);
+    let chunks = split_markdown(
+        md,
+        "docs/readme.md",
+        "my-src",
+        DocSubtype::Readme,
+        "abc123",
+        when,
+    );
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].source, "my-src");
     assert_eq!(chunks[0].metadata.source_path, "docs/readme.md");
@@ -149,13 +163,23 @@ fn section_with_only_whitespace_is_skipped() {
 fn chunk_kind_is_doc() {
     let md = "## A\nfoo\n";
     let chunks = split_markdown(md, "d.md", "s", DocSubtype::Doc, "c", when());
-    assert!(matches!(chunks[0].kind, super::super::types::ChunkKind::Doc));
+    assert!(matches!(
+        chunks[0].kind,
+        super::super::types::ChunkKind::Doc
+    ));
 }
 
 #[test]
 fn mini_rust_readme_fixture_splits() {
     let md = std::fs::read_to_string("tests/fixtures/context/repos/mini-rust/README.md").unwrap();
-    let chunks = split_markdown(&md, "README.md", "mini-rust", DocSubtype::Readme, "abc", when());
+    let chunks = split_markdown(
+        &md,
+        "README.md",
+        "mini-rust",
+        DocSubtype::Readme,
+        "abc",
+        when(),
+    );
     // Fixture has >=2 H2 headings per Task 1.1 spec
     assert!(
         chunks.len() >= 2,

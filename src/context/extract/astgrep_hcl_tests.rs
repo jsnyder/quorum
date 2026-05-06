@@ -63,7 +63,10 @@ resource \"aws_vpc\" \"this\" {
         .iter()
         .find(|c| c.qualified_name.as_deref() == Some("aws_vpc.this"))
         .expect("expected aws_vpc.this chunk");
-    assert_eq!(r.signature.as_deref(), Some("resource \"aws_vpc\" \"this\""));
+    assert_eq!(
+        r.signature.as_deref(),
+        Some("resource \"aws_vpc\" \"this\"")
+    );
 }
 
 #[test]
@@ -149,8 +152,8 @@ resource \"aws_vpc\" \"this\" {
 
 #[test]
 fn extracts_multiple_blocks_from_fixture() {
-    let base =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context/repos/mini-terraform/networking");
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/context/repos/mini-terraform/networking");
 
     let main = std::fs::read_to_string(base.join("main.tf")).unwrap();
     let outs = std::fs::read_to_string(base.join("outputs.tf")).unwrap();
@@ -400,4 +403,3 @@ variable \"region\" {
         v.content
     );
 }
-

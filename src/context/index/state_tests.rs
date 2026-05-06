@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tempfile::tempdir;
 
-use super::state::{IndexState, StateCheck, StateError, CURRENT_SCHEMA_VERSION};
+use super::state::{CURRENT_SCHEMA_VERSION, IndexState, StateCheck, StateError};
 
 fn sample(hash: &str) -> IndexState {
     IndexState::new(hash.to_string())

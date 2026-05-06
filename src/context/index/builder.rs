@@ -215,17 +215,15 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
                 "INSERT INTO chunks_fts (id, content, qualified_name, signature)
                  VALUES (?1, ?2, ?3, ?4)",
             )?;
-            let mut ins_vec = tx.prepare(
-                "INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)",
-            )?;
+            let mut ins_vec =
+                tx.prepare("INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)")?;
 
             for (chunk, vec) in &embedded {
                 let kind_str = serde_json::to_value(&chunk.kind)
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_default();
-                let neighbors_json =
-                    serde_json::to_string(&chunk.metadata.neighboring_symbols)?;
+                let neighbors_json = serde_json::to_string(&chunk.metadata.neighboring_symbols)?;
                 let indexed_at = chunk.metadata.indexed_at.to_rfc3339();
 
                 ins_chunk.execute(params![
@@ -270,9 +268,8 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
     fn open_with_vec(db_path: &Path) -> rusqlite::Result<Connection> {
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             }
         }
         ensure_vec_loaded();

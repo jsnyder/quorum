@@ -71,7 +71,12 @@ fn knn_returns_nearest_chunks_first() {
     let chunks = vec![
         mk_chunk("s", "jwt", "jwt auth signing", ChunkKind::Symbol),
         mk_chunk("s", "db", "database query", ChunkKind::Symbol),
-        mk_chunk("s", "weather", "unrelated text about weather", ChunkKind::Symbol),
+        mk_chunk(
+            "s",
+            "weather",
+            "unrelated text about weather",
+            ChunkKind::Symbol,
+        ),
     ];
     let conn = build_test_db_with_embeddings(dir.path(), chunks);
 
@@ -158,7 +163,11 @@ fn kind_filter_limits_results() {
 
     assert!(!hits.is_empty());
     for h in &hits {
-        assert!(h.chunk_id.starts_with("doc"), "unexpected id: {}", h.chunk_id);
+        assert!(
+            h.chunk_id.starts_with("doc"),
+            "unexpected id: {}",
+            h.chunk_id
+        );
     }
 }
 

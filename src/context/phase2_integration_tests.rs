@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tempfile::tempdir;
 
 use super::config::{SourceEntry, SourceKind, SourceLocation};
-use super::extract::dispatch::{extract_source, ExtractConfig, FixedClock};
+use super::extract::dispatch::{ExtractConfig, FixedClock, extract_source};
 use super::store::ChunkStore;
 use super::types::ChunkKind;
 
@@ -38,13 +38,13 @@ fn extract_source_writes_jsonl_that_loads_back_mini_rust() {
     let loaded = ChunkStore::load_all(&chunks_path).unwrap();
     assert_eq!(loaded.len(), result.chunks.len());
     assert_eq!(loaded, result.chunks);
-    assert!(loaded
-        .iter()
-        .any(|c| c.qualified_name.as_deref() == Some("verify_token")));
+    assert!(
+        loaded
+            .iter()
+            .any(|c| c.qualified_name.as_deref() == Some("verify_token"))
+    );
     assert!(loaded.iter().any(|c| matches!(c.kind, ChunkKind::Doc)));
-    assert!(loaded
-        .iter()
-        .any(|c| c.subtype.as_deref() == Some("ADR")));
+    assert!(loaded.iter().any(|c| c.subtype.as_deref() == Some("ADR")));
 }
 
 #[test]
@@ -101,13 +101,19 @@ fn validation_passes_on_combined_multi_source_extraction() {
     );
 
     // Spot-check a symbol from each source appears.
-    assert!(loaded
-        .iter()
-        .any(|c| c.qualified_name.as_deref() == Some("verify_token")));
-    assert!(loaded
-        .iter()
-        .any(|c| c.qualified_name.as_deref() == Some("verifyToken")));
-    assert!(loaded
-        .iter()
-        .any(|c| c.qualified_name.as_deref() == Some("aws_vpc.this")));
+    assert!(
+        loaded
+            .iter()
+            .any(|c| c.qualified_name.as_deref() == Some("verify_token"))
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|c| c.qualified_name.as_deref() == Some("verifyToken"))
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|c| c.qualified_name.as_deref() == Some("aws_vpc.this"))
+    );
 }

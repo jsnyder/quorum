@@ -183,7 +183,10 @@ fn collect_h2_starts(md: &str) -> Vec<H2Start> {
 
     for (event, range) in parser {
         match event {
-            Event::Start(Tag::Heading { level: HeadingLevel::H2, .. }) => {
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H2,
+                ..
+            }) => {
                 current = Some((range.start, String::new()));
             }
             Event::End(end_tag) if current.is_some() => {

@@ -17,7 +17,7 @@
 //! content is the `description` attribute value if present (variable/output),
 //! else a whitespace-collapsed, length-capped rendering of the block body.
 
-use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
+use ast_grep_config::{GlobalRules, RuleConfig, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 use chrono::{DateTime, Utc};
 
@@ -125,8 +125,7 @@ pub fn extract_hcl(
     let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
     raw.retain(|s| seen.insert((s.qualified_name.clone(), s.byte_start)));
 
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for s in &raw {
         *name_counts.entry(s.qualified_name.clone()).or_insert(0) += 1;
     }
@@ -147,7 +146,10 @@ pub fn extract_hcl(
                 .collect();
 
             let id = if name_counts.get(&s.qualified_name).copied().unwrap_or(1) > 1 {
-                format!("{source}:{source_path}:{}@{}", s.qualified_name, s.byte_start)
+                format!(
+                    "{source}:{source_path}:{}@{}",
+                    s.qualified_name, s.byte_start
+                )
             } else {
                 format!("{source}:{source_path}:{}", s.qualified_name)
             };
@@ -272,9 +274,7 @@ fn find_description<D: ast_grep_core::Doc>(
     block: &ast_grep_core::Node<'_, D>,
     src: &str,
 ) -> Option<String> {
-    let body = block
-        .children()
-        .find(|c| c.kind().as_ref() == "body")?;
+    let body = block.children().find(|c| c.kind().as_ref() == "body")?;
 
     for attr in body.children() {
         if attr.kind().as_ref() != "attribute" {

@@ -89,15 +89,15 @@ fn normalize(values: &[f32]) -> Vec<f32> {
 
 /// Recency decay: `max(exp(-ln2 * age_days / halflife), floor)`.
 /// Negative ages (clock skew) clamp to 0 (→ decay = 1.0).
-fn recency_multiplier(
-    now: DateTime<Utc>,
-    indexed_at: DateTime<Utc>,
-    config: &RerankConfig,
-) -> f32 {
+fn recency_multiplier(now: DateTime<Utc>, indexed_at: DateTime<Utc>, config: &RerankConfig) -> f32 {
     let age_days = (now - indexed_at).num_days().max(0) as f32;
     let halflife = config.recency_halflife_days.max(1) as f32;
     let decay = (-std::f32::consts::LN_2 * age_days / halflife).exp();
-    let value = if decay.is_finite() { decay } else { config.recency_floor };
+    let value = if decay.is_finite() {
+        decay
+    } else {
+        config.recency_floor
+    };
     value.max(config.recency_floor)
 }
 
@@ -130,7 +130,11 @@ pub(crate) fn rerank(
             let bn = bm25_norm[i];
             let vn = vec_norm[i];
             let id_boost = if input.id_exact_match { ID_BOOST } else { 0.0 };
-            let path_boost = if input.language_match { PATH_BOOST } else { 0.0 };
+            let path_boost = if input.language_match {
+                PATH_BOOST
+            } else {
+                0.0
+            };
             let blended = BM25_WEIGHT * bn + VEC_WEIGHT * vn;
             let recency_mul = recency_multiplier(now, input.indexed_at, &config);
             let score = (blended + id_boost + path_boost) * recency_mul;

@@ -94,8 +94,7 @@ fn no_match_returns_empty() {
         "fn validate() {}",
     )];
     let conn = build_test_db(dir.path(), chunks);
-    let hits =
-        structural_search(&conn, &["nonexistent::fn".into()], &Filters::default()).unwrap();
+    let hits = structural_search(&conn, &["nonexistent::fn".into()], &Filters::default()).unwrap();
     assert!(hits.is_empty());
 }
 
@@ -107,7 +106,12 @@ fn multiple_qnames_mixed_hit_and_miss() {
         sample_symbol("c2", "repo", "a::two", "fn two() {}"),
     ];
     let conn = build_test_db(dir.path(), chunks);
-    let hits = structural_search(&conn, &["a::one".into(), "never::seen".into(), "a::two".into()], &Filters::default()).unwrap();
+    let hits = structural_search(
+        &conn,
+        &["a::one".into(), "never::seen".into(), "a::two".into()],
+        &Filters::default(),
+    )
+    .unwrap();
     assert_eq!(hits.len(), 2);
     // Order follows the input qname order, not DB order.
     assert_eq!(hits[0].qualified_name, "a::one");
@@ -169,11 +173,9 @@ fn many_qnames_do_not_exceed_sqlite_parameter_limit() {
     let dir = tempdir().unwrap();
     let chunks = vec![sample_symbol("c1", "r", "hit", "fn hit(){}")];
     let conn = build_test_db(dir.path(), chunks);
-    let mut qnames: Vec<String> =
-        (0..2000).map(|i| format!("miss_{i}")).collect();
+    let mut qnames: Vec<String> = (0..2000).map(|i| format!("miss_{i}")).collect();
     qnames.push("hit".into());
-    let hits =
-        structural_search(&conn, &qnames, &Filters::default()).unwrap();
+    let hits = structural_search(&conn, &qnames, &Filters::default()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].chunk_id, "c1");
 }
@@ -202,12 +204,7 @@ fn qname_with_sql_metachars_is_safely_bound() {
     // as SQL. If this were vulnerable, the test DB would be
     // dropped and subsequent queries would fail.
     let dir = tempdir().unwrap();
-    let chunks = vec![sample_symbol(
-        "c1",
-        "repo",
-        "harmless",
-        "fn harmless() {}",
-    )];
+    let chunks = vec![sample_symbol("c1", "repo", "harmless", "fn harmless() {}")];
     let conn = build_test_db(dir.path(), chunks);
     let payload = "'); DROP TABLE chunks;--".to_string();
     let hits = structural_search(&conn, &[payload], &Filters::default()).unwrap();

@@ -20,12 +20,18 @@ pub fn verify_token(token: &str, opts: VerifyOpts) -> Result<Claims, AuthError> 
         .find(|c| c.qualified_name.as_deref() == Some("verify_token"))
         .unwrap();
     assert_eq!(vt.kind, super::super::types::ChunkKind::Symbol);
-    assert!(vt.signature.as_ref().unwrap().contains("pub fn verify_token"));
-    assert!(vt
-        .signature
-        .as_ref()
-        .unwrap()
-        .contains("Result<Claims, AuthError>"));
+    assert!(
+        vt.signature
+            .as_ref()
+            .unwrap()
+            .contains("pub fn verify_token")
+    );
+    assert!(
+        vt.signature
+            .as_ref()
+            .unwrap()
+            .contains("Result<Claims, AuthError>")
+    );
     assert!(vt.content.contains("Validates a JWT"));
     assert!(vt.content.contains("Errors if expired"));
     assert!(vt.metadata.is_exported);
@@ -44,9 +50,11 @@ fn signature_without_doc_comment_falls_back_to_signature_as_content() {
 #[test]
 fn skips_private_fn() {
     let src = "fn private() {}";
-    assert!(extract_rust(src, "x.rs", "s", "c", when())
-        .unwrap()
-        .is_empty());
+    assert!(
+        extract_rust(src, "x.rs", "s", "c", when())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -161,8 +169,18 @@ mod b { pub fn foo() {} }
     assert!(foos[0].id.contains("@"));
     assert!(foos[1].id.contains("@"));
     // Each `foo` lists the OTHER `foo` as a neighbor.
-    assert!(foos[0].metadata.neighboring_symbols.contains(&"foo".to_string()));
-    assert!(foos[1].metadata.neighboring_symbols.contains(&"foo".to_string()));
+    assert!(
+        foos[0]
+            .metadata
+            .neighboring_symbols
+            .contains(&"foo".to_string())
+    );
+    assert!(
+        foos[1]
+            .metadata
+            .neighboring_symbols
+            .contains(&"foo".to_string())
+    );
 }
 
 #[test]

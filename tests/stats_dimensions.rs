@@ -64,19 +64,40 @@ fn stats_by_caller_json_returns_slices() {
         .args(["stats", "--by-caller", "--json"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stats --by-caller --json should succeed");
+    assert!(
+        out.status.success(),
+        "stats --by-caller --json should succeed"
+    );
 
     let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!("stdout not JSON: {}\n{}", e, String::from_utf8_lossy(&out.stdout))
+        panic!(
+            "stdout not JSON: {}\n{}",
+            e,
+            String::from_utf8_lossy(&out.stdout)
+        )
     });
     assert_eq!(v["mode"], "by-caller");
     let slices = v["slices"].as_array().expect("slices array");
-    let a = slices.iter().find(|s| s["key"] == "script-a")
-        .unwrap_or_else(|| panic!("expected script-a slice, got {:?}",
-            slices.iter().map(|s| s["key"].as_str()).collect::<Vec<_>>()));
+    let a = slices
+        .iter()
+        .find(|s| s["key"] == "script-a")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected script-a slice, got {:?}",
+                slices.iter().map(|s| s["key"].as_str()).collect::<Vec<_>>()
+            )
+        });
     let b = slices.iter().find(|s| s["key"] == "script-b").unwrap();
-    assert_eq!(a["n_reviews"].as_u64().unwrap(), 3, "script-a seeded 3 reviews");
-    assert_eq!(b["n_reviews"].as_u64().unwrap(), 2, "script-b seeded 2 reviews");
+    assert_eq!(
+        a["n_reviews"].as_u64().unwrap(),
+        3,
+        "script-a seeded 3 reviews"
+    );
+    assert_eq!(
+        b["n_reviews"].as_u64().unwrap(),
+        2,
+        "script-b seeded 2 reviews"
+    );
 }
 
 #[test]
@@ -99,11 +120,21 @@ fn stats_by_repo_json_returns_slices() {
     // containing git repo — so we expect exactly one slice carrying all 5 reviews.
     // Repo name is derived from the test's CWD so a forked checkout still works.
     let repo = current_repo_basename();
-    let repo_slice = slices.iter().find(|s| s["key"] == repo.as_str())
-        .unwrap_or_else(|| panic!("expected a '{}' repo slice, got {:?}", repo,
-            slices.iter().map(|s| s["key"].as_str()).collect::<Vec<_>>()));
-    assert_eq!(repo_slice["n_reviews"].as_u64().unwrap(), 5,
-        "all 5 reviews of fixtures in this repo should group into one slice");
+    let repo_slice = slices
+        .iter()
+        .find(|s| s["key"] == repo.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a '{}' repo slice, got {:?}",
+                repo,
+                slices.iter().map(|s| s["key"].as_str()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        repo_slice["n_reviews"].as_u64().unwrap(),
+        5,
+        "all 5 reviews of fixtures in this repo should group into one slice"
+    );
     assert_eq!(v["meta"]["total_reviews"].as_u64().unwrap(), 5);
 }
 
@@ -121,9 +152,20 @@ fn stats_by_caller_compact_is_single_line_no_glyphs() {
     let s = String::from_utf8_lossy(&out.stdout);
     // At most one trailing newline; body must be a single line.
     let body = s.trim_end_matches('\n');
-    assert!(!body.contains('\n'), "compact output must be single-line, got:\n{:?}", body);
-    assert!(body.starts_with("by-caller:"), "expected by-caller prefix, got: {:?}", body);
-    assert!(!body.contains('█'), "compact mode must not contain block glyphs");
+    assert!(
+        !body.contains('\n'),
+        "compact output must be single-line, got:\n{:?}",
+        body
+    );
+    assert!(
+        body.starts_with("by-caller:"),
+        "expected by-caller prefix, got: {:?}",
+        body
+    );
+    assert!(
+        !body.contains('█'),
+        "compact mode must not contain block glyphs"
+    );
 }
 
 #[test]

@@ -126,7 +126,10 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
 
     if let Some(ref status) = f.grounding_status {
         use crate::finding::GroundingStatus;
-        if matches!(status, GroundingStatus::SymbolNotFound | GroundingStatus::LineOutOfRange) {
+        if matches!(
+            status,
+            GroundingStatus::SymbolNotFound | GroundingStatus::LineOutOfRange
+        ) {
             output.push_str(&format!(
                 "    {dim}[ungrounded] cited symbol not verified in source{reset}\n",
                 dim = style.dim,
@@ -887,7 +890,10 @@ mod tests {
             .grounding_status(GroundingStatus::SymbolNotFound)
             .build();
         let output = format_finding(&f, &Style::plain());
-        assert!(output.contains("[ungrounded]"), "Expected [ungrounded] in output: {output}");
+        assert!(
+            output.contains("[ungrounded]"),
+            "Expected [ungrounded] in output: {output}"
+        );
     }
 
     #[test]
@@ -898,7 +904,10 @@ mod tests {
             .grounding_status(GroundingStatus::LineOutOfRange)
             .build();
         let output = format_finding(&f, &Style::plain());
-        assert!(output.contains("[ungrounded]"), "Expected [ungrounded] in output: {output}");
+        assert!(
+            output.contains("[ungrounded]"),
+            "Expected [ungrounded] in output: {output}"
+        );
     }
 
     #[test]
@@ -909,7 +918,10 @@ mod tests {
             .grounding_status(GroundingStatus::Verified)
             .build();
         let output = format_finding(&f, &Style::plain());
-        assert!(!output.contains("[ungrounded]"), "Verified should NOT show [ungrounded]: {output}");
+        assert!(
+            !output.contains("[ungrounded]"),
+            "Verified should NOT show [ungrounded]: {output}"
+        );
     }
 
     #[test]
@@ -920,7 +932,10 @@ mod tests {
             .grounding_status(GroundingStatus::NotChecked)
             .build();
         let output = format_finding(&f, &Style::plain());
-        assert!(!output.contains("[ungrounded]"), "NotChecked should NOT show [ungrounded]: {output}");
+        assert!(
+            !output.contains("[ungrounded]"),
+            "NotChecked should NOT show [ungrounded]: {output}"
+        );
     }
 
     #[test]
@@ -930,7 +945,10 @@ mod tests {
             .severity(Severity::Medium)
             .build();
         let output = format_finding(&f, &Style::plain());
-        assert!(!output.contains("[ungrounded]"), "None grounding should NOT show [ungrounded]: {output}");
+        assert!(
+            !output.contains("[ungrounded]"),
+            "None grounding should NOT show [ungrounded]: {output}"
+        );
     }
 
     #[test]
@@ -940,8 +958,14 @@ mod tests {
             .grounding_status(GroundingStatus::SymbolNotFound)
             .build();
         let json = serde_json::to_string(&f).unwrap();
-        assert!(json.contains("grounding_status"), "JSON should contain grounding_status: {json}");
-        assert!(json.contains("symbol-not-found"), "JSON should contain kebab-case status: {json}");
+        assert!(
+            json.contains("grounding_status"),
+            "JSON should contain grounding_status: {json}"
+        );
+        assert!(
+            json.contains("symbol-not-found"),
+            "JSON should contain kebab-case status: {json}"
+        );
     }
 
     #[test]
@@ -969,7 +993,10 @@ mod tests {
             .build();
         let style = Style::plain();
         let output = format_finding(&f, &style);
-        assert!(!output.contains("\x1b[31m"), "ANSI escape leaked through suggested_fix");
+        assert!(
+            !output.contains("\x1b[31m"),
+            "ANSI escape leaked through suggested_fix"
+        );
         assert!(output.contains("parameterized"));
     }
 
@@ -982,7 +1009,10 @@ mod tests {
             .build();
         let style = Style::plain();
         let output = format_finding(&f, &style);
-        assert!(!output.contains("\x1b[0m"), "ANSI escape leaked through based_on_excerpt");
+        assert!(
+            !output.contains("\x1b[0m"),
+            "ANSI escape leaked through based_on_excerpt"
+        );
         assert!(output.contains("lines 1-50"));
     }
 

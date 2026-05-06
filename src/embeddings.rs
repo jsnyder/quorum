@@ -4,7 +4,7 @@
 //! Model auto-downloaded on first use, cached in ~/.quorum/models/
 
 #[cfg(feature = "embeddings")]
-use fastembed::{TextEmbedding, InitOptions, EmbeddingModel};
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 #[cfg(feature = "embeddings")]
 pub struct LocalEmbedder {
@@ -23,7 +23,9 @@ impl LocalEmbedder {
 
     pub fn embed(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
         let results = self.model.embed(vec![text], None)?;
-        results.into_iter().next()
+        results
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("No embedding result"))
     }
 
@@ -33,11 +35,15 @@ impl LocalEmbedder {
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 { return 0.0; }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
     dot / (norm_a * norm_b)
 }
 
@@ -80,7 +86,16 @@ mod tests {
         let c = embedder.embed("Unused import os").unwrap();
         let ab = cosine_similarity(&a, &b);
         let ac = cosine_similarity(&a, &c);
-        assert!(ab > 0.7, "Similar texts should have high similarity: {}", ab);
-        assert!(ac < ab, "Different texts should have lower similarity: {} vs {}", ac, ab);
+        assert!(
+            ab > 0.7,
+            "Similar texts should have high similarity: {}",
+            ab
+        );
+        assert!(
+            ac < ab,
+            "Different texts should have lower similarity: {} vs {}",
+            ac,
+            ab
+        );
     }
 }

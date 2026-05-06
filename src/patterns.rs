@@ -3,27 +3,107 @@
 
 /// Known patterns with keywords that identify them.
 const PATTERN_RULES: &[(&str, &[&str])] = &[
-    ("sql_injection", &["sql injection", "sql query", "execute(", "cursor.execute"]),
-    ("xss", &["innerhtml", "outerhtml", "document.write", "dangerouslysetinnerhtml", "cross-site scripting"]),
+    (
+        "sql_injection",
+        &["sql injection", "sql query", "execute(", "cursor.execute"],
+    ),
+    (
+        "xss",
+        &[
+            "innerhtml",
+            "outerhtml",
+            "document.write",
+            "dangerouslysetinnerhtml",
+            "cross-site scripting",
+        ],
+    ),
     ("eval_exec", &["eval(", "exec(", "code injection"]),
-    ("hardcoded_secret", &["hardcoded secret", "hardcoded key", "hardcoded password", "secret_key"]),
+    (
+        "hardcoded_secret",
+        &[
+            "hardcoded secret",
+            "hardcoded key",
+            "hardcoded password",
+            "secret_key",
+        ],
+    ),
     ("debug_mode", &["debug=true", "debug mode"]),
-    ("open_binding", &["0.0.0.0", "all interfaces", "all network"]),
+    (
+        "open_binding",
+        &["0.0.0.0", "all interfaces", "all network"],
+    ),
     ("bare_except", &["bare except", "broad except"]),
-    ("blocking_in_async", &["block_in_place", "future.result()", "blocking call", "stall.*reactor", "stall.*event loop"]),
-    ("resource_leak", &["resource leak", "tab.*leak", "connection.*leak", "file.*leak", "not closed"]),
-    ("race_condition", &["race condition", "not synchronized", "not thread-safe", "thread safety"]),
-    ("missing_timeout", &["no timeout", "missing timeout", "hang indefinitely"]),
-    ("exception_disclosure", &["exception detail", "str(e)", "internal error.*client", "error.*expose"]),
-    ("mutate_while_iterate", &["mutating.*while.*iterating", "mutating.*while.*iterate"]),
+    (
+        "blocking_in_async",
+        &[
+            "block_in_place",
+            "future.result()",
+            "blocking call",
+            "stall.*reactor",
+            "stall.*event loop",
+        ],
+    ),
+    (
+        "resource_leak",
+        &[
+            "resource leak",
+            "tab.*leak",
+            "connection.*leak",
+            "file.*leak",
+            "not closed",
+        ],
+    ),
+    (
+        "race_condition",
+        &[
+            "race condition",
+            "not synchronized",
+            "not thread-safe",
+            "thread safety",
+        ],
+    ),
+    (
+        "missing_timeout",
+        &["no timeout", "missing timeout", "hang indefinitely"],
+    ),
+    (
+        "exception_disclosure",
+        &[
+            "exception detail",
+            "str(e)",
+            "internal error.*client",
+            "error.*expose",
+        ],
+    ),
+    (
+        "mutate_while_iterate",
+        &["mutating.*while.*iterating", "mutating.*while.*iterate"],
+    ),
     ("mutable_default", &["mutable default"]),
     ("complexity_high", &["cyclomatic complexity", "complexity"]),
     ("unsafe_code", &["unsafe block", "unsafe code"]),
     ("unwrap_panic", &["unwrap()", "may panic"]),
-    ("ssrf", &["ssrf", "server-side request", "unvalidated.*url", "arbitrary.*url"]),
-    ("path_traversal", &["path traversal", "directory traversal", "../"]),
-    ("weak_crypto", &["md5", "sha1", "weak.*hash", "weak.*crypto"]),
-    ("unused_code", &["unused import", "unused variable", "dead code"]),
+    (
+        "ssrf",
+        &[
+            "ssrf",
+            "server-side request",
+            "unvalidated.*url",
+            "arbitrary.*url",
+        ],
+    ),
+    (
+        "path_traversal",
+        &["path traversal", "directory traversal", "../"],
+    ),
+    (
+        "weak_crypto",
+        &["md5", "sha1", "weak.*hash", "weak.*crypto"],
+    ),
+    (
+        "unused_code",
+        &["unused import", "unused variable", "dead code"],
+    ),
     ("non_atomic_write", &["non-atomic", "atomic write"]),
 ];
 
@@ -40,7 +120,11 @@ pub fn classify_pattern(title: &str, description: &str, category: &str) -> Optio
 
 /// Format a finding for embedding: "{pattern} {category} {title}"
 /// This normalized format improves embedding similarity for semantically similar findings.
-pub fn embedding_text(finding_title: &str, category: &str, canonical_pattern: Option<&str>) -> String {
+pub fn embedding_text(
+    finding_title: &str,
+    category: &str,
+    canonical_pattern: Option<&str>,
+) -> String {
     match canonical_pattern {
         Some(pattern) => format!("{} {} {}", pattern, category, finding_title),
         None => format!("{} {}", category, finding_title),
@@ -66,7 +150,8 @@ pub fn embedding_text_enriched(
     discriminators: &[&str],
 ) -> String {
     let base = embedding_text(finding_title, category, canonical_pattern);
-    let extras: Vec<&str> = discriminators.iter()
+    let extras: Vec<&str> = discriminators
+        .iter()
         .copied()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -84,25 +169,51 @@ mod tests {
 
     #[test]
     fn classify_sql_injection_variants() {
-        assert_eq!(classify_pattern("SQL injection via f-string", "", "security"), Some("sql_injection".into()));
-        assert_eq!(classify_pattern("Unvalidated input in SQL query", "", "security"), Some("sql_injection".into()));
-        assert_eq!(classify_pattern("Potential SQL injection via f-string in execute()", "", "security"), Some("sql_injection".into()));
+        assert_eq!(
+            classify_pattern("SQL injection via f-string", "", "security"),
+            Some("sql_injection".into())
+        );
+        assert_eq!(
+            classify_pattern("Unvalidated input in SQL query", "", "security"),
+            Some("sql_injection".into())
+        );
+        assert_eq!(
+            classify_pattern(
+                "Potential SQL injection via f-string in execute()",
+                "",
+                "security"
+            ),
+            Some("sql_injection".into())
+        );
     }
 
     #[test]
     fn classify_xss_variants() {
-        assert_eq!(classify_pattern("innerHTML assignment is XSS risk", "", "security"), Some("xss".into()));
-        assert_eq!(classify_pattern("document.write allows injection", "", "security"), Some("xss".into()));
+        assert_eq!(
+            classify_pattern("innerHTML assignment is XSS risk", "", "security"),
+            Some("xss".into())
+        );
+        assert_eq!(
+            classify_pattern("document.write allows injection", "", "security"),
+            Some("xss".into())
+        );
     }
 
     #[test]
     fn classify_unknown_returns_none() {
-        assert_eq!(classify_pattern("Some random finding", "nothing specific", "misc"), None);
+        assert_eq!(
+            classify_pattern("Some random finding", "nothing specific", "misc"),
+            None
+        );
     }
 
     #[test]
     fn embedding_text_with_pattern() {
-        let text = embedding_text("SQL injection via f-string", "security", Some("sql_injection"));
+        let text = embedding_text(
+            "SQL injection via f-string",
+            "security",
+            Some("sql_injection"),
+        );
         assert!(text.starts_with("sql_injection"));
         assert!(text.contains("security"));
     }
@@ -128,7 +239,10 @@ mod tests {
             None,
             &["jwt.verify", "HS256", "algorithm"],
         );
-        assert!(text.contains("jwt.verify"), "discriminator tokens must be in embed text");
+        assert!(
+            text.contains("jwt.verify"),
+            "discriminator tokens must be in embed text"
+        );
         assert!(text.contains("HS256"));
         assert!(text.contains("algorithm"));
         assert!(text.contains("security"));
@@ -152,12 +266,25 @@ mod tests {
 
     #[test]
     fn classify_blocking_in_async() {
-        assert_eq!(classify_pattern("Blocking future.result() in async", "", "concurrency"), Some("blocking_in_async".into()));
-        assert_eq!(classify_pattern("block_in_place can panic", "", "bug"), Some("blocking_in_async".into()));
+        assert_eq!(
+            classify_pattern("Blocking future.result() in async", "", "concurrency"),
+            Some("blocking_in_async".into())
+        );
+        assert_eq!(
+            classify_pattern("block_in_place can panic", "", "bug"),
+            Some("blocking_in_async".into())
+        );
     }
 
     #[test]
     fn classify_complexity() {
-        assert_eq!(classify_pattern("Function foo has cyclomatic complexity 12", "", "complexity"), Some("complexity_high".into()));
+        assert_eq!(
+            classify_pattern(
+                "Function foo has cyclomatic complexity 12",
+                "",
+                "complexity"
+            ),
+            Some("complexity_high".into())
+        );
     }
 }

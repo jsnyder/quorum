@@ -1,6 +1,5 @@
 /// Domain/framework detection: scan project for framework markers.
 /// Detected domains enrich review prompts with framework-specific context.
-
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -155,9 +154,7 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if content.starts_with("esphome:")
-                            || content.contains("\nesphome:")
-                        {
+                        if content.starts_with("esphome:") || content.contains("\nesphome:") {
                             frameworks.insert("esphome".into());
                             break;
                         }
@@ -173,9 +170,7 @@ pub fn detect_domain(project_dir: &Path) -> DomainInfo {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if content.starts_with("esphome:")
-                            || content.contains("\nesphome:")
-                        {
+                        if content.starts_with("esphome:") || content.contains("\nesphome:") {
                             frameworks.insert("esphome".into());
                             break;
                         }
@@ -264,9 +259,7 @@ mod tests {
 
     #[test]
     fn detect_react_framework() {
-        let dir = create_project(&[
-            ("package.json", r#"{"dependencies":{"react":"^18.0.0"}}"#),
-        ]);
+        let dir = create_project(&[("package.json", r#"{"dependencies":{"react":"^18.0.0"}}"#)]);
         let info = detect_domain(dir.path());
         assert!(info.frameworks.contains(&"react".to_string()));
     }
@@ -283,18 +276,17 @@ mod tests {
 
     #[test]
     fn detect_nextjs_framework() {
-        let dir = create_project(&[
-            ("package.json", r#"{"dependencies":{"next":"^14.0.0"}}"#),
-        ]);
+        let dir = create_project(&[("package.json", r#"{"dependencies":{"next":"^14.0.0"}}"#)]);
         let info = detect_domain(dir.path());
         assert!(info.frameworks.contains(&"nextjs".to_string()));
     }
 
     #[test]
     fn detect_fastapi_framework() {
-        let dir = create_project(&[
-            ("pyproject.toml", "[project]\ndependencies = [\"fastapi\"]\n"),
-        ]);
+        let dir = create_project(&[(
+            "pyproject.toml",
+            "[project]\ndependencies = [\"fastapi\"]\n",
+        )]);
         let info = detect_domain(dir.path());
         assert!(info.frameworks.contains(&"fastapi".to_string()));
     }
@@ -309,7 +301,10 @@ mod tests {
         .unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Should detect Home Assistant. Got: {:?}",
             domain.frameworks
         );
@@ -321,7 +316,10 @@ mod tests {
         std::fs::write(dir.path().join(".HA_VERSION"), "2024.1.0\n").unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Should detect HA from .HA_VERSION. Got: {:?}",
             domain.frameworks
         );
@@ -343,7 +341,10 @@ mod tests {
         .unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Should detect HA from automations.yaml. Got: {:?}",
             domain.frameworks
         );
@@ -407,10 +408,14 @@ mod tests {
         std::fs::write(
             dir.path().join("configuration/configuration.yaml"),
             "homeassistant:\n  name: Home\n",
-        ).unwrap();
+        )
+        .unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Should detect HA from configuration/configuration.yaml. Got: {:?}",
             domain.frameworks
         );
@@ -424,7 +429,10 @@ mod tests {
         std::fs::write(dir.path().join("secrets.yaml"), "key: val\n").unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Should detect HA from custom_components/ + secrets.yaml. Got: {:?}",
             domain.frameworks
         );
@@ -438,7 +446,8 @@ mod tests {
         std::fs::write(
             dir.path().join("esphome/device.yaml"),
             "esphome:\n  name: test\n",
-        ).unwrap();
+        )
+        .unwrap();
         let domain = detect_domain(dir.path());
         assert!(
             domain.frameworks.iter().any(|f| f.contains("esphome")),
@@ -455,7 +464,10 @@ mod tests {
         std::fs::write(dir.path().join("secrets.yaml"), "api_key: xxx\n").unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "2 weak HA signals should detect HA. Got: {:?}",
             domain.frameworks
         );
@@ -468,7 +480,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("blueprints")).unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            !domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Single weak signal should NOT detect HA. Got: {:?}",
             domain.frameworks
         );
@@ -482,7 +497,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("packages")).unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "custom_components + packages should detect HA. Got: {:?}",
             domain.frameworks
         );
@@ -495,7 +513,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("custom_components")).unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            !domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "custom_components alone should NOT detect HA. Got: {:?}",
             domain.frameworks
         );
@@ -508,9 +529,15 @@ mod tests {
         std::fs::write(
             dir.path().join("configuration.yaml"),
             "homeassistant:\n  name: Home\n",
-        ).unwrap();
+        )
+        .unwrap();
         let domain = detect_domain(dir.path());
-        assert!(domain.frameworks.iter().any(|f| f.contains("home-assistant")));
+        assert!(
+            domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant"))
+        );
     }
 
     #[test]
@@ -520,10 +547,14 @@ mod tests {
         std::fs::write(
             dir.path().join("configuration.yaml"),
             "# homeassistant: is configured elsewhere\nsome_key: value\n",
-        ).unwrap();
+        )
+        .unwrap();
         let domain = detect_domain(dir.path());
         assert!(
-            !domain.frameworks.iter().any(|f| f.contains("home-assistant")),
+            !domain
+                .frameworks
+                .iter()
+                .any(|f| f.contains("home-assistant")),
             "Commented homeassistant: should NOT detect HA. Got: {:?}",
             domain.frameworks
         );
@@ -552,7 +583,11 @@ mod tests {
     #[test]
     fn detect_terraform_from_tfvars() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("terraform.tfvars"), "region = \"us-east-1\"").unwrap();
+        std::fs::write(
+            dir.path().join("terraform.tfvars"),
+            "region = \"us-east-1\"",
+        )
+        .unwrap();
         let info = detect_domain(dir.path());
         assert!(info.frameworks.contains(&"terraform".to_string()));
     }
@@ -560,7 +595,11 @@ mod tests {
     #[test]
     fn detect_terraform_from_tf_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("main.tf"), "resource \"aws_instance\" \"web\" {}").unwrap();
+        std::fs::write(
+            dir.path().join("main.tf"),
+            "resource \"aws_instance\" \"web\" {}",
+        )
+        .unwrap();
         let info = detect_domain(dir.path());
         assert!(info.frameworks.contains(&"terraform".to_string()));
         assert!(info.languages.contains(&"hcl".to_string()));

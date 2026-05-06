@@ -106,7 +106,10 @@ fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
         .expect("failed to drain quorum stderr");
     let status = child.wait().expect("failed to wait for quorum child");
 
-    assert!(status.success(), "successful list must exit 0; got {status:?}");
+    assert!(
+        status.success(),
+        "successful list must exit 0; got {status:?}"
+    );
     let stderr = String::from_utf8_lossy(&stderr_buf);
     assert!(
         !stderr.contains("failed to write"),

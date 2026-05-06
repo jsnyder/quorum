@@ -1,4 +1,4 @@
-use super::plan::{plan_injection, TokenCounter};
+use super::plan::{TokenCounter, plan_injection};
 use crate::context::config::ContextConfig;
 use crate::context::retrieve::{ScoreBreakdown, ScoredChunk};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
@@ -122,14 +122,7 @@ fn unused_symbol_budget_spills_to_prose() {
         scored("s2", ChunkKind::Symbol, &tokens(200), 0.8),
     ];
     let prose: Vec<_> = (0..4)
-        .map(|i| {
-            scored(
-                &format!("p{i}"),
-                ChunkKind::Doc,
-                &tokens(250),
-                0.7,
-            )
-        })
+        .map(|i| scored(&format!("p{i}"), ChunkKind::Doc, &tokens(250), 0.7))
         .collect();
     let plan = plan_injection(symbols, prose, &cfg, &*counter);
     assert_eq!(plan.injected.len(), 6);

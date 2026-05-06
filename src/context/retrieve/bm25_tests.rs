@@ -68,7 +68,12 @@ fn empty_query_returns_no_hits() {
     let dir = tempdir().unwrap();
     let conn = build_test_db(
         dir.path(),
-        vec![sample_chunk("a", "src", "verify_token helps", ChunkKind::Symbol)],
+        vec![sample_chunk(
+            "a",
+            "src",
+            "verify_token helps",
+            ChunkKind::Symbol,
+        )],
     );
     let hits = bm25_search(&conn, "", &Filters::default(), 10).unwrap();
     assert!(hits.is_empty());
@@ -80,14 +85,23 @@ fn single_term_match_returns_relevant_chunk() {
     let conn = build_test_db(
         dir.path(),
         vec![
-            sample_chunk("a", "src", "verify_token helps secure things", ChunkKind::Symbol),
+            sample_chunk(
+                "a",
+                "src",
+                "verify_token helps secure things",
+                ChunkKind::Symbol,
+            ),
             sample_chunk("b", "src", "random code doing stuff", ChunkKind::Symbol),
             sample_chunk("c", "src", "database query with params", ChunkKind::Symbol),
         ],
     );
     let expr = build_match_expression(&["verify_token".to_string()]).unwrap();
     let hits = bm25_search(&conn, &expr, &Filters::default(), 10).unwrap();
-    assert!(ids(&hits).contains(&"a"), "expected 'a' in hits {:?}", ids(&hits));
+    assert!(
+        ids(&hits).contains(&"a"),
+        "expected 'a' in hits {:?}",
+        ids(&hits)
+    );
     assert!(hits.iter().all(|h| h.chunk_id != "b" && h.chunk_id != "c"));
 }
 
@@ -205,11 +219,7 @@ fn match_expression_empty_list_returns_none() {
 
 #[test]
 fn match_expression_filters_whitespace() {
-    let expr = build_match_expression(&[
-        "foo".to_string(),
-        "  ".to_string(),
-        "".to_string(),
-    ]);
+    let expr = build_match_expression(&["foo".to_string(), "  ".to_string(), "".to_string()]);
     assert_eq!(expr.as_deref(), Some("\"foo\""));
 }
 

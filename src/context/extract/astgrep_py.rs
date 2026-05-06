@@ -17,7 +17,7 @@
 //! - Conditional module-level defs (inside `if TYPE_CHECKING:` etc.) are
 //!   extracted if they sit at module top level in the parse tree.
 
-use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
+use ast_grep_config::{GlobalRules, RuleConfig, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -29,8 +29,7 @@ const RULE_YAMLS: &[&str] = &[
     include_str!("../../../rules/python/extraction/classes.yml"),
 ];
 
-const DUNDER_ALL_RULE_YAML: &str =
-    include_str!("../../../rules/python/extraction/dunder-all.yml");
+const DUNDER_ALL_RULE_YAML: &str = include_str!("../../../rules/python/extraction/dunder-all.yml");
 
 fn load_extraction_rules() -> anyhow::Result<Vec<RuleConfig<SupportLang>>> {
     let globals = GlobalRules::default();
@@ -122,8 +121,7 @@ pub fn extract_python(
     let mut seen: HashSet<(String, usize)> = HashSet::new();
     raw.retain(|s| seen.insert((s.name.clone(), s.byte_start)));
 
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for s in &raw {
         *name_counts.entry(s.name.clone()).or_insert(0) += 1;
     }
@@ -424,9 +422,7 @@ fn item_signature(item_text: &str) -> String {
             }
         }
         tidied.push(b as char);
-        if matches!(b, b'(' | b'[' | b'{')
-            && bytes.get(i + 1) == Some(&b' ')
-        {
+        if matches!(b, b'(' | b'[' | b'{') && bytes.get(i + 1) == Some(&b' ') {
             i += 2;
             continue;
         }
@@ -454,9 +450,7 @@ fn extract_docstring<D: ast_grep_core::Doc>(
     node: &ast_grep_core::Node<'_, D>,
 ) -> Option<String> {
     // Locate the body `block` child.
-    let block = node
-        .children()
-        .find(|c| c.kind().as_ref() == "block")?;
+    let block = node.children().find(|c| c.kind().as_ref() == "block")?;
 
     // Inspect the FIRST statement-like child of the body. tree-sitter-python
     // may place trivia (comments) as siblings, so skip those but stop at the
@@ -506,10 +500,7 @@ fn dedent_docstring(raw: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
-        if matches!(
-            c,
-            b'r' | b'R' | b'b' | b'B' | b'u' | b'U' | b'f' | b'F'
-        ) {
+        if matches!(c, b'r' | b'R' | b'b' | b'B' | b'u' | b'U' | b'f' | b'F') {
             i += 1;
         } else {
             break;

@@ -12,7 +12,7 @@
 //! - `export const`/`export let`/`export var` bindings are NOT extracted.
 //! - Non-exported items are NOT extracted.
 
-use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
+use ast_grep_config::{GlobalRules, RuleConfig, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 use chrono::{DateTime, Utc};
 
@@ -109,8 +109,7 @@ pub fn extract_typescript(
     let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
     raw.retain(|s| seen.insert((s.name.clone(), s.byte_start)));
 
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for s in &raw {
         *name_counts.entry(s.name.clone()).or_insert(0) += 1;
     }

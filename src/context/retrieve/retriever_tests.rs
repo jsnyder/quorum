@@ -173,13 +173,29 @@ fn respects_source_filter() {
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
         vec![
-            mk_chunk("a1", "A", "token flow", Some("a1"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("b1", "B", "token flow", Some("b1"), ChunkKind::Symbol, "rust", n),
+            mk_chunk(
+                "a1",
+                "A",
+                "token flow",
+                Some("a1"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "b1",
+                "B",
+                "token flow",
+                Some("b1"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
-            structural_names: vec![],
+        structural_names: vec![],
         text: "token".into(),
         filters: Filters {
             sources: vec!["A".into()],
@@ -203,13 +219,29 @@ fn respects_kind_filter() {
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
         vec![
-            mk_chunk("sym", "s", "token rotation", Some("sym"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("doc", "s", "token rotation", Some("doc"), ChunkKind::Doc, "rust", n),
+            mk_chunk(
+                "sym",
+                "s",
+                "token rotation",
+                Some("sym"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "doc",
+                "s",
+                "token rotation",
+                Some("doc"),
+                ChunkKind::Doc,
+                "rust",
+                n,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
-            structural_names: vec![],
+        structural_names: vec![],
         text: "token".into(),
         filters: Filters {
             sources: vec![],
@@ -233,8 +265,24 @@ fn language_match_boost_applies() {
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
         vec![
-            mk_chunk("rs", "s", "alpha content token", Some("rs"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("py", "s", "alpha content token", Some("py"), ChunkKind::Symbol, "python", n),
+            mk_chunk(
+                "rs",
+                "s",
+                "alpha content token",
+                Some("rs"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "py",
+                "s",
+                "alpha content token",
+                Some("py"),
+                ChunkKind::Symbol,
+                "python",
+                n,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
@@ -258,8 +306,24 @@ fn recency_decay_applies() {
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
         vec![
-            mk_chunk("new", "s", "alpha beta gamma", Some("new"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("old", "s", "alpha beta gamma", Some("old"), ChunkKind::Symbol, "rust", old),
+            mk_chunk(
+                "new",
+                "s",
+                "alpha beta gamma",
+                Some("new"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "old",
+                "s",
+                "alpha beta gamma",
+                Some("old"),
+                ChunkKind::Symbol,
+                "rust",
+                old,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
@@ -330,7 +394,11 @@ fn score_components_exposed_in_breakdown() {
     let br = &hits[0].components;
     assert!((0.0..=1.0).contains(&br.bm25_norm));
     assert!((0.0..=1.0).contains(&br.vec_norm));
-    assert!(br.recency_mul >= 0.25, "recency below floor: {}", br.recency_mul);
+    assert!(
+        br.recency_mul >= 0.25,
+        "recency below floor: {}",
+        br.recency_mul
+    );
     assert!(br.score.is_finite());
     assert_eq!(br.score, hits[0].score);
 }
@@ -384,7 +452,15 @@ fn empty_query_returns_empty() {
     let n = now_ts();
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
-        vec![mk_chunk("a", "s", "alpha", Some("a"), ChunkKind::Symbol, "rust", n)],
+        vec![mk_chunk(
+            "a",
+            "s",
+            "alpha",
+            Some("a"),
+            ChunkKind::Symbol,
+            "rust",
+            n,
+        )],
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery::default();
@@ -436,9 +512,33 @@ fn duplicate_chunk_ids_dont_inflate_results() {
     let (conn, emb, clock) = mk_retriever_ctx(
         dir.path(),
         vec![
-            mk_chunk("a", "s", "unique-token-alpha content", Some("a"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("b", "s", "unique-token-alpha content", Some("b"), ChunkKind::Symbol, "rust", n),
-            mk_chunk("c", "s", "unique-token-alpha content", Some("c"), ChunkKind::Symbol, "rust", n),
+            mk_chunk(
+                "a",
+                "s",
+                "unique-token-alpha content",
+                Some("a"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "b",
+                "s",
+                "unique-token-alpha content",
+                Some("b"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "c",
+                "s",
+                "unique-token-alpha content",
+                Some("c"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
@@ -468,15 +568,29 @@ fn respects_exclude_source_paths_filter() {
         vec![
             // Both chunks match "token flow" by BM25 + vector; only the
             // exclude filter should break the tie.
-            mk_chunk("under_review", "S", "token flow", Some("under_review"),
-                     ChunkKind::Symbol, "rust", n),
-            mk_chunk("peer", "S", "token flow", Some("peer"),
-                     ChunkKind::Symbol, "rust", n),
+            mk_chunk(
+                "under_review",
+                "S",
+                "token flow",
+                Some("under_review"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
+            mk_chunk(
+                "peer",
+                "S",
+                "token flow",
+                Some("peer"),
+                ChunkKind::Symbol,
+                "rust",
+                n,
+            ),
         ],
     );
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
-            structural_names: vec![],
+        structural_names: vec![],
         text: "token flow".into(),
         filters: Filters {
             sources: vec![],
@@ -639,24 +753,19 @@ fn structural_only_hit_survives_topk_against_strong_bm25_competitors() {
             n,
         ));
     }
-    let (conn, emb, clock) = mk_retriever_ctx(
-        dir.path(),
-        {
-            let mut v = vec![
-                mk_chunk(
-                    "structural_target",
-                    "S",
-                    "fn validate(x: &str) -> bool { !x.is_empty() }",
-                    Some("validate"),
-                    ChunkKind::Symbol,
-                    "rust",
-                    n,
-                ),
-            ];
-            v.extend(extra);
-            v
-        },
-    );
+    let (conn, emb, clock) = mk_retriever_ctx(dir.path(), {
+        let mut v = vec![mk_chunk(
+            "structural_target",
+            "S",
+            "fn validate(x: &str) -> bool { !x.is_empty() }",
+            Some("validate"),
+            ChunkKind::Symbol,
+            "rust",
+            n,
+        )];
+        v.extend(extra);
+        v
+    });
     let r = Retriever::new(&conn, &emb, &clock);
     let q = RetrievalQuery {
         text: "orchestrate pipeline flow tokens bytes flags".into(),

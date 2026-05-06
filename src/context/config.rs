@@ -479,7 +479,9 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
         rerank_recency_floor: raw
             .rerank_recency_floor
             .unwrap_or(defaults.rerank_recency_floor),
-        max_source_size_mb: raw.max_source_size_mb.unwrap_or(defaults.max_source_size_mb),
+        max_source_size_mb: raw
+            .max_source_size_mb
+            .unwrap_or(defaults.max_source_size_mb),
         ignore: raw.ignore,
     };
 

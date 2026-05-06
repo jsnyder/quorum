@@ -174,9 +174,8 @@ fn human_path_honors_explicit_json_flag() {
     .stdout
     .clone();
     let stdout = String::from_utf8(out).unwrap();
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("Human --json must emit valid JSON: {stdout:?} ({e})")
-    });
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Human --json must emit valid JSON: {stdout:?} ({e})"));
     assert_eq!(v["verdict"], "tp");
     assert_eq!(v["file_path"], "src/x.rs");
 }
@@ -219,10 +218,14 @@ fn cli_feedback_accepts_uppercase_verdict() {
     run_feedback(
         home.path(),
         &[
-            "--file", "a.rs",
-            "--finding", "X",
-            "--verdict", "TP",
-            "--reason", "r",
+            "--file",
+            "a.rs",
+            "--finding",
+            "X",
+            "--verdict",
+            "TP",
+            "--reason",
+            "r",
         ],
     )
     .success();
@@ -239,10 +242,14 @@ fn cli_feedback_accepts_whitespace_padded_verdict() {
     run_feedback(
         home.path(),
         &[
-            "--file", "a.rs",
-            "--finding", "X",
-            "--verdict", "  tp  ",
-            "--reason", "r",
+            "--file",
+            "a.rs",
+            "--finding",
+            "X",
+            "--verdict",
+            "  tp  ",
+            "--reason",
+            "r",
         ],
     )
     .success();
@@ -259,10 +266,14 @@ fn cli_feedback_rejects_unknown_verdict() {
     run_feedback(
         home.path(),
         &[
-            "--file", "a.rs",
-            "--finding", "X",
-            "--verdict", "maybe",
-            "--reason", "r",
+            "--file",
+            "a.rs",
+            "--finding",
+            "X",
+            "--verdict",
+            "maybe",
+            "--reason",
+            "r",
         ],
     )
     .failure();

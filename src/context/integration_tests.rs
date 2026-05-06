@@ -16,8 +16,11 @@ fn example_sources_fixture_loads_all_three_mini_repos() {
     let config = SourcesConfig::load(path).unwrap();
     assert_eq!(config.sources.len(), 3);
 
-    let by_name: std::collections::HashMap<_, _> =
-        config.sources.iter().map(|s| (s.name.as_str(), s)).collect();
+    let by_name: std::collections::HashMap<_, _> = config
+        .sources
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
     assert!(by_name.contains_key("mini-rust"));
     assert!(by_name.contains_key("mini-ts"));
     assert!(by_name.contains_key("mini-terraform"));

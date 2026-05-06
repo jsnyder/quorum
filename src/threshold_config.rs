@@ -75,7 +75,9 @@ impl ThresholdConfig {
         if self.suppress.as_ref().is_some_and(|p| !valid(p))
             || self.boost.as_ref().is_some_and(|p| !valid(p))
         {
-            tracing::warn!("calibrator_thresholds.toml contains out-of-range values, using defaults");
+            tracing::warn!(
+                "calibrator_thresholds.toml contains out-of-range values, using defaults"
+            );
             return None;
         }
         if let (Some(s), Some(b)) = (&self.suppress, &self.boost)

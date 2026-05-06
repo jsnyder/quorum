@@ -26,11 +26,7 @@ use crate::context::cli::CmdOutput;
 ///
 /// Errors writing to `err` (the diagnostic channel) are themselves swallowed
 /// — there is no useful recovery if both stdout and stderr are broken.
-pub fn write_cmd_output<W: Write, E: Write>(
-    out: &mut W,
-    err: &mut E,
-    cmd: &CmdOutput,
-) -> i32 {
+pub fn write_cmd_output<W: Write, E: Write>(out: &mut W, err: &mut E, cmd: &CmdOutput) -> i32 {
     // Capture the exit code from the first stdout error (if any) but do NOT
     // return early — warnings still need to reach stderr regardless of the
     // stdout state. The pre-extraction inline code in `run_context` had this

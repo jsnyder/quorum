@@ -97,7 +97,11 @@ fn review_unknown_extension_llm_only_fallback() {
     // Unknown extensions use LLM-only review; without LLM configured, returns 0 findings
     let dir = tempfile::TempDir::new().unwrap();
     let file = dir.path().join("example.go");
-    std::fs::write(&file, "package main\nfunc main() { fmt.Println(\"hello\") }\n").unwrap();
+    std::fs::write(
+        &file,
+        "package main\nfunc main() { fmt.Println(\"hello\") }\n",
+    )
+    .unwrap();
     quorum()
         .arg("review")
         .arg(file.to_str().unwrap())
