@@ -188,6 +188,10 @@ pub fn compute_tier_stats(entries: &[FeedbackEntry]) -> TierSummary {
     summary
 }
 
+#[deprecated(
+    since = "0.19.0",
+    note = "Use `format_channel_attribution` instead. Tier-precision rollups are misleading: External and AutoCalibrate aren't comparable to Human/PostFix on a precision axis."
+)]
 pub fn format_tier_report(summary: &TierSummary) -> String {
     let mut lines = Vec::new();
     lines.push("Feedback by provenance tier:".into());
@@ -274,6 +278,101 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
     }
 
     windows
+}
+
+/// Channel attribution table — replaces format_tier_report.
+///
+/// Reports counts only (no precision column) per provenance channel.
+/// Precision belongs on the headline trend, not the channel rollup —
+/// External and AutoCalibrate aren't comparable to Human/PostFix on a
+/// precision axis (different sampling distributions, different signal
+/// quality).
+///
+/// Layout per DESIGN.md §4.x: thin dim `─` rule under header only;
+/// numeric columns right-aligned; empty cells render as em-dash.
+pub fn format_channel_attribution(summary: &TierSummary) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+
+    let rows: [(&str, &SourceStats); 4] = [
+        ("Human", &summary.human),
+        ("PostFix", &summary.post_fix),
+        ("External", &summary.external.total),
+        ("AutoCalib", &summary.auto_calibrate),
+    ];
+
+    // Header.
+    writeln!(
+        out,
+        "  {label:<10}  {total:>6}  {tp:>5}  {fp:>5}  {part:>5}  {wfix:>5}",
+        label = "Channel",
+        total = "Total",
+        tp = "TP",
+        fp = "FP",
+        part = "Part",
+        wfix = "Wfix",
+    )
+    .unwrap();
+    // Single dim rule under header only.
+    writeln!(
+        out,
+        "  {}",
+        "─".repeat(10 + 2 + 6 + 2 + 5 + 2 + 5 + 2 + 5 + 2 + 5)
+    )
+    .unwrap();
+
+    fn cell(n: usize) -> String {
+        if n == 0 {
+            "—".to_string()
+        } else {
+            n.to_string()
+        }
+    }
+
+    for (label, s) in rows {
+        let total = s.total();
+        if total == 0 && label != "Human" {
+            continue; // hide empty channels except Human (always shown)
+        }
+        writeln!(
+            out,
+            "  {label:<10}  {total:>6}  {tp:>5}  {fp:>5}  {part:>5}  {wfix:>5}",
+            label = label,
+            total = if total == 0 { "—".to_string() } else { total.to_string() },
+            tp = cell(s.tp),
+            fp = cell(s.fp),
+            part = cell(s.partial),
+            wfix = cell(s.wontfix),
+        )
+        .unwrap();
+    }
+
+    // Per-agent External rollup.
+    if !summary.external.per_agent.is_empty() {
+        let top: Vec<String> = summary
+            .external
+            .per_agent
+            .iter()
+            .take(3)
+            .map(|(name, s)| format!("{name} ({})", s.total()))
+            .collect();
+        writeln!(out, "    top agents: {}", top.join(", ")).unwrap();
+    }
+
+    if summary.unknown.total() > 0 {
+        let s = &summary.unknown;
+        writeln!(
+            out,
+            "  {label:<10}  {total:>6}  {dim}(legacy rows, no provenance field){reset}",
+            label = "Unknown",
+            total = s.total(),
+            dim = "",
+            reset = "",
+        )
+        .unwrap();
+    }
+
+    out
 }
 
 /// External-agent corpus overlap with quorum's own verdicts.
@@ -931,6 +1030,72 @@ mod tests {
         // Precision: (Partial + TP) / (Partial + TP + FP) = (1+7) / (1+7+1) = 8/9.
         assert_eq!(trend[0].count, 10);
         assert!((trend[0].precision - (8.0 / 9.0)).abs() < 1e-9);
+    }
+
+    // ─── Stats redesign Task 8: channel attribution table ───
+
+    #[test]
+    fn channel_attribution_header_lists_count_columns_only() {
+        // No precision column on the channel rollup; precision lives on
+        // the headline trend instead.
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        assert!(out.contains("Total"));
+        assert!(out.contains("TP"));
+        assert!(out.contains("FP"));
+        assert!(out.contains("Part"));
+        assert!(out.contains("Wfix"));
+        assert!(!out.contains("prec"), "no precision column expected");
+        assert!(!out.contains('%'), "no percent rendering expected");
+    }
+
+    #[test]
+    fn channel_attribution_renders_em_dash_for_zero_cells() {
+        // Counts of 0 render as `—` so the eye lands on actual signal,
+        // not on rows of zeros.
+        let summary = TierSummary::default(); // all zero
+        let out = format_channel_attribution(&summary);
+        // Human row is always rendered, even when all-zero — its zero
+        // cells should be em-dashes.
+        let human_line = out.lines().find(|l| l.contains("Human")).unwrap();
+        assert!(
+            human_line.contains("—"),
+            "Human row with zeros should use em-dash: {human_line}"
+        );
+    }
+
+    #[test]
+    fn channel_attribution_uses_single_dim_rule_under_header() {
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        let rule_count = out.matches("──").count();
+        assert!(
+            rule_count >= 1,
+            "expected at least one box-rule run under header, got {rule_count}"
+        );
+        // Sanity: no double rule below data rows
+        let line_count = out.lines().count();
+        assert!(line_count < 12, "too many lines for an empty summary");
+    }
+
+    #[test]
+    fn channel_attribution_hides_empty_postfix_external_autocalib() {
+        // Empty channels (other than Human) are hidden — keeps the table
+        // tight before the user has any non-Human verdicts.
+        let summary = TierSummary::default();
+        let out = format_channel_attribution(&summary);
+        assert!(!out.contains("PostFix"));
+        assert!(!out.contains("External"));
+        assert!(!out.contains("AutoCalib"));
+    }
+
+    #[test]
+    fn channel_attribution_shows_postfix_when_any_postfix_entries_exist() {
+        use crate::feedback::Provenance;
+        let entries = vec![entry_with(Provenance::PostFix, Verdict::Tp)];
+        let summary = compute_tier_stats(&entries);
+        let out = format_channel_attribution(&summary);
+        assert!(out.contains("PostFix"), "PostFix should appear: {out}");
     }
 
     // ─── Stats redesign Task 9: external corpus overlap ───

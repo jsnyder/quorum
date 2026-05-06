@@ -350,6 +350,12 @@ pub struct StatsOpts {
     /// precision math is trustworthy or should fall back to entry-level.
     #[arg(long)]
     pub join_health: bool,
+
+    /// Show all dimensional drill-downs (By caller, Rolling N reviews).
+    /// Default omits these to keep the dashboard scannable; By repo is
+    /// always shown.
+    #[arg(long)]
+    pub full: bool,
 }
 
 fn parse_rolling_n(s: &str) -> Result<usize, String> {

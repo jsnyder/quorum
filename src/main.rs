@@ -288,7 +288,10 @@ async fn main() -> anyhow::Result<()> {
                         if opts.minimal {
                             print!("{}", stats::format_human_minimal(&report, &style));
                         } else {
-                            print!("{}", stats::format_human(&report, &style));
+                            print!(
+                                "{}",
+                                stats::format_human_with_full(&report, &style, opts.full)
+                            );
                         }
                     }
                 }

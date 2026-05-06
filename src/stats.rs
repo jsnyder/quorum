@@ -222,17 +222,148 @@ pub fn format_human_minimal(report: &StatsReport, style: &Style) -> String {
     format_human_core(report, style)
 }
 
+/// Minimum window count for showing a precision percentage. Below this
+/// the window is rendered as `n<30` to flag low-N noise — matches the
+/// design doc's stability cutoff.
+const MIN_TREND_WINDOW_N: usize = 30;
+
+/// Render the External corpus block — per-agent contribution and
+/// agreement rate against quorum's Human-tier verdicts.
+pub fn format_external_corpus(overlap: &analytics::ExternalOverlap) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "\nExternal corpus").unwrap();
+    for agent in &overlap.per_agent {
+        if agent.overlap == 0 {
+            writeln!(
+                out,
+                "  {agent}: {findings} entries (no overlap with quorum verdicts)",
+                agent = agent.agent,
+                findings = agent.findings,
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                "  {agent}: {findings} entries, {overlap} overlap, {pct}% agreement",
+                agent = agent.agent,
+                findings = agent.findings,
+                overlap = agent.overlap,
+                pct = (agent.agreement_rate() * 100.0).round() as u32,
+            )
+            .unwrap();
+        }
+    }
+    out
+}
+
+/// Render the headline precision trend with Wilson CI on the most recent
+/// window. Uses `precision_trend_per_finding` when the linkage gate is
+/// open; otherwise falls back to entry-level `precision_trend` with a
+/// "entry-level pending finding-id rollout" banner.
+pub fn format_headline_trend(report: &StatsReport) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+
+    let (windows, banner) = if report.headline_trend_uses_finding_id {
+        (&report.precision_trend_per_finding, None)
+    } else {
+        (
+            &report.precision_trend,
+            Some("entry-level pending finding-id rollout"),
+        )
+    };
+
+    if windows.is_empty() {
+        if let Some(b) = banner {
+            writeln!(out, "  Trend: (no data) — {b}").unwrap();
+        } else {
+            writeln!(out, "  Trend: (no data)").unwrap();
+        }
+        return out;
+    }
+
+    // Build "77 → 81 → 78 → 76%" chain — tail window keeps `%` to anchor
+    // the eye on the current value.
+    let mut chain = String::new();
+    for (i, w) in windows.iter().enumerate() {
+        let is_last = i == windows.len() - 1;
+        let cell = if w.count < MIN_TREND_WINDOW_N {
+            "n<30".to_string()
+        } else if is_last {
+            format!("{}%", (w.precision * 100.0).round() as u32)
+        } else {
+            format!("{}", (w.precision * 100.0).round() as u32)
+        };
+        if i > 0 {
+            chain.push_str(" → ");
+        }
+        chain.push_str(&cell);
+    }
+
+    let tail = windows.last().unwrap();
+    let ci = if tail.count >= MIN_TREND_WINDOW_N {
+        let (lo, hi) = crate::stats_math::wilson_interval(
+            (tail.precision * tail.count as f64).round() as usize,
+            tail.count,
+            0.95,
+        );
+        format!(
+            " [{lo}-{hi}]",
+            lo = (lo * 100.0).round() as u32,
+            hi = (hi * 100.0).round() as u32,
+        )
+    } else {
+        String::new()
+    };
+
+    let n_annotation = format!(" n={}", tail.count);
+    let capture = if report.capture_total > 0 {
+        format!(
+            ", capture: {}% ({}/{})",
+            (report.capture_rate * 100.0).round() as u32,
+            report.capture_labeled,
+            report.capture_total,
+        )
+    } else {
+        String::new()
+    };
+
+    if let Some(b) = banner {
+        writeln!(out, "  Trend: {chain}{ci}{n_annotation}{capture} — {b}").unwrap();
+    } else {
+        writeln!(out, "  Trend: {chain}{ci}{n_annotation}{capture}").unwrap();
+    }
+    out
+}
+
 pub fn format_human(report: &StatsReport, style: &Style) -> String {
+    // Default = !full: hide By caller and Rolling, keep By repo. See
+    // format_human_with_full for the full-fat variant.
+    format_human_with_full(report, style, false)
+}
+
+/// Render the dashboard, gating dimensional drill-downs (By caller,
+/// Rolling N) on `full`. By repo stays in default — it's the most
+/// scannable orientation.
+pub fn format_human_with_full(report: &StatsReport, style: &Style, full: bool) -> String {
     let mut out = format_human_core(report, style);
     let unicode = crate::output::unicode_ok_default();
     if !report.top_repos.is_empty() {
         out.push_str(&format_highlight_block("By repo (top)", &report.top_repos, style, unicode));
     }
-    if !report.top_callers.is_empty() {
-        out.push_str(&format_highlight_block("By caller (top)", &report.top_callers, style, unicode));
-    }
-    if !report.rolling_windows.is_empty() {
-        out.push_str(&format_highlight_block("Rolling 50 reviews", &report.rolling_windows, style, unicode));
+    if full {
+        if !report.top_callers.is_empty() {
+            out.push_str(&format_highlight_block("By caller (top)", &report.top_callers, style, unicode));
+        }
+        if !report.rolling_windows.is_empty() {
+            out.push_str(&format_highlight_block(
+                "Rolling windows (50 reviews each)",
+                &report.rolling_windows,
+                style,
+                unicode,
+            ));
+        }
     }
     out
 }
@@ -294,28 +425,23 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         report.tp, report.fp, report.partial, report.wontfix,
     ));
 
-    // Tier breakdown is only interesting once at least one non-Human entry
-    // exists — otherwise it's redundant with the TP/FP line above.
-    let ts = &report.tier_summary;
-    let has_tier_data = ts.post_fix.total() > 0
-        || ts.external.total.total() > 0
-        || ts.auto_calibrate.total() > 0
-        || ts.unknown.total() > 0;
-    if has_tier_data {
-        out.push('\n');
-        out.push_str(&analytics::format_tier_report(ts));
-        out.push('\n');
-    }
+    // Channel attribution table — counts only, no precision column.
+    // Always rendered (even all-zero Human) so the dashboard shape is
+    // stable; format_channel_attribution hides empty non-Human channels.
+    out.push('\n');
+    out.push_str(&analytics::format_channel_attribution(&report.tier_summary));
 
-    if !report.precision_trend.is_empty() {
-        let trend_str: Vec<String> = report.precision_trend.iter()
-            .map(|w| formatting::format_pct(w.precision))
-            .collect();
-        out.push_str(&format!("  Trend: {}\n", trend_str.join(">")));
+    // Headline trend with Wilson CI on the most recent window, plus
+    // capture-rate inline so trend footing is visible.
+    out.push_str(&format_headline_trend(report));
+
+    // External corpus block — per-agent overlap + agreement rate.
+    if !report.external_overlap.per_agent.is_empty() {
+        out.push_str(&format_external_corpus(&report.external_overlap));
     }
 
     out.push_str(&format!(
-        "\n{bold}Activity (7d){reset}\n",
+        "\n{bold}Activity (last 7 days){reset}\n",
         bold = style.bold, reset = style.reset
     ));
     out.push_str(&format!(
@@ -326,7 +452,7 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
 
     if report.tokens_in_7d > 0 || report.tokens_out_7d > 0 {
         out.push_str(&format!(
-            "\n{bold}Spend (7d){reset}\n",
+            "\n{bold}Spend (last 7 days){reset}\n",
             bold = style.bold, reset = style.reset
         ));
         out.push_str(&format!(
@@ -726,6 +852,143 @@ mod tests {
         }
     }
 
+    // ─── Stats redesign Task 11: section label normalization ───
+
+    #[test]
+    fn format_human_uses_normalized_section_labels() {
+        // The redesign explicitly states "(7d)" reads as jargon — replace
+        // with "(last 7 days)". Same for "Rolling 50 reviews" which is
+        // ambiguous about whether 50 is the window size or the count.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..6).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("(7d)"),
+            "old jargon label '(7d)' should be replaced: {out}"
+        );
+        assert!(
+            out.contains("last 7 days"),
+            "expected 'last 7 days' label: {out}"
+        );
+    }
+
+    // ─── Stats redesign Task 12: --full flag ───
+
+    #[test]
+    fn format_human_default_omits_by_caller_and_rolling() {
+        // The default dashboard hides the dimensional drill-downs (caller,
+        // rolling) — they live behind --full.
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..120).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human_with_full(&report, &Style::plain(), false);
+        assert!(out.contains("By repo"), "By repo stays in default: {out}");
+        assert!(!out.contains("By caller"), "By caller hides without --full: {out}");
+        assert!(!out.contains("Rolling"), "Rolling hides without --full: {out}");
+    }
+
+    #[test]
+    fn format_human_full_shows_all_dimensional_views() {
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        let records: Vec<_> = (0..120).map(|_| rec("alpha", "claude_code", 2)).collect();
+        let rl = make_review_log(&dir, &records);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        let out = format_human_with_full(&report, &Style::plain(), true);
+        assert!(out.contains("By repo"));
+        assert!(out.contains("By caller"));
+        assert!(out.contains("Rolling"));
+    }
+
+    // ─── Stats redesign Task 10: headline trend rendering ───
+
+    fn pw(precision: f64, count: usize) -> analytics::PrecisionWindow {
+        analytics::PrecisionWindow {
+            week_start: chrono::Utc::now(),
+            precision,
+            count,
+        }
+    }
+
+    fn make_report_for_trend(
+        trend_per_finding: Vec<analytics::PrecisionWindow>,
+        capture_labeled: usize,
+        capture_total: usize,
+        uses_finding_id: bool,
+    ) -> StatsReport {
+        StatsReport {
+            feedback_count: 0,
+            precision: 0.0,
+            tp: 0, fp: 0, partial: 0, wontfix: 0,
+            precision_trend: vec![],
+            reviews_7d: 0,
+            findings_per_review: 0.0,
+            suppression_rate: 0.0,
+            tokens_in_7d: 0, tokens_out_7d: 0,
+            cost_7d: 0.0, tokens_per_finding: 0.0,
+            model: String::new(),
+            top_repos: Vec::new(),
+            top_callers: Vec::new(),
+            rolling_windows: Vec::new(),
+            tier_summary: analytics::TierSummary::default(),
+            linkage_rate: 0.0,
+            linkage_linked: 0,
+            linkage_unlinked: 0,
+            capture_rate: if capture_total > 0 { capture_labeled as f64 / capture_total as f64 } else { 0.0 },
+            capture_labeled,
+            capture_total,
+            headline_trend_uses_finding_id: uses_finding_id,
+            external_overlap: analytics::ExternalOverlap::default(),
+            precision_trend_per_finding: trend_per_finding,
+        }
+    }
+
+    #[test]
+    fn headline_trend_renders_arrow_chain_with_ci_on_current_window() {
+        // 4-window trend, last window n=145 ≥ 30 → Wilson CI shown.
+        let report = make_report_for_trend(
+            vec![pw(0.77, 30), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
+            212, 1159, true,
+        );
+        let out = format_headline_trend(&report);
+        assert!(out.contains("77 → 81"), "trend chain missing: {out}");
+        assert!(out.contains("76%"), "current window pct missing: {out}");
+        assert!(out.contains("["), "expected CI bracket: {out}");
+        assert!(out.contains("n=145"), "expected sample-size annotation: {out}");
+        assert!(out.contains("capture"), "capture-rate inline missing: {out}");
+    }
+
+    #[test]
+    fn headline_trend_replaces_low_n_window_with_n_too_low() {
+        let report = make_report_for_trend(
+            vec![pw(0.77, 8), pw(0.81, 32), pw(0.78, 90), pw(0.76, 145)],
+            10, 100, true,
+        );
+        let out = format_headline_trend(&report);
+        assert!(
+            out.contains("n<30") || out.contains("n=8"),
+            "low-n window must be marked: {out}"
+        );
+    }
+
+    #[test]
+    fn headline_trend_shows_legacy_banner_when_finding_id_unused() {
+        let report = make_report_for_trend(vec![], 0, 0, false);
+        let out = format_headline_trend(&report);
+        assert!(
+            out.contains("entry-level") && out.contains("finding-id"),
+            "legacy banner should indicate the fallback: {out}"
+        );
+    }
+
     // ─── Stats redesign Task 6: extended StatsReport fields ───
 
     #[test]
@@ -854,7 +1117,9 @@ mod tests {
     }
 
     #[test]
-    fn format_human_default_includes_highlights_when_data_present() {
+    fn format_human_default_includes_by_repo_when_data_present() {
+        // After Task 12, default omits By caller / Rolling — only By repo
+        // is shown by default.
         let dir = TempDir::new().unwrap();
         let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
         let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
@@ -863,9 +1128,7 @@ mod tests {
         let report = compute_report(&fb, &tl, &rl).unwrap();
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("By repo"), "missing repo section: {}", out);
-        assert!(out.contains("By caller"), "missing caller section: {}", out);
         assert!(out.contains("alpha"));
-        assert!(out.contains("claude_code"));
     }
 
     #[test]
@@ -983,8 +1246,8 @@ mod tests {
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
-        assert!(out.contains("Activity (7d)"));
-        assert!(out.contains("Spend (7d)"));
+        assert!(out.contains("Activity (last 7 days)"));
+        assert!(out.contains("Spend (last 7 days)"));
         assert!(out.contains("2.0k"));  // feedback count
         assert!(out.contains("74%"));   // precision
     }
