@@ -302,10 +302,11 @@ pub fn format_headline_trend(report: &StatsReport) -> String {
     }
 
     let tail = windows.last().unwrap();
-    let ci = if tail.count >= MIN_TREND_WINDOW_N {
+    let ci = if tail.count >= MIN_TREND_WINDOW_N && tail.precision_denom > 0 {
+        let successes = (tail.precision * tail.precision_denom as f64).round() as usize;
         let (lo, hi) = crate::stats_math::wilson_interval(
-            (tail.precision * tail.count as f64).round() as usize,
-            tail.count,
+            successes,
+            tail.precision_denom,
             0.95,
         );
         format!(
@@ -957,6 +958,7 @@ mod tests {
             week_start: chrono::Utc::now(),
             precision,
             count,
+            precision_denom: count,
         }
     }
 

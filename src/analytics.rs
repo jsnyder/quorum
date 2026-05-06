@@ -134,6 +134,7 @@ pub struct PrecisionWindow {
     pub week_start: DateTime<Utc>,
     pub precision: f64,
     pub count: usize,
+    pub precision_denom: usize,
 }
 
 /// Tier-level aggregation by `Provenance`. Parallel to (and does not replace)
@@ -276,6 +277,7 @@ pub fn precision_trend(entries: &[FeedbackEntry], window_days: i64) -> Vec<Preci
                 week_start: window_start,
                 precision,
                 count: window_entries.len(),
+                precision_denom: total,
             });
         }
 
@@ -793,6 +795,33 @@ mod tests {
         let entries = vec![entry("model", Verdict::Tp)]; // only 1 entry
         let trend = precision_trend(&entries, 7);
         assert!(trend.is_empty()); // not enough data
+    }
+
+    #[test]
+    fn precision_denom_excludes_wontfix() {
+        let now = Utc::now();
+        let mut entries = Vec::new();
+        for _ in 0..8 {
+            let mut e = entry("model", Verdict::Tp);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        for _ in 0..2 {
+            let mut e = entry("model", Verdict::Fp);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        for _ in 0..5 {
+            let mut e = entry("model", Verdict::Wontfix);
+            e.timestamp = now - chrono::Duration::days(3);
+            entries.push(e);
+        }
+        let trend = precision_trend(&entries, 7);
+        assert!(!trend.is_empty());
+        let w = &trend[0];
+        assert_eq!(w.count, 15, "count includes all entries");
+        assert_eq!(w.precision_denom, 10, "precision_denom excludes wontfix");
+        assert!((w.precision - 0.8).abs() < 1e-9);
     }
 
     // ─── Stats redesign Phase 0: linkage_stats ───
