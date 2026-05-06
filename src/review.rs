@@ -1407,38 +1407,21 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_carves_out_trust_boundary_findings_via_precedence_rule() {
-        // Issue #118: down-classification rules 3 ("theoretically possible") and
-        // 4 ("defensive programming") were silently demoting legitimate boundary-
-        // security findings (no retry, unbounded allocation, symlink follow,
-        // SSRF) to LOW where the default review threshold dropped them.
-        //
-        // The fix: a Precedence rule placed BEFORE the down-classification list
-        // that exempts missing safety checks at trust/external-input boundaries.
-        // Postpositive EXCEPTION clauses are unreliable per gpt-5.4 +
-        // claude-opus-4.5 critique — frontier models compress them away.
-        //
-        // This test asserts the precedence-rule scaffolding survives. It does
-        // NOT assert per-keyword (symlink, SSRF, retry, etc.) — those are
-        // examples *inside* the carve-out, not the carve-out's existence.
-        // Per-keyword tests are change-detector tautology; the only credible
-        // failure mode this test guards against is a future refactor that
-        // accidentally drops the precedence rule altogether.
+    fn system_prompt_does_not_suppress_theoretical_bugs() {
+        // Issue #118 originally added a precedence rule to exempt trust-boundary
+        // findings from down-classification rule 3 ("theoretically possible → omit").
+        // The open-ended prompt reframe (2026-05-06) removed both: rule 3 now says
+        // "flag at low with reasoning" instead of "omit", so the exemption is
+        // unnecessary. This test verifies the new invariant: the prompt never
+        // instructs the model to omit any category of reachable bug.
         let sys = crate::llm_client::OpenAiClient::system_prompt();
         assert!(
-            sys.contains("Precedence rule"),
-            "system prompt missing precedence-rule scaffolding for trust-boundary carve-out"
+            sys.contains("rather than omitting"),
+            "system prompt must instruct flagging at low rather than omitting"
         );
         assert!(
-            sys.contains("trust or external-input boundary"),
-            "system prompt missing the trust/external-input boundary anchor phrase"
-        );
-        // Per gpt-5.4 review feedback: also pin the carve-out's *semantics*,
-        // not just the boundary phrase. A regression could preserve the
-        // boundary noun while silently deleting the rules-3-and-4 exemption.
-        assert!(
-            sys.contains("Rules 3 and 4 below do not apply"),
-            "system prompt missing the explicit rule 3 + 4 exemption that defines the carve-out"
+            sys.contains("trust boundaries"),
+            "system prompt must mention trust boundaries in the review spec"
         );
     }
 
