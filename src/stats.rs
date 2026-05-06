@@ -66,7 +66,7 @@ pub struct StatsReport {
 /// Take top-N slices by review volume. Ties resolved by insertion order
 /// (which reflects first-seen-in-log); stable enough for a highlight.
 fn take_top(mut slices: Vec<DimensionSlice>, n: usize) -> Vec<DimensionSlice> {
-    slices.sort_by(|a, b| b.n_reviews.cmp(&a.n_reviews));
+    slices.sort_by_key(|s| std::cmp::Reverse(s.n_reviews));
     slices.truncate(n);
     slices
 }
