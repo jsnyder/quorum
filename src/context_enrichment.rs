@@ -209,9 +209,10 @@ pub fn enrich_for_review(
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
             if let Some(dep) = deps.iter().find(|d| d.name == name)
-                && !import_matched.iter().any(|d| d.name == dep.name) {
-                    import_matched.push(dep);
-                }
+                && !import_matched.iter().any(|d| d.name == dep.name)
+            {
+                import_matched.push(dep);
+            }
         }
     }
 
@@ -458,9 +459,10 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         let now = (self.now)();
         if let Ok(mut cache) = self.resolve_cache.lock()
             && let Some(entry) = cache.get(name)
-                && now.duration_since(entry.cached_at) < self.resolve_ttl {
-                    return entry.result.clone();
-                }
+            && now.duration_since(entry.cached_at) < self.resolve_ttl
+        {
+            return entry.result.clone();
+        }
         let result = self.inner.resolve_library(name);
         if let Ok(mut cache) = self.resolve_cache.lock() {
             // LruCache::put auto-evicts the LRU entry at capacity — preserves
@@ -481,9 +483,10 @@ impl<'a> ContextFetcher for CachedContextFetcher<'a> {
         let key = (library_id.to_string(), query.to_string(), max_tokens);
 
         if let Ok(mut cache) = self.query_cache.lock()
-            && let Some(cached) = cache.get(&key) {
-                return cached.clone();
-            }
+            && let Some(cached) = cache.get(&key)
+        {
+            return cached.clone();
+        }
 
         let result = self.inner.query_docs(library_id, query, max_tokens);
 
@@ -628,9 +631,10 @@ impl ContextFetcher for Context7HttpFetcher {
         // Context7 API may return plain text/markdown or JSON
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
             if let Some(content) = json["content"].as_str()
-                && !content.is_empty() {
-                    return Some(content.to_string());
-                }
+                && !content.is_empty()
+            {
+                return Some(content.to_string());
+            }
             if let Some(snippets) = json["snippets"].as_array() {
                 let combined: String = snippets
                     .iter()

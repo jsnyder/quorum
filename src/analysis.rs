@@ -193,15 +193,13 @@ fn is_in_test_context(node: &tree_sitter::Node, source: &str) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         // Check for #[cfg(test)] on mod items
-        if parent.kind() == "mod_item"
-            && has_attribute(&parent, source, "cfg(test)") {
-                return true;
-            }
+        if parent.kind() == "mod_item" && has_attribute(&parent, source, "cfg(test)") {
+            return true;
+        }
         // Check for #[test] on function items
-        if parent.kind() == "function_item"
-            && has_attribute(&parent, source, "test") {
-                return true;
-            }
+        if parent.kind() == "function_item" && has_attribute(&parent, source, "test") {
+            return true;
+        }
         current = parent.parent();
     }
     false
@@ -252,34 +250,37 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
     // .unwrap() calls — tree-sitter-rust: call_expression with function=field_expression
     // Skip unwrap in test code (#[cfg(test)] modules, #[test] functions)
-    if node.kind() == "call_expression" && !is_in_test_context(node, source)
+    if node.kind() == "call_expression"
+        && !is_in_test_context(node, source)
         && let Some(func) = node.child_by_field_name("function")
-            && func.kind() == "field_expression"
-                && let Some(field) = func.child_by_field_name("field") {
-                    let field_name = &source[field.byte_range()];
-                    if field_name == "unwrap" {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "Use of `.unwrap()` may panic at runtime".into(),
-                            description: "Consider using `.expect()` with a message or proper error handling.".into(),
-                            severity: Severity::Low,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: node.start_position().row as u32 + 1,
-                            line_end: node.end_position().row as u32 + 1,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                        });
-                    }
-                }
+        && func.kind() == "field_expression"
+        && let Some(field) = func.child_by_field_name("field")
+    {
+        let field_name = &source[field.byte_range()];
+        if field_name == "unwrap" {
+            findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
+                title: "Use of `.unwrap()` may panic at runtime".into(),
+                description: "Consider using `.expect()` with a message or proper error handling."
+                    .into(),
+                severity: Severity::Low,
+                category: "security".into(),
+                source: Source::LocalAst,
+                line_start: node.start_position().row as u32 + 1,
+                line_end: node.end_position().row as u32 + 1,
+                evidence: vec![],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+                suggested_fix: None,
+                based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
+                grounding_status: None,
+            });
+        }
+    }
 }
 
 fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
@@ -370,15 +371,16 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if let Some(func) = node.child_by_field_name("function") {
             let func_text = &source[func.byte_range()];
             if (func_text.ends_with(".execute") || func_text.ends_with(".executemany"))
-                && let Some(args) = node.child_by_field_name("arguments") {
-                    // Check first argument for f-string or .format()
-                    if let Some(first_arg) = args.named_child(0) {
-                        let arg_kind = first_arg.kind();
-                        let arg_text = &source[first_arg.byte_range()];
-                        if arg_kind == "string"
-                            && (arg_text.starts_with("f\"") || arg_text.starts_with("f'"))
-                        {
-                            findings.push(Finding {
+                && let Some(args) = node.child_by_field_name("arguments")
+            {
+                // Check first argument for f-string or .format()
+                if let Some(first_arg) = args.named_child(0) {
+                    let arg_kind = first_arg.kind();
+                    let arg_text = &source[first_arg.byte_range()];
+                    if arg_kind == "string"
+                        && (arg_text.starts_with("f\"") || arg_text.starts_with("f'"))
+                    {
+                        findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: "Potential SQL injection via f-string in execute()".into(),
                                 description: "String interpolation in SQL queries allows injection. Use parameterized queries instead.".into(),
@@ -398,8 +400,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        } else if arg_text.contains(".format(") {
-                            findings.push(Finding {
+                    } else if arg_text.contains(".format(") {
+                        findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: "Potential SQL injection via .format() in execute()".into(),
                                 description: "String formatting in SQL queries allows injection. Use parameterized queries instead.".into(),
@@ -419,28 +421,28 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        }
                     }
                 }
+            }
         }
 
         // open() without explicit encoding
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             if func_name == "open"
-                && let Some(args) = node.child_by_field_name("arguments") {
-                    let args_text = &source[args.byte_range()];
-                    let binary_modes = [
-                        "'rb'", "\"rb\"", "'wb'", "\"wb\"", "'ab'", "\"ab\"", "'xb'", "\"xb\"",
-                        "'r+b'", "\"r+b\"", "'w+b'", "\"w+b\"", "'a+b'", "\"a+b\"", "'x+b'",
-                        "\"x+b\"", "'rb+'", "\"rb+\"", "'wb+'", "\"wb+\"", "'ab+'", "\"ab+\"",
-                        "'xb+'", "\"xb+\"",
-                    ];
-                    let is_binary = binary_modes.iter().any(|m| args_text.contains(m));
-                    let has_encoding =
-                        args_text.contains("encoding=") || args_text.contains("encoding =");
-                    if !is_binary && !has_encoding {
-                        findings.push(Finding {
+                && let Some(args) = node.child_by_field_name("arguments")
+            {
+                let args_text = &source[args.byte_range()];
+                let binary_modes = [
+                    "'rb'", "\"rb\"", "'wb'", "\"wb\"", "'ab'", "\"ab\"", "'xb'", "\"xb\"",
+                    "'r+b'", "\"r+b\"", "'w+b'", "\"w+b\"", "'a+b'", "\"a+b\"", "'x+b'", "\"x+b\"",
+                    "'rb+'", "\"rb+\"", "'wb+'", "\"wb+\"", "'ab+'", "\"ab+\"", "'xb+'", "\"xb+\"",
+                ];
+                let is_binary = binary_modes.iter().any(|m| args_text.contains(m));
+                let has_encoding =
+                    args_text.contains("encoding=") || args_text.contains("encoding =");
+                if !is_binary && !has_encoding {
+                    findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: "`open()` without explicit `encoding` parameter".into(),
                             description: "Without `encoding=`, open() uses the system default which varies by platform. Specify `encoding='utf-8'` for portable behavior.".into(),
@@ -460,8 +462,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                         });
-                    }
                 }
+            }
         }
     }
 
@@ -494,12 +496,11 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             None => true, // bare `except:`
             Some(t) => t == "Exception" || t == "BaseException",
         };
-        if is_catch_all
-            && let Some(body) = body_node {
-                let body_has_only_pass = body.named_child_count() == 1
-                    && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
-                if body_has_only_pass {
-                    findings.push(Finding {
+        if is_catch_all && let Some(body) = body_node {
+            let body_has_only_pass = body.named_child_count() == 1
+                && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
+            if body_has_only_pass {
+                findings.push(Finding {
                         id: crate::finding::new_finding_ulid(),
                         title: "Catch-all `except: pass` silently swallows errors".into(),
                         description: "Catching all exceptions with `pass` hides bugs. Log the error or catch a specific exception type.".into(),
@@ -519,60 +520,61 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         cited_lines: None,
                     grounding_status: None,
                     });
-                }
             }
+        }
     }
 
     // Hardcoded secrets: SECRET_KEY = "...", PASSWORD = "...", API_KEY = "..."
     if node.kind() == "assignment"
-        && let Some(left) = node.child_by_field_name("left") {
-            let var_name = source[left.byte_range()].to_uppercase();
-            let secret_names = [
-                "SECRET_KEY",
-                "SECRET",
-                "PASSWORD",
-                "PASSWD",
-                "API_KEY",
-                "APIKEY",
-                "AUTH_TOKEN",
-                "TOKEN",
-                "PRIVATE_KEY",
-            ];
-            if secret_names.iter().any(|s| var_name.contains(s))
-                && let Some(right) = node.child_by_field_name("right") {
-                    let right_kind = right.kind();
-                    let right_text = &source[right.byte_range()];
-                    // Only flag string literals that look like real secrets:
-                    // - Not empty, not None, not env lookups
-                    // - Longer than a typical key name (> 10 chars inside quotes)
-                    // - Contains mixed case, numbers, or special chars (not just lowercase words)
-                    // Guard: only slice into string content if it's actually a quoted string
-                    let inner_len = if right_text.len() > 2 {
-                        right_text.len() - 2
-                    } else {
-                        0
-                    };
-                    let inner = if right_text.len() > 2 {
-                        &right_text[1..right_text.len() - 1]
-                    } else {
-                        ""
-                    };
-                    let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
-                    let has_digit = inner.chars().any(|c| c.is_ascii_digit());
-                    let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
-                    // Real secrets have mixed character classes (upper+lower, digits, special chars)
-                    // Plain lowercase_words or dotted.names are key names, not secrets
-                    let looks_like_secret =
-                        (has_upper || has_digit || has_special) && inner_len > 8;
-                    if (right_kind == "string" || right_kind == "concatenated_string")
-                        && inner_len > 3
-                        && looks_like_secret
-                        && !right_text.contains("os.environ")
-                        && !right_text.contains("getenv")
-                        && !inner.starts_with("http://")
-                        && !inner.starts_with("https://")
-                    {
-                        findings.push(Finding {
+        && let Some(left) = node.child_by_field_name("left")
+    {
+        let var_name = source[left.byte_range()].to_uppercase();
+        let secret_names = [
+            "SECRET_KEY",
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "API_KEY",
+            "APIKEY",
+            "AUTH_TOKEN",
+            "TOKEN",
+            "PRIVATE_KEY",
+        ];
+        if secret_names.iter().any(|s| var_name.contains(s))
+            && let Some(right) = node.child_by_field_name("right")
+        {
+            let right_kind = right.kind();
+            let right_text = &source[right.byte_range()];
+            // Only flag string literals that look like real secrets:
+            // - Not empty, not None, not env lookups
+            // - Longer than a typical key name (> 10 chars inside quotes)
+            // - Contains mixed case, numbers, or special chars (not just lowercase words)
+            // Guard: only slice into string content if it's actually a quoted string
+            let inner_len = if right_text.len() > 2 {
+                right_text.len() - 2
+            } else {
+                0
+            };
+            let inner = if right_text.len() > 2 {
+                &right_text[1..right_text.len() - 1]
+            } else {
+                ""
+            };
+            let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
+            let has_digit = inner.chars().any(|c| c.is_ascii_digit());
+            let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
+            // Real secrets have mixed character classes (upper+lower, digits, special chars)
+            // Plain lowercase_words or dotted.names are key names, not secrets
+            let looks_like_secret = (has_upper || has_digit || has_special) && inner_len > 8;
+            if (right_kind == "string" || right_kind == "concatenated_string")
+                && inner_len > 3
+                && looks_like_secret
+                && !right_text.contains("os.environ")
+                && !right_text.contains("getenv")
+                && !inner.starts_with("http://")
+                && !inner.starts_with("https://")
+            {
+                findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: format!("Hardcoded secret in `{}`", &source[left.byte_range()]),
                             description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
@@ -592,9 +594,9 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                         });
-                    }
-                }
+            }
         }
+    }
 
     // Mutating collection while iterating
     if node.kind() == "for_statement" {
@@ -605,8 +607,9 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             if right.kind() == "identifier" {
                 let iterable_name = &source[right.byte_range()];
                 if let Some(body) = node.child_by_field_name("body")
-                    && has_mutating_call(&body, source, iterable_name) {
-                        findings.push(Finding {
+                    && has_mutating_call(&body, source, iterable_name)
+                {
+                    findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: format!("Mutating `{}` while iterating over it", iterable_name),
                             description: "Modifying a collection while iterating over it leads to skipped elements or RuntimeError. Iterate over a copy instead.".into(),
@@ -626,7 +629,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                         });
-                    }
+                }
             }
         }
     }
@@ -638,18 +641,20 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         let mut exc_var: Option<&str> = None;
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i as u32)
-                && child.kind() == "as_pattern" {
-                    // Look for as_pattern_target child which contains the identifier
-                    for j in 0..child.child_count() {
-                        if let Some(target) = child.child(j as u32)
-                            && target.kind() == "as_pattern_target"
-                                && let Some(ident) = target.child(0)
-                                    && ident.kind() == "identifier" {
-                                        exc_var = Some(&source[ident.byte_range()]);
-                                    }
+                && child.kind() == "as_pattern"
+            {
+                // Look for as_pattern_target child which contains the identifier
+                for j in 0..child.child_count() {
+                    if let Some(target) = child.child(j as u32)
+                        && target.kind() == "as_pattern_target"
+                        && let Some(ident) = target.child(0)
+                        && ident.kind() == "identifier"
+                    {
+                        exc_var = Some(&source[ident.byte_range()]);
                     }
-                    break;
                 }
+                break;
+            }
         }
         if let Some(var_name) = exc_var {
             // Look for return statements that expose the exception
@@ -687,9 +692,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         // In tree-sitter-python, async functions have "async" as a preceding sibling or
         // the node text starts with "async"
         let func_text = &source[node.byte_range()];
-        if func_text.starts_with("async ")
-            && has_result_call(node, source) {
-                findings.push(Finding {
+        if func_text.starts_with("async ") && has_result_call(node, source) {
+            findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: "Blocking `.result()` call in async function".into(),
                     description: "Calling `.result()` on a future inside an async function blocks the event loop. Use `await` or run in an executor.".into(),
@@ -709,19 +713,20 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                 });
-            }
+        }
     }
 
     // Mutable default arguments: def foo(x=[], y={})
     if node.kind() == "default_parameter"
-        && let Some(value) = node.child_by_field_name("value") {
-            let val_kind = value.kind();
-            if val_kind == "list" || val_kind == "dictionary" || val_kind == "set" {
-                let param_name = node
-                    .child_by_field_name("name")
-                    .map(|n| &source[n.byte_range()])
-                    .unwrap_or("parameter");
-                findings.push(Finding {
+        && let Some(value) = node.child_by_field_name("value")
+    {
+        let val_kind = value.kind();
+        if val_kind == "list" || val_kind == "dictionary" || val_kind == "set" {
+            let param_name = node
+                .child_by_field_name("name")
+                .map(|n| &source[n.byte_range()])
+                .unwrap_or("parameter");
+            findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: format!("Mutable default argument `{}`", param_name),
                     description: "Mutable default arguments are shared across calls and cause subtle bugs. Use None and initialize inside the function.".into(),
@@ -741,8 +746,8 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                 });
-            }
         }
+    }
 }
 
 /// Check if a node tree contains a mutating method call on the given identifier.
@@ -751,21 +756,24 @@ fn has_mutating_call(node: &tree_sitter::Node, source: &str, target: &str) -> bo
 
     if node.kind() == "call"
         && let Some(func) = node.child_by_field_name("function")
-            && func.kind() == "attribute"
-                && let Some(obj) = func.child_by_field_name("object")
-                    && obj.kind() == "identifier" && &source[obj.byte_range()] == target
-                        && let Some(attr) = func.child_by_field_name("attribute") {
-                            let method = &source[attr.byte_range()];
-                            if mutating_methods.contains(&method) {
-                                return true;
-                            }
-                        }
+        && func.kind() == "attribute"
+        && let Some(obj) = func.child_by_field_name("object")
+        && obj.kind() == "identifier"
+        && &source[obj.byte_range()] == target
+        && let Some(attr) = func.child_by_field_name("attribute")
+    {
+        let method = &source[attr.byte_range()];
+        if mutating_methods.contains(&method) {
+            return true;
+        }
+    }
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
-            && has_mutating_call(&child, source, target) {
-                return true;
-            }
+            && has_mutating_call(&child, source, target)
+        {
+            return true;
+        }
     }
     false
 }
@@ -788,9 +796,10 @@ fn has_exception_in_return(node: &tree_sitter::Node, source: &str, var_name: &st
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
-            && has_exception_in_return(&child, source, var_name) {
-                return true;
-            }
+            && has_exception_in_return(&child, source, var_name)
+        {
+            return true;
+        }
     }
     false
 }
@@ -799,17 +808,19 @@ fn has_exception_in_return(node: &tree_sitter::Node, source: &str, var_name: &st
 fn has_result_call(node: &tree_sitter::Node, source: &str) -> bool {
     if node.kind() == "call"
         && let Some(func) = node.child_by_field_name("function")
-            && func.kind() == "attribute"
-                && let Some(attr) = func.child_by_field_name("attribute")
-                    && &source[attr.byte_range()] == "result" {
-                        return true;
-                    }
+        && func.kind() == "attribute"
+        && let Some(attr) = func.child_by_field_name("attribute")
+        && &source[attr.byte_range()] == "result"
+    {
+        return true;
+    }
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
-            && has_result_call(&child, source) {
-                return true;
-            }
+            && has_result_call(&child, source)
+        {
+            return true;
+        }
     }
     false
 }
@@ -880,15 +891,16 @@ fn yaml_value_has_safe_tag(value_node: &tree_sitter::Node, source: &str) -> bool
             // Recurse one more level (flow_node may contain tag)
             for j in 0..child.child_count() {
                 if let Some(gc) = child.child(j as u32)
-                    && gc.kind() == "tag" {
-                        let tag_text = &source[gc.byte_range()];
-                        if tag_text.starts_with("!secret")
-                            || tag_text.starts_with("!include")
-                            || tag_text.starts_with("!env_var")
-                        {
-                            return true;
-                        }
+                    && gc.kind() == "tag"
+                {
+                    let tag_text = &source[gc.byte_range()];
+                    if tag_text.starts_with("!secret")
+                        || tag_text.starts_with("!include")
+                        || tag_text.starts_with("!env_var")
+                    {
+                        return true;
                     }
+                }
             }
         }
     }
@@ -926,10 +938,11 @@ fn is_in_automation_context(node: &tree_sitter::Node, source: &str) -> bool {
             continue;
         }
         if c.kind() == "block_mapping_pair"
-            && let Some(key) = c.child_by_field_name("key") {
-                let key_text = source[key.byte_range()].trim();
-                return key_text == "automation" || key_text == "automation!";
-            }
+            && let Some(key) = c.child_by_field_name("key")
+        {
+            let key_text = source[key.byte_range()].trim();
+            return key_text == "automation" || key_text == "automation!";
+        }
         break;
     }
     false
@@ -941,9 +954,10 @@ fn collect_mapping_keys<'a>(node: &tree_sitter::Node, source: &'a str) -> Vec<&'
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
             && child.kind() == "block_mapping_pair"
-                && let Some(key) = child.child_by_field_name("key") {
-                    keys.push(source[key.byte_range()].trim());
-                }
+            && let Some(key) = child.child_by_field_name("key")
+        {
+            keys.push(source[key.byte_range()].trim());
+        }
     }
     keys
 }
@@ -958,17 +972,19 @@ fn yaml_value_is_empty(pair_node: &tree_sitter::Node, source: &str) -> bool {
         // Check if value has a block_sequence child with items
         for i in 0..value.child_count() {
             if let Some(child) = value.child(i as u32)
-                && child.kind() == "block_sequence" {
-                    let mut has_items = false;
-                    for j in 0..child.child_count() {
-                        if let Some(item) = child.child(j as u32)
-                            && item.kind() == "block_sequence_item" {
-                                has_items = true;
-                                break;
-                            }
+                && child.kind() == "block_sequence"
+            {
+                let mut has_items = false;
+                for j in 0..child.child_count() {
+                    if let Some(item) = child.child(j as u32)
+                        && item.kind() == "block_sequence_item"
+                    {
+                        has_items = true;
+                        break;
                     }
-                    return !has_items;
                 }
+                return !has_items;
+            }
         }
         false
     } else {
@@ -1023,12 +1039,13 @@ fn find_value_mapping<'a>(
     for i in 0..mapping_node.child_count() {
         if let Some(child) = mapping_node.child(i as u32)
             && child.kind() == "block_mapping_pair"
-                && let Some(key) = child.child_by_field_name("key")
-                    && source[key.byte_range()].trim() == key_name
-                        && let Some(value) = child.child_by_field_name("value") {
-                            // Walk through block_node wrappers to find block_mapping
-                            return find_block_mapping_in(&value);
-                        }
+            && let Some(key) = child.child_by_field_name("key")
+            && source[key.byte_range()].trim() == key_name
+            && let Some(value) = child.child_by_field_name("value")
+        {
+            // Walk through block_node wrappers to find block_mapping
+            return find_block_mapping_in(&value);
+        }
     }
     None
 }
@@ -1044,9 +1061,10 @@ fn find_block_mapping_in<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter
                 return Some(child);
             }
             if child.kind() == "block_node"
-                && let Some(found) = find_block_mapping_in(&child) {
-                    return Some(found);
-                }
+                && let Some(found) = find_block_mapping_in(&child)
+            {
+                return Some(found);
+            }
         }
     }
     None
@@ -1062,13 +1080,12 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i as u32)
                 && child.kind() == "block_mapping_pair"
-                    && let Some(key) = child.child_by_field_name("key") {
-                        let key_text = source[key.byte_range()].trim();
-                        let key_line = key.start_position().row as u32 + 1;
-                        if let Some((_, first_line)) =
-                            seen_keys.iter().find(|(k, _)| *k == key_text)
-                        {
-                            findings.push(Finding {
+                && let Some(key) = child.child_by_field_name("key")
+            {
+                let key_text = source[key.byte_range()].trim();
+                let key_line = key.start_position().row as u32 + 1;
+                if let Some((_, first_line)) = seen_keys.iter().find(|(k, _)| *k == key_text) {
+                    findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: format!("Duplicate key `{}` in mapping", key_text),
                                 description: format!(
@@ -1091,10 +1108,10 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        } else {
-                            seen_keys.push((key_text, key_line));
-                        }
-                    }
+                } else {
+                    seen_keys.push((key_text, key_line));
+                }
+            }
         }
 
         // --- Tier 2: Automation-level checks ---
@@ -1190,12 +1207,13 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i as u32)
                     && child.kind() == "block_mapping_pair"
-                        && let Some(key) = child.child_by_field_name("key") {
-                            let key_text = source[key.byte_range()].trim();
-                            if (key_text == "triggers" || key_text == "actions")
-                                && yaml_value_is_empty(&child, source)
-                            {
-                                findings.push(Finding {
+                    && let Some(key) = child.child_by_field_name("key")
+                {
+                    let key_text = source[key.byte_range()].trim();
+                    if (key_text == "triggers" || key_text == "actions")
+                        && yaml_value_is_empty(&child, source)
+                    {
+                        findings.push(Finding {
                                     id: crate::finding::new_finding_ulid(),
                                     title: format!("Empty `{}:` in automation", key_text),
                                     description: format!(
@@ -1218,8 +1236,8 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     cited_lines: None,
                     grounding_status: None,
                                 });
-                            }
-                        }
+                    }
+                }
             }
         }
 
@@ -1298,45 +1316,47 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             // --- Tier 5b: Docker Compose checks ---
             // Detect docker-compose files by presence of top-level `services:` key.
             // Skip if `apiVersion` is present (excludes Kubernetes, CloudFormation, etc.).
-            if keys.contains(&"services") && !keys.contains(&"apiVersion")
-                && let Some(services_mapping) = find_value_mapping(node, source, "services") {
-                    // Iterate over each service defined under `services:`
-                    for i in 0..services_mapping.child_count() {
-                        if let Some(child) = services_mapping.child(i as u32)
-                            && child.kind() == "block_mapping_pair" {
-                                let svc_line = child.start_position().row as u32 + 1;
-                                let svc_end = child.end_position().row as u32 + 1;
-                                let svc_name = if let Some(key) = child.child_by_field_name("key") {
-                                    source[key.byte_range()].trim().to_string()
+            if keys.contains(&"services")
+                && !keys.contains(&"apiVersion")
+                && let Some(services_mapping) = find_value_mapping(node, source, "services")
+            {
+                // Iterate over each service defined under `services:`
+                for i in 0..services_mapping.child_count() {
+                    if let Some(child) = services_mapping.child(i as u32)
+                        && child.kind() == "block_mapping_pair"
+                    {
+                        let svc_line = child.start_position().row as u32 + 1;
+                        let svc_end = child.end_position().row as u32 + 1;
+                        let svc_name = if let Some(key) = child.child_by_field_name("key") {
+                            source[key.byte_range()].trim().to_string()
+                        } else {
+                            "unknown".to_string()
+                        };
+
+                        // Get the service's block_mapping (its config keys)
+                        let svc_mapping = if let Some(value) = child.child_by_field_name("value") {
+                            find_block_mapping_in(&value)
+                        } else {
+                            None
+                        };
+
+                        if let Some(ref svc_map) = svc_mapping {
+                            let svc_keys = collect_mapping_keys(svc_map, source);
+
+                            // Pattern: Docker Compose service missing no-new-privileges
+                            let has_no_new_privs = if svc_keys.contains(&"security_opt") {
+                                // Check if security_opt value contains no-new-privileges
+                                if let Some(value) = child.child_by_field_name("value") {
+                                    let svc_text = source[value.byte_range()].to_string();
+                                    svc_text.contains("no-new-privileges")
                                 } else {
-                                    "unknown".to_string()
-                                };
-
-                                // Get the service's block_mapping (its config keys)
-                                let svc_mapping =
-                                    if let Some(value) = child.child_by_field_name("value") {
-                                        find_block_mapping_in(&value)
-                                    } else {
-                                        None
-                                    };
-
-                                if let Some(ref svc_map) = svc_mapping {
-                                    let svc_keys = collect_mapping_keys(svc_map, source);
-
-                                    // Pattern: Docker Compose service missing no-new-privileges
-                                    let has_no_new_privs = if svc_keys.contains(&"security_opt") {
-                                        // Check if security_opt value contains no-new-privileges
-                                        if let Some(value) = child.child_by_field_name("value") {
-                                            let svc_text = source[value.byte_range()].to_string();
-                                            svc_text.contains("no-new-privileges")
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    };
-                                    if !has_no_new_privs {
-                                        findings.push(Finding {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if !has_no_new_privs {
+                                findings.push(Finding {
                                             id: crate::finding::new_finding_ulid(),
                                             title: format!("Docker Compose service `{}` missing `no-new-privileges` security option", svc_name),
                                             description: "Without `security_opt: [no-new-privileges:true]`, containers can escalate privileges via setuid binaries.".into(),
@@ -1356,11 +1376,11 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                             cited_lines: None,
                     grounding_status: None,
                                         });
-                                    }
+                            }
 
-                                    // Pattern: Docker Compose service missing read_only
-                                    if !svc_keys.contains(&"read_only") {
-                                        findings.push(Finding {
+                            // Pattern: Docker Compose service missing read_only
+                            if !svc_keys.contains(&"read_only") {
+                                findings.push(Finding {
                                             id: crate::finding::new_finding_ulid(),
                                             title: format!("Docker Compose service `{}` has writable root filesystem", svc_name),
                                             description: "Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.".into(),
@@ -1380,167 +1400,167 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                             cited_lines: None,
                     grounding_status: None,
                                         });
-                                    }
-                                }
                             }
+                        }
                     }
                 }
+            }
         }
     }
 
     // --- Tier 1: Hardcoded secrets (on block_mapping_pair nodes) ---
     if node.kind() == "block_mapping_pair"
-        && let Some(key) = node.child_by_field_name("key") {
-            let key_text = source[key.byte_range()].trim().to_lowercase();
+        && let Some(key) = node.child_by_field_name("key")
+    {
+        let key_text = source[key.byte_range()].trim().to_lowercase();
 
-            if YAML_SECRET_KEY_PATTERNS
-                .iter()
-                .any(|p| key_text.contains(p))
-                && let Some(value) = node.child_by_field_name("value")
-                    && !yaml_value_has_safe_tag(&value, source) {
-                        let val_text = source[value.byte_range()].trim();
-                        if !val_text.is_empty() {
-                            findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: format!(
-                                    "Hardcoded secret in `{}`",
-                                    source[key.byte_range()].trim()
-                                ),
-                                description:
-                                    "Secrets should use `!secret` references, not hardcoded values."
-                                        .into(),
-                                severity: Severity::High,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![format!(
-                                    "{}: [REDACTED]",
-                                    source[key.byte_range()].trim()
-                                )],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                confidence: None,
-                                cited_lines: None,
-                                grounding_status: None,
-                            });
+        if YAML_SECRET_KEY_PATTERNS
+            .iter()
+            .any(|p| key_text.contains(p))
+            && let Some(value) = node.child_by_field_name("value")
+            && !yaml_value_has_safe_tag(&value, source)
+        {
+            let val_text = source[value.byte_range()].trim();
+            if !val_text.is_empty() {
+                findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
+                    title: format!("Hardcoded secret in `{}`", source[key.byte_range()].trim()),
+                    description: "Secrets should use `!secret` references, not hardcoded values."
+                        .into(),
+                    severity: Severity::High,
+                    category: "security".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                    suggested_fix: None,
+                    based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
+                    grounding_status: None,
+                });
+            }
+        }
+
+        // --- Tier 3: entity_id without domain ---
+        if key_text == "entity_id"
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let val_text = source[value.byte_range()].trim();
+            let mut is_list = false;
+            for i in 0..value.child_count() {
+                if let Some(child) = value.child(i as u32)
+                    && child.kind() == "block_sequence"
+                {
+                    is_list = true;
+                    for j in 0..child.child_count() {
+                        if let Some(item) = child.child(j as u32)
+                            && item.kind() == "block_sequence_item"
+                        {
+                            let item_text = source[item.byte_range()]
+                                .trim()
+                                .trim_start_matches("- ")
+                                .trim();
+                            if !item_text.is_empty() && !item_text.contains('.') {
+                                findings.push(Finding {
+                                    id: crate::finding::new_finding_ulid(),
+                                    title: "entity_id without domain prefix".into(),
+                                    description: format!(
+                                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                                        item_text, item_text
+                                    ),
+                                    severity: Severity::High,
+                                    category: "bug".into(),
+                                    source: Source::LocalAst,
+                                    line_start: item.start_position().row as u32 + 1,
+                                    line_end: item.end_position().row as u32 + 1,
+                                    evidence: vec![],
+                                    calibrator_action: None,
+                                    similar_precedent: vec![],
+                                    canonical_pattern: None,
+                                    suggested_fix: None,
+                                    based_on_excerpt: None,
+                                    reasoning: None,
+                                    confidence: None,
+                                    cited_lines: None,
+                                    grounding_status: None,
+                                });
+                            }
                         }
                     }
-
-            // --- Tier 3: entity_id without domain ---
-            if key_text == "entity_id"
-                && let Some(value) = node.child_by_field_name("value") {
-                    let val_text = source[value.byte_range()].trim();
-                    let mut is_list = false;
-                    for i in 0..value.child_count() {
-                        if let Some(child) = value.child(i as u32)
-                            && child.kind() == "block_sequence" {
-                                is_list = true;
-                                for j in 0..child.child_count() {
-                                    if let Some(item) = child.child(j as u32)
-                                        && item.kind() == "block_sequence_item" {
-                                            let item_text = source[item.byte_range()]
-                                                .trim()
-                                                .trim_start_matches("- ")
-                                                .trim();
-                                            if !item_text.is_empty() && !item_text.contains('.') {
-                                                findings.push(Finding {
-                                                    id: crate::finding::new_finding_ulid(),
-                                                    title: "entity_id without domain prefix".into(),
-                                                    description: format!(
-                                                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                                                        item_text, item_text
-                                                    ),
-                                                    severity: Severity::High,
-                                                    category: "bug".into(),
-                                                    source: Source::LocalAst,
-                                                    line_start: item.start_position().row as u32 + 1,
-                                                    line_end: item.end_position().row as u32 + 1,
-                                                    evidence: vec![],
-                                                    calibrator_action: None,
-                                                    similar_precedent: vec![],
-                                                    canonical_pattern: None,
-                                                    suggested_fix: None,
-                                                    based_on_excerpt: None,
-                                                    reasoning: None,
-                                                    confidence: None,
-                                                    cited_lines: None,
+                    break;
+                }
+            }
+            if !is_list && !val_text.is_empty() && !val_text.contains('.') {
+                findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
+                    title: "entity_id without domain prefix".into(),
+                    description: format!(
+                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                        val_text, val_text
+                    ),
+                    severity: Severity::High,
+                    category: "bug".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                    suggested_fix: None,
+                    based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
                     grounding_status: None,
-                                                });
-                                            }
-                                        }
-                                }
-                                break;
-                            }
-                    }
-                    if !is_list && !val_text.is_empty() && !val_text.contains('.') {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "entity_id without domain prefix".into(),
-                            description: format!(
-                                "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                                val_text, val_text
-                            ),
-                            severity: Severity::High,
-                            category: "bug".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            confidence: None,
-                            cited_lines: None,
-                            grounding_status: None,
-                        });
-                    }
-                }
+                });
+            }
+        }
 
-            // --- Tier 3: service without domain ---
-            if key_text == "service"
-                && let Some(value) = node.child_by_field_name("value") {
-                    let val_text = source[value.byte_range()].trim();
-                    if !val_text.is_empty() && !val_text.contains('.') {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "service without domain prefix".into(),
-                            description: format!(
-                                "`{}` is missing a domain prefix (e.g. `light.{}`)",
-                                val_text, val_text
-                            ),
-                            severity: Severity::Medium,
-                            category: "bug".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            confidence: None,
-                            cited_lines: None,
-                            grounding_status: None,
-                        });
-                    }
-                }
+        // --- Tier 3: service without domain ---
+        if key_text == "service"
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let val_text = source[value.byte_range()].trim();
+            if !val_text.is_empty() && !val_text.contains('.') {
+                findings.push(Finding {
+                    id: crate::finding::new_finding_ulid(),
+                    title: "service without domain prefix".into(),
+                    description: format!(
+                        "`{}` is missing a domain prefix (e.g. `light.{}`)",
+                        val_text, val_text
+                    ),
+                    severity: Severity::Medium,
+                    category: "bug".into(),
+                    source: Source::LocalAst,
+                    line_start: line,
+                    line_end: end_line,
+                    evidence: vec![],
+                    calibrator_action: None,
+                    similar_precedent: vec![],
+                    canonical_pattern: None,
+                    suggested_fix: None,
+                    based_on_excerpt: None,
+                    reasoning: None,
+                    confidence: None,
+                    cited_lines: None,
+                    grounding_status: None,
+                });
+            }
+        }
 
-            // --- Tier 4: Exposed 0.0.0.0 binding ---
-            if (key_text == "host" || key_text == "server_host" || key_text == "server")
-                && let Some(value) = node.child_by_field_name("value") {
-                    let val_text = source[value.byte_range()].trim();
-                    if val_text.contains("0.0.0.0") {
-                        findings.push(Finding {
+        // --- Tier 4: Exposed 0.0.0.0 binding ---
+        if (key_text == "host" || key_text == "server_host" || key_text == "server")
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let val_text = source[value.byte_range()].trim();
+            if val_text.contains("0.0.0.0") {
+                findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: "Server binding to 0.0.0.0 exposes all interfaces".into(),
                             description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
@@ -1560,15 +1580,18 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                         });
-                    }
-                }
+            }
+        }
 
-            // --- Tier 4: URL with embedded credentials ---
-            if let Some(value) = node.child_by_field_name("value") {
-                let val_text = source[value.byte_range()].trim();
-                if !val_text.starts_with("!secret") && !val_text.starts_with("!include")
-                    && val_text.contains("://") && yaml_url_has_credentials(val_text) {
-                        findings.push(Finding {
+        // --- Tier 4: URL with embedded credentials ---
+        if let Some(value) = node.child_by_field_name("value") {
+            let val_text = source[value.byte_range()].trim();
+            if !val_text.starts_with("!secret")
+                && !val_text.starts_with("!include")
+                && val_text.contains("://")
+                && yaml_url_has_credentials(val_text)
+            {
+                findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: "URL contains embedded credentials".into(),
                             description: "URLs with embedded user:password credentials are a security risk. Use environment variables or secret references.".into(),
@@ -1588,9 +1611,9 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                         });
-                    }
             }
         }
+    }
 
     // --- Tier 6: Jinja2 template patterns (on scalar values) ---
     if node.kind() == "plain_scalar"
@@ -1695,36 +1718,36 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
 
     // eval(), document.write(), console.log/debug calls
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let func_name = &source[func.byte_range()];
-            if func_name == "eval" {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Use of `eval()` is a code injection risk".into(),
-                    description:
-                        "`eval()` executes arbitrary code. Avoid using it with untrusted input."
-                            .into(),
-                    severity: Severity::Critical,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                });
-            }
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let func_name = &source[func.byte_range()];
+        if func_name == "eval" {
+            findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
+                title: "Use of `eval()` is a code injection risk".into(),
+                description:
+                    "`eval()` executes arbitrary code. Avoid using it with untrusted input.".into(),
+                severity: Severity::Critical,
+                category: "security".into(),
+                source: Source::LocalAst,
+                line_start: line,
+                line_end: end_line,
+                evidence: vec![],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+                suggested_fix: None,
+                based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
+                grounding_status: None,
+            });
+        }
 
-            // document.write XSS
-            if func_name == "document.write" {
-                findings.push(Finding {
+        // document.write XSS
+        if func_name == "document.write" {
+            findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: "Use of `document.write()` is an XSS risk".into(),
                     description: "`document.write()` injects raw HTML into the page. Use DOM APIs or a framework's safe rendering instead.".into(),
@@ -1744,11 +1767,11 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                 });
-            }
+        }
 
-            // console.log / console.debug debug artifacts
-            if func_name == "console.log" || func_name == "console.debug" {
-                findings.push(Finding {
+        // console.log / console.debug debug artifacts
+        if func_name == "console.log" || func_name == "console.debug" {
+            findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: format!("`{}` debug artifact left in code", func_name),
                     description: "Debug logging should be removed or replaced with a proper logging framework before production.".into(),
@@ -1768,39 +1791,40 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                 });
-            }
         }
+    }
 
     // Hardcoded secrets in variable declarations
     if node.kind() == "variable_declarator"
-        && let Some(name_node) = node.child_by_field_name("name") {
-            let var_name = source[name_node.byte_range()].to_uppercase();
-            let secret_names = [
-                "SECRET_KEY",
-                "SECRET",
-                "PASSWORD",
-                "PASSWD",
-                "API_KEY",
-                "APIKEY",
-                "AUTH_TOKEN",
-                "TOKEN",
-                "PRIVATE_KEY",
-            ];
-            if secret_names.iter().any(|s| var_name.contains(s))
-                && let Some(value) = node.child_by_field_name("value") {
-                    let val_kind = value.kind();
-                    let val_text = &source[value.byte_range()];
-                    // Only flag string literals that look like real secrets
-                    if val_kind == "string" && val_text.len() > 2 {
-                        let inner_len = val_text.len() - 2;
-                        let inner = &val_text[1..val_text.len() - 1];
-                        let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
-                        let has_digit = inner.chars().any(|c| c.is_ascii_digit());
-                        let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
-                        let looks_like_secret =
-                            (has_upper || has_digit || has_special) && inner_len > 8;
-                        if looks_like_secret && !val_text.contains("process.env") {
-                            findings.push(Finding {
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let var_name = source[name_node.byte_range()].to_uppercase();
+        let secret_names = [
+            "SECRET_KEY",
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "API_KEY",
+            "APIKEY",
+            "AUTH_TOKEN",
+            "TOKEN",
+            "PRIVATE_KEY",
+        ];
+        if secret_names.iter().any(|s| var_name.contains(s))
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let val_kind = value.kind();
+            let val_text = &source[value.byte_range()];
+            // Only flag string literals that look like real secrets
+            if val_kind == "string" && val_text.len() > 2 {
+                let inner_len = val_text.len() - 2;
+                let inner = &val_text[1..val_text.len() - 1];
+                let has_upper = inner.chars().any(|c| c.is_ascii_uppercase());
+                let has_digit = inner.chars().any(|c| c.is_ascii_digit());
+                let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
+                let looks_like_secret = (has_upper || has_digit || has_special) && inner_len > 8;
+                if looks_like_secret && !val_text.contains("process.env") {
+                    findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
                                 description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
@@ -1820,22 +1844,23 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        }
-                    }
                 }
+            }
         }
+    }
 
     // innerHTML / outerHTML XSS
     if node.kind() == "assignment_expression"
-        && let Some(left) = node.child_by_field_name("left") {
-            let left_text = &source[left.byte_range()];
-            if left_text.ends_with(".innerHTML") || left_text.ends_with(".outerHTML") {
-                let prop = if left_text.ends_with(".innerHTML") {
-                    "innerHTML"
-                } else {
-                    "outerHTML"
-                };
-                findings.push(Finding {
+        && let Some(left) = node.child_by_field_name("left")
+    {
+        let left_text = &source[left.byte_range()];
+        if left_text.ends_with(".innerHTML") || left_text.ends_with(".outerHTML") {
+            let prop = if left_text.ends_with(".innerHTML") {
+                "innerHTML"
+            } else {
+                "outerHTML"
+            };
+            findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: format!("Direct `{}` assignment is an XSS risk", prop),
                     description: format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop),
@@ -1855,8 +1880,8 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                 });
-            }
         }
+    }
 
     // `any` type annotation
     if node.kind() == "type_annotation" {
@@ -1888,59 +1913,60 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
 
     // Empty catch blocks that silently swallow errors
     if node.kind() == "catch_clause"
-        && let Some(body) = node.child_by_field_name("body") {
-            let has_statements = (0..body.named_child_count()).any(|i| {
-                body.named_child(i as u32)
-                    .map(|c| c.kind() != "comment" && c.kind() != "empty_statement")
-                    .unwrap_or(false)
+        && let Some(body) = node.child_by_field_name("body")
+    {
+        let has_statements = (0..body.named_child_count()).any(|i| {
+            body.named_child(i as u32)
+                .map(|c| c.kind() != "comment" && c.kind() != "empty_statement")
+                .unwrap_or(false)
+        });
+        if !has_statements {
+            findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
+                title: "Empty `catch` block silently swallows errors".into(),
+                description:
+                    "An empty catch block hides failures. Log the error, handle it, or rethrow."
+                        .into(),
+                severity: Severity::Medium,
+                category: "reliability".into(),
+                source: Source::LocalAst,
+                line_start: line,
+                line_end: end_line,
+                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+                suggested_fix: None,
+                based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
+                grounding_status: None,
             });
-            if !has_statements {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Empty `catch` block silently swallows errors".into(),
-                    description:
-                        "An empty catch block hides failures. Log the error, handle it, or rethrow."
-                            .into(),
-                    severity: Severity::Medium,
-                    category: "reliability".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                });
-            }
         }
+    }
 
     // Sync Node.js APIs inside async functions
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let func_name = &source[func.byte_range()];
-            let sync_apis = [
-                "readFileSync",
-                "writeFileSync",
-                "mkdirSync",
-                "existsSync",
-                "readdirSync",
-                "unlinkSync",
-                "appendFileSync",
-                "copyFileSync",
-                "renameSync",
-                "statSync",
-                "accessSync",
-            ];
-            for api in &sync_apis {
-                if func_name.ends_with(api)
-                    && is_in_async_function(node, source) {
-                        findings.push(Finding {
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let func_name = &source[func.byte_range()];
+        let sync_apis = [
+            "readFileSync",
+            "writeFileSync",
+            "mkdirSync",
+            "existsSync",
+            "readdirSync",
+            "unlinkSync",
+            "appendFileSync",
+            "copyFileSync",
+            "renameSync",
+            "statSync",
+            "accessSync",
+        ];
+        for api in &sync_apis {
+            if func_name.ends_with(api) && is_in_async_function(node, source) {
+                findings.push(Finding {
                             id: crate::finding::new_finding_ulid(),
                             title: format!("`{}` blocks the event loop in async function", api),
                             description: format!(
@@ -1963,26 +1989,28 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             cited_lines: None,
                     grounding_status: None,
                         });
-                        break;
-                    }
+                break;
             }
         }
+    }
 
     // Tautological .length >= 0 (always true for arrays/strings)
     if node.kind() == "binary_expression"
-        && let Some(op) = node.child_by_field_name("operator") {
-            let op_text = &source[op.byte_range()];
-            if op_text == ">="
-                && let Some(left) = node.child_by_field_name("left")
-                    && let Some(right) = node.child_by_field_name("right") {
-                        let right_text = &source[right.byte_range()];
-                        let is_length_access = left.kind() == "member_expression"
-                            && left
-                                .child_by_field_name("property")
-                                .map(|p| &source[p.byte_range()] == "length")
-                                .unwrap_or(false);
-                        if is_length_access && right_text.trim() == "0" {
-                            findings.push(Finding {
+        && let Some(op) = node.child_by_field_name("operator")
+    {
+        let op_text = &source[op.byte_range()];
+        if op_text == ">="
+            && let Some(left) = node.child_by_field_name("left")
+            && let Some(right) = node.child_by_field_name("right")
+        {
+            let right_text = &source[right.byte_range()];
+            let is_length_access = left.kind() == "member_expression"
+                && left
+                    .child_by_field_name("property")
+                    .map(|p| &source[p.byte_range()] == "length")
+                    .unwrap_or(false);
+            if is_length_access && right_text.trim() == "0" {
+                findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: "`.length >= 0` is always true".into(),
                                 description: "Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?".into(),
@@ -2002,9 +2030,9 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        }
-                    }
+            }
         }
+    }
 
     // Non-null assertion operator (!)
     if node.kind() == "non_null_expression" {
@@ -2037,9 +2065,8 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     let end_line = node.end_position().row as u32 + 1;
 
     // B11: Missing shebang (root program node only)
-    if kind == "program"
-        && !source.starts_with("#!") {
-            findings.push(Finding {
+    if kind == "program" && !source.starts_with("#!") {
+        findings.push(Finding {
                 id: crate::finding::new_finding_ulid(),
                 title: "Script has no shebang line".into(),
                 description: "Add a shebang (e.g. #!/usr/bin/env bash) so the script runs with the intended interpreter.".into(),
@@ -2059,7 +2086,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 cited_lines: None,
                     grounding_status: None,
             });
-        }
+    }
 
     // B4: Missing set -e (root program node only)
     if kind == "program" {
@@ -2067,13 +2094,14 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         let limit = node.child_count().min(10);
         for i in 0..limit {
             if let Some(child) = node.child(i as u32)
-                && child.kind() == "command" {
-                    let text = &source[child.byte_range()];
-                    if text.contains("set") && (text.contains("-e") || text.contains("errexit")) {
-                        found_set_e = true;
-                        break;
-                    }
+                && child.kind() == "command"
+            {
+                let text = &source[child.byte_range()];
+                if text.contains("set") && (text.contains("-e") || text.contains("errexit")) {
+                    found_set_e = true;
+                    break;
                 }
+            }
         }
         if !found_set_e {
             findings.push(Finding {
@@ -2102,66 +2130,66 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
     // B2: eval usage
     if kind == "command"
-        && let Some(name_node) = node.child_by_field_name("name") {
-            let name = &source[name_node.byte_range()];
-            if name == "eval" {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Use of `eval` is a code injection risk".into(),
-                    description: "Avoid `eval` -- use arrays, printf, or parameter expansion instead.".into(),
-                    severity: Severity::High,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                });
-            }
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let name = &source[name_node.byte_range()];
+        if name == "eval" {
+            findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
+                title: "Use of `eval` is a code injection risk".into(),
+                description: "Avoid `eval` -- use arrays, printf, or parameter expansion instead."
+                    .into(),
+                severity: Severity::High,
+                category: "security".into(),
+                source: Source::LocalAst,
+                line_start: line,
+                line_end: end_line,
+                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+                suggested_fix: None,
+                based_on_excerpt: None,
+                reasoning: None,
+                confidence: None,
+                cited_lines: None,
+                grounding_status: None,
+            });
+        }
 
-            // B9: chmod 777
-            if name == "chmod" {
-                for i in 0..node.child_count() {
-                    if let Some(arg) = node.child(i as u32) {
-                        let text = &source[arg.byte_range()];
-                        if text == "777" {
-                            findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "`chmod 777` grants world-writable permissions".into(),
-                                description: "Use more restrictive permissions (e.g. 755 or 700)."
-                                    .into(),
-                                severity: Severity::Medium,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![
-                                    source[node.byte_range()].chars().take(200).collect(),
-                                ],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                confidence: None,
-                                cited_lines: None,
-                                grounding_status: None,
-                            });
-                            break;
-                        }
+        // B9: chmod 777
+        if name == "chmod" {
+            for i in 0..node.child_count() {
+                if let Some(arg) = node.child(i as u32) {
+                    let text = &source[arg.byte_range()];
+                    if text == "777" {
+                        findings.push(Finding {
+                            id: crate::finding::new_finding_ulid(),
+                            title: "`chmod 777` grants world-writable permissions".into(),
+                            description: "Use more restrictive permissions (e.g. 755 or 700)."
+                                .into(),
+                            severity: Severity::Medium,
+                            category: "security".into(),
+                            source: Source::LocalAst,
+                            line_start: line,
+                            line_end: end_line,
+                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                            calibrator_action: None,
+                            similar_precedent: vec![],
+                            canonical_pattern: None,
+                            suggested_fix: None,
+                            based_on_excerpt: None,
+                            reasoning: None,
+                            confidence: None,
+                            cited_lines: None,
+                            grounding_status: None,
+                        });
+                        break;
                     }
                 }
             }
         }
+    }
 
     // B3: curl|bash piping
     if kind == "pipeline" {
@@ -2169,64 +2197,61 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i as u32)
                 && child.kind() == "command"
-                    && let Some(name_node) = child.child_by_field_name("name") {
-                        let name = &source[name_node.byte_range()];
-                        if name == "curl" || name == "wget" {
-                            saw_curl = true;
-                        } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
-                            findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "Piping curl/wget to shell executes untrusted remote code"
-                                    .into(),
-                                description: "Download to a file first, inspect it, then execute."
-                                    .into(),
-                                severity: Severity::Critical,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![
-                                    source[node.byte_range()].chars().take(200).collect(),
-                                ],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                confidence: None,
-                                cited_lines: None,
-                                grounding_status: None,
-                            });
-                            break;
-                        }
-                    }
+                && let Some(name_node) = child.child_by_field_name("name")
+            {
+                let name = &source[name_node.byte_range()];
+                if name == "curl" || name == "wget" {
+                    saw_curl = true;
+                } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
+                    findings.push(Finding {
+                        id: crate::finding::new_finding_ulid(),
+                        title: "Piping curl/wget to shell executes untrusted remote code".into(),
+                        description: "Download to a file first, inspect it, then execute.".into(),
+                        severity: Severity::Critical,
+                        category: "security".into(),
+                        source: Source::LocalAst,
+                        line_start: line,
+                        line_end: end_line,
+                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
+                        calibrator_action: None,
+                        similar_precedent: vec![],
+                        canonical_pattern: None,
+                        suggested_fix: None,
+                        based_on_excerpt: None,
+                        reasoning: None,
+                        confidence: None,
+                        cited_lines: None,
+                        grounding_status: None,
+                    });
+                    break;
+                }
+            }
         }
     }
 
     // B5: Hardcoded secrets
     if kind == "variable_assignment"
-        && let Some(name_node) = node.child_by_field_name("name") {
-            let var_name = &source[name_node.byte_range()];
-            let upper = var_name.to_uppercase();
-            let is_secret_name = upper.contains("PASSWORD")
-                || upper.contains("API_KEY")
-                || upper.contains("SECRET")
-                || upper.contains("TOKEN")
-                || upper.contains("APIKEY")
-                || upper.contains("PRIVATE_KEY");
-            if is_secret_name
-                && let Some(value_node) = node.child_by_field_name("value") {
-                    let vkind = value_node.kind();
-                    // Skip command substitutions and expansions
-                    if vkind != "command_substitution"
-                        && vkind != "simple_expansion"
-                        && vkind != "expansion"
-                    {
-                        let val_text = &source[value_node.byte_range()];
-                        // Skip if value contains $ (env var reference)
-                        if !val_text.contains('$') {
-                            findings.push(Finding {
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let var_name = &source[name_node.byte_range()];
+        let upper = var_name.to_uppercase();
+        let is_secret_name = upper.contains("PASSWORD")
+            || upper.contains("API_KEY")
+            || upper.contains("SECRET")
+            || upper.contains("TOKEN")
+            || upper.contains("APIKEY")
+            || upper.contains("PRIVATE_KEY");
+        if is_secret_name && let Some(value_node) = node.child_by_field_name("value") {
+            let vkind = value_node.kind();
+            // Skip command substitutions and expansions
+            if vkind != "command_substitution"
+                && vkind != "simple_expansion"
+                && vkind != "expansion"
+            {
+                let val_text = &source[value_node.byte_range()];
+                // Skip if value contains $ (env var reference)
+                if !val_text.contains('$') {
+                    findings.push(Finding {
                                 id: crate::finding::new_finding_ulid(),
                                 title: format!("Hardcoded secret in shell variable `{}`", var_name),
                                 description: "Use environment variables or a secrets manager instead of hardcoded values.".into(),
@@ -2246,10 +2271,10 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 cited_lines: None,
                     grounding_status: None,
                             });
-                        }
-                    }
                 }
+            }
         }
+    }
 }
 
 fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
@@ -2390,9 +2415,10 @@ fn tf_expr_is_variable_ref(attr_node: &tree_sitter::Node) -> bool {
     // expression child(0) is variable_expr for `var.xxx`
     if let Some(expr) = attr_node.child(2)
         && expr.kind() == "expression"
-            && let Some(first) = expr.child(0) {
-                return first.kind() == "variable_expr";
-            }
+        && let Some(first) = expr.child(0)
+    {
+        return first.kind() == "variable_expr";
+    }
     false
 }
 
@@ -2400,22 +2426,24 @@ fn tf_expr_is_variable_ref(attr_node: &tree_sitter::Node) -> bool {
 /// Returns the inner text (without quotes) if the value is a string literal.
 fn tf_expr_string_inner<'a>(attr_node: &tree_sitter::Node, source: &'a str) -> Option<&'a str> {
     if let Some(expr) = attr_node.child(2)
-        && expr.kind() == "expression" {
-            let text = source[expr.byte_range()].trim();
-            if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
-                return Some(&text[1..text.len() - 1]);
-            }
+        && expr.kind() == "expression"
+    {
+        let text = source[expr.byte_range()].trim();
+        if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+            return Some(&text[1..text.len() - 1]);
         }
+    }
     None
 }
 
 /// Extract the numeric value from a Terraform attribute's expression.
 fn tf_expr_numeric(attr_node: &tree_sitter::Node, source: &str) -> Option<u16> {
     if let Some(expr) = attr_node.child(2)
-        && expr.kind() == "expression" {
-            let text = source[expr.byte_range()].trim();
-            return text.parse::<u16>().ok();
-        }
+        && expr.kind() == "expression"
+    {
+        let text = source[expr.byte_range()].trim();
+        return text.parse::<u16>().ok();
+    }
     None
 }
 
@@ -2428,17 +2456,18 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
     // AST: attribute > identifier, =, expression > literal_value > string_lit
     if kind == "attribute"
         && let Some(name_node) = node.child(0)
-            && name_node.kind() == "identifier" {
-                let attr_name = source[name_node.byte_range()].to_uppercase();
-                if TF_SECRET_PATTERNS.iter().any(|p| attr_name.contains(p)) {
-                    // Only flag if value is a non-empty string literal (not a variable ref)
-                    if !tf_expr_is_variable_ref(node)
-                        && let Some(inner) = tf_expr_string_inner(node, source)
-                            && !inner.is_empty()
-                                && !inner.starts_with("${var.")
-                                && !inner.starts_with("${")
-                            {
-                                findings.push(Finding {
+        && name_node.kind() == "identifier"
+    {
+        let attr_name = source[name_node.byte_range()].to_uppercase();
+        if TF_SECRET_PATTERNS.iter().any(|p| attr_name.contains(p)) {
+            // Only flag if value is a non-empty string literal (not a variable ref)
+            if !tf_expr_is_variable_ref(node)
+                && let Some(inner) = tf_expr_string_inner(node, source)
+                && !inner.is_empty()
+                && !inner.starts_with("${var.")
+                && !inner.starts_with("${")
+            {
+                findings.push(Finding {
                                     id: crate::finding::new_finding_ulid(),
                                     title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
                                     description: "Secrets should be loaded from variables or a secrets manager, not hardcoded in Terraform files.".into(),
@@ -2458,25 +2487,27 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                     cited_lines: None,
                     grounding_status: None,
                                 });
-                            }
-                }
             }
+        }
+    }
 
     // T2: Wildcard IAM actions in object_elem (jsonencode-style HCL objects)
     // AST: object_elem > expression(variable_expr "Action"), =, expression(literal_value "\"*\"")
     if kind == "object_elem" {
         // Check if the key expression is "Action" (case-insensitive)
         if let Some(key_expr) = node.child(0)
-            && key_expr.kind() == "expression" {
-                let key_text = source[key_expr.byte_range()].trim();
-                if key_text.eq_ignore_ascii_case("Action") {
-                    // Check if value expression is "*"
-                    if let Some(val_expr) = node.child(2)
-                        && val_expr.kind() == "expression" {
-                            let val_text = source[val_expr.byte_range()].trim();
-                            let inner = val_text.trim_matches('"');
-                            if inner == "*" {
-                                findings.push(Finding {
+            && key_expr.kind() == "expression"
+        {
+            let key_text = source[key_expr.byte_range()].trim();
+            if key_text.eq_ignore_ascii_case("Action") {
+                // Check if value expression is "*"
+                if let Some(val_expr) = node.child(2)
+                    && val_expr.kind() == "expression"
+                {
+                    let val_text = source[val_expr.byte_range()].trim();
+                    let inner = val_text.trim_matches('"');
+                    if inner == "*" {
+                        findings.push(Finding {
                                     id: crate::finding::new_finding_ulid(),
                                     title: "Wildcard IAM action grants unrestricted permissions".into(),
                                     description: "Using `Action = \"*\"` grants all permissions. Follow the principle of least privilege.".into(),
@@ -2496,55 +2527,55 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                     cited_lines: None,
                     grounding_status: None,
                                 });
-                            }
-                        }
+                    }
                 }
             }
+        }
     }
 
     // T3: Open security groups on sensitive ports
     // AST: block > identifier("ingress"), block_start, body > attribute(from_port), attribute(cidr_blocks), block_end
     if kind == "block"
         && let Some(first_child) = node.child(0)
-            && first_child.kind() == "identifier" && &source[first_child.byte_range()] == "ingress"
-            {
-                let mut has_open_cidr = false;
-                let mut port_is_sensitive = true;
-                let mut found_port = false;
+        && first_child.kind() == "identifier"
+        && &source[first_child.byte_range()] == "ingress"
+    {
+        let mut has_open_cidr = false;
+        let mut port_is_sensitive = true;
+        let mut found_port = false;
 
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i as u32)
-                        && child.kind() == "body" {
-                            for j in 0..child.child_count() {
-                                if let Some(attr) = child.child(j as u32)
-                                    && attr.kind() == "attribute"
-                                        && let Some(attr_name) = attr.child(0)
-                                            && attr_name.kind() == "identifier" {
-                                                let name = &source[attr_name.byte_range()];
-                                                if name == "cidr_blocks" {
-                                                    let attr_text = &source[attr.byte_range()];
-                                                    if attr_text.contains("0.0.0.0/0")
-                                                        || attr_text.contains("::/0")
-                                                    {
-                                                        has_open_cidr = true;
-                                                    }
-                                                }
-                                                if name == "from_port"
-                                                    && let Some(port) =
-                                                        tf_expr_numeric(&attr, source)
-                                                    {
-                                                        found_port = true;
-                                                        if port == 80 || port == 443 {
-                                                            port_is_sensitive = false;
-                                                        }
-                                                    }
-                                            }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i as u32)
+                && child.kind() == "body"
+            {
+                for j in 0..child.child_count() {
+                    if let Some(attr) = child.child(j as u32)
+                        && attr.kind() == "attribute"
+                        && let Some(attr_name) = attr.child(0)
+                        && attr_name.kind() == "identifier"
+                    {
+                        let name = &source[attr_name.byte_range()];
+                        if name == "cidr_blocks" {
+                            let attr_text = &source[attr.byte_range()];
+                            if attr_text.contains("0.0.0.0/0") || attr_text.contains("::/0") {
+                                has_open_cidr = true;
                             }
                         }
+                        if name == "from_port"
+                            && let Some(port) = tf_expr_numeric(&attr, source)
+                        {
+                            found_port = true;
+                            if port == 80 || port == 443 {
+                                port_is_sensitive = false;
+                            }
+                        }
+                    }
                 }
+            }
+        }
 
-                if has_open_cidr && port_is_sensitive && found_port {
-                    findings.push(Finding {
+        if has_open_cidr && port_is_sensitive && found_port {
+            findings.push(Finding {
                         id: crate::finding::new_finding_ulid(),
                         title: "Security group open to 0.0.0.0/0 on sensitive port".into(),
                         description: "Allowing ingress from 0.0.0.0/0 on non-HTTP(S) ports exposes the service to the internet. Restrict to specific CIDR ranges.".into(),
@@ -2564,8 +2595,8 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                         cited_lines: None,
                     grounding_status: None,
                     });
-                }
-            }
+        }
+    }
 }
 
 fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Finding> {
@@ -2615,18 +2646,19 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
                         };
                         if attr_or_block.kind() == "attribute"
                             && let Some(id) = attr_or_block.child(0)
-                                && id.kind() == "identifier"
-                                    && &source[id.byte_range()] == "required_version"
-                                {
-                                    has_required_version = true;
-                                }
+                            && id.kind() == "identifier"
+                            && &source[id.byte_range()] == "required_version"
+                        {
+                            has_required_version = true;
+                        }
 
                         // S2: Check required_providers block
                         if attr_or_block.kind() == "block"
                             && hcl_block_type(attr_or_block, source) == Some("required_providers")
-                                && let Some(rp_body) = hcl_block_body(attr_or_block) {
-                                    check_required_providers(rp_body, source, &mut findings);
-                                }
+                            && let Some(rp_body) = hcl_block_body(attr_or_block)
+                        {
+                            check_required_providers(rp_body, source, &mut findings);
+                        }
                     }
                 }
             }
@@ -2665,9 +2697,10 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
 fn hcl_block_type<'a>(block: tree_sitter::Node, source: &'a str) -> Option<&'a str> {
     for i in 0..block.child_count() {
         if let Some(c) = block.child(i as u32)
-            && c.kind() == "identifier" {
-                return Some(&source[c.byte_range()]);
-            }
+            && c.kind() == "identifier"
+        {
+            return Some(&source[c.byte_range()]);
+        }
     }
     None
 }
@@ -2676,9 +2709,10 @@ fn hcl_block_type<'a>(block: tree_sitter::Node, source: &'a str) -> Option<&'a s
 fn hcl_block_body(block: tree_sitter::Node) -> Option<tree_sitter::Node> {
     for i in 0..block.child_count() {
         if let Some(c) = block.child(i as u32)
-            && c.kind() == "body" {
-                return Some(c);
-            }
+            && c.kind() == "body"
+        {
+            return Some(c);
+        }
     }
     None
 }
@@ -2790,9 +2824,10 @@ fn extract_identifier_from_expr<'a>(node: tree_sitter::Node, source: &'a str) ->
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
-            && let Some(result) = extract_identifier_from_expr(child, source) {
-                return Some(result);
-            }
+            && let Some(result) = extract_identifier_from_expr(child, source)
+        {
+            return Some(result);
+        }
     }
     None
 }
@@ -3062,10 +3097,7 @@ mod tests {
         let source = "function simple() { return 42; }";
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(
-            cyclomatic_complexity(&func, source),
-            1
-        );
+        assert_eq!(cyclomatic_complexity(&func, source), 1);
     }
 
     #[test]
@@ -3073,10 +3105,7 @@ mod tests {
         let source = "function check(x: boolean) { return x ? 1 : 0; }";
         let tree = parse(source, Language::TypeScript).unwrap();
         let func = tree.root_node().child(0).unwrap();
-        assert_eq!(
-            cyclomatic_complexity(&func, source),
-            2
-        );
+        assert_eq!(cyclomatic_complexity(&func, source), 2);
     }
 
     // -- analyze_complexity integration --

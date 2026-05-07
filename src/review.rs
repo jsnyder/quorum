@@ -171,14 +171,15 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     let mut prompt = String::new();
 
     if let Some(docs) = &req.framework_docs
-        && !docs.is_empty() {
-            prompt.push_str("<framework_docs>\n");
-            for doc in docs {
-                prompt.push_str(&defang_sandbox_tags(doc));
-                prompt.push_str("\n\n");
-            }
-            prompt.push_str("</framework_docs>\n\n");
+        && !docs.is_empty()
+    {
+        prompt.push_str("<framework_docs>\n");
+        for doc in docs {
+            prompt.push_str(&defang_sandbox_tags(doc));
+            prompt.push_str("\n\n");
         }
+        prompt.push_str("</framework_docs>\n\n");
+    }
 
     if let Some(ctx) = &req.hydration_context {
         let any_section = !ctx.callee_signatures.is_empty()
@@ -232,13 +233,14 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
     }
 
     if let Some(precedents) = &req.feedback_precedents
-        && !precedents.is_empty() {
-            prompt.push_str("<historical_findings>\n");
-            for p in precedents {
-                prompt.push_str(&format!("- {}\n", defang_sandbox_tags(p)));
-            }
-            prompt.push_str("</historical_findings>\n\n");
+        && !precedents.is_empty()
+    {
+        prompt.push_str("<historical_findings>\n");
+        for p in precedents {
+            prompt.push_str(&format!("- {}\n", defang_sandbox_tags(p)));
         }
+        prompt.push_str("</historical_findings>\n\n");
+    }
 
     if let Some(ref notice) = req.truncation_notice {
         prompt.push_str(&format!(
@@ -345,22 +347,24 @@ pub fn parse_llm_response(json_str: &str, model_name: &str) -> anyhow::Result<Ve
     // escapes). Fall through to the sanitize-then-envelope retry
     // instead of returning an empty result.
     if let Ok(findings) = try_parse_findings(&cleaned)
-        && (!findings.is_empty() || !payload_is_object) {
-            return Ok(findings
-                .into_iter()
-                .map(|f| f.into_finding(model_name))
-                .collect());
-        }
+        && (!findings.is_empty() || !payload_is_object)
+    {
+        return Ok(findings
+            .into_iter()
+            .map(|f| f.into_finding(model_name))
+            .collect());
+    }
 
     // Strategy 3: sanitize invalid JSON escapes (LLMs emit \d, \s, etc.)
     let sanitized = sanitize_json_escapes(&cleaned);
     if let Ok(findings) = try_parse_findings(&sanitized)
-        && (!findings.is_empty() || !payload_is_object) {
-            return Ok(findings
-                .into_iter()
-                .map(|f| f.into_finding(model_name))
-                .collect());
-        }
+        && (!findings.is_empty() || !payload_is_object)
+    {
+        return Ok(findings
+            .into_iter()
+            .map(|f| f.into_finding(model_name))
+            .collect());
+    }
 
     // Strategy 4: same sanitize-then-envelope pass on the full payload.
     let sanitized_payload = sanitize_json_escapes(trimmed_payload.trim());
@@ -524,9 +528,10 @@ fn extract_json_array(text: &str) -> String {
             // would not satisfy `depth == 0`, and the array would be missed.
             depth -= 1;
             if depth == 0
-                && let Some(s) = start {
-                    return text[s..=i].to_string();
-                }
+                && let Some(s) = start
+            {
+                return text[s..=i].to_string();
+            }
         }
     }
 

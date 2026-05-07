@@ -198,20 +198,22 @@ fn collect_definitions(
     let line2 = node.end_position().row as u32 + 1;
 
     if func_kinds.contains(&kind)
-        && let Some(name_node) = node.child_by_field_name("name") {
-            let name = source[name_node.byte_range()].to_string();
-            // Extract first line as signature
-            let text = &source[node.byte_range()];
-            let sig = text.lines().next().unwrap_or(text).to_string();
-            funcs.push((name, sig, line1, line2));
-        }
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let name = source[name_node.byte_range()].to_string();
+        // Extract first line as signature
+        let text = &source[node.byte_range()];
+        let sig = text.lines().next().unwrap_or(text).to_string();
+        funcs.push((name, sig, line1, line2));
+    }
 
     if type_kinds.contains(&kind)
-        && let Some(name_node) = node.child_by_field_name("name") {
-            let name = source[name_node.byte_range()].to_string();
-            let text = source[node.byte_range()].to_string();
-            types.push((name, text));
-        }
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let name = source[name_node.byte_range()].to_string();
+        let text = source[node.byte_range()].to_string();
+        types.push((name, text));
+    }
 
     if import_kinds_list.contains(&kind) {
         let text = source[node.byte_range()].to_string();
@@ -248,36 +250,37 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
     if text.starts_with("use ") {
         // Rust: handle grouped `use std::collections::{HashMap, BTreeSet}` first.
         if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}'))
-            && open < close {
-                let inner = &text[open + 1..close];
-                for part in inner.split(',') {
-                    let part = part.trim();
-                    if part.is_empty() || part == "*" {
-                        continue;
-                    }
-                    // Handle `Foo as Bar` aliases inside the group.
-                    let name = if let Some(alias) = part.split(" as ").nth(1) {
-                        alias.trim()
-                    } else {
-                        // Handle nested paths like `io::{self, Read}` — take last segment.
-                        part.rsplit("::").next().unwrap_or(part).trim()
-                    };
-                    if !name.is_empty() && name != "*" && name != "self" {
-                        names.push(name.to_string());
-                    } else if name == "self" {
-                        // `use foo::{self, ...}` brings `foo` into scope; surface the
-                        // parent segment (between "use " and "::{").
-                        let head = &text[..open];
-                        if let Some(parent) = head.rsplit("::").next() {
-                            let parent = parent.trim();
-                            if !parent.is_empty() {
-                                names.push(parent.to_string());
-                            }
+            && open < close
+        {
+            let inner = &text[open + 1..close];
+            for part in inner.split(',') {
+                let part = part.trim();
+                if part.is_empty() || part == "*" {
+                    continue;
+                }
+                // Handle `Foo as Bar` aliases inside the group.
+                let name = if let Some(alias) = part.split(" as ").nth(1) {
+                    alias.trim()
+                } else {
+                    // Handle nested paths like `io::{self, Read}` — take last segment.
+                    part.rsplit("::").next().unwrap_or(part).trim()
+                };
+                if !name.is_empty() && name != "*" && name != "self" {
+                    names.push(name.to_string());
+                } else if name == "self" {
+                    // `use foo::{self, ...}` brings `foo` into scope; surface the
+                    // parent segment (between "use " and "::{").
+                    let head = &text[..open];
+                    if let Some(parent) = head.rsplit("::").next() {
+                        let parent = parent.trim();
+                        if !parent.is_empty() {
+                            names.push(parent.to_string());
                         }
                     }
                 }
-                return names;
             }
+            return names;
+        }
         // Rust: last segment after ::, handle `as` aliases
         if let Some(last) = text.rsplit("::").next() {
             let name = last.trim().trim_end_matches(';');
@@ -613,9 +616,10 @@ pub fn parse_unified_diff(diff: &str) -> DiffRanges {
         if let Some(path) = line.strip_prefix("+++ b/") {
             // Save previous file
             if let Some(file) = current_file.take()
-                && !current_ranges.is_empty() {
-                    results.push((file, std::mem::take(&mut current_ranges)));
-                }
+                && !current_ranges.is_empty()
+            {
+                results.push((file, std::mem::take(&mut current_ranges)));
+            }
             current_file = Some(path.to_string());
         } else if line.starts_with("@@ ") {
             // Parse @@ -old,count +new,count @@ format
@@ -625,25 +629,27 @@ pub fn parse_unified_diff(diff: &str) -> DiffRanges {
                     .filter(|s| !s.is_empty())
                     .collect();
                 if let Some(start_str) = nums.first()
-                    && let Ok(s) = start_str.parse::<u32>() {
-                        // Count is optional in unified diff format (defaults to 1).
-                        // "@@ -10 +10 @@" means a single-line change at line 10.
-                        let count = nums.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(1);
-                        // Pure-deletion hunks (+N,0) have count==0 and contribute no
-                        // changed lines on the new side — skip rather than emit a
-                        // garbage (N, N-1) range from saturating_sub underflow.
-                        if count > 0 {
-                            current_ranges.push((s, s + count - 1));
-                        }
+                    && let Ok(s) = start_str.parse::<u32>()
+                {
+                    // Count is optional in unified diff format (defaults to 1).
+                    // "@@ -10 +10 @@" means a single-line change at line 10.
+                    let count = nums.get(1).and_then(|c| c.parse::<u32>().ok()).unwrap_or(1);
+                    // Pure-deletion hunks (+N,0) have count==0 and contribute no
+                    // changed lines on the new side — skip rather than emit a
+                    // garbage (N, N-1) range from saturating_sub underflow.
+                    if count > 0 {
+                        current_ranges.push((s, s + count - 1));
                     }
+                }
             }
         }
     }
     // Save last file
     if let Some(file) = current_file
-        && !current_ranges.is_empty() {
-            results.push((file, current_ranges));
-        }
+        && !current_ranges.is_empty()
+    {
+        results.push((file, current_ranges));
+    }
 
     results
 }
@@ -658,28 +664,32 @@ fn find_callers_of(
     callers: &mut Vec<String>,
 ) {
     if call_kinds.contains(&node.kind())
-        && let Some(func_node) = node.child_by_field_name("function") {
-            let func_text = &source[func_node.byte_range()];
-            let call_name = func_text
-                .rsplit('.')
-                .next()
-                .unwrap_or(func_text)
-                .rsplit("::")
-                .next()
-                .unwrap_or(func_text)
-                .trim();
+        && let Some(func_node) = node.child_by_field_name("function")
+    {
+        let func_text = &source[func_node.byte_range()];
+        let call_name = func_text
+            .rsplit('.')
+            .next()
+            .unwrap_or(func_text)
+            .rsplit("::")
+            .next()
+            .unwrap_or(func_text)
+            .trim();
 
-            if call_name == target_name {
-                // Find which function this call is inside
-                let call_line = node.start_position().row as u32 + 1;
-                for (fname, _, fstart, fend) in all_funcs {
-                    if fname != target_name && call_line >= *fstart && call_line <= *fend
-                        && !callers.contains(fname) {
-                            callers.push(fname.clone());
-                        }
+        if call_name == target_name {
+            // Find which function this call is inside
+            let call_line = node.start_position().row as u32 + 1;
+            for (fname, _, fstart, fend) in all_funcs {
+                if fname != target_name
+                    && call_line >= *fstart
+                    && call_line <= *fend
+                    && !callers.contains(fname)
+                {
+                    callers.push(fname.clone());
                 }
             }
         }
+    }
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {

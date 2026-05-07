@@ -448,9 +448,10 @@ fn first_match<'a>(patterns: &'a [(String, Pattern)], rel: &str) -> Option<&'a s
         // `**/docs/**` matches `docs/adr/001.md` at the root.
         if pat.as_str().starts_with("**/")
             && let Ok(inner) = Pattern::new(&pat.as_str()[3..])
-                && inner.matches(rel) {
-                    return Some(raw);
-                }
+            && inner.matches(rel)
+        {
+            return Some(raw);
+        }
     }
     None
 }

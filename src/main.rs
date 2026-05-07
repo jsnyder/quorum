@@ -64,9 +64,10 @@ use pipeline::{LlmReviewer, PipelineConfig};
 /// `$HOME/.quorum`. Returns None if neither can be resolved.
 fn quorum_dir() -> Option<std::path::PathBuf> {
     if let Ok(override_path) = std::env::var("QUORUM_HOME")
-        && !override_path.is_empty() {
-            return Some(std::path::PathBuf::from(override_path));
-        }
+        && !override_path.is_empty()
+    {
+        return Some(std::path::PathBuf::from(override_path));
+    }
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".quorum"))
@@ -601,9 +602,10 @@ fn unicode_ok() -> bool {
         return false;
     }
     if let Some(term) = std::env::var_os("TERM")
-        && term == "dumb" {
-            return false;
-        }
+        && term == "dumb"
+    {
+        return false;
+    }
     if let Ok(lang) = std::env::var("LANG") {
         return lang.to_uppercase().contains("UTF-8") || lang.to_uppercase().contains("UTF8");
     }
@@ -1079,66 +1081,64 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
             // Deep review: agent loop with tool calling
             if opts.deep
-                && let Some(client) = llm_client.as_deref() {
-                    let project_root = deep_tool_root(file_path);
-                    let tool_reg = tools::ToolRegistry::new(&project_root);
-                    let agent_cfg = agent::AgentConfig::default();
-                    let model = pipeline_cfg
-                        .models
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("gpt-5.4");
-                    match agent::agent_loop(
-                        &source,
-                        &file_path.to_string_lossy(),
-                        client as &dyn agent::AgentReviewer,
-                        model,
-                        &tool_reg,
-                        &agent_cfg,
-                    ) {
-                        Ok(findings) => {
-                            // Apply project-level suppressions
-                            let sup_result = suppress::apply_suppressions(
-                                findings,
-                                &suppress_rules,
-                                &file_display,
-                            );
-                            if !sup_result.suppressed.is_empty() {
-                                tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
-                            }
-                            if opts.show_suppressed {
-                                for (f, rule) in &sup_result.suppressed {
-                                    eprint!("{}", suppress::format_suppressed_finding(f, rule));
-                                }
-                            }
-                            let findings = sup_result.kept;
-                            progress.finish_file(findings.len());
-                            if use_compact {
-                                println!(
-                                    "{}",
-                                    output::format_compact_review(&file_display, &findings)
-                                );
-                            } else if use_json {
-                                // collected below
-                            } else {
-                                print!(
-                                    "{}",
-                                    output::format_review(&file_display, &findings, &style)
-                                );
-                            }
-                            all_findings.extend(findings);
-                            continue;
+                && let Some(client) = llm_client.as_deref()
+            {
+                let project_root = deep_tool_root(file_path);
+                let tool_reg = tools::ToolRegistry::new(&project_root);
+                let agent_cfg = agent::AgentConfig::default();
+                let model = pipeline_cfg
+                    .models
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("gpt-5.4");
+                match agent::agent_loop(
+                    &source,
+                    &file_path.to_string_lossy(),
+                    client as &dyn agent::AgentReviewer,
+                    model,
+                    &tool_reg,
+                    &agent_cfg,
+                ) {
+                    Ok(findings) => {
+                        // Apply project-level suppressions
+                        let sup_result =
+                            suppress::apply_suppressions(findings, &suppress_rules, &file_display);
+                        if !sup_result.suppressed.is_empty() {
+                            tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
                         }
-                        Err(e) => {
-                            progress.clear_line();
-                            eprintln!(
-                                "Warning: Deep review failed for {}: {}. Falling back to standard review.",
-                                file_path.display(),
-                                e
+                        if opts.show_suppressed {
+                            for (f, rule) in &sup_result.suppressed {
+                                eprint!("{}", suppress::format_suppressed_finding(f, rule));
+                            }
+                        }
+                        let findings = sup_result.kept;
+                        progress.finish_file(findings.len());
+                        if use_compact {
+                            println!(
+                                "{}",
+                                output::format_compact_review(&file_display, &findings)
+                            );
+                        } else if use_json {
+                            // collected below
+                        } else {
+                            print!(
+                                "{}",
+                                output::format_review(&file_display, &findings, &style)
                             );
                         }
+                        all_findings.extend(findings);
+                        continue;
+                    }
+                    Err(e) => {
+                        progress.clear_line();
+                        eprintln!(
+                            "Warning: Deep review failed for {}: {}. Falling back to standard review.",
+                            file_path.display(),
+                            e
+                        );
                     }
                 }
+            }
 
             // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
             let review_result = if let Some(l) = lang {
@@ -1236,49 +1236,48 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 let file_display = file_path.to_string_lossy().to_string();
 
                 // Deep review path
-                if deep
-                    && let Some(ref client) = llm_client {
-                        let project_root = deep_tool_root(&file_path);
-                        let tool_reg = tools::ToolRegistry::new(&project_root);
-                        let agent_cfg = agent::AgentConfig::default();
-                        let model = pipeline_cfg
-                            .models
-                            .first()
-                            .map(|s| s.as_str())
-                            .unwrap_or("gpt-5.4");
-                        match agent::agent_loop(
-                            &source,
-                            &file_display,
-                            &**client as &dyn agent::AgentReviewer,
-                            model,
-                            &tool_reg,
-                            &agent_cfg,
-                        ) {
-                            Ok(findings) => {
-                                let sup_result = suppress::apply_suppressions(
-                                    findings,
-                                    &suppress_rules,
-                                    &file_display,
-                                );
-                                let result = pipeline::FileReviewResult {
-                                    file_path: file_display,
-                                    findings: sup_result.kept,
-                                    usage: Default::default(),
-                                    suppressed: sup_result.suppressed.len(),
-                                    context_telemetry: None,
-                                    enrichment_metrics: Default::default(),
-                                };
-                                return (idx, Ok((result, sup_result.suppressed)));
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[{}] Warning: Deep review failed: {}. Falling back.",
-                                    file_path.display(),
-                                    e
-                                );
-                            }
+                if deep && let Some(ref client) = llm_client {
+                    let project_root = deep_tool_root(&file_path);
+                    let tool_reg = tools::ToolRegistry::new(&project_root);
+                    let agent_cfg = agent::AgentConfig::default();
+                    let model = pipeline_cfg
+                        .models
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("gpt-5.4");
+                    match agent::agent_loop(
+                        &source,
+                        &file_display,
+                        &**client as &dyn agent::AgentReviewer,
+                        model,
+                        &tool_reg,
+                        &agent_cfg,
+                    ) {
+                        Ok(findings) => {
+                            let sup_result = suppress::apply_suppressions(
+                                findings,
+                                &suppress_rules,
+                                &file_display,
+                            );
+                            let result = pipeline::FileReviewResult {
+                                file_path: file_display,
+                                findings: sup_result.kept,
+                                usage: Default::default(),
+                                suppressed: sup_result.suppressed.len(),
+                                context_telemetry: None,
+                                enrichment_metrics: Default::default(),
+                            };
+                            return (idx, Ok((result, sup_result.suppressed)));
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[{}] Warning: Deep review failed: {}. Falling back.",
+                                file_path.display(),
+                                e
+                            );
                         }
                     }
+                }
 
                 // Standard review path
                 let llm_reviewer: Option<&dyn pipeline::LlmReviewer> =

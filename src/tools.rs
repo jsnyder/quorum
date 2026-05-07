@@ -231,16 +231,17 @@ impl ToolRegistry {
                 self.grep_recursive(&path, pattern, glob, acc)?;
             } else if path.is_file() {
                 if let Some(g) = glob
-                    && g != "*" {
-                        let ext_match = g.trim_start_matches("*.");
-                        if let Some(ext) = path.extension() {
-                            if ext.to_string_lossy() != ext_match {
-                                continue;
-                            }
-                        } else {
+                    && g != "*"
+                {
+                    let ext_match = g.trim_start_matches("*.");
+                    if let Some(ext) = path.extension() {
+                        if ext.to_string_lossy() != ext_match {
                             continue;
                         }
+                    } else {
+                        continue;
                     }
+                }
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                     for (i, line) in content.lines().enumerate() {
@@ -323,16 +324,17 @@ impl ToolRegistry {
             } else {
                 let rel = path.strip_prefix(&self.root).unwrap_or(&path);
                 if let Some(g) = glob
-                    && g != "*" {
-                        let ext = g.trim_start_matches("*.");
-                        if let Some(file_ext) = path.extension() {
-                            if file_ext.to_string_lossy() != ext {
-                                continue;
-                            }
-                        } else {
+                    && g != "*"
+                {
+                    let ext = g.trim_start_matches("*.");
+                    if let Some(file_ext) = path.extension() {
+                        if file_ext.to_string_lossy() != ext {
                             continue;
                         }
+                    } else {
+                        continue;
                     }
+                }
                 acc.push(rel.display().to_string());
             }
         }

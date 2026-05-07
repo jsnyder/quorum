@@ -592,7 +592,9 @@ pub async fn review_file(
                     Some(
                         docs.iter()
                             .map(|d| {
-                                crate::context_enrichment::format_context_section(std::slice::from_ref(d))
+                                crate::context_enrichment::format_context_section(
+                                    std::slice::from_ref(d),
+                                )
                             })
                             .collect(),
                     )
@@ -1019,121 +1021,124 @@ pub async fn review_file_llm_only(
 
     // LLM review (if configured)
     if let Some(reviewer) = llm
-        && !pipeline_config.models.is_empty() {
-            let redacted_code = redact::redact_secrets(source);
-            let (review_code, truncation_notice) =
-                truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
-            let language = lang_name_from_path(file_path);
+        && !pipeline_config.models.is_empty()
+    {
+        let redacted_code = redact::redact_secrets(source);
+        let (review_code, truncation_notice) =
+            truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
+        let language = lang_name_from_path(file_path);
 
-            // Context7 framework docs (metrics aggregate into the function-scoped var)
-            let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
-                tracing::debug!(reason, "Context7: enrichment skipped");
-                None
-            } else {
-                let project_root = find_project_root(file_path);
-                let mut domain = crate::domain::detect_domain(&project_root);
-                for fw in &pipeline_config.framework_overrides {
-                    if !domain.frameworks.contains(fw) {
-                        domain.frameworks.push(fw.clone());
-                    }
-                }
-                let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
-                    crate::context_enrichment::enrich_for_review_in_project(
-                        &project_root,
-                        &[],
-                        &domain.frameworks,
-                        shared.as_ref(),
-                    )
-                } else {
-                    let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
-                    let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
-                    crate::context_enrichment::enrich_for_review_in_project(
-                        &project_root,
-                        &[],
-                        &domain.frameworks,
-                        &cached,
-                    )
-                };
-                let docs = result.docs;
-                enrichment_metrics = result.metrics;
-                if !docs.is_empty() {
-                    Some(
-                        docs.iter()
-                            .map(|d| {
-                                crate::context_enrichment::format_context_section(std::slice::from_ref(d))
-                            })
-                            .collect(),
-                    )
-                } else if domain.frameworks.is_empty() {
-                    None
-                } else {
-                    // skip_context7 unreachable: outer if-let returned None already.
-                    anyhow::bail!(
-                        "Context7: failed to fetch docs for frameworks {:?}. \
-                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                        domain.frameworks
-                    );
-                }
-            };
-
-            // Query feedback index for few-shot precedents
-            let precedents = if let Some(ref shared) = shared_index {
-                let mut idx = shared.lock().unwrap();
-                query_feedback_precedents(&mut idx, &file_str, &language, &redacted_code)
-            } else if let Some(ref mut idx) = local_index {
-                query_feedback_precedents(idx, &file_str, &language, &redacted_code)
-            } else {
-                Vec::new()
-            };
-
-            let req = ReviewRequest {
-                file_path: file_str.clone(),
-                language,
-                code: review_code,
-                hydration_context: None,
-                framework_docs,
-                feedback_precedents: if precedents.is_empty() {
-                    None
-                } else {
-                    Some(precedents)
-                },
-                context_block: None,
-                truncation_notice: truncation_notice.clone(),
-                focus: pipeline_config.focus.clone(),
-                mode: pipeline_config.mode,
-            };
-
-            let prompt = review::build_review_prompt(&req);
-            let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
-            for model in &pipeline_config.models {
-                let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
-                match reviewer.review(&prompt, model, sys_prompt) {
-                    Ok(resp) => {
-                        if let Some(u) = &resp.usage {
-                            total_usage.prompt_tokens += u.prompt_tokens;
-                            total_usage.completion_tokens += u.completion_tokens;
-                            total_usage.cached_tokens += u.cached_tokens;
-                        }
-                        match review::parse_llm_response(&resp.content, model) {
-                            Ok(mut findings) => {
-                                if let Some(ref notice) = truncation_notice {
-                                    for f in &mut findings {
-                                        if matches!(f.source, crate::finding::Source::Llm(_)) {
-                                            f.based_on_excerpt = Some(notice.clone());
-                                        }
-                                    }
-                                }
-                                all_sources.push(findings);
-                            }
-                            Err(e) => {
-                                eprintln!("Warning: Failed to parse {} response: {}", model, e)
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
+        // Context7 framework docs (metrics aggregate into the function-scoped var)
+        let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+            tracing::debug!(reason, "Context7: enrichment skipped");
+            None
+        } else {
+            let project_root = find_project_root(file_path);
+            let mut domain = crate::domain::detect_domain(&project_root);
+            for fw in &pipeline_config.framework_overrides {
+                if !domain.frameworks.contains(fw) {
+                    domain.frameworks.push(fw.clone());
                 }
             }
+            let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &[],
+                    &domain.frameworks,
+                    shared.as_ref(),
+                )
+            } else {
+                let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+                let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+                crate::context_enrichment::enrich_for_review_in_project(
+                    &project_root,
+                    &[],
+                    &domain.frameworks,
+                    &cached,
+                )
+            };
+            let docs = result.docs;
+            enrichment_metrics = result.metrics;
+            if !docs.is_empty() {
+                Some(
+                    docs.iter()
+                        .map(|d| {
+                            crate::context_enrichment::format_context_section(std::slice::from_ref(
+                                d,
+                            ))
+                        })
+                        .collect(),
+                )
+            } else if domain.frameworks.is_empty() {
+                None
+            } else {
+                // skip_context7 unreachable: outer if-let returned None already.
+                anyhow::bail!(
+                    "Context7: failed to fetch docs for frameworks {:?}. \
+                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                    domain.frameworks
+                );
+            }
+        };
+
+        // Query feedback index for few-shot precedents
+        let precedents = if let Some(ref shared) = shared_index {
+            let mut idx = shared.lock().unwrap();
+            query_feedback_precedents(&mut idx, &file_str, &language, &redacted_code)
+        } else if let Some(ref mut idx) = local_index {
+            query_feedback_precedents(idx, &file_str, &language, &redacted_code)
+        } else {
+            Vec::new()
+        };
+
+        let req = ReviewRequest {
+            file_path: file_str.clone(),
+            language,
+            code: review_code,
+            hydration_context: None,
+            framework_docs,
+            feedback_precedents: if precedents.is_empty() {
+                None
+            } else {
+                Some(precedents)
+            },
+            context_block: None,
+            truncation_notice: truncation_notice.clone(),
+            focus: pipeline_config.focus.clone(),
+            mode: pipeline_config.mode,
+        };
+
+        let prompt = review::build_review_prompt(&req);
+        let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
+        for model in &pipeline_config.models {
+            let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
+            match reviewer.review(&prompt, model, sys_prompt) {
+                Ok(resp) => {
+                    if let Some(u) = &resp.usage {
+                        total_usage.prompt_tokens += u.prompt_tokens;
+                        total_usage.completion_tokens += u.completion_tokens;
+                        total_usage.cached_tokens += u.cached_tokens;
+                    }
+                    match review::parse_llm_response(&resp.content, model) {
+                        Ok(mut findings) => {
+                            if let Some(ref notice) = truncation_notice {
+                                for f in &mut findings {
+                                    if matches!(f.source, crate::finding::Source::Llm(_)) {
+                                        f.based_on_excerpt = Some(notice.clone());
+                                    }
+                                }
+                            }
+                            all_sources.push(findings);
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to parse {} response: {}", model, e)
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
+            }
         }
+    }
 
     let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
 

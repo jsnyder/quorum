@@ -24,9 +24,10 @@ fn load_entries(path: &std::path::Path) -> anyhow::Result<Vec<Entry>> {
             continue;
         }
         if let Ok(e) = serde_json::from_str::<Entry>(line)
-            && !e.finding_title.is_empty() {
-                out.push(e);
-            }
+            && !e.finding_title.is_empty()
+        {
+            out.push(e);
+        }
     }
     Ok(out)
 }

@@ -104,15 +104,9 @@ fn extracts_mini_terraform_source() {
         qn.contains(&"aws_vpc.this"),
         "expected resource aws_vpc.this, got {qn:?}"
     );
-    assert!(
-        qn.contains(&"vpc_id"),
-        "expected output vpc_id, got {qn:?}"
-    );
+    assert!(qn.contains(&"vpc_id"), "expected output vpc_id, got {qn:?}");
     assert!(qn.contains(&"name"), "expected variable name");
-    assert!(
-        qn.contains(&"cidr_block"),
-        "expected variable cidr_block"
-    );
+    assert!(qn.contains(&"cidr_block"), "expected variable cidr_block");
     assert!(
         result
             .chunks
