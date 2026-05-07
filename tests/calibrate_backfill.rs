@@ -1,4 +1,3 @@
-
 /// Integration test for `quorum calibrate --backfill-paths --dry-run`.
 #[test]
 fn calibrate_backfill_paths_dry_run() {

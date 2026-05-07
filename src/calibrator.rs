@@ -2207,12 +2207,7 @@ mod tests {
         assert_eq!(result1.suppressed, 1, "Human+auto FP should suppress");
 
         // 2 auto only: 0.5 + 0.5 = 1.0 < 1.5 threshold -> NOT suppress
-        let result2 = calibrate(
-            findings.clone(),
-            &[auto_fp.clone(), auto_fp],
-            &config,
-            "",
-        );
+        let result2 = calibrate(findings.clone(), &[auto_fp.clone(), auto_fp], &config, "");
         assert_eq!(
             result2.suppressed, 0,
             "2 auto FPs alone should not suppress (insufficient weight)"

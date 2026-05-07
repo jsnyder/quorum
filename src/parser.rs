@@ -30,9 +30,10 @@ impl Language {
     pub fn from_path(path: &Path) -> Option<Self> {
         // Check filename first for extensionless files (Dockerfile, Dockerfile.prod, etc.)
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.to_lowercase().starts_with("dockerfile") {
-                return Some(Language::Dockerfile);
-            }
+            && name.to_lowercase().starts_with("dockerfile")
+        {
+            return Some(Language::Dockerfile);
+        }
         path.extension()
             .and_then(|ext| ext.to_str())
             .and_then(Self::from_extension)
@@ -105,28 +106,31 @@ pub fn extract_functions(
 
             // Standard named functions/methods
             if kinds.contains(&node.kind())
-                && let Some(name_node) = node.child_by_field_name("name") {
-                    let name = &source[name_node.byte_range()];
-                    functions.push(FunctionInfo {
-                        name: name.to_string(),
-                        line_start: node.start_position().row as u32 + 1,
-                        line_end: node.end_position().row as u32 + 1,
-                    });
-                }
+                && let Some(name_node) = node.child_by_field_name("name")
+            {
+                let name = &source[name_node.byte_range()];
+                functions.push(FunctionInfo {
+                    name: name.to_string(),
+                    line_start: node.start_position().row as u32 + 1,
+                    line_end: node.end_position().row as u32 + 1,
+                });
+            }
 
             // Arrow functions: const name = (...) => { ... }
             // Tree shape: lexical_declaration > variable_declarator[name, value=arrow_function]
-            if is_ts && node.kind() == "arrow_function"
+            if is_ts
+                && node.kind() == "arrow_function"
                 && let Some(parent) = node.parent()
-                    && parent.kind() == "variable_declarator"
-                        && let Some(name_node) = parent.child_by_field_name("name") {
-                            let name = &source[name_node.byte_range()];
-                            functions.push(FunctionInfo {
-                                name: name.to_string(),
-                                line_start: parent.start_position().row as u32 + 1,
-                                line_end: node.end_position().row as u32 + 1,
-                            });
-                        }
+                && parent.kind() == "variable_declarator"
+                && let Some(name_node) = parent.child_by_field_name("name")
+            {
+                let name = &source[name_node.byte_range()];
+                functions.push(FunctionInfo {
+                    name: name.to_string(),
+                    line_start: parent.start_position().row as u32 + 1,
+                    line_end: node.end_position().row as u32 + 1,
+                });
+            }
         }
 
         // Iterative tree walk: down, right, or up

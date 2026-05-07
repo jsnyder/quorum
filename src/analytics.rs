@@ -437,12 +437,13 @@ pub fn compute_external_overlap(
             });
         row.findings += 1;
         if let Some(fid) = &e.finding_id
-            && let Some(qv) = quorum_verdicts.get(fid) {
-                row.overlap += 1;
-                if verdict_eq(qv, &e.verdict) {
-                    row.agree += 1;
-                }
+            && let Some(qv) = quorum_verdicts.get(fid)
+        {
+            row.overlap += 1;
+            if verdict_eq(qv, &e.verdict) {
+                row.agree += 1;
             }
+        }
     }
     let mut agents: Vec<AgentOverlap> = per_agent.into_values().collect();
     agents.sort_by(|a, b| {

@@ -51,7 +51,6 @@ pub enum Provenance {
     Unknown,
 }
 
-
 /// Discriminates `Verdict::Fp` entries by reason. Calibrator applies
 /// different decay/scope rules per kind. `Option<FpKind> = None` ↔
 /// Hallucination semantics — preserves behavior on pre-bump entries
@@ -2181,8 +2180,9 @@ mod tests {
                         // Padding inside `reason` keeps the JSON valid;
                         // distinct chars per thread make truncation
                         // detectable in failure messages.
-                        let pad: String = std::iter::repeat_n(if tid == 0 { 'A' } else { 'B' }, PAD_BYTES)
-                            .collect();
+                        let pad: String =
+                            std::iter::repeat_n(if tid == 0 { 'A' } else { 'B' }, PAD_BYTES)
+                                .collect();
                         e.reason = format!("t{tid}-i{i}-{pad}");
                         store.record(&e).unwrap();
                     }

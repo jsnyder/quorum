@@ -74,12 +74,7 @@ impl PartialEq<&str> for Category {
 
 impl From<String> for Category {
     fn from(s: String) -> Self {
-        match s
-            .to_lowercase()
-            .trim()
-            .replace([' ', '_'], "-")
-            .as_str()
-        {
+        match s.to_lowercase().trim().replace([' ', '_'], "-").as_str() {
             "security" | "safety" => Category::Security,
             "correctness" | "functional-bug" | "bug" => Category::Correctness,
             "logic" | "logic-error" => Category::Logic,

@@ -428,9 +428,10 @@ fn item_signature(item_text: &str) -> String {
         }
         if b == b' '
             && let Some(&next) = bytes.get(i + 1)
-                && matches!(next, b')' | b']' | b'}' | b',') {
-                    tidied.pop();
-                }
+            && matches!(next, b')' | b']' | b'}' | b',')
+        {
+            tidied.pop();
+        }
         i += 1;
     }
     tidied

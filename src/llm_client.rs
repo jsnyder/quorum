@@ -43,43 +43,44 @@ pub fn parse_chat_response(json: &serde_json::Value) -> anyhow::Result<LlmTurnRe
         .unwrap_or("stop");
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(|tc| tc.as_array())
-        && !tool_calls.is_empty() {
-            // Error on any malformed entry rather than silently dropping it
-            // via filter_map. A partial tool_calls vec leaves orphaned
-            // assistant calls without matching tool responses, which most
-            // chat APIs reject on the next turn — same failure mode as the
-            // agent.rs limit-reached bug, just at the parser layer.
-            let mut calls = Vec::with_capacity(tool_calls.len());
-            for (i, tc) in tool_calls.iter().enumerate() {
-                let id = tc
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("malformed tool_calls[{i}]: missing `id`"))?
-                    .to_string();
-                let name = tc
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("malformed tool_calls[{i}]: missing `function.name`")
-                    })?
-                    .to_string();
-                let arguments = tc
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|a| a.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("malformed tool_calls[{i}]: missing `function.arguments`")
-                    })?
-                    .to_string();
-                calls.push(ToolCall {
-                    id,
-                    name,
-                    arguments,
-                });
-            }
-            return Ok(LlmTurnResult::ToolCalls(calls));
+        && !tool_calls.is_empty()
+    {
+        // Error on any malformed entry rather than silently dropping it
+        // via filter_map. A partial tool_calls vec leaves orphaned
+        // assistant calls without matching tool responses, which most
+        // chat APIs reject on the next turn — same failure mode as the
+        // agent.rs limit-reached bug, just at the parser layer.
+        let mut calls = Vec::with_capacity(tool_calls.len());
+        for (i, tc) in tool_calls.iter().enumerate() {
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("malformed tool_calls[{i}]: missing `id`"))?
+                .to_string();
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("malformed tool_calls[{i}]: missing `function.name`")
+                })?
+                .to_string();
+            let arguments = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("malformed tool_calls[{i}]: missing `function.arguments`")
+                })?
+                .to_string();
+            calls.push(ToolCall {
+                id,
+                name,
+                arguments,
+            });
         }
+        return Ok(LlmTurnResult::ToolCalls(calls));
+    }
 
     if finish_reason == "length" {
         anyhow::bail!("Response truncated (finish_reason=length)");
@@ -995,14 +996,16 @@ impl OpenAiClient {
         let mut texts = Vec::new();
         for item in output {
             if item["type"].as_str() == Some("message")
-                && let Some(content) = item["content"].as_array() {
-                    for block in content {
-                        if block["type"].as_str() == Some("output_text")
-                            && let Some(text) = block["text"].as_str() {
-                                texts.push(text.to_string());
-                            }
+                && let Some(content) = item["content"].as_array()
+            {
+                for block in content {
+                    if block["type"].as_str() == Some("output_text")
+                        && let Some(text) = block["text"].as_str()
+                    {
+                        texts.push(text.to_string());
                     }
                 }
+            }
         }
 
         if texts.is_empty() {

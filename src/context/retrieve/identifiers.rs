@@ -89,11 +89,10 @@ fn split_token(token: &str, out: &mut Vec<String>) {
         for (i, ch) in chars.iter().enumerate() {
             if i > 0 && ch.is_ascii_uppercase() {
                 let prev = chars[i - 1];
-                if (prev.is_ascii_lowercase() || prev.is_ascii_digit())
-                    && !current.is_empty() {
-                        push_if_valid(&current, out);
-                        current.clear();
-                    }
+                if (prev.is_ascii_lowercase() || prev.is_ascii_digit()) && !current.is_empty() {
+                    push_if_valid(&current, out);
+                    current.clear();
+                }
             }
             current.push(*ch);
         }

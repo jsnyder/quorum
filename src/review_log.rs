@@ -314,11 +314,12 @@ impl ReviewLog {
     pub fn record(&self, entry: &ReviewRecord) -> anyhow::Result<()> {
         use std::io::Write;
         if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create review log dir: {}", parent.display())
-                })?;
-            }
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create review log dir: {}", parent.display())
+            })?;
+        }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -363,9 +364,10 @@ impl Iterator for ReviewLogIter {
 /// signals beat generic `AGENT`.
 pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
     if let Some(name) = caller_override
-        && !name.is_empty() {
-            return name.to_string();
-        }
+        && !name.is_empty()
+    {
+        return name.to_string();
+    }
     if std::env::var_os("CLAUDE_CODE").is_some() {
         return "claude_code".to_string();
     }
@@ -377,9 +379,10 @@ pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
     }
     if let Some(v) = std::env::var_os("AGENT")
         && let Some(s) = v.to_str()
-            && !s.is_empty() {
-                return s.to_string();
-            }
+        && !s.is_empty()
+    {
+        return s.to_string();
+    }
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() {
         "tty".to_string()

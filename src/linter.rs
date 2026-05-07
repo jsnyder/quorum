@@ -137,9 +137,10 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
     if project_dir.join("ruff.toml").exists() {
         linters.push(LinterKind::Ruff);
     } else if let Ok(content) = std::fs::read_to_string(project_dir.join("pyproject.toml"))
-        && content.contains("[tool.ruff]") {
-            linters.push(LinterKind::Ruff);
-        }
+        && content.contains("[tool.ruff]")
+    {
+        linters.push(LinterKind::Ruff);
+    }
 
     // Clippy: Cargo.toml present
     if project_dir.join("Cargo.toml").exists() {
