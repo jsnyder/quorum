@@ -81,6 +81,7 @@ fn new_fields_omitted_from_json_when_none() {
     assert!(!json.contains("reasoning"));
     assert!(!json.contains("confidence"));
     assert!(!json.contains("cited_lines"));
+    assert!(!json.contains("grounding_confidence"));
 }
 
 #[test]
