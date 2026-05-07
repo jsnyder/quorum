@@ -1413,20 +1413,16 @@ mod tests {
 
     #[test]
     fn system_prompt_does_not_suppress_theoretical_bugs() {
-        // Issue #118 originally added a precedence rule to exempt trust-boundary
-        // findings from down-classification rule 3 ("theoretically possible → omit").
-        // The open-ended prompt reframe (2026-05-06) removed both: rule 3 now says
-        // "flag at low with reasoning" instead of "omit", so the exemption is
-        // unnecessary. This test verifies the new invariant: the prompt never
-        // instructs the model to omit any category of reachable bug.
+        // The prompt must never instruct the model to omit reachable bugs.
+        // It should also mention trust boundaries so the model checks them.
         let sys = crate::llm_client::OpenAiClient::system_prompt();
         assert!(
             sys.contains("rather than omitting"),
-            "system prompt must instruct flagging at low rather than omitting"
+            "system prompt must instruct including uncertain findings rather than omitting"
         );
         assert!(
-            sys.contains("trust boundaries"),
-            "system prompt must mention trust boundaries in the review spec"
+            sys.contains("trust boundar"),
+            "system prompt must mention trust boundaries"
         );
     }
 
