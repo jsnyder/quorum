@@ -153,6 +153,7 @@ impl LlmFinding {
             confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         }
     }
 }

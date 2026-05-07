@@ -292,6 +292,7 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         });
     }
 
@@ -352,6 +353,7 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         });
     }
 
@@ -400,6 +402,7 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 confidence: None,
                 cited_lines: None,
                 grounding_status: None,
+                grounding_confidence: None,
             });
         }
     }
@@ -462,6 +465,7 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         });
     }
     Ok(findings)
@@ -507,6 +511,7 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 confidence: None,
                 cited_lines: None,
                 grounding_status: None,
+                grounding_confidence: None,
             });
         }
     }
@@ -569,6 +574,7 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         });
     }
     Ok(findings)
@@ -615,6 +621,7 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 confidence: None,
                 cited_lines: None,
                 grounding_status: None,
+                grounding_confidence: None,
             });
         }
     }
