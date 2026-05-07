@@ -124,18 +124,15 @@ pub fn format_finding(f: &Finding, style: &Style) -> String {
         ));
     }
 
-    if let Some(ref status) = f.grounding_status {
-        use crate::finding::GroundingStatus;
-        if matches!(
-            status,
-            GroundingStatus::SymbolNotFound | GroundingStatus::LineOutOfRange
-        ) {
-            output.push_str(&format!(
-                "    {dim}[ungrounded] cited symbol not verified in source{reset}\n",
-                dim = style.dim,
-                reset = style.reset,
-            ));
-        }
+    if let Some(gc) = f.grounding_confidence
+        && gc < 1.0
+    {
+        output.push_str(&format!(
+            "    {dim}[grounding: {gc:.1}] cited symbol not verified in source{reset}\n",
+            dim = style.dim,
+            gc = gc,
+            reset = style.reset,
+        ));
     }
 
     output
@@ -883,30 +880,32 @@ mod tests {
     use crate::finding::GroundingStatus;
 
     #[test]
-    fn format_finding_shows_ungrounded_tag() {
+    fn format_finding_shows_grounding_confidence_for_symbol_not_found() {
         let f = FindingBuilder::new()
             .title("Function `nonexistent` has bug")
             .severity(Severity::Medium)
             .grounding_status(GroundingStatus::SymbolNotFound)
+            .grounding_confidence(0.3)
             .build();
         let output = format_finding(&f, &Style::plain());
         assert!(
-            output.contains("[ungrounded]"),
-            "Expected [ungrounded] in output: {output}"
+            output.contains("[grounding: 0.3]"),
+            "Expected [grounding: 0.3] in output: {output}"
         );
     }
 
     #[test]
-    fn format_finding_shows_ungrounded_for_line_out_of_range() {
+    fn format_finding_shows_grounding_confidence_for_line_out_of_range() {
         let f = FindingBuilder::new()
             .title("Function `foo_bar` has bug")
             .severity(Severity::Medium)
             .grounding_status(GroundingStatus::LineOutOfRange)
+            .grounding_confidence(0.1)
             .build();
         let output = format_finding(&f, &Style::plain());
         assert!(
-            output.contains("[ungrounded]"),
-            "Expected [ungrounded] in output: {output}"
+            output.contains("[grounding: 0.1]"),
+            "Expected [grounding: 0.1] in output: {output}"
         );
     }
 
@@ -916,11 +915,12 @@ mod tests {
             .title("Function `real_func` has bug")
             .severity(Severity::Medium)
             .grounding_status(GroundingStatus::Verified)
+            .grounding_confidence(1.0)
             .build();
         let output = format_finding(&f, &Style::plain());
         assert!(
-            !output.contains("[ungrounded]"),
-            "Verified should NOT show [ungrounded]: {output}"
+            !output.contains("[grounding:"),
+            "Verified (1.0) should NOT show grounding tag: {output}"
         );
     }
 
@@ -933,8 +933,8 @@ mod tests {
             .build();
         let output = format_finding(&f, &Style::plain());
         assert!(
-            !output.contains("[ungrounded]"),
-            "NotChecked should NOT show [ungrounded]: {output}"
+            !output.contains("[grounding:"),
+            "NotChecked should NOT show grounding tag: {output}"
         );
     }
 
@@ -946,16 +946,17 @@ mod tests {
             .build();
         let output = format_finding(&f, &Style::plain());
         assert!(
-            !output.contains("[ungrounded]"),
-            "None grounding should NOT show [ungrounded]: {output}"
+            !output.contains("[grounding:"),
+            "None grounding should NOT show grounding tag: {output}"
         );
     }
 
     #[test]
-    fn grounding_status_in_json_output() {
+    fn grounding_confidence_in_json_output() {
         let f = FindingBuilder::new()
             .title("Function `nonexistent` has bug")
             .grounding_status(GroundingStatus::SymbolNotFound)
+            .grounding_confidence(0.3)
             .build();
         let json = serde_json::to_string(&f).unwrap();
         assert!(
@@ -965,6 +966,10 @@ mod tests {
         assert!(
             json.contains("symbol-not-found"),
             "JSON should contain kebab-case status: {json}"
+        );
+        assert!(
+            json.contains("grounding_confidence"),
+            "JSON should contain grounding_confidence: {json}"
         );
     }
 
