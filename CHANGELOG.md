@@ -4,6 +4,27 @@
 
 _No unreleased changes._
 
+## [0.20.0] - 2026-05-07
+
+### Review quality
+
+- **Function-by-function LLM prompt (#253).** System prompt reframed from ranked-checklist to function-by-function review instruction. A/B testing showed 100% recall (20/20 planted bugs) vs 93% with the previous prompt. Removed 4 down-classification rules that caused the model to self-censor findings. Severity rubric condensed to concise one-liners.
+
+### Developer experience
+
+- **Pre-commit hooks (.githooks/).** Added `cargo fmt --check`, `cargo clippy`, and `cargo check` as pre-commit hooks. Hooks only fire on commits touching `.rs` files. Setup: `git config core.hooksPath .githooks`.
+
+### Code quality
+
+- **Clippy cleanup (#240).** Fixed all 166 clippy lints across the codebase and made clippy blocking in CI (`-D warnings`).
+- **Formatting sweep (#236, #252).** Applied `rustfmt` across the entire codebase, including if-let chain patterns introduced by the clippy cleanup.
+
+## [0.19.0] - 2026-05-05
+
+### Stats dashboard redesign (#235)
+
+- Redesigned stats dashboard for clarity with improved semigraphics and layout.
+
 ## [0.18.4] - 2026-05-02
 
 Cluster of follow-up fixes from quorum self-reviews after v0.18.2's batch-3, plus a refactor that unblocks integration-testable internal types.

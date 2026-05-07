@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -e
+
+# Only check staged Rust files to keep the hook fast on non-Rust commits.
+rust_staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+if [ -z "$rust_staged" ]; then
+    exit 0
+fi
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check 2>&1 || {
+    echo ""
+    echo "Formatting check failed. Run 'cargo fmt' and re-stage."
+    exit 1
+}
+
+echo "pre-commit: cargo clippy"
+cargo clippy --all-targets --quiet -- -D warnings 2>&1 || {
+    echo ""
+    echo "Clippy found warnings. Fix them and re-stage."
+    exit 1
+}
+
+echo "pre-commit: cargo check"
+cargo check --all-targets --quiet 2>&1 || {
+    echo ""
+    echo "Compilation failed."
+    exit 1
+}
