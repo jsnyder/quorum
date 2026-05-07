@@ -1,11 +1,5 @@
 # Quorum — Rust-native multi-source code review tool
 
-## Setup
-
-```bash
-git config core.hooksPath .githooks    # enable pre-commit hooks (fmt, clippy, check)
-```
-
 ## Commands
 
 ```bash
