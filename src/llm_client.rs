@@ -883,8 +883,7 @@ impl OpenAiClient {
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.3,
-            "max_tokens": 16384
+            "temperature": 0.3
         });
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
@@ -921,7 +920,7 @@ impl OpenAiClient {
             .unwrap_or("unknown");
         if finish_reason == "length" {
             anyhow::bail!(
-                "Response truncated (finish_reason=length). Model {} may need a higher max_tokens.",
+                "Response truncated (finish_reason=length). Model {} hit its output token limit.",
                 model
             );
         }
@@ -1029,7 +1028,6 @@ impl OpenAiClient {
             "model": model,
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 16384,
             "tools": tools
         });
         if let Some(effort) = &self.reasoning_effort {
