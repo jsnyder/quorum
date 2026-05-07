@@ -1060,7 +1060,7 @@ impl OpenAiClient {
     }
 
     pub(crate) fn system_prompt() -> &'static str {
-        // Stable system prompt (~1000 tokens). Function-by-function review
+        // Stable system prompt (~1100 tokens). Function-by-function review
         // framing for maximum recall — categories are non-exhaustive
         // examples, severity rubric is concise. Kept >1024 tokens so
         // OpenAI/LiteLLM prompt caching hits on repeat invocations. Do not
@@ -2911,11 +2911,14 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_exceeds_caching_threshold() {
+    fn system_prompt_length_regression() {
+        // Guard against accidentally shrinking below the ~1024-token prompt
+        // caching threshold. Char length is a rough proxy (4:1 ratio); the
+        // real gate is token count, but we don't have a tokenizer in tests.
         let prompt = OpenAiClient::system_prompt();
         assert!(
             prompt.len() >= 4096,
-            "system prompt must be >=4096 chars to trigger prompt caching (~1024 tokens). \
+            "system prompt must be >=4096 chars (~1024 tokens) for prompt caching. \
              Current length: {} chars",
             prompt.len()
         );
