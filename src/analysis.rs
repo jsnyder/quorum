@@ -67,6 +67,7 @@ pub fn analyze_complexity(
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
         }
@@ -249,6 +250,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+        model_agreement: None,
         });
     }
 
@@ -284,6 +286,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
     }
@@ -322,6 +325,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
         }
@@ -351,6 +355,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -375,6 +380,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
         }
@@ -413,6 +419,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                     } else if arg_text.contains(".format(") {
                         findings.push(Finding {
@@ -436,6 +443,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                     }
                 }
@@ -479,6 +487,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                 }
             }
@@ -539,6 +548,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                     });
             }
         }
@@ -615,6 +625,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
             }
         }
@@ -652,6 +663,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                 }
             }
@@ -707,6 +719,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
         }
@@ -740,6 +753,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
         }
     }
@@ -775,6 +789,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
         }
     }
@@ -1139,6 +1154,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                 } else {
                     seen_keys.push((key_text, key_line));
@@ -1176,6 +1192,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
 
@@ -1202,6 +1219,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
 
@@ -1237,6 +1255,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                     });
                 }
             }
@@ -1275,6 +1294,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                                model_agreement: None,
                                 });
                     }
                 }
@@ -1317,6 +1337,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                     }
                 }
@@ -1352,6 +1373,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                     }
                 }
@@ -1421,6 +1443,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                                        model_agreement: None,
                                         });
                             }
 
@@ -1447,6 +1470,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                                        model_agreement: None,
                                         });
                             }
                         }
@@ -1492,6 +1516,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
         }
@@ -1540,6 +1565,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     cited_lines: None,
                                     grounding_status: None,
                                     grounding_confidence: None,
+                                    model_agreement: None,
                                 });
                             }
                         }
@@ -1572,6 +1598,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
         }
@@ -1606,6 +1633,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
         }
@@ -1637,6 +1665,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
             }
         }
@@ -1670,6 +1699,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
             }
         }
@@ -1710,6 +1740,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                     });
                 }
             }
@@ -1770,6 +1801,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                 });
             }
         }
@@ -1808,6 +1840,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
 
@@ -1834,6 +1867,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
         }
 
@@ -1860,6 +1894,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
         }
     }
@@ -1915,6 +1950,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                 }
             }
@@ -1953,6 +1989,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
         }
     }
@@ -1983,6 +2020,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
     }
@@ -2020,6 +2058,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
     }
@@ -2068,6 +2107,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                 break;
             }
@@ -2111,6 +2151,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
             }
         }
@@ -2139,6 +2180,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+        model_agreement: None,
         });
     }
 }
@@ -2171,6 +2213,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 cited_lines: None,
                     grounding_status: None,
                 grounding_confidence: None,
+            model_agreement: None,
             });
     }
 
@@ -2212,6 +2255,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
     }
@@ -2244,6 +2288,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
 
@@ -2275,6 +2320,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             cited_lines: None,
                             grounding_status: None,
                             grounding_confidence: None,
+                            model_agreement: None,
                         });
                         break;
                     }
@@ -2316,6 +2362,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         cited_lines: None,
                         grounding_status: None,
                         grounding_confidence: None,
+                        model_agreement: None,
                     });
                     break;
                 }
@@ -2366,6 +2413,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                 }
             }
@@ -2402,6 +2450,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
         }
@@ -2449,6 +2498,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                                 cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                            model_agreement: None,
                             });
                             break;
                         }
@@ -2485,6 +2535,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                model_agreement: None,
                 });
             }
         }
@@ -2590,6 +2641,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                                model_agreement: None,
                                 });
             }
         }
@@ -2632,6 +2684,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                     cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                                model_agreement: None,
                                 });
                     }
                 }
@@ -2702,6 +2755,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                         cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                    model_agreement: None,
                     });
         }
     }
@@ -2797,6 +2851,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+        model_agreement: None,
         });
     }
 
@@ -2893,6 +2948,7 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             });
         }
     }
@@ -2994,6 +3050,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+                        model_agreement: None,
                         });
                     }
                 }
@@ -3030,6 +3087,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         });
     }
 
@@ -3056,6 +3114,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             cited_lines: None,
                     grounding_status: None,
                     grounding_confidence: None,
+        model_agreement: None,
         });
     }
 
@@ -3085,6 +3144,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         });
     }
     if entrypoint_count > 1 {
@@ -3112,6 +3172,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         });
     }
 

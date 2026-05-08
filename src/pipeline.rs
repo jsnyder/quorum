@@ -752,7 +752,11 @@ pub async fn review_file(
     let merge_t0 = std::time::Instant::now();
     let merged = {
         let _span = tracing::info_span!("phase.merge", file = %file_str).entered();
-        let result = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
+        let result = merge::merge_findings(
+            all_sources,
+            pipeline_config.similarity_threshold,
+            pipeline_config.models.len(),
+        );
         tracing::info!(
             phase = "merge",
             duration_ms = merge_t0.elapsed().as_millis() as u64,
@@ -1169,7 +1173,11 @@ pub async fn review_file_llm_only(
         }
     }
 
-    let merged = merge::merge_findings(all_sources, pipeline_config.similarity_threshold);
+    let merged = merge::merge_findings(
+        all_sources,
+        pipeline_config.similarity_threshold,
+        pipeline_config.models.len(),
+    );
 
     // Grounding: verify LLM-cited symbols exist in source (skipped for prose reviews)
     let merged = if pipeline_config.mode.is_prose() {
