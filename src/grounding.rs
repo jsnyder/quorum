@@ -1,4 +1,4 @@
-use crate::finding::{Finding, GroundingStatus, Severity, Source};
+use crate::finding::{Finding, GroundingStatus, Source};
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -93,18 +93,7 @@ pub fn extract_identifiers_from_finding_text<'a>(
 #[derive(Debug)]
 pub struct GroundingResult {
     pub status: GroundingStatus,
-    pub severity_change: Option<Severity>,
-}
-
-/// Step severity down one level. Returns `None` for `Info` (cannot demote further).
-fn demote_severity(s: &Severity) -> Option<Severity> {
-    match s {
-        Severity::Critical => Some(Severity::High),
-        Severity::High => Some(Severity::Medium),
-        Severity::Medium => Some(Severity::Low),
-        Severity::Low => Some(Severity::Info),
-        Severity::Info => None,
-    }
+    pub confidence: Option<f32>,
 }
 
 fn is_word_char(c: char) -> bool {
@@ -152,13 +141,12 @@ fn verify_grounding_with_lines(
     if !matches!(finding.source, Source::Llm(_)) {
         return GroundingResult {
             status: GroundingStatus::NotChecked,
-            severity_change: None,
+            confidence: None,
         };
     }
 
     let line_count = source_lines.len() as u32;
 
-    // Check line range validity (1-indexed, ordered).
     if finding.line_start == 0
         || finding.line_end == 0
         || finding.line_start > finding.line_end
@@ -167,25 +155,22 @@ fn verify_grounding_with_lines(
     {
         return GroundingResult {
             status: GroundingStatus::LineOutOfRange,
-            severity_change: demote_severity(&finding.severity),
+            confidence: Some(0.1),
         };
     }
 
-    // Extract identifiers from title (fallback to description).
     let identifiers = extract_identifiers_from_finding_text(&finding.title, &finding.description);
     if identifiers.is_empty() {
         return GroundingResult {
             status: GroundingStatus::NotChecked,
-            severity_change: None,
+            confidence: None,
         };
     }
 
-    // Build the +/- 2 line window (1-indexed to 0-indexed).
-    let start = (finding.line_start as usize).saturating_sub(3); // -1 for 0-index, -2 for window
+    let start = (finding.line_start as usize).saturating_sub(3);
     let end = ((finding.line_end as usize) + 2).min(source_lines.len());
     let window: String = source_lines[start..end].join("\n");
 
-    // Check all identifiers: first in source window, then in hydration context.
     let all_found = identifiers
         .iter()
         .all(|id| contains_symbol(&window, id) || contains_symbol(hydration_text, id));
@@ -193,12 +178,12 @@ fn verify_grounding_with_lines(
     if all_found {
         GroundingResult {
             status: GroundingStatus::Verified,
-            severity_change: None,
+            confidence: Some(1.0),
         }
     } else {
         GroundingResult {
             status: GroundingStatus::SymbolNotFound,
-            severity_change: demote_severity(&finding.severity),
+            confidence: Some(0.3),
         }
     }
 }
@@ -226,9 +211,9 @@ pub fn count_grounding_outcomes(findings: &[Finding]) -> GroundingCounters {
     c
 }
 
-/// Apply grounding verification to a batch of findings, mutating severity
-/// in place for ungrounded LLM findings. When `disabled` is true, returns
-/// findings unchanged.
+/// Apply grounding verification to a batch of findings, setting
+/// `grounding_status` and `grounding_confidence` on each LLM finding.
+/// When `disabled` is true, returns findings unchanged.
 pub fn apply_grounding(
     mut findings: Vec<Finding>,
     source: &str,
@@ -245,9 +230,7 @@ pub fn apply_grounding(
         }
         let result = verify_grounding_with_lines(finding, &source_lines, hydration_text);
         finding.grounding_status = Some(result.status);
-        if let Some(new_severity) = result.severity_change {
-            finding.severity = new_severity;
-        }
+        finding.grounding_confidence = result.confidence;
     }
     findings
 }
@@ -354,7 +337,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::Verified);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, Some(1.0));
     }
 
     #[test]
@@ -367,7 +350,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::SymbolNotFound);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.3));
     }
 
     #[test]
@@ -380,7 +363,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::LineOutOfRange);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.1));
     }
 
     #[test]
@@ -393,7 +376,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::NotChecked);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, None);
     }
 
     #[test]
@@ -407,44 +390,33 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::NotChecked);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, None);
     }
 
     #[test]
-    fn grounding_demotion_steps_down_one_level() {
-        for (input, expected) in [
-            (Severity::Critical, Severity::High),
-            (Severity::High, Severity::Medium),
-            (Severity::Medium, Severity::Low),
-            (Severity::Low, Severity::Info),
+    fn grounding_confidence_consistent_across_severities() {
+        for severity in [
+            Severity::Critical,
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+            Severity::Info,
         ] {
             let f = FindingBuilder::new()
                 .title("Function `nonexistent_func` has a bug")
                 .source(Source::Llm("gpt-5.4".into()))
                 .lines(3, 9)
-                .severity(input.clone())
+                .severity(severity.clone())
                 .build();
             let result = verify_grounding(&f, sample_source());
+            assert_eq!(result.status, GroundingStatus::SymbolNotFound);
             assert_eq!(
-                result.severity_change,
-                Some(expected),
-                "failed for {:?}",
-                input
+                result.confidence,
+                Some(0.3),
+                "confidence should be 0.3 for SymbolNotFound regardless of severity {:?}",
+                severity
             );
         }
-    }
-
-    #[test]
-    fn grounding_info_cannot_demote_further() {
-        let f = FindingBuilder::new()
-            .title("Function `nonexistent_func` has a bug")
-            .source(Source::Llm("gpt-5.4".into()))
-            .lines(3, 9)
-            .severity(Severity::Info)
-            .build();
-        let result = verify_grounding(&f, sample_source());
-        assert_eq!(result.status, GroundingStatus::SymbolNotFound);
-        assert_eq!(result.severity_change, None);
     }
 
     #[test]
@@ -486,7 +458,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::SymbolNotFound);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.3));
     }
 
     #[test]
@@ -501,7 +473,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::Verified);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, Some(1.0));
     }
 
     #[test]
@@ -516,7 +488,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, source);
         assert_eq!(result.status, GroundingStatus::Verified);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, Some(1.0));
     }
 
     #[test]
@@ -529,7 +501,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::SymbolNotFound);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.3));
     }
 
     #[test]
@@ -542,13 +514,13 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::NotChecked);
-        assert_eq!(result.severity_change, None);
+        assert_eq!(result.confidence, None);
     }
 
     // --- apply_grounding tests ---
 
     #[test]
-    fn apply_grounding_pass_sets_status_and_demotes() {
+    fn apply_grounding_sets_status_and_confidence() {
         let source = "fn parse_unified_diff() {}\nfn other() {}\n";
         let findings = vec![
             FindingBuilder::new()
@@ -572,13 +544,16 @@ mod tests {
         ];
         let result = apply_grounding(findings, source, false, "");
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
+        assert_eq!(result[0].grounding_confidence, Some(1.0));
         assert_eq!(result[0].severity, Severity::High);
         assert_eq!(
             result[1].grounding_status,
             Some(GroundingStatus::SymbolNotFound)
         );
-        assert_eq!(result[1].severity, Severity::Medium); // demoted
+        assert_eq!(result[1].grounding_confidence, Some(0.3));
+        assert_eq!(result[1].severity, Severity::High); // severity unchanged
         assert!(result[2].grounding_status.is_none()); // LocalAst untouched
+        assert!(result[2].grounding_confidence.is_none());
         assert_eq!(result[2].severity, Severity::Medium);
     }
 
@@ -674,7 +649,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::LineOutOfRange);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.1));
     }
 
     #[test]
@@ -687,7 +662,7 @@ mod tests {
             .build();
         let result = verify_grounding(&f, sample_source());
         assert_eq!(result.status, GroundingStatus::LineOutOfRange);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.1));
     }
 
     #[test]
@@ -707,8 +682,8 @@ mod tests {
             "title has no backticked IDs; description fallback should not cause SymbolNotFound"
         );
         assert!(
-            result.severity_change.is_none(),
-            "severity should not change"
+            result.confidence.is_none(),
+            "confidence should be None for NotChecked"
         );
     }
 
@@ -725,11 +700,11 @@ mod tests {
         let source_lines: Vec<&str> = source.lines().collect();
         let result = verify_grounding_with_lines(&f, &source_lines, hydration);
         assert_eq!(result.status, GroundingStatus::Verified);
-        assert!(result.severity_change.is_none());
+        assert_eq!(result.confidence, Some(1.0));
     }
 
     #[test]
-    fn symbol_missing_from_both_source_and_hydration_demotes() {
+    fn symbol_missing_from_both_source_and_hydration_not_found() {
         let source = "fn foo() {}\n";
         let hydration = "fn unrelated_fn(x: i32) -> bool";
         let f = FindingBuilder::new()
@@ -741,7 +716,7 @@ mod tests {
         let source_lines: Vec<&str> = source.lines().collect();
         let result = verify_grounding_with_lines(&f, &source_lines, hydration);
         assert_eq!(result.status, GroundingStatus::SymbolNotFound);
-        assert_eq!(result.severity_change, Some(Severity::Medium));
+        assert_eq!(result.confidence, Some(0.3));
     }
 
     #[test]
@@ -756,6 +731,6 @@ mod tests {
             .build()];
         let result = apply_grounding(findings, source, false, hydration);
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
-        assert_eq!(result[0].severity, Severity::High);
+        assert_eq!(result[0].grounding_confidence, Some(1.0));
     }
 }

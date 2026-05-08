@@ -293,6 +293,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     confidence: None,
                     cited_lines: None,
                     grounding_status: None,
+                    grounding_confidence: None,
                 });
             }
         }

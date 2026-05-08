@@ -106,6 +106,8 @@ pub struct Finding {
     pub cited_lines: Option<(u32, u32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grounding_status: Option<GroundingStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grounding_confidence: Option<f32>,
 }
 
 impl Finding {
@@ -165,6 +167,7 @@ impl FindingBuilder {
                 confidence: None,
                 cited_lines: None,
                 grounding_status: None,
+                grounding_confidence: None,
             },
         }
     }
@@ -257,6 +260,11 @@ impl FindingBuilder {
         self
     }
 
+    pub fn grounding_confidence(mut self, c: f32) -> Self {
+        self.inner.grounding_confidence = Some(c);
+        self
+    }
+
     pub fn precedent(mut self, p: &str) -> Self {
         self.inner.similar_precedent.push(p.into());
         self
@@ -344,6 +352,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -378,6 +387,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -405,6 +415,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -434,6 +445,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         assert!(f.is_valid());
     }
@@ -459,6 +471,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         assert!(f.is_valid());
     }
@@ -484,6 +497,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         assert!(!f.is_valid());
     }
@@ -509,6 +523,7 @@ mod tests {
             confidence: None,
             cited_lines: None,
             grounding_status: None,
+            grounding_confidence: None,
         };
         assert!(!f.is_valid());
     }

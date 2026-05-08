@@ -22,6 +22,7 @@ fn finding_with_new_fields_roundtrips() {
         confidence: Some(0.92),
         cited_lines: Some((10, 12)),
         grounding_status: None,
+        grounding_confidence: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -73,12 +74,14 @@ fn new_fields_omitted_from_json_when_none() {
         confidence: None,
         cited_lines: None,
         grounding_status: None,
+        grounding_confidence: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
     assert!(!json.contains("reasoning"));
     assert!(!json.contains("confidence"));
     assert!(!json.contains("cited_lines"));
+    assert!(!json.contains("grounding_confidence"));
 }
 
 #[test]
@@ -102,6 +105,7 @@ fn category_serializes_as_kebab_case_in_finding() {
         confidence: None,
         cited_lines: None,
         grounding_status: None,
+        grounding_confidence: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
