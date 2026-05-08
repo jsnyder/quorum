@@ -101,6 +101,8 @@ pub struct Finding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_lines: Option<(u32, u32)>,
@@ -113,6 +115,22 @@ pub struct Finding {
 impl Finding {
     pub fn is_valid(&self) -> bool {
         self.line_start >= 1 && self.line_start <= self.line_end
+    }
+
+    pub fn compute_confidence(&mut self) {
+        let base = match &self.source {
+            Source::LocalAst => 0.95,
+            Source::Linter(_) => 0.90,
+            Source::Llm(_) => self.grounding_confidence.unwrap_or(0.5),
+        };
+        let cal_factor = match self.calibrator_action {
+            Some(CalibratorAction::Confirmed) => 1.1,
+            Some(CalibratorAction::Disputed) => 0.6,
+            Some(CalibratorAction::Adjusted) => 0.85,
+            Some(CalibratorAction::Added) => 0.7,
+            None => 1.0,
+        };
+        self.confidence = Some((base * cal_factor).clamp(0.0, 1.0));
     }
 
     pub fn severity_label(&self) -> &'static str {
@@ -164,6 +182,7 @@ impl FindingBuilder {
                 suggested_fix: None,
                 based_on_excerpt: None,
                 reasoning: None,
+                llm_confidence: None,
                 confidence: None,
                 cited_lines: None,
                 grounding_status: None,
@@ -206,6 +225,11 @@ impl FindingBuilder {
 
     pub fn reasoning(mut self, r: &str) -> Self {
         self.inner.reasoning = Some(r.into());
+        self
+    }
+
+    pub fn llm_confidence(mut self, c: f32) -> Self {
+        self.inner.llm_confidence = Some(c);
         self
     }
 
@@ -349,6 +373,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -384,6 +409,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -412,6 +438,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -442,6 +469,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -468,6 +496,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -494,6 +523,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -520,6 +550,7 @@ mod tests {
             suggested_fix: None,
             based_on_excerpt: None,
             reasoning: None,
+            llm_confidence: None,
             confidence: None,
             cited_lines: None,
             grounding_status: None,
@@ -700,5 +731,84 @@ mod tests {
     fn collect_finding_ids_empty_input_yields_empty_vec() {
         let ids = collect_finding_ids(&[]);
         assert!(ids.is_empty());
+    }
+
+    // -- compute_confidence --
+
+    #[test]
+    fn confidence_local_ast_is_high() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.95));
+    }
+
+    #[test]
+    fn confidence_linter_is_high() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Linter("clippy".into()))
+            .build();
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.90));
+    }
+
+    #[test]
+    fn confidence_llm_verified_grounding() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(1.0);
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(1.0));
+    }
+
+    #[test]
+    fn confidence_llm_symbol_not_found() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(0.3);
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.3));
+    }
+
+    #[test]
+    fn confidence_llm_no_grounding_uses_default() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.5));
+    }
+
+    #[test]
+    fn confidence_calibrator_confirmed_boosts() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .calibrator_action(CalibratorAction::Confirmed)
+            .build();
+        f.grounding_confidence = Some(0.5);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.55).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_calibrator_disputed_penalizes() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .calibrator_action(CalibratorAction::Disputed)
+            .build();
+        f.grounding_confidence = Some(1.0);
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.6));
+    }
+
+    #[test]
+    fn confidence_clamped_to_one() {
+        let mut f = FindingBuilder::new()
+            .source(Source::LocalAst)
+            .calibrator_action(CalibratorAction::Confirmed)
+            .build();
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(1.0));
     }
 }

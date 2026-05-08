@@ -723,12 +723,14 @@ mod tests {
     fn apply_grounding_with_hydration_text_verifies() {
         let source = "fn foo() {}\n";
         let hydration = "fn remote_callee(x: i32) -> bool";
-        let findings = vec![FindingBuilder::new()
-            .title("Function `remote_callee` has unchecked return")
-            .source(Source::Llm("gpt-5.4".into()))
-            .lines(1, 1)
-            .severity(Severity::High)
-            .build()];
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Function `remote_callee` has unchecked return")
+                .source(Source::Llm("gpt-5.4".into()))
+                .lines(1, 1)
+                .severity(Severity::High)
+                .build(),
+        ];
         let result = apply_grounding(findings, source, false, hydration);
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
         assert_eq!(result[0].grounding_confidence, Some(1.0));

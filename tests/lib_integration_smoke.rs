@@ -35,6 +35,7 @@ fn lib_exports_are_reachable_from_integration_tests() {
         suggested_fix: None,
         based_on_excerpt: None,
         reasoning: None,
+        llm_confidence: None,
         confidence: None,
         cited_lines: None,
         grounding_status: None,
