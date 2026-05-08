@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn body_vs_definition_mismatch_verified_elsewhere() {
+    fn body_vs_definition_mismatch_verified_at_callsite() {
         let source = "fn hydrate(ctx: &Context) -> Result<()> {\n\
                       // function definition at line 1\n\
                       }\n\
