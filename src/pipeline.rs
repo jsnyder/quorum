@@ -480,28 +480,26 @@ pub async fn review_file(
             let redacted_ctx = if pipeline_config.mode.is_prose() {
                 crate::hydration::HydrationContext::default()
             } else {
-                let changed_lines: Vec<(u32, u32)> =
+                let (changed_lines, path_resolved) =
                     if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-                        // Hoist canonicalization out of the filter loop: review_path and
-                        // repo_root are loop-invariant, only diff_path varies. Without
-                        // this, large diffs paid 2 canonicalize syscalls per range entry.
                         let repo_root = find_project_root(file_path);
                         let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-                        diff_ranges
+                        let lines: Vec<(u32, u32)> = diff_ranges
                             .iter()
                             .filter(|(path, _)| resolver.matches(path))
                             .flat_map(|(_, ranges)| ranges.clone())
-                            .collect()
+                            .collect();
+                        (lines, resolver.resolved())
                     } else {
-                        Vec::new()
+                        (Vec::new(), true)
                     };
                 let hydration_ranges = if changed_lines.is_empty() {
-                    if pipeline_config.diff_ranges.is_some() {
+                    if pipeline_config.diff_ranges.is_some() && !path_resolved {
                         tracing::warn!(
                             file = %file_str,
-                            "diff-file provided but no ranges matched this file; \
-                             falling back to full-file hydration \
-                             (is the file inside the repository?)"
+                            "diff-file provided but file path could not be \
+                             resolved relative to the repository root; \
+                             falling back to full-file hydration"
                         );
                     }
                     let total_lines = source.lines().count() as u32;
@@ -846,17 +844,13 @@ pub async fn review_file(
 }
 
 fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for s in &ctx.callee_signatures {
-        parts.push(s);
-    }
-    for s in &ctx.type_definitions {
-        parts.push(s);
-    }
-    for s in &ctx.callers {
-        parts.push(s);
-    }
-    parts.join("\n")
+    ctx.callee_signatures
+        .iter()
+        .chain(&ctx.type_definitions)
+        .chain(&ctx.callers)
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Best-effort extraction of an identifier from a hydrated callee signature
@@ -910,6 +904,10 @@ impl ReviewPathResolver {
             .ok()
             .map(|p| p.to_path_buf());
         Self { review_rel }
+    }
+
+    pub(crate) fn resolved(&self) -> bool {
+        self.review_rel.is_some()
     }
 
     /// True iff `diff_path` (always repo-relative, as produced by the diff
