@@ -40,6 +40,7 @@ fn lib_exports_are_reachable_from_integration_tests() {
         cited_lines: None,
         grounding_status: None,
         grounding_confidence: None,
+        model_agreement: None,
     };
 
     // calibrate(...) must be callable with no precedents — exercises the

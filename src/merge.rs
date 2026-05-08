@@ -1,6 +1,10 @@
-use crate::finding::Finding;
+use crate::finding::{Finding, Source};
 
-pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> Vec<Finding> {
+pub fn merge_findings(
+    groups: Vec<Vec<Finding>>,
+    similarity_threshold: f64,
+    num_models: usize,
+) -> Vec<Finding> {
     let all: Vec<Finding> = groups.into_iter().flatten().collect();
     if all.is_empty() {
         return vec![];
@@ -8,6 +12,7 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
 
     let mut merged: Vec<Finding> = Vec::new();
     let mut occurrence_count: Vec<usize> = Vec::new();
+    let mut llm_model_names: Vec<std::collections::HashSet<String>> = Vec::new();
 
     for finding in all {
         let mut found_match = false;
@@ -23,24 +28,39 @@ pub fn merge_findings(groups: Vec<Vec<Finding>>, similarity_threshold: f64) -> V
                         existing.evidence.push(e.clone());
                     }
                 }
+                if let Source::Llm(ref model) = finding.source {
+                    llm_model_names[idx].insert(model.clone());
+                }
                 occurrence_count[idx] += 1;
                 found_match = true;
                 break;
             }
         }
         if !found_match {
+            let mut models = std::collections::HashSet::new();
+            if let Source::Llm(ref model) = finding.source {
+                models.insert(model.clone());
+            }
+            llm_model_names.push(models);
             merged.push(finding);
             occurrence_count.push(1);
         }
     }
 
-    // Annotate findings that absorbed duplicates so downstream output can
-    // show "N occurrences" instead of N separate entries.
     for (idx, count) in occurrence_count.iter().enumerate() {
         if *count > 1 {
             merged[idx]
                 .evidence
                 .push(format!("{} occurrences merged", count));
+        }
+    }
+
+    if num_models > 1 {
+        for (idx, finding) in merged.iter_mut().enumerate() {
+            let agreeing = llm_model_names[idx].len();
+            if agreeing > 0 {
+                finding.model_agreement = Some(agreeing as f32 / num_models as f32);
+            }
         }
     }
 
@@ -137,7 +157,7 @@ mod tests {
             .lines(42, 50)
             .source(Source::Llm("claude".into()))
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 2);
         assert_eq!(result.len(), 1);
     }
 
@@ -153,7 +173,7 @@ mod tests {
             .category("style".into())
             .lines(1, 1)
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
         assert_eq!(result.len(), 2);
     }
 
@@ -169,14 +189,14 @@ mod tests {
             .severity(Severity::Critical)
             .lines(42, 50)
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, Severity::Critical);
     }
 
     #[test]
     fn merge_empty_input() {
-        let result = merge_findings(vec![], 0.8);
+        let result = merge_findings(vec![], 0.8, 1);
         assert!(result.is_empty());
     }
 
@@ -184,7 +204,7 @@ mod tests {
     fn merge_single_source_passthrough() {
         let f1 = FindingBuilder::new().title("Bug 1").lines(10, 20).build();
         let f2 = FindingBuilder::new().title("Bug 2").lines(30, 40).build();
-        let result = merge_findings(vec![vec![f1, f2]], 0.8);
+        let result = merge_findings(vec![vec![f1, f2]], 0.8, 1);
         assert_eq!(result.len(), 2);
     }
 
@@ -200,7 +220,7 @@ mod tests {
             .category("security".into())
             .lines(45, 55)
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
         assert_eq!(result.len(), 1);
     }
 
@@ -221,7 +241,7 @@ mod tests {
             .category("error-handling".into())
             .lines(150, 150)
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2], vec![f3]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2], vec![f3]], 0.8, 1);
         assert_eq!(
             result.len(),
             1,
@@ -249,7 +269,7 @@ mod tests {
             .category("security".into())
             .lines(100, 100)
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
         assert_eq!(result.len(), 2);
     }
 
@@ -270,7 +290,7 @@ mod tests {
             .severity(Severity::Medium)
             .lines(20, 30)
             .build();
-        let result = merge_findings(vec![vec![f1, f2, f3]], 0.8);
+        let result = merge_findings(vec![vec![f1, f2, f3]], 0.8, 1);
         assert_eq!(result[0].severity, Severity::Critical);
         assert_eq!(result[1].severity, Severity::Medium);
         assert_eq!(result[2].severity, Severity::Info);
@@ -288,8 +308,8 @@ mod tests {
             .lines(10, 20)
             .severity(Severity::Medium)
             .build();
-        let first = merge_findings(vec![vec![f1.clone(), f2.clone()]], 0.8);
-        let second = merge_findings(vec![first], 0.8);
+        let first = merge_findings(vec![vec![f1.clone(), f2.clone()]], 0.8, 1);
+        let second = merge_findings(vec![first], 0.8, 1);
         assert_eq!(second.len(), 1);
     }
 
@@ -305,7 +325,7 @@ mod tests {
             .lines(42, 50)
             .evidence("pattern match")
             .build();
-        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8);
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
         assert_eq!(result.len(), 1);
         assert!(result[0].evidence.len() >= 2);
     }
@@ -333,5 +353,66 @@ mod tests {
             .lines(200, 200)
             .build();
         assert!(similarity(&f1, &f2) < 0.3);
+    }
+
+    // -- model agreement --
+
+    #[test]
+    fn ensemble_full_agreement_sets_model_agreement() {
+        let f1 = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .lines(42, 50)
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .lines(42, 50)
+            .source(Source::Llm("claude".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 2);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].model_agreement, Some(1.0));
+    }
+
+    #[test]
+    fn ensemble_partial_agreement() {
+        let f1 = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .lines(42, 50)
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("Unused import")
+            .category("style".into())
+            .lines(1, 1)
+            .source(Source::Llm("claude".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].model_agreement, Some(0.5));
+        assert_eq!(result[1].model_agreement, Some(0.5));
+    }
+
+    #[test]
+    fn single_model_no_agreement_field() {
+        let f1 = FindingBuilder::new()
+            .title("SQL injection")
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1]], 0.8, 1);
+        assert_eq!(result[0].model_agreement, None);
+    }
+
+    #[test]
+    fn ast_findings_no_agreement_in_ensemble() {
+        let f1 = FindingBuilder::new()
+            .title("Unwrap without context")
+            .source(Source::LocalAst)
+            .build();
+        let result = merge_findings(vec![vec![f1]], 0.8, 2);
+        assert_eq!(result[0].model_agreement, None);
     }
 }

@@ -155,6 +155,7 @@ impl LlmFinding {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         }
     }
 }

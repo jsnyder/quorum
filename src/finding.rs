@@ -110,6 +110,8 @@ pub struct Finding {
     pub grounding_status: Option<GroundingStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grounding_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_agreement: Option<f32>,
 }
 
 impl Finding {
@@ -130,7 +132,14 @@ impl Finding {
             Some(CalibratorAction::Added) => 0.7,
             None => 1.0,
         };
-        self.confidence = Some((base * cal_factor).clamp(0.0, 1.0));
+        let agreement_factor = match (&self.source, self.model_agreement) {
+            (Source::Llm(_), Some(a)) if a.is_finite() => {
+                let a = a.clamp(0.0, 1.0);
+                0.85 + 0.30 * a
+            }
+            _ => 1.0,
+        };
+        self.confidence = Some((base * cal_factor * agreement_factor).clamp(0.0, 1.0));
     }
 
     pub fn severity_label(&self) -> &'static str {
@@ -187,6 +196,7 @@ impl FindingBuilder {
                 cited_lines: None,
                 grounding_status: None,
                 grounding_confidence: None,
+                model_agreement: None,
             },
         }
     }
@@ -289,6 +299,11 @@ impl FindingBuilder {
         self
     }
 
+    pub fn model_agreement(mut self, a: f32) -> Self {
+        self.inner.model_agreement = Some(a);
+        self
+    }
+
     pub fn precedent(mut self, p: &str) -> Self {
         self.inner.similar_precedent.push(p.into());
         self
@@ -378,6 +393,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -414,6 +430,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -443,6 +460,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -474,6 +492,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         assert!(f.is_valid());
     }
@@ -501,6 +520,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         assert!(f.is_valid());
     }
@@ -528,6 +548,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         assert!(!f.is_valid());
     }
@@ -555,6 +576,7 @@ mod tests {
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
+            model_agreement: None,
         };
         assert!(!f.is_valid());
     }
@@ -810,5 +832,52 @@ mod tests {
             .build();
         f.compute_confidence();
         assert_eq!(f.confidence, Some(1.0));
+    }
+
+    #[test]
+    fn confidence_full_agreement_boosts() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .model_agreement(1.0)
+            .build();
+        f.grounding_confidence = Some(0.5);
+        f.compute_confidence();
+        // 0.5 * 1.0 * (0.85 + 0.30) = 0.575
+        assert!((f.confidence.unwrap() - 0.575).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_half_agreement_neutral() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .model_agreement(0.5)
+            .build();
+        f.grounding_confidence = Some(0.5);
+        f.compute_confidence();
+        // 0.5 * 1.0 * (0.85 + 0.15) = 0.5
+        assert!((f.confidence.unwrap() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_no_agreement_info_unchanged() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(0.5);
+        f.compute_confidence();
+        assert_eq!(f.confidence, Some(0.5));
+    }
+
+    #[test]
+    fn confidence_low_agreement_penalizes() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .model_agreement(0.33)
+            .build();
+        f.grounding_confidence = Some(1.0);
+        f.compute_confidence();
+        // 1.0 * 1.0 * (0.85 + 0.099) = 0.949
+        assert!(f.confidence.unwrap() < 1.0);
+        assert!(f.confidence.unwrap() > 0.9);
     }
 }
