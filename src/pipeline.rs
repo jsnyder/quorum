@@ -410,6 +410,8 @@ pub async fn review_file(
         None
     };
 
+    let mut hydration_text = String::new();
+
     // Source 1: Local AST analysis (skipped for prose reviews)
     let mut local_findings = Vec::new();
     if !pipeline_config.mode.is_prose() {
@@ -494,6 +496,14 @@ pub async fn review_file(
                         Vec::new()
                     };
                 let hydration_ranges = if changed_lines.is_empty() {
+                    if pipeline_config.diff_ranges.is_some() {
+                        tracing::warn!(
+                            file = %file_str,
+                            "diff-file provided but no ranges matched this file; \
+                             falling back to full-file hydration \
+                             (is the file inside the repository?)"
+                        );
+                    }
                     let total_lines = source.lines().count() as u32;
                     vec![(1, total_lines.max(1))]
                 } else {
@@ -670,6 +680,7 @@ pub async fn review_file(
                 }
             };
 
+            hydration_text = render_hydration_for_grounding(&redacted_ctx);
             let req = ReviewRequest {
                 file_path: file_str.clone(),
                 language: lang_name(lang).to_string(),
@@ -760,7 +771,8 @@ pub async fn review_file(
         let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let grounded =
+            grounding::apply_grounding(merged, source, grounding_disabled, &hydration_text);
         let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
@@ -831,6 +843,20 @@ pub async fn review_file(
         context_telemetry,
         enrichment_metrics,
     })
+}
+
+fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for s in &ctx.callee_signatures {
+        parts.push(s);
+    }
+    for s in &ctx.type_definitions {
+        parts.push(s);
+    }
+    for s in &ctx.callers {
+        parts.push(s);
+    }
+    parts.join("\n")
 }
 
 /// Best-effort extraction of an identifier from a hydrated callee signature
@@ -1149,7 +1175,8 @@ pub async fn review_file_llm_only(
         let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let grounded =
+            grounding::apply_grounding(merged, source, grounding_disabled, "");
         let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
