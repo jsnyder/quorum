@@ -290,6 +290,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     suggested_fix: None,
                     based_on_excerpt: None,
                     reasoning: None,
+                    llm_confidence: None,
                     confidence: None,
                     cited_lines: None,
                     grounding_status: None,

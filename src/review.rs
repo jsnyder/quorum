@@ -150,7 +150,8 @@ impl LlmFinding {
             suggested_fix: self.suggested_fix,
             based_on_excerpt: None,
             reasoning: self.reasoning,
-            confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
+            llm_confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
+            confidence: None,
             cited_lines: None,
             grounding_status: None,
             grounding_confidence: None,
@@ -1819,7 +1820,7 @@ mod tests {
             findings[0].reasoning.as_deref(),
             Some("The function lacks bounds checking")
         );
-        assert_eq!(findings[0].confidence, Some(0.85));
+        assert_eq!(findings[0].llm_confidence, Some(0.85));
     }
 
     #[test]
@@ -1827,21 +1828,21 @@ mod tests {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
         assert!(findings[0].reasoning.is_none());
-        assert!(findings[0].confidence.is_none());
+        assert!(findings[0].llm_confidence.is_none());
     }
 
     #[test]
     fn llm_finding_confidence_clamped_to_0_1() {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":1.5}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert_eq!(findings[0].confidence, Some(1.0));
+        assert_eq!(findings[0].llm_confidence, Some(1.0));
     }
 
     #[test]
     fn llm_finding_confidence_negative_clamped() {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":-0.5}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert_eq!(findings[0].confidence, Some(0.0));
+        assert_eq!(findings[0].llm_confidence, Some(0.0));
     }
 
     #[test]
@@ -1849,21 +1850,21 @@ mod tests {
         // NaN in JSON becomes null, which should parse as None
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":null}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert!(findings[0].confidence.is_none());
+        assert!(findings[0].llm_confidence.is_none());
     }
 
     #[test]
     fn llm_finding_confidence_array_discarded() {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":[0.5, 0.8]}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert!(findings[0].confidence.is_none());
+        assert!(findings[0].llm_confidence.is_none());
     }
 
     #[test]
     fn llm_finding_confidence_object_discarded() {
         let json = r#"[{"title":"Bug","description":"D","severity":"high","category":"security","line_start":1,"line_end":1,"confidence":{"value":0.5}}]"#;
         let findings = parse_llm_response(json, "gpt-5.4").unwrap();
-        assert!(findings[0].confidence.is_none());
+        assert!(findings[0].llm_confidence.is_none());
     }
 
     // -- Prose review mode prompt layout --

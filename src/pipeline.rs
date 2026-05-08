@@ -833,6 +833,11 @@ pub async fn review_file(
         (merged, 0)
     };
 
+    let mut final_findings = final_findings;
+    for f in &mut final_findings {
+        f.compute_confidence();
+    }
+
     Ok(FileReviewResult {
         file_path: file_str,
         findings: final_findings,
@@ -1234,6 +1239,11 @@ pub async fn review_file_llm_only(
     } else {
         (merged, 0)
     };
+
+    let mut final_findings = final_findings;
+    for f in &mut final_findings {
+        f.compute_confidence();
+    }
 
     Ok(FileReviewResult {
         file_path: file_str,
