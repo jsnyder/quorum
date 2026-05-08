@@ -132,9 +132,12 @@ impl Finding {
             Some(CalibratorAction::Added) => 0.7,
             None => 1.0,
         };
-        let agreement_factor = match self.model_agreement {
-            Some(a) => 0.85 + 0.30 * a,
-            None => 1.0,
+        let agreement_factor = match (&self.source, self.model_agreement) {
+            (Source::Llm(_), Some(a)) if a.is_finite() => {
+                let a = a.clamp(0.0, 1.0);
+                0.85 + 0.30 * a
+            }
+            _ => 1.0,
         };
         self.confidence = Some((base * cal_factor * agreement_factor).clamp(0.0, 1.0));
     }

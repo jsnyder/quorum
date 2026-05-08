@@ -57,9 +57,9 @@ pub fn merge_findings(
 
     if num_models > 1 {
         for (idx, finding) in merged.iter_mut().enumerate() {
-            if matches!(finding.source, Source::Llm(_)) {
-                let agreeing = llm_model_names[idx].len() as f32;
-                finding.model_agreement = Some(agreeing / num_models as f32);
+            let agreeing = llm_model_names[idx].len();
+            if agreeing > 0 {
+                finding.model_agreement = Some(agreeing as f32 / num_models as f32);
             }
         }
     }
