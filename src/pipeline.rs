@@ -779,6 +779,7 @@ pub async fn review_file(
         tracing::info!(
             phase = "grounding",
             verified = gc.verified,
+            verified_elsewhere = gc.verified_elsewhere,
             symbol_not_found = gc.symbol_not_found,
             line_out_of_range = gc.line_out_of_range,
             not_checked = gc.not_checked,
@@ -1191,6 +1192,7 @@ pub async fn review_file_llm_only(
         tracing::info!(
             phase = "grounding",
             verified = gc.verified,
+            verified_elsewhere = gc.verified_elsewhere,
             symbol_not_found = gc.symbol_not_found,
             line_out_of_range = gc.line_out_of_range,
             not_checked = gc.not_checked,

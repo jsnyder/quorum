@@ -166,6 +166,7 @@ fn cited_lines_tuple_roundtrips() {
 fn grounding_status_serde_roundtrip() {
     for status in [
         GroundingStatus::Verified,
+        GroundingStatus::VerifiedElsewhere,
         GroundingStatus::SymbolNotFound,
         GroundingStatus::LineOutOfRange,
         GroundingStatus::NotChecked,

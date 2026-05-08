@@ -171,14 +171,49 @@ fn verify_grounding_with_lines(
     let end = ((finding.line_end as usize) + 2).min(source_lines.len());
     let window: String = source_lines[start..end].join("\n");
 
-    let all_found = identifiers
+    let all_in_window = identifiers
         .iter()
         .all(|id| contains_symbol(&window, id) || contains_symbol(hydration_text, id));
 
-    if all_found {
-        GroundingResult {
+    if all_in_window {
+        return GroundingResult {
             status: GroundingStatus::Verified,
             confidence: Some(1.0),
+        };
+    }
+
+    let full_file: String = source_lines.join("\n");
+    let all_in_file = identifiers
+        .iter()
+        .all(|id| contains_symbol(&full_file, id) || contains_symbol(hydration_text, id));
+
+    if all_in_file {
+        for id in &identifiers {
+            if !contains_symbol(&window, id)
+                && !contains_symbol(hydration_text, id)
+                && let Some(actual_line) = source_lines
+                    .iter()
+                    .position(|line| contains_symbol(line, id))
+                    .map(|i| i + 1)
+            {
+                let cited_start = finding.line_start as usize;
+                let cited_end = finding.line_end as usize;
+                let distance = actual_line
+                    .saturating_sub(cited_end)
+                    .max(cited_start.saturating_sub(actual_line));
+                tracing::info!(
+                    symbol = id,
+                    cited_start = finding.line_start,
+                    cited_end = finding.line_end,
+                    actual_line = actual_line,
+                    distance = distance,
+                    "grounding: symbol verified elsewhere in file"
+                );
+            }
+        }
+        GroundingResult {
+            status: GroundingStatus::VerifiedElsewhere,
+            confidence: Some(0.7),
         }
     } else {
         GroundingResult {
@@ -192,6 +227,7 @@ fn verify_grounding_with_lines(
 #[derive(Debug, Default)]
 pub struct GroundingCounters {
     pub verified: u32,
+    pub verified_elsewhere: u32,
     pub symbol_not_found: u32,
     pub line_out_of_range: u32,
     pub not_checked: u32,
@@ -203,6 +239,7 @@ pub fn count_grounding_outcomes(findings: &[Finding]) -> GroundingCounters {
     for f in findings {
         match &f.grounding_status {
             Some(GroundingStatus::Verified) => c.verified += 1,
+            Some(GroundingStatus::VerifiedElsewhere) => c.verified_elsewhere += 1,
             Some(GroundingStatus::SymbolNotFound) => c.symbol_not_found += 1,
             Some(GroundingStatus::LineOutOfRange) => c.line_out_of_range += 1,
             Some(GroundingStatus::NotChecked) | None => c.not_checked += 1,
@@ -734,5 +771,102 @@ mod tests {
         let result = apply_grounding(findings, source, false, hydration);
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
         assert_eq!(result[0].grounding_confidence, Some(1.0));
+    }
+
+    // --- verified-elsewhere (tiered grounding) tests ---
+
+    #[test]
+    fn symbol_in_file_but_outside_window_returns_verified_elsewhere() {
+        let source = "fn target_func() {}\n\
+                      fn other() {}\n\
+                      fn other2() {}\n\
+                      fn other3() {}\n\
+                      fn other4() {}\n\
+                      fn other5() {}\n\
+                      fn other6() {}\n\
+                      fn other7() {}\n\
+                      fn other8() {}\n\
+                      fn other9() {}\n\
+                      fn buggy_code() { panic!() }\n";
+        let f = FindingBuilder::new()
+            .title("Function `target_func` has a bug")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(10, 11)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, source);
+        assert_eq!(result.status, GroundingStatus::VerifiedElsewhere);
+        assert_eq!(result.confidence, Some(0.7));
+    }
+
+    #[test]
+    fn symbol_truly_missing_returns_symbol_not_found() {
+        let source = "fn other() {}\nfn other2() {}\n";
+        let f = FindingBuilder::new()
+            .title("Function `hallucinated_func` has a bug")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 2)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, source);
+        assert_eq!(result.status, GroundingStatus::SymbolNotFound);
+        assert_eq!(result.confidence, Some(0.3));
+    }
+
+    #[test]
+    fn body_vs_definition_mismatch_verified_at_callsite() {
+        let source = "fn hydrate(ctx: &Context) -> Result<()> {\n\
+                      // function definition at line 1\n\
+                      }\n\
+                      \n\
+                      fn other1() {}\n\
+                      fn other2() {}\n\
+                      fn other3() {}\n\
+                      fn other4() {}\n\
+                      fn other5() {}\n\
+                      fn other6() {}\n\
+                      // bug is in the body usage at line 11\n\
+                      let result = hydrate(&bad_ctx);\n";
+        let f = FindingBuilder::new()
+            .title("Function `hydrate` called with invalid context")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(11, 12)
+            .severity(Severity::High)
+            .build();
+        let result = verify_grounding(&f, source);
+        assert_eq!(result.status, GroundingStatus::Verified);
+    }
+
+    #[test]
+    fn verified_elsewhere_counters_correct() {
+        let source = "fn target_func() {}\n\
+                      fn other() {}\n\
+                      fn other2() {}\n\
+                      fn other3() {}\n\
+                      fn other4() {}\n\
+                      fn other5() {}\n\
+                      fn other6() {}\n\
+                      fn other7() {}\n\
+                      fn other8() {}\n\
+                      fn other9() {}\n\
+                      fn buggy_code() { panic!() }\n";
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Function `target_func` has a bug")
+                .source(Source::Llm("gpt-5.4".into()))
+                .lines(10, 11)
+                .severity(Severity::High)
+                .build(),
+        ];
+        let result = apply_grounding(findings, source, false, "");
+        assert_eq!(
+            result[0].grounding_status,
+            Some(GroundingStatus::VerifiedElsewhere)
+        );
+        assert_eq!(result[0].grounding_confidence, Some(0.7));
+        let counters = count_grounding_outcomes(&result);
+        assert_eq!(counters.verified_elsewhere, 1);
+        assert_eq!(counters.verified, 0);
+        assert_eq!(counters.symbol_not_found, 0);
     }
 }

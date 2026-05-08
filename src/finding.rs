@@ -69,6 +69,7 @@ impl Source {
 #[serde(rename_all = "kebab-case")]
 pub enum GroundingStatus {
     Verified,
+    VerifiedElsewhere,
     SymbolNotFound,
     LineOutOfRange,
     NotChecked,
