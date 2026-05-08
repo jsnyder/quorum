@@ -737,9 +737,7 @@ mod tests {
 
     #[test]
     fn confidence_local_ast_is_high() {
-        let mut f = FindingBuilder::new()
-            .source(Source::LocalAst)
-            .build();
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
         f.compute_confidence();
         assert_eq!(f.confidence, Some(0.95));
     }

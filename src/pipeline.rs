@@ -1178,8 +1178,7 @@ pub async fn review_file_llm_only(
         let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let grounded =
-            grounding::apply_grounding(merged, source, grounding_disabled, "");
+        let grounded = grounding::apply_grounding(merged, source, grounding_disabled, "");
         let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
