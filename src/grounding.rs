@@ -130,10 +130,14 @@ fn contains_symbol(text: &str, id: &str) -> bool {
 /// the cited range accommodates off-by-one LLM citations.
 pub fn verify_grounding(finding: &Finding, source: &str) -> GroundingResult {
     let source_lines: Vec<&str> = source.lines().collect();
-    verify_grounding_with_lines(finding, &source_lines)
+    verify_grounding_with_lines(finding, &source_lines, "")
 }
 
-fn verify_grounding_with_lines(finding: &Finding, source_lines: &[&str]) -> GroundingResult {
+fn verify_grounding_with_lines(
+    finding: &Finding,
+    source_lines: &[&str],
+    hydration_text: &str,
+) -> GroundingResult {
     if !matches!(finding.source, Source::Llm(_)) {
         return GroundingResult {
             status: GroundingStatus::NotChecked,
@@ -167,7 +171,9 @@ fn verify_grounding_with_lines(finding: &Finding, source_lines: &[&str]) -> Grou
     let end = ((finding.line_end as usize) + 2).min(source_lines.len());
     let window: String = source_lines[start..end].join("\n");
 
-    let all_found = identifiers.iter().all(|id| contains_symbol(&window, id));
+    let all_found = identifiers
+        .iter()
+        .all(|id| contains_symbol(&window, id) || contains_symbol(hydration_text, id));
 
     if all_found {
         GroundingResult {
@@ -208,7 +214,12 @@ pub fn count_grounding_outcomes(findings: &[Finding]) -> GroundingCounters {
 /// Apply grounding verification to a batch of findings, setting
 /// `grounding_status` and `grounding_confidence` on each LLM finding.
 /// When `disabled` is true, returns findings unchanged.
-pub fn apply_grounding(mut findings: Vec<Finding>, source: &str, disabled: bool) -> Vec<Finding> {
+pub fn apply_grounding(
+    mut findings: Vec<Finding>,
+    source: &str,
+    disabled: bool,
+    hydration_text: &str,
+) -> Vec<Finding> {
     if disabled {
         return findings;
     }
@@ -217,7 +228,7 @@ pub fn apply_grounding(mut findings: Vec<Finding>, source: &str, disabled: bool)
         if !matches!(finding.source, Source::Llm(_)) {
             continue;
         }
-        let result = verify_grounding_with_lines(finding, &source_lines);
+        let result = verify_grounding_with_lines(finding, &source_lines, hydration_text);
         finding.grounding_status = Some(result.status);
         finding.grounding_confidence = result.confidence;
     }
@@ -531,7 +542,7 @@ mod tests {
                 .severity(Severity::Medium)
                 .build(),
         ];
-        let result = apply_grounding(findings, source, false);
+        let result = apply_grounding(findings, source, false, "");
         assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
         assert_eq!(result[0].grounding_confidence, Some(1.0));
         assert_eq!(result[0].severity, Severity::High);
@@ -579,7 +590,7 @@ mod tests {
                 .severity(Severity::High)
                 .build(),
         ];
-        let result = apply_grounding(findings, source, false);
+        let result = apply_grounding(findings, source, false, "");
         let counters = count_grounding_outcomes(&result);
         assert_eq!(counters.verified, 1);
         assert_eq!(counters.symbol_not_found, 1);
@@ -598,7 +609,7 @@ mod tests {
                 .severity(Severity::High)
                 .build(),
         ];
-        let result = apply_grounding(findings, source, true);
+        let result = apply_grounding(findings, source, true, "");
         assert!(result[0].grounding_status.is_none());
         assert_eq!(result[0].severity, Severity::High);
     }
@@ -621,7 +632,7 @@ mod tests {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             assert!(disabled, "Should be disabled for value: {val}");
-            let result = apply_grounding(findings.clone(), source, disabled);
+            let result = apply_grounding(findings.clone(), source, disabled, "");
             assert!(result[0].grounding_status.is_none());
             assert_eq!(result[0].severity, Severity::High);
         }
@@ -674,5 +685,52 @@ mod tests {
             result.confidence.is_none(),
             "confidence should be None for NotChecked"
         );
+    }
+
+    #[test]
+    fn symbol_in_hydration_text_verifies() {
+        let source = "fn foo() {}\n";
+        let hydration = "fn remote_callee(x: i32) -> bool";
+        let f = FindingBuilder::new()
+            .title("Function `remote_callee` has unchecked return")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 1)
+            .severity(Severity::High)
+            .build();
+        let source_lines: Vec<&str> = source.lines().collect();
+        let result = verify_grounding_with_lines(&f, &source_lines, hydration);
+        assert_eq!(result.status, GroundingStatus::Verified);
+        assert_eq!(result.confidence, Some(1.0));
+    }
+
+    #[test]
+    fn symbol_missing_from_both_source_and_hydration_not_found() {
+        let source = "fn foo() {}\n";
+        let hydration = "fn unrelated_fn(x: i32) -> bool";
+        let f = FindingBuilder::new()
+            .title("Function `remote_callee` has unchecked return")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 1)
+            .severity(Severity::High)
+            .build();
+        let source_lines: Vec<&str> = source.lines().collect();
+        let result = verify_grounding_with_lines(&f, &source_lines, hydration);
+        assert_eq!(result.status, GroundingStatus::SymbolNotFound);
+        assert_eq!(result.confidence, Some(0.3));
+    }
+
+    #[test]
+    fn apply_grounding_with_hydration_text_verifies() {
+        let source = "fn foo() {}\n";
+        let hydration = "fn remote_callee(x: i32) -> bool";
+        let findings = vec![FindingBuilder::new()
+            .title("Function `remote_callee` has unchecked return")
+            .source(Source::Llm("gpt-5.4".into()))
+            .lines(1, 1)
+            .severity(Severity::High)
+            .build()];
+        let result = apply_grounding(findings, source, false, hydration);
+        assert_eq!(result[0].grounding_status, Some(GroundingStatus::Verified));
+        assert_eq!(result[0].grounding_confidence, Some(1.0));
     }
 }

@@ -410,6 +410,8 @@ pub async fn review_file(
         None
     };
 
+    let mut hydration_text = String::new();
+
     // Source 1: Local AST analysis (skipped for prose reviews)
     let mut local_findings = Vec::new();
     if !pipeline_config.mode.is_prose() {
@@ -478,22 +480,28 @@ pub async fn review_file(
             let redacted_ctx = if pipeline_config.mode.is_prose() {
                 crate::hydration::HydrationContext::default()
             } else {
-                let changed_lines: Vec<(u32, u32)> =
+                let (changed_lines, path_resolved) =
                     if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-                        // Hoist canonicalization out of the filter loop: review_path and
-                        // repo_root are loop-invariant, only diff_path varies. Without
-                        // this, large diffs paid 2 canonicalize syscalls per range entry.
                         let repo_root = find_project_root(file_path);
                         let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-                        diff_ranges
+                        let lines: Vec<(u32, u32)> = diff_ranges
                             .iter()
                             .filter(|(path, _)| resolver.matches(path))
                             .flat_map(|(_, ranges)| ranges.clone())
-                            .collect()
+                            .collect();
+                        (lines, resolver.resolved())
                     } else {
-                        Vec::new()
+                        (Vec::new(), true)
                     };
                 let hydration_ranges = if changed_lines.is_empty() {
+                    if pipeline_config.diff_ranges.is_some() && !path_resolved {
+                        tracing::warn!(
+                            file = %file_str,
+                            "diff-file provided but file path could not be \
+                             resolved relative to the repository root; \
+                             falling back to full-file hydration"
+                        );
+                    }
                     let total_lines = source.lines().count() as u32;
                     vec![(1, total_lines.max(1))]
                 } else {
@@ -670,6 +678,7 @@ pub async fn review_file(
                 }
             };
 
+            hydration_text = render_hydration_for_grounding(&redacted_ctx);
             let req = ReviewRequest {
                 file_path: file_str.clone(),
                 language: lang_name(lang).to_string(),
@@ -760,7 +769,8 @@ pub async fn review_file(
         let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let grounded =
+            grounding::apply_grounding(merged, source, grounding_disabled, &hydration_text);
         let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
@@ -833,6 +843,16 @@ pub async fn review_file(
     })
 }
 
+fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> String {
+    ctx.callee_signatures
+        .iter()
+        .chain(&ctx.type_definitions)
+        .chain(&ctx.callers)
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Best-effort extraction of an identifier from a hydrated callee signature
 /// string like `fn verify_token(s: &str) -> bool` or
 /// `def verify_token(s: str) -> bool`. Returns `None` for shapes we don't
@@ -884,6 +904,10 @@ impl ReviewPathResolver {
             .ok()
             .map(|p| p.to_path_buf());
         Self { review_rel }
+    }
+
+    pub(crate) fn resolved(&self) -> bool {
+        self.review_rel.is_some()
     }
 
     /// True iff `diff_path` (always repo-relative, as produced by the diff
@@ -1149,7 +1173,8 @@ pub async fn review_file_llm_only(
         let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled);
+        let grounded =
+            grounding::apply_grounding(merged, source, grounding_disabled, "");
         let gc = grounding::count_grounding_outcomes(&grounded);
         tracing::info!(
             phase = "grounding",
