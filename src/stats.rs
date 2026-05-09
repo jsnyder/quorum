@@ -952,8 +952,7 @@ pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: boo
         .map(|r| r.file_path.len())
         .max()
         .unwrap_or(4)
-        .max(4)
-        .min(40);
+        .clamp(4, 40);
 
     out.push_str(&format!(
         "  {bold}{:<pw$}  {:>4}  {:>4}  {:>7}  {:>7}  {:>5}  {:<10}{reset}\n",

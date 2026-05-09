@@ -176,7 +176,7 @@ fn stats_by_file_json_returns_hotspots() {
     let quorum_dir = home.join(".quorum");
     std::fs::create_dir_all(&quorum_dir).unwrap();
 
-    let entries = vec![
+    let entries = [
         serde_json::json!({"file_path":"src/a.rs","finding_title":"buf overflow","finding_category":"security","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"real bug"}),
         serde_json::json!({"file_path":"src/a.rs","finding_title":"sql inject","finding_category":"security","verdict":"tp","timestamp":"2026-01-02T00:00:00Z","provenance":"human","reason":"another"}),
         serde_json::json!({"file_path":"src/b.rs","finding_title":"xss","finding_category":"security","verdict":"fp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"false alarm"}),
@@ -220,7 +220,7 @@ fn stats_by_file_top_limits_output() {
     let quorum_dir = home.join(".quorum");
     std::fs::create_dir_all(&quorum_dir).unwrap();
 
-    let entries = vec![
+    let entries = [
         serde_json::json!({"file_path":"src/a.rs","finding_title":"a","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
         serde_json::json!({"file_path":"src/b.rs","finding_title":"b","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
         serde_json::json!({"file_path":"src/c.rs","finding_title":"c","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
