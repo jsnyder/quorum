@@ -970,7 +970,12 @@ pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: boo
 
     for r in rows {
         let display_path = if r.file_path.len() > path_width {
-            format!("..{}", &r.file_path[r.file_path.len() - (path_width - 2)..])
+            let tail_len = path_width - 2;
+            let start = r.file_path.len().saturating_sub(tail_len);
+            let safe_start = (start..r.file_path.len())
+                .find(|&i| r.file_path.is_char_boundary(i))
+                .unwrap_or(r.file_path.len());
+            format!("..{}", &r.file_path[safe_start..])
         } else {
             r.file_path.clone()
         };

@@ -341,7 +341,7 @@ pub struct StatsOpts {
     pub by_file: bool,
 
     /// Limit output rows for --by-file (default: show all)
-    #[arg(long, requires = "by_file")]
+    #[arg(long, requires = "by_file", value_parser = parse_top_n)]
     pub top: Option<usize>,
 
     /// Hide dimensional highlights (top repos/callers/rolling) from the
@@ -365,6 +365,14 @@ pub struct StatsOpts {
 fn parse_rolling_n(s: &str) -> Result<usize, String> {
     match s.parse::<usize>() {
         Ok(0) => Err("--rolling must be >= 1 (0 would produce no output)".into()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(format!("invalid number '{}': {}", s, e)),
+    }
+}
+
+fn parse_top_n(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("--top must be >= 1 (0 would produce no output)".into()),
         Ok(n) => Ok(n),
         Err(e) => Err(format!("invalid number '{}': {}", s, e)),
     }
@@ -1596,5 +1604,12 @@ mod tests {
         use clap::Parser;
         let res = Args::try_parse_from(["quorum", "stats", "--top", "5"]);
         assert!(res.is_err(), "--top requires --by-file");
+    }
+
+    #[test]
+    fn stats_top_zero_is_rejected() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-file", "--top", "0"]);
+        assert!(res.is_err(), "--top 0 should be rejected");
     }
 }

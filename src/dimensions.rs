@@ -489,6 +489,7 @@ pub fn group_by_file(entries: &[FeedbackEntry], top_n: Option<usize>) -> Vec<Fil
             total: acc.tp + acc.fp + acc.wontfix + acc.partial,
             last_seen: acc.last_seen,
         })
+        .filter(|r| r.total > 0)
         .collect();
 
     rows.sort_by(|a, b| {
@@ -1169,5 +1170,23 @@ mod tests {
         assert_eq!(rows[1].file_path, "noisy.rs");
         assert_eq!(rows[1].tp_count, 0);
         assert_eq!(rows[1].fp_count, 2);
+    }
+
+    #[test]
+    fn group_by_file_context_misleading_only_file_excluded() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry(
+                "misleading.rs",
+                Verdict::ContextMisleading {
+                    blamed_chunk_ids: vec![],
+                },
+                t,
+            ),
+            fb_entry("real.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows.len(), 1, "context_misleading-only file should be excluded");
+        assert_eq!(rows[0].file_path, "real.rs");
     }
 }
