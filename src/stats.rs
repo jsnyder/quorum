@@ -1716,4 +1716,60 @@ mod tests {
         assert_eq!(parsed["feedback_count"], 50);
         assert_eq!(parsed["tp"], 32);
     }
+
+    fn hotspot(path: &str, tp: u32, fp: u32, wontfix: u32, partial: u32) -> FileHotspotRow {
+        use chrono::TimeZone;
+        FileHotspotRow {
+            file_path: path.to_string(),
+            tp_count: tp,
+            fp_count: fp,
+            wontfix_count: wontfix,
+            partial_count: partial,
+            total: tp + fp + wontfix + partial,
+            last_seen: chrono::Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn file_hotspots_human_contains_headers_and_values() {
+        let rows = vec![
+            hotspot("src/a.rs", 5, 2, 1, 0),
+            hotspot("src/b.rs", 3, 0, 0, 1),
+        ];
+        let style = Style::plain();
+        let out = format_file_hotspots(&rows, &style, false);
+        assert!(out.contains("by-file"), "header should mention by-file");
+        assert!(out.contains("TPs"), "header should have TPs column");
+        assert!(out.contains("FPs"), "header should have FPs column");
+        assert!(out.contains("src/a.rs"), "should contain file path");
+        assert!(out.contains("src/b.rs"), "should contain file path");
+        assert!(out.contains("2026-01-15"), "should contain last_seen date");
+    }
+
+    #[test]
+    fn file_hotspots_empty_shows_no_data_message() {
+        let style = Style::plain();
+        let out = format_file_hotspots(&[], &style, false);
+        assert!(out.contains("no file hotspot data"));
+    }
+
+    #[test]
+    fn file_hotspots_compact_single_line() {
+        let rows = vec![
+            hotspot("src/a.rs", 5, 2, 0, 0),
+            hotspot("src/b.rs", 3, 1, 0, 0),
+        ];
+        let out = format_file_hotspots_compact(&rows);
+        let body = out.trim_end_matches('\n');
+        assert!(!body.contains('\n'), "compact must be single-line");
+        assert!(body.starts_with("by-file:"));
+        assert!(body.contains("src/a.rs:tp=5"));
+        assert!(body.contains("src/b.rs:tp=3"));
+    }
+
+    #[test]
+    fn file_hotspots_compact_empty() {
+        let out = format_file_hotspots_compact(&[]);
+        assert_eq!(out, "by-file: (no data)");
+    }
 }
