@@ -5,6 +5,9 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
+use crate::feedback::{FeedbackEntry, Verdict};
 use crate::review_log::{ReviewRecord, SeverityCounts};
 
 pub const MIN_SAMPLE: u32 = 5;
@@ -430,11 +433,84 @@ pub fn rolling_window(
     out
 }
 
+/// Per-file hotspot row aggregated from feedback verdicts.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FileHotspotRow {
+    pub file_path: String,
+    pub tp_count: u32,
+    pub fp_count: u32,
+    pub wontfix_count: u32,
+    pub partial_count: u32,
+    pub total: u32,
+    pub last_seen: DateTime<Utc>,
+}
+
+pub fn group_by_file(entries: &[FeedbackEntry], top_n: Option<usize>) -> Vec<FileHotspotRow> {
+    struct Accum {
+        tp: u32,
+        fp: u32,
+        wontfix: u32,
+        partial: u32,
+        last_seen: DateTime<Utc>,
+    }
+
+    let mut buckets: HashMap<&str, Accum> = HashMap::new();
+    for e in entries {
+        if e.file_path.is_empty() {
+            continue;
+        }
+        let acc = buckets.entry(&e.file_path).or_insert(Accum {
+            tp: 0,
+            fp: 0,
+            wontfix: 0,
+            partial: 0,
+            last_seen: e.timestamp,
+        });
+        match &e.verdict {
+            Verdict::Tp => acc.tp += 1,
+            Verdict::Fp => acc.fp += 1,
+            Verdict::Wontfix => acc.wontfix += 1,
+            Verdict::Partial => acc.partial += 1,
+            Verdict::ContextMisleading { .. } => {}
+        }
+        if e.timestamp > acc.last_seen {
+            acc.last_seen = e.timestamp;
+        }
+    }
+
+    let mut rows: Vec<FileHotspotRow> = buckets
+        .into_iter()
+        .map(|(path, acc)| FileHotspotRow {
+            file_path: path.to_string(),
+            tp_count: acc.tp,
+            fp_count: acc.fp,
+            wontfix_count: acc.wontfix,
+            partial_count: acc.partial,
+            total: acc.tp + acc.fp + acc.wontfix + acc.partial,
+            last_seen: acc.last_seen,
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        b.tp_count
+            .cmp(&a.tp_count)
+            .then_with(|| b.total.cmp(&a.total))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+    });
+
+    if let Some(n) = top_n {
+        rows.truncate(n);
+    }
+
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feedback::{FeedbackEntry, Provenance, Verdict};
     use crate::review_log::{Flags, ReviewRecord, SeverityCounts};
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
 
     fn rec(repo: &str, caller: &str, files: u32, findings: u32) -> ReviewRecord {
         ReviewRecord {
@@ -967,5 +1043,131 @@ mod tests {
         assert_eq!(slices[0].n_reviews, 4);
         assert!((slices[0].avg_injected_chunk_count - 1.0).abs() < 1e-9);
         assert!((slices[0].avg_injected_tokens - 50.0).abs() < 1e-9);
+    }
+
+    // -- file hotspot tests --
+
+    fn fb_entry(file: &str, verdict: Verdict, ts: DateTime<Utc>) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: file.into(),
+            finding_title: "test finding".into(),
+            finding_category: "test".into(),
+            verdict,
+            reason: "test".into(),
+            model: None,
+            timestamp: ts,
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+        }
+    }
+
+    #[test]
+    fn group_by_file_empty_input() {
+        let rows = group_by_file(&[], None);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn group_by_file_aggregates_verdicts() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("src/main.rs", Verdict::Tp, t),
+            fb_entry("src/main.rs", Verdict::Tp, t),
+            fb_entry("src/main.rs", Verdict::Fp, t),
+            fb_entry("src/main.rs", Verdict::Wontfix, t),
+            fb_entry("src/main.rs", Verdict::Partial, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tp_count, 2);
+        assert_eq!(rows[0].fp_count, 1);
+        assert_eq!(rows[0].wontfix_count, 1);
+        assert_eq!(rows[0].partial_count, 1);
+        assert_eq!(rows[0].total, 5);
+    }
+
+    #[test]
+    fn group_by_file_sorted_by_tp_count_desc() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("low.rs", Verdict::Tp, t),
+            fb_entry("high.rs", Verdict::Tp, t),
+            fb_entry("high.rs", Verdict::Tp, t),
+            fb_entry("high.rs", Verdict::Tp, t),
+            fb_entry("mid.rs", Verdict::Tp, t),
+            fb_entry("mid.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows[0].file_path, "high.rs");
+        assert_eq!(rows[1].file_path, "mid.rs");
+        assert_eq!(rows[2].file_path, "low.rs");
+    }
+
+    #[test]
+    fn group_by_file_top_n_limits_output() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("a.rs", Verdict::Tp, t),
+            fb_entry("b.rs", Verdict::Tp, t),
+            fb_entry("c.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, Some(2));
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn group_by_file_top_n_none_returns_all() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("a.rs", Verdict::Tp, t),
+            fb_entry("b.rs", Verdict::Tp, t),
+            fb_entry("c.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn group_by_file_last_seen_is_max_timestamp() {
+        let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2026, 6, 15, 0, 0, 0).unwrap();
+        let t3 = Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("src/main.rs", Verdict::Tp, t1),
+            fb_entry("src/main.rs", Verdict::Fp, t2),
+            fb_entry("src/main.rs", Verdict::Tp, t3),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows[0].last_seen, t2);
+    }
+
+    #[test]
+    fn group_by_file_skips_empty_file_path() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("", Verdict::Tp, t),
+            fb_entry("real.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file_path, "real.rs");
+    }
+
+    #[test]
+    fn group_by_file_all_fp_file_still_appears() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let entries = vec![
+            fb_entry("noisy.rs", Verdict::Fp, t),
+            fb_entry("noisy.rs", Verdict::Fp, t),
+            fb_entry("good.rs", Verdict::Tp, t),
+        ];
+        let rows = group_by_file(&entries, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].file_path, "good.rs");
+        assert_eq!(rows[1].file_path, "noisy.rs");
+        assert_eq!(rows[1].tp_count, 0);
+        assert_eq!(rows[1].fp_count, 2);
     }
 }
