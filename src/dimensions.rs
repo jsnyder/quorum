@@ -1186,7 +1186,11 @@ mod tests {
             fb_entry("real.rs", Verdict::Tp, t),
         ];
         let rows = group_by_file(&entries, None);
-        assert_eq!(rows.len(), 1, "context_misleading-only file should be excluded");
+        assert_eq!(
+            rows.len(),
+            1,
+            "context_misleading-only file should be excluded"
+        );
         assert_eq!(rows[0].file_path, "real.rs");
     }
 }

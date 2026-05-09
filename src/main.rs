@@ -154,8 +154,7 @@ async fn main() -> anyhow::Result<()> {
             // Context dims compose with --rolling by restricting aggregation to
             // the chronologically-last N records.
             if opts.by_file {
-                let fb_store =
-                    feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+                let fb_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
                 let entries = match fb_store.load_all() {
                     Ok(e) => e,
                     Err(e) => {

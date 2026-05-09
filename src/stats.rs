@@ -1009,7 +1009,12 @@ pub fn format_file_hotspots_compact(rows: &[FileHotspotRow]) -> String {
     }
     let parts: Vec<String> = rows
         .iter()
-        .map(|r| format!("{}:tp={},fp={},total={}", r.file_path, r.tp_count, r.fp_count, r.total))
+        .map(|r| {
+            format!(
+                "{}:tp={},fp={},total={}",
+                r.file_path, r.tp_count, r.fp_count, r.total
+            )
+        })
         .collect();
     format!("by-file: {}", parts.join(" | "))
 }
