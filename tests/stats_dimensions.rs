@@ -169,6 +169,77 @@ fn stats_by_caller_compact_is_single_line_no_glyphs() {
 }
 
 #[test]
+fn stats_by_file_json_returns_hotspots() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let quorum_dir = home.join(".quorum");
+    std::fs::create_dir_all(&quorum_dir).unwrap();
+
+    let entries = vec![
+        serde_json::json!({"file_path":"src/a.rs","finding_title":"buf overflow","finding_category":"security","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"real bug"}),
+        serde_json::json!({"file_path":"src/a.rs","finding_title":"sql inject","finding_category":"security","verdict":"tp","timestamp":"2026-01-02T00:00:00Z","provenance":"human","reason":"another"}),
+        serde_json::json!({"file_path":"src/b.rs","finding_title":"xss","finding_category":"security","verdict":"fp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"false alarm"}),
+        serde_json::json!({"file_path":"src/a.rs","finding_title":"eval","finding_category":"security","verdict":"fp","timestamp":"2026-01-03T00:00:00Z","provenance":"human","reason":"nah"}),
+    ];
+    let content: String = entries.iter().map(|e| e.to_string() + "\n").collect();
+    std::fs::write(quorum_dir.join("feedback.jsonl"), content).unwrap();
+
+    let out = quorum(home)
+        .args(["stats", "--by-file", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stats --by-file --json should succeed, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout not JSON: {}\n{}",
+            e,
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["mode"], "by-file");
+    let rows = v["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "expected 2 file hotspots");
+    assert_eq!(rows[0]["file_path"], "src/a.rs", "src/a.rs has more TPs");
+    assert_eq!(rows[0]["tp_count"], 2);
+    assert_eq!(rows[0]["fp_count"], 1);
+    assert_eq!(rows[1]["file_path"], "src/b.rs");
+    assert_eq!(rows[1]["fp_count"], 1);
+}
+
+#[test]
+fn stats_by_file_top_limits_output() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let quorum_dir = home.join(".quorum");
+    std::fs::create_dir_all(&quorum_dir).unwrap();
+
+    let entries = vec![
+        serde_json::json!({"file_path":"src/a.rs","finding_title":"a","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
+        serde_json::json!({"file_path":"src/b.rs","finding_title":"b","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
+        serde_json::json!({"file_path":"src/c.rs","finding_title":"c","finding_category":"bug","verdict":"tp","timestamp":"2026-01-01T00:00:00Z","provenance":"human","reason":"r"}),
+    ];
+    let content: String = entries.iter().map(|e| e.to_string() + "\n").collect();
+    std::fs::write(quorum_dir.join("feedback.jsonl"), content).unwrap();
+
+    let out = quorum(home)
+        .args(["stats", "--by-file", "--top", "1", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "--top 1 should limit to 1 row");
+}
+
+#[test]
 fn stats_rolling_json_returns_windows() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();

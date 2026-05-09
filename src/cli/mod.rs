@@ -336,6 +336,14 @@ pub struct StatsOpts {
     #[arg(long)]
     pub misleading: bool,
 
+    /// Rank files by finding frequency from feedback (hotspot detection)
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading"])]
+    pub by_file: bool,
+
+    /// Limit output rows for --by-file (default: show all)
+    #[arg(long, requires = "by_file")]
+    pub top: Option<usize>,
+
     /// Hide dimensional highlights (top repos/callers/rolling) from the
     /// default dashboard. Restores the pre-highlights output shape.
     #[arg(long)]
@@ -1534,5 +1542,59 @@ mod tests {
             }
             _ => panic!("Expected Calibrate command"),
         }
+    }
+
+    #[test]
+    fn stats_by_file_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-file"]);
+        match args.command {
+            Command::Stats(opts) => {
+                assert!(opts.by_file);
+                assert_eq!(opts.top, None);
+            }
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_file_with_top_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-file", "--top", "10"]);
+        match args.command {
+            Command::Stats(opts) => {
+                assert!(opts.by_file);
+                assert_eq!(opts.top, Some(10));
+            }
+            _ => panic!("Expected Stats command"),
+        }
+    }
+
+    #[test]
+    fn stats_by_file_conflicts_with_by_repo() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-file", "--by-repo"]);
+        assert!(res.is_err(), "--by-file and --by-repo should conflict");
+    }
+
+    #[test]
+    fn stats_by_file_conflicts_with_by_caller() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-file", "--by-caller"]);
+        assert!(res.is_err(), "--by-file and --by-caller should conflict");
+    }
+
+    #[test]
+    fn stats_by_file_conflicts_with_rolling() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-file", "--rolling", "10"]);
+        assert!(res.is_err(), "--by-file and --rolling should conflict");
+    }
+
+    #[test]
+    fn stats_top_without_by_file_is_rejected() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--top", "5"]);
+        assert!(res.is_err(), "--top requires --by-file");
     }
 }

@@ -1,6 +1,6 @@
 /// Stats dashboard -- reads local data files and computes metrics.
 use crate::analytics;
-use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice};
+use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice, FileHotspotRow};
 use crate::feedback::FeedbackStore;
 use crate::formatting;
 use crate::glyphs;
@@ -932,6 +932,76 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
         }).collect::<Vec<_>>(),
     });
     Ok(serde_json::to_string_pretty(&json)?)
+}
+
+pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: bool) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: by-file{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no file hotspot data)\n");
+        return out;
+    }
+
+    let path_width = rows
+        .iter()
+        .map(|r| r.file_path.len())
+        .max()
+        .unwrap_or(4)
+        .max(4)
+        .min(40);
+
+    out.push_str(&format!(
+        "  {bold}{:<pw$}  {:>4}  {:>4}  {:>7}  {:>7}  {:>5}  {:<10}{reset}\n",
+        "File",
+        "TPs",
+        "FPs",
+        "Wontfix",
+        "Partial",
+        "Total",
+        "Last seen",
+        bold = style.bold,
+        reset = style.reset,
+        pw = path_width,
+    ));
+
+    for r in rows {
+        let display_path = if r.file_path.len() > path_width {
+            format!("..{}", &r.file_path[r.file_path.len() - (path_width - 2)..])
+        } else {
+            r.file_path.clone()
+        };
+        let bar = glyphs::hbar(r.tp_count as f64, rows[0].tp_count.max(1) as f64, unicode);
+        let date = r.last_seen.format("%Y-%m-%d").to_string();
+        out.push_str(&format!(
+            "  {:<pw$}  {:>4}  {:>4}  {:>7}  {:>7}  {:>5}  {}  {}\n",
+            display_path,
+            r.tp_count,
+            r.fp_count,
+            r.wontfix_count,
+            r.partial_count,
+            r.total,
+            date,
+            bar,
+            pw = path_width,
+        ));
+    }
+    out
+}
+
+pub fn format_file_hotspots_compact(rows: &[FileHotspotRow]) -> String {
+    if rows.is_empty() {
+        return "by-file: (no data)".to_string();
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| format!("{}:tp={},fp={},total={}", r.file_path, r.tp_count, r.fp_count, r.total))
+        .collect();
+    format!("by-file: {}", parts.join(" | "))
 }
 
 #[cfg(test)]
