@@ -949,7 +949,7 @@ pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: boo
 
     let path_width = rows
         .iter()
-        .map(|r| r.file_path.len())
+        .map(|r| r.file_path.chars().count())
         .max()
         .unwrap_or(4)
         .clamp(4, 40);
@@ -969,13 +969,19 @@ pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: boo
     ));
 
     for r in rows {
-        let display_path = if r.file_path.len() > path_width {
-            let tail_len = path_width - 2;
-            let start = r.file_path.len().saturating_sub(tail_len);
-            let safe_start = (start..r.file_path.len())
-                .find(|&i| r.file_path.is_char_boundary(i))
-                .unwrap_or(r.file_path.len());
-            format!("..{}", &r.file_path[safe_start..])
+        let char_len = r.file_path.chars().count();
+        let display_path = if char_len > path_width {
+            let tail_len = path_width.saturating_sub(2);
+            let tail: String = r
+                .file_path
+                .chars()
+                .rev()
+                .take(tail_len)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("..{}", tail)
         } else {
             r.file_path.clone()
         };

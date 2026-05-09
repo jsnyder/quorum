@@ -12,7 +12,7 @@ fn quorum(home: &Path) -> Command {
         .env_remove("CODEX_CI")
         .env_remove("GEMINI_CLI")
         .env_remove("AGENT")
-        // Isolate from developer shell so tests don't invoke real LLM (see issue #23)
+        .env_remove("QUORUM_HOME")
         .env_remove("QUORUM_API_KEY");
     cmd
 }
