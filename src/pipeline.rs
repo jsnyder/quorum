@@ -376,6 +376,7 @@ fn apply_same_file_boost(
             .partial_cmp(&a.similarity)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.entry.timestamp.cmp(&a.entry.timestamp))
+            .then_with(|| a.entry.file_path.cmp(&b.entry.file_path))
     });
 
     boosted
