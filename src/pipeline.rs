@@ -266,6 +266,13 @@ fn select_few_shot_precedents(
         return Vec::new();
     }
 
+    debug_assert!(
+        candidates
+            .iter()
+            .all(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp)),
+        "select_few_shot_precedents expects only Tp/Fp candidates; filter upstream"
+    );
+
     let best_score = candidates[0].similarity;
     let threshold = best_score * 0.6;
 
@@ -1583,6 +1590,22 @@ mod tests {
             .count();
         assert_eq!(fp_count, 1, "must find FP at position 4");
         assert_eq!(selected[2].entry.finding_title, "fp-4");
+    }
+
+    #[test]
+    fn few_shot_diversity_skipped_when_minority_below_threshold() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 1.0, "tp-1"),
+            sim_entry(Verdict::Tp, 0.90, "tp-2"),
+            sim_entry(Verdict::Tp, 0.85, "tp-3"),
+            sim_entry(Verdict::Fp, 0.50, "fp-weak"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        assert!(
+            selected.iter().all(|s| s.entry.verdict == Verdict::Tp),
+            "FP below threshold must not be pulled in by diversity floor"
+        );
     }
 
     async fn parse_and_review(
