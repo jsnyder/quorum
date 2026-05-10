@@ -1494,6 +1494,14 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 .iter()
                 .map(|r| r.enrichment_metrics.context7_query_failed)
                 .sum(),
+            context7_skipped_popular: file_results
+                .iter()
+                .map(|r| r.enrichment_metrics.context7_skipped_popular)
+                .sum(),
+            context7_budget_reduced: file_results
+                .iter()
+                .map(|r| r.enrichment_metrics.context7_budget_reduced)
+                .sum(),
             // #123 Layer 1 (Task 10): adoption telemetry for the FpKind
             // taxonomy. Computed over the loaded feedback store (same one
             // pipeline_cfg.feedback was built from). None when no FP
