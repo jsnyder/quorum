@@ -1545,6 +1545,46 @@ mod tests {
         assert_eq!(selected.len(), 1);
     }
 
+    #[test]
+    fn few_shot_two_mixed_candidates_returns_both() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.90, "tp"),
+            sim_entry(Verdict::Fp, 0.85, "fp"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().any(|s| s.entry.verdict == Verdict::Tp));
+        assert!(selected.iter().any(|s| s.entry.verdict == Verdict::Fp));
+    }
+
+    #[test]
+    fn few_shot_threshold_boundary_exactly_60_pct_included() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 1.0, "best"),
+            sim_entry(Verdict::Fp, 0.6, "boundary"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 2, "0.6 is exactly 60% of 1.0 — include it");
+    }
+
+    #[test]
+    fn few_shot_diversity_skip_finds_fp_past_position_3() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.95, "tp-1"),
+            sim_entry(Verdict::Tp, 0.90, "tp-2"),
+            sim_entry(Verdict::Tp, 0.85, "tp-3"),
+            sim_entry(Verdict::Fp, 0.80, "fp-4"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        let fp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .count();
+        assert_eq!(fp_count, 1, "must find FP at position 4");
+        assert_eq!(selected[2].entry.finding_title, "fp-4");
+    }
+
     async fn parse_and_review(
         source: &str,
         lang: Language,
