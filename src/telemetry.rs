@@ -315,6 +315,8 @@ mod tests {
         assert_eq!(entry.context7_resolved, 0);
         assert_eq!(entry.context7_resolve_failed, 0);
         assert_eq!(entry.context7_query_failed, 0);
+        assert_eq!(entry.context7_skipped_popular, 0);
+        assert_eq!(entry.context7_budget_reduced, 0);
     }
 
     #[test]

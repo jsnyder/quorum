@@ -675,6 +675,8 @@ pub async fn review_file(
                     resolved = enrichment_metrics.context7_resolved,
                     resolve_failed = enrichment_metrics.context7_resolve_failed,
                     query_failed = enrichment_metrics.context7_query_failed,
+                    skipped_popular = enrichment_metrics.context7_skipped_popular,
+                    budget_reduced = enrichment_metrics.context7_budget_reduced,
                     "phase complete"
                 );
                 if !docs.is_empty() {
