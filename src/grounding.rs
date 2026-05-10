@@ -63,6 +63,23 @@ static STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 const MIN_IDENTIFIER_LEN: usize = 4;
 
+fn looks_like_symbol(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.contains(char::is_whitespace) {
+        return false;
+    }
+    let has_alpha_start = s
+        .split([':', '.', '#', '@'])
+        .any(|seg| seg.starts_with(|c: char| c == '_' || c.is_alphabetic()));
+    if !has_alpha_start {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '!' | '?' | '#' | '@' | '\''))
+}
+
 /// Extract backtick-delimited identifiers from text, filtering stopwords
 /// and short tokens.
 pub fn extract_identifiers(text: &str) -> Vec<&str> {
@@ -70,10 +87,26 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
         .captures_iter(text)
         .filter_map(|cap| {
             let mut id = cap.get(1).unwrap().as_str().trim();
-            if id.ends_with("()") {
-                id = &id[..id.len() - 2];
+
+            // Strip generic parameters first: truncate at first '<' if '>' exists.
+            // Must run before arg stripping so `Option<(u32, u32)>` strips to
+            // `Option`, not `Option<` (which would happen if `(` were found first).
+            if id.contains('>')
+                && let Some(pos) = id.find('<')
+            {
+                id = id[..pos].trim_end();
             }
-            if id.len() >= MIN_IDENTIFIER_LEN && !STOPWORDS.contains(id) {
+
+            // Strip call arguments: truncate at first '('
+            if let Some(pos) = id.find('(') {
+                id = id[..pos].trim_end();
+            }
+
+            // Post-strip cleanup: leading/trailing :: and .
+            id = id.trim_start_matches([':', '.']);
+            id = id.trim_end_matches([':', '.']);
+
+            if id.len() >= MIN_IDENTIFIER_LEN && !STOPWORDS.contains(id) && looks_like_symbol(id) {
                 Some(id)
             } else {
                 None
@@ -345,6 +378,180 @@ mod tests {
             "`some_func` and `\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}` both present",
         );
         assert_eq!(ids.len(), 2);
+    }
+
+    // --- looks_like_symbol ---
+
+    #[test]
+    fn looks_like_symbol_accepts_simple_identifier() {
+        assert!(looks_like_symbol("parse_config"));
+    }
+
+    #[test]
+    fn looks_like_symbol_accepts_qualified_path() {
+        assert!(looks_like_symbol("std::io::Error"));
+    }
+
+    #[test]
+    fn looks_like_symbol_accepts_dotted_access() {
+        assert!(looks_like_symbol("self.process"));
+    }
+
+    #[test]
+    fn looks_like_symbol_accepts_rust_macro() {
+        assert!(looks_like_symbol("macro_rules!"));
+    }
+
+    #[test]
+    fn looks_like_symbol_accepts_decorator() {
+        assert!(looks_like_symbol("@app.route"));
+    }
+
+    #[test]
+    fn looks_like_symbol_accepts_multibyte_unicode() {
+        assert!(looks_like_symbol(
+            "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}"
+        ));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_prose_with_space() {
+        assert!(!looks_like_symbol("missing check"));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_number_phrase() {
+        assert!(!looks_like_symbol("line 42"));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_operator() {
+        assert!(!looks_like_symbol("->"));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_string_literal() {
+        assert!(!looks_like_symbol("\"hello\""));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_pure_digits() {
+        assert!(!looks_like_symbol("1234"));
+    }
+
+    #[test]
+    fn looks_like_symbol_rejects_empty() {
+        assert!(!looks_like_symbol(""));
+    }
+
+    // --- extract_identifiers normalization (#269, #262) ---
+
+    #[test]
+    fn strips_call_arguments_from_identifier() {
+        let ids = extract_identifiers("The `parse_diff(input)` function panics");
+        assert_eq!(ids, vec!["parse_diff"]);
+    }
+
+    #[test]
+    fn strips_nested_call_arguments() {
+        let ids = extract_identifiers("Calling `foo(bar(baz))` is wrong");
+        assert!(
+            ids.is_empty(),
+            "foo is only 3 chars, below MIN_IDENTIFIER_LEN"
+        );
+    }
+
+    #[test]
+    fn strips_generic_parameters() {
+        let ids = extract_identifiers("The `HashMap<String, Vec<u8>>` type");
+        assert_eq!(ids, vec!["HashMap"]);
+    }
+
+    #[test]
+    fn strips_turbofish_and_trailing_colons() {
+        let ids = extract_identifiers("Use `transform::<Vec<_>>()` here");
+        assert_eq!(ids, vec!["transform"]);
+    }
+
+    #[test]
+    fn turbofish_stopword_still_rejected() {
+        let ids = extract_identifiers("Use `collect::<Vec<_>>()` here");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn strips_leading_separator() {
+        let ids = extract_identifiers("The `::some_func` call");
+        assert_eq!(ids, vec!["some_func"]);
+    }
+
+    #[test]
+    fn strips_method_call_preserves_receiver() {
+        let ids = extract_identifiers("The `iter.collect::<Vec<_>>()` call");
+        assert_eq!(ids, vec!["iter.collect"]);
+    }
+
+    #[test]
+    fn rejects_prose_in_backticks() {
+        let ids = extract_identifiers("The `missing check` causes issues");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn rejects_line_reference_in_backticks() {
+        let ids = extract_identifiers("At `line 42` the code fails");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn rejects_operator_in_backticks() {
+        let ids = extract_identifiers("The `->` return type");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn rejects_string_literal_in_backticks() {
+        let ids = extract_identifiers("Returns `\"hello\"` always");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn strips_args_with_spaces_around_paren() {
+        let ids = extract_identifiers("Call `process_data ( x, y )` safely");
+        assert_eq!(ids, vec!["process_data"]);
+    }
+
+    #[test]
+    fn vec_new_parens_stripped() {
+        let ids = extract_identifiers("Creates `Vec::new()` each time");
+        assert_eq!(ids, vec!["Vec::new"]);
+    }
+
+    #[test]
+    fn unbalanced_generic_passes_through() {
+        let ids = extract_identifiers("The `foo_bar<T` type is odd");
+        assert!(
+            ids.is_empty(),
+            "no closing > so < not stripped, but < is not in allowed chars"
+        );
+    }
+
+    #[test]
+    fn multi_segment_generic_filtered_by_length() {
+        let ids = extract_identifiers("Type `Foo<A>::Bar<B>` is complex");
+        assert!(ids.is_empty(), "Foo is only 3 chars after stripping");
+    }
+
+    #[test]
+    fn generic_with_tuple_inside_not_dropped() {
+        let ids = extract_identifiers("The `Decoder<(u32, u32)>` type wraps a pair");
+        assert_eq!(ids, vec!["Decoder"]);
+    }
+
+    #[test]
+    fn generic_with_fn_syntax_inside_not_dropped() {
+        let ids = extract_identifiers("Use `Callback<fn(i32)>` for handlers");
+        assert_eq!(ids, vec!["Callback"]);
     }
 
     // --- verify_grounding / apply_grounding tests (Task 3) ---
