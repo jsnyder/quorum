@@ -29,6 +29,8 @@ pub struct EnrichmentMetrics {
     pub context7_resolved: u32,
     pub context7_resolve_failed: u32,
     pub context7_query_failed: u32,
+    pub context7_skipped_popular: u32,
+    pub context7_budget_reduced: u32,
 }
 
 /// Result of enrich_for_review: docs to splice into the prompt + telemetry counters.
@@ -262,16 +264,92 @@ pub fn enrich_for_review(
     EnrichmentResult { docs, metrics }
 }
 
-/// Convenience wrapper: parse the project's manifests, then run enrich_for_review.
+/// Policy-aware enrichment: skips popular deps, tiers budgets, gates on quality.
+pub fn enrich_for_review_with_policy(
+    deps: &[crate::dep_manifest::Dependency],
+    curated_frameworks: &[String],
+    imports: &[String],
+    fetcher: &dyn ContextFetcher,
+    policy: &crate::enrichment_policy::EnrichmentPolicy,
+) -> EnrichmentResult {
+    let mut metrics = EnrichmentMetrics::default();
+    let mut docs: Vec<ContextDoc> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
+    for imp in imports {
+        for name in normalize_import_to_dep_names(imp) {
+            if let Some(dep) = deps.iter().find(|d| d.name == name)
+                && !import_matched.iter().any(|d| d.name == dep.name)
+            {
+                import_matched.push(dep);
+            }
+        }
+    }
+
+    for dep in import_matched.into_iter().take(ENRICH_K) {
+        if seen.contains(&dep.name) {
+            continue;
+        }
+        seen.insert(dep.name.clone());
+
+        let resolve = match fetcher.resolve_library(&dep.name) {
+            Some(r) => {
+                metrics.context7_resolved += 1;
+                r
+            }
+            None => {
+                metrics.context7_resolve_failed += 1;
+                continue;
+            }
+        };
+
+        let budget = policy.token_budget_for(&dep.name, &dep.language, imports, &resolve);
+        if budget == 0 {
+            metrics.context7_skipped_popular += 1;
+            continue;
+        }
+        if budget < 5000 {
+            metrics.context7_budget_reduced += 1;
+        }
+
+        let query = curated_query_for(&dep.name)
+            .unwrap_or_else(|| generic_query_for_language(&dep.language).into());
+        let enriched = build_code_aware_query(&query, imports);
+        if let Some(content) = fetcher.query_docs(&resolve.library_id, &enriched, budget) {
+            docs.push(ContextDoc {
+                library: dep.name.clone(),
+                content,
+            });
+        } else {
+            metrics.context7_query_failed += 1;
+        }
+    }
+
+    // Curated frameworks bypass policy — they're directory-detected (HA/ESPHome)
+    for fw in curated_frameworks {
+        if seen.contains(fw) {
+            continue;
+        }
+        if let Some(query) = curated_query_for(fw) {
+            try_fetch_one(fw, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+        }
+    }
+
+    EnrichmentResult { docs, metrics }
+}
+
+/// Convenience wrapper: parse the project's manifests, then run policy-aware enrichment.
 /// This is the main public entry point used by pipeline.rs.
 pub fn enrich_for_review_in_project(
     project_root: &std::path::Path,
     imports: &[String],
     curated_frameworks: &[String],
     fetcher: &dyn ContextFetcher,
+    policy: &crate::enrichment_policy::EnrichmentPolicy,
 ) -> EnrichmentResult {
     let deps = crate::dep_manifest::parse_dependencies(project_root);
-    enrich_for_review(&deps, curated_frameworks, imports, fetcher)
+    enrich_for_review_with_policy(&deps, curated_frameworks, imports, fetcher, policy)
 }
 
 fn try_fetch_one(
@@ -1280,20 +1358,71 @@ axum = "0.7"
 
         let spy = CapturingSpy::new();
         let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
-        let result = enrich_for_review_in_project(dir.path(), &imports, &[], &spy);
+        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+        let result = enrich_for_review_in_project(dir.path(), &imports, &[], &spy, &policy);
 
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
-        assert!(libs.contains(&"tokio".to_string()));
-        assert!(libs.contains(&"serde".to_string()));
+        // tokio and serde are in the mainstream skip-list, so they will be
+        // skipped by the policy. The test verifies they are not present.
         assert!(
             !libs.contains(&"axum".to_string()),
             "axum not in imports — must be skipped"
         );
 
-        // Telemetry: 2 deps were import-matched and resolved.
-        assert_eq!(result.metrics.context7_resolved, 2);
-        assert_eq!(result.metrics.context7_resolve_failed, 0);
-        assert_eq!(result.metrics.context7_query_failed, 0);
+        // Telemetry: both were resolved but then skipped_popular by the policy.
+        // (tokio and serde are mainstream Rust deps)
+        assert_eq!(result.metrics.context7_skipped_popular, 2);
+    }
+
+    // Policy-aware enrichment integration tests
+
+    #[test]
+    fn popular_dep_is_skipped_by_policy() {
+        let deps = vec![
+            crate::dep_manifest::Dependency { name: "serde".into(), language: "rust".into() },
+        ];
+        let imports = vec!["Deserialize: use serde::Deserialize;".into()];
+        let fetcher = test_support::Spy;
+        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+
+        let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
+        assert!(result.docs.is_empty(), "serde should be skipped");
+        assert_eq!(result.metrics.context7_skipped_popular, 1);
+    }
+
+    #[test]
+    fn niche_dep_gets_enriched_by_policy() {
+        let deps = vec![
+            crate::dep_manifest::Dependency { name: "fastembed".into(), language: "rust".into() },
+        ];
+        let imports = vec![
+            "TextEmbedding: use fastembed::TextEmbedding;".into(),
+            "EmbeddingModel: use fastembed::EmbeddingModel;".into(),
+        ];
+        let fetcher = test_support::Spy;
+        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+
+        let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
+        assert_eq!(result.docs.len(), 1);
+        assert_eq!(result.docs[0].library, "fastembed");
+    }
+
+    #[test]
+    fn curated_frameworks_bypass_policy() {
+        let deps = vec![];
+        let imports = vec![];
+        let fetcher = test_support::Spy;
+        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+
+        let result = enrich_for_review_with_policy(
+            &deps,
+            &["home-assistant".into()],
+            &imports,
+            &fetcher,
+            &policy,
+        );
+        assert_eq!(result.docs.len(), 1);
+        assert_eq!(result.docs[0].library, "home-assistant");
     }
 
     #[test]
