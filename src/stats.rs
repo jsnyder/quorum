@@ -1,6 +1,6 @@
 /// Stats dashboard -- reads local data files and computes metrics.
 use crate::analytics;
-use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice};
+use crate::dimensions::{self, ContextDimensionSlice, DimensionSlice, FileHotspotRow};
 use crate::feedback::FeedbackStore;
 use crate::formatting;
 use crate::glyphs;
@@ -934,6 +934,91 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(&json)?)
 }
 
+pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: bool) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: by-file{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no file hotspot data)\n");
+        return out;
+    }
+
+    let path_width = rows
+        .iter()
+        .map(|r| r.file_path.chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 40);
+
+    out.push_str(&format!(
+        "  {bold}{:<pw$}  {:>4}  {:>4}  {:>7}  {:>7}  {:>5}  {:<10}{reset}\n",
+        "File",
+        "TPs",
+        "FPs",
+        "Wontfix",
+        "Partial",
+        "Total",
+        "Last seen",
+        bold = style.bold,
+        reset = style.reset,
+        pw = path_width,
+    ));
+
+    for r in rows {
+        let char_len = r.file_path.chars().count();
+        let display_path = if char_len > path_width {
+            let tail_len = path_width.saturating_sub(2);
+            let tail: String = r
+                .file_path
+                .chars()
+                .rev()
+                .take(tail_len)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("..{}", tail)
+        } else {
+            r.file_path.clone()
+        };
+        let bar = glyphs::hbar(r.tp_count as f64, rows[0].tp_count.max(1) as f64, unicode);
+        let date = r.last_seen.format("%Y-%m-%d").to_string();
+        out.push_str(&format!(
+            "  {:<pw$}  {:>4}  {:>4}  {:>7}  {:>7}  {:>5}  {}  {}\n",
+            display_path,
+            r.tp_count,
+            r.fp_count,
+            r.wontfix_count,
+            r.partial_count,
+            r.total,
+            date,
+            bar,
+            pw = path_width,
+        ));
+    }
+    out
+}
+
+pub fn format_file_hotspots_compact(rows: &[FileHotspotRow]) -> String {
+    if rows.is_empty() {
+        return "by-file: (no data)".to_string();
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:tp={},fp={},total={}",
+                r.file_path, r.tp_count, r.fp_count, r.total
+            )
+        })
+        .collect();
+    format!("by-file: {}", parts.join(" | "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1645,5 +1730,61 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["feedback_count"], 50);
         assert_eq!(parsed["tp"], 32);
+    }
+
+    fn hotspot(path: &str, tp: u32, fp: u32, wontfix: u32, partial: u32) -> FileHotspotRow {
+        use chrono::TimeZone;
+        FileHotspotRow {
+            file_path: path.to_string(),
+            tp_count: tp,
+            fp_count: fp,
+            wontfix_count: wontfix,
+            partial_count: partial,
+            total: tp + fp + wontfix + partial,
+            last_seen: chrono::Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn file_hotspots_human_contains_headers_and_values() {
+        let rows = vec![
+            hotspot("src/a.rs", 5, 2, 1, 0),
+            hotspot("src/b.rs", 3, 0, 0, 1),
+        ];
+        let style = Style::plain();
+        let out = format_file_hotspots(&rows, &style, false);
+        assert!(out.contains("by-file"), "header should mention by-file");
+        assert!(out.contains("TPs"), "header should have TPs column");
+        assert!(out.contains("FPs"), "header should have FPs column");
+        assert!(out.contains("src/a.rs"), "should contain file path");
+        assert!(out.contains("src/b.rs"), "should contain file path");
+        assert!(out.contains("2026-01-15"), "should contain last_seen date");
+    }
+
+    #[test]
+    fn file_hotspots_empty_shows_no_data_message() {
+        let style = Style::plain();
+        let out = format_file_hotspots(&[], &style, false);
+        assert!(out.contains("no file hotspot data"));
+    }
+
+    #[test]
+    fn file_hotspots_compact_single_line() {
+        let rows = vec![
+            hotspot("src/a.rs", 5, 2, 0, 0),
+            hotspot("src/b.rs", 3, 1, 0, 0),
+        ];
+        let out = format_file_hotspots_compact(&rows);
+        let body = out.trim_end_matches('\n');
+        assert!(!body.contains('\n'), "compact must be single-line");
+        assert!(body.starts_with("by-file:"));
+        assert!(body.contains("src/a.rs:tp=5"));
+        assert!(body.contains("src/b.rs:tp=3"));
+    }
+
+    #[test]
+    fn file_hotspots_compact_empty() {
+        let out = format_file_hotspots_compact(&[]);
+        assert_eq!(out, "by-file: (no data)");
     }
 }

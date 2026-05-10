@@ -153,6 +153,41 @@ async fn main() -> anyhow::Result<()> {
             // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
             // Context dims compose with --rolling by restricting aggregation to
             // the chronologically-last N records.
+            if opts.by_file {
+                let fb_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+                let entries = match fb_store.load_all() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("error: cannot read feedback store: {e}");
+                        std::process::exit(3);
+                    }
+                };
+                let rows = dimensions::group_by_file(&entries, opts.top);
+
+                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let use_compact = output::should_use_compact(opts.compact);
+                let use_json = opts.json || (is_pipe && !use_compact);
+
+                if use_json {
+                    let payload = serde_json::json!({
+                        "mode": "by-file",
+                        "rows": rows,
+                        "meta": {
+                            "total_feedback_entries": entries.len(),
+                            "top": opts.top,
+                        },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else if use_compact {
+                    println!("{}", stats::format_file_hotspots_compact(&rows));
+                } else {
+                    let style = output::Style::detect(false);
+                    let unicode = unicode_ok();
+                    print!("{}", stats::format_file_hotspots(&rows, &style, unicode));
+                }
+                std::process::exit(0);
+            }
+
             let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
             let want_classic_dim =
                 !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
