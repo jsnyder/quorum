@@ -112,11 +112,12 @@ pub enum PopularityTier {
 
 impl PopularityTier {
     pub fn from_downloads(monthly: u64, language: &str) -> Self {
+        // All thresholds are monthly downloads (crates.io 90-day is ÷3 in parse_downloads).
         let (very_high, high, medium) = match language {
-            "rust" => (1_000_000, 100_000, 10_000),
+            "rust" => (300_000, 30_000, 3_000),
             "typescript" | "javascript" => (10_000_000, 1_000_000, 100_000),
             "python" => (5_000_000, 500_000, 50_000),
-            _ => (1_000_000, 100_000, 10_000),
+            _ => (300_000, 30_000, 3_000),
         };
         if monthly >= very_high {
             Self::VeryHigh
@@ -180,7 +181,20 @@ impl HttpRegistryClient {
                 "https://api.npmjs.org/downloads/point/last-month/{name}"
             )),
             "python" => {
-                let normalized = name.to_lowercase().replace('-', "_");
+                // PEP 503: collapse runs of `.`, `-`, `_` to a single `-`, lowercase.
+                let mut normalized = String::with_capacity(name.len());
+                let mut prev_sep = false;
+                for c in name.to_lowercase().chars() {
+                    if matches!(c, '.' | '-' | '_') {
+                        if !prev_sep {
+                            normalized.push('-');
+                            prev_sep = true;
+                        }
+                    } else {
+                        normalized.push(c);
+                        prev_sep = false;
+                    }
+                }
                 Some(format!(
                     "https://pypistats.org/api/packages/{normalized}/recent"
                 ))
@@ -189,11 +203,14 @@ impl HttpRegistryClient {
         }
     }
 
+    /// Parse download count from registry JSON. Normalizes to approximate monthly:
+    /// crates.io `recent_downloads` is 90-day, so we divide by 3.
     pub fn parse_downloads(json: &serde_json::Value, language: &str) -> Option<u64> {
         match language {
             "rust" => json["crate"]["recent_downloads"]
                 .as_u64()
-                .or_else(|| json["crate"]["downloads"].as_u64()),
+                .or_else(|| json["crate"]["downloads"].as_u64())
+                .map(|d| d / 3),
             "typescript" | "javascript" => json["downloads"].as_u64(),
             "python" => json["data"]["last_month"].as_u64(),
             _ => None,
@@ -360,6 +377,16 @@ impl Default for EnrichmentPolicy<'_> {
 }
 
 impl EnrichmentPolicy<'_> {
+    /// Cheap local-only check: returns true if this dep would definitely get
+    /// budget=0 without needing a Context7 resolve or registry lookup.
+    pub fn would_skip_locally(&self, dep_name: &str, language: &str, imports: &[String]) -> bool {
+        let usage = usage_relevance(dep_name, imports);
+        if matches!(usage, UsageLevel::None) {
+            return true;
+        }
+        is_mainstream(dep_name, language)
+    }
+
     pub fn token_budget_for(
         &self,
         dep_name: &str,
@@ -435,20 +462,21 @@ mod tests {
     // Popularity tier tests
     #[test]
     fn popularity_tier_from_downloads() {
+        // Thresholds for Rust are monthly: 300k/30k/3k
         assert_eq!(
-            PopularityTier::from_downloads(5_000_000, "rust"),
+            PopularityTier::from_downloads(500_000, "rust"),
             PopularityTier::VeryHigh
         );
         assert_eq!(
-            PopularityTier::from_downloads(500_000, "rust"),
+            PopularityTier::from_downloads(100_000, "rust"),
             PopularityTier::High
         );
         assert_eq!(
-            PopularityTier::from_downloads(50_000, "rust"),
+            PopularityTier::from_downloads(10_000, "rust"),
             PopularityTier::Medium
         );
         assert_eq!(
-            PopularityTier::from_downloads(5_000, "rust"),
+            PopularityTier::from_downloads(1_000, "rust"),
             PopularityTier::Low
         );
         assert_eq!(
@@ -459,13 +487,14 @@ mod tests {
 
     #[test]
     fn npm_thresholds_are_higher_than_crates_io() {
+        // 50k/month is High for Rust but only Low for npm
         assert_eq!(
-            PopularityTier::from_downloads(500_000, "rust"),
+            PopularityTier::from_downloads(50_000, "rust"),
             PopularityTier::High
         );
         assert_eq!(
-            PopularityTier::from_downloads(500_000, "typescript"),
-            PopularityTier::Medium
+            PopularityTier::from_downloads(50_000, "typescript"),
+            PopularityTier::Low
         );
     }
 
@@ -521,6 +550,15 @@ mod tests {
             HttpRegistryClient::registry_url("django", "python"),
             Some("https://pypistats.org/api/packages/django/recent".into())
         );
+        // PEP 503: dashes and underscores normalize to single dash
+        assert_eq!(
+            HttpRegistryClient::registry_url("python-dateutil", "python"),
+            Some("https://pypistats.org/api/packages/python-dateutil/recent".into())
+        );
+        assert_eq!(
+            HttpRegistryClient::registry_url("Flask_SQLAlchemy", "python"),
+            Some("https://pypistats.org/api/packages/flask-sqlalchemy/recent".into())
+        );
     }
 
     #[test]
@@ -530,10 +568,11 @@ mod tests {
 
     #[test]
     fn parse_crates_io_downloads() {
-        let json = serde_json::json!({"crate": {"recent_downloads": 1_234_567u64}});
+        // crates.io recent_downloads is 90-day; parse_downloads normalizes to monthly (÷3)
+        let json = serde_json::json!({"crate": {"recent_downloads": 1_200_000u64}});
         assert_eq!(
             HttpRegistryClient::parse_downloads(&json, "rust"),
-            Some(1_234_567)
+            Some(400_000)
         );
     }
 

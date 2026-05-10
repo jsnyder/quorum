@@ -293,6 +293,11 @@ pub fn enrich_for_review_with_policy(
         }
         seen.insert(dep.name.clone());
 
+        if policy.would_skip_locally(&dep.name, &dep.language, imports) {
+            metrics.context7_skipped_popular += 1;
+            continue;
+        }
+
         let resolve = match fetcher.resolve_library(&dep.name) {
             Some(r) => {
                 metrics.context7_resolved += 1;
@@ -1369,9 +1374,10 @@ axum = "0.7"
             "axum not in imports — must be skipped"
         );
 
-        // Telemetry: both were resolved but then skipped_popular by the policy.
-        // (tokio and serde are mainstream Rust deps)
+        // Telemetry: both were skipped locally (mainstream) before resolve.
         assert_eq!(result.metrics.context7_skipped_popular, 2);
+        // No resolve calls were made for mainstream deps.
+        assert_eq!(result.metrics.context7_resolved, 0);
     }
 
     // Policy-aware enrichment integration tests
@@ -1388,6 +1394,7 @@ axum = "0.7"
         let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
         assert!(result.docs.is_empty(), "serde should be skipped");
         assert_eq!(result.metrics.context7_skipped_popular, 1);
+        assert_eq!(result.metrics.context7_resolved, 0, "no resolve for mainstream dep");
     }
 
     #[test]
