@@ -35,6 +35,7 @@ mod context_enrichment;
 mod daemon;
 mod dep_manifest;
 mod dimensions;
+mod enrichment_policy;
 mod formatting;
 mod glyphs;
 mod http_server;

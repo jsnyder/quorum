@@ -60,7 +60,7 @@ pub struct EnrichmentResult {
 ///    - JS scoped deep `@nestjs/common/decorators` -> `["@nestjs/common"]`
 ///    - Bare `@foo` -> `["@foo"]`
 ///    - Leading `::std::ptr` -> `["std"]` (skips empty heads)
-pub(crate) fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
+pub fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
     // Production hydration form: "{symbol}: {statement}". Detection requires
     // both ": " and a recognized verb (`use`, `from`, `import`) — a clean
     // path like `tokio::sync::Mutex` has no ": " (no space) and falls through.
