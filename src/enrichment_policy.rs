@@ -248,38 +248,44 @@ impl<'a> CachedRegistryClient<'a> {
     }
 }
 
-impl RegistryClient for CachedRegistryClient<'_> {
-    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
-        let key = (name.to_string(), language.to_string());
-        {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some(entry) = cache.get(&key) {
-                if entry.cached_at.elapsed() < self.ttl {
-                    return entry.downloads;
-                }
+fn cached_lookup(
+    cache: &std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
+    ttl: std::time::Duration,
+    inner: &dyn RegistryClient,
+    name: &str,
+    language: &str,
+) -> Option<u64> {
+    let key = (name.to_string(), language.to_string());
+    {
+        let mut c = cache.lock().unwrap();
+        if let Some(entry) = c.get(&key) {
+            if entry.cached_at.elapsed() < ttl {
+                return entry.downloads;
             }
         }
-        let downloads = self.inner.monthly_downloads(name, language);
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(
-                key,
-                RegistryCacheEntry {
-                    downloads,
-                    cached_at: std::time::Instant::now(),
-                },
-            );
-        }
-        downloads
+    }
+    let downloads = inner.monthly_downloads(name, language);
+    {
+        let mut c = cache.lock().unwrap();
+        c.put(
+            key,
+            RegistryCacheEntry {
+                downloads,
+                cached_at: std::time::Instant::now(),
+            },
+        );
+    }
+    downloads
+}
+
+impl RegistryClient for CachedRegistryClient<'_> {
+    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
+        cached_lookup(&self.cache, self.ttl, self.inner, name, language)
     }
 }
 
-// ── Component 4b: Owned Cached Registry ──────────────────────────────────────
-
 /// Owned variant of `CachedRegistryClient` for pipeline use where the inner
-/// client lives inside an `Arc`. Unlike `CachedRegistryClient<'a>`, this
-/// struct owns its inner client via a `Box<dyn RegistryClient>` so it can
-/// be wrapped in `Arc<dyn RegistryClient>` without lifetime constraints.
+/// client lives inside an `Arc`.
 pub struct OwnedCachedRegistryClient {
     inner: Box<dyn RegistryClient>,
     cache: std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
@@ -299,27 +305,7 @@ impl OwnedCachedRegistryClient {
 
 impl RegistryClient for OwnedCachedRegistryClient {
     fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
-        let key = (name.to_string(), language.to_string());
-        {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some(entry) = cache.get(&key) {
-                if entry.cached_at.elapsed() < self.ttl {
-                    return entry.downloads;
-                }
-            }
-        }
-        let downloads = self.inner.monthly_downloads(name, language);
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(
-                key,
-                RegistryCacheEntry {
-                    downloads,
-                    cached_at: std::time::Instant::now(),
-                },
-            );
-        }
-        downloads
+        cached_lookup(&self.cache, self.ttl, self.inner.as_ref(), name, language)
     }
 }
 
