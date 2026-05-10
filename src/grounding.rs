@@ -70,16 +70,14 @@ fn looks_like_symbol(s: &str) -> bool {
     if s.contains(char::is_whitespace) {
         return false;
     }
-    let has_alpha_start = s.split([':', '.', '#', '@'])
-        .any(|seg| {
-            seg.starts_with(|c: char| c == '_' || c.is_alphabetic())
-        });
+    let has_alpha_start = s
+        .split([':', '.', '#', '@'])
+        .any(|seg| seg.starts_with(|c: char| c == '_' || c.is_alphabetic()));
     if !has_alpha_start {
         return false;
     }
-    s.chars().all(|c| {
-        c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '!' | '?' | '#' | '@' | '\'')
-    })
+    s.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '!' | '?' | '#' | '@' | '\''))
 }
 
 /// Extract backtick-delimited identifiers from text, filtering stopwords
@@ -93,7 +91,9 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
             // Strip generic parameters first: truncate at first '<' if '>' exists.
             // Must run before arg stripping so `Option<(u32, u32)>` strips to
             // `Option`, not `Option<` (which would happen if `(` were found first).
-            if id.contains('>') && let Some(pos) = id.find('<') {
+            if id.contains('>')
+                && let Some(pos) = id.find('<')
+            {
                 id = id[..pos].trim_end();
             }
 
@@ -105,10 +105,7 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
             // Post-strip cleanup: trailing :: and .
             id = id.trim_end_matches([':', '.']);
 
-            if id.len() >= MIN_IDENTIFIER_LEN
-                && !STOPWORDS.contains(id)
-                && looks_like_symbol(id)
-            {
+            if id.len() >= MIN_IDENTIFIER_LEN && !STOPWORDS.contains(id) && looks_like_symbol(id) {
                 Some(id)
             } else {
                 None
@@ -411,7 +408,9 @@ mod tests {
 
     #[test]
     fn looks_like_symbol_accepts_multibyte_unicode() {
-        assert!(looks_like_symbol("\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}"));
+        assert!(looks_like_symbol(
+            "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}"
+        ));
     }
 
     #[test]
@@ -455,7 +454,10 @@ mod tests {
     #[test]
     fn strips_nested_call_arguments() {
         let ids = extract_identifiers("Calling `foo(bar(baz))` is wrong");
-        assert!(ids.is_empty(), "foo is only 3 chars, below MIN_IDENTIFIER_LEN");
+        assert!(
+            ids.is_empty(),
+            "foo is only 3 chars, below MIN_IDENTIFIER_LEN"
+        );
     }
 
     #[test]
@@ -521,7 +523,10 @@ mod tests {
     #[test]
     fn unbalanced_generic_passes_through() {
         let ids = extract_identifiers("The `foo_bar<T` type is odd");
-        assert!(ids.is_empty(), "no closing > so < not stripped, but < is not in allowed chars");
+        assert!(
+            ids.is_empty(),
+            "no closing > so < not stripped, but < is not in allowed chars"
+        );
     }
 
     #[test]
