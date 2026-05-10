@@ -399,6 +399,27 @@ pub fn unicode_ok_default() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    Json,
+    Compact,
+    Human,
+}
+
+pub fn resolve_output_mode(json_flag: bool, compact_flag: bool, is_terminal: bool) -> OutputMode {
+    if json_flag {
+        return OutputMode::Json;
+    }
+    let compact = should_use_compact(compact_flag);
+    if compact {
+        return OutputMode::Compact;
+    }
+    if !is_terminal {
+        return OutputMode::Json;
+    }
+    OutputMode::Human
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,5 +1052,55 @@ mod tests {
         let style = Style::plain();
         let output = format_finding(&f, &style);
         assert!(output.contains("[partial view: lines 1-50 of 100]"));
+    }
+
+    // -- resolve_output_mode --
+
+    #[test]
+    fn json_flag_wins_over_compact_env() {
+        assert_eq!(
+            resolve_output_mode(true, true, true),
+            OutputMode::Json,
+        );
+    }
+
+    #[test]
+    fn json_flag_wins_over_pipe() {
+        assert_eq!(
+            resolve_output_mode(true, false, false),
+            OutputMode::Json,
+        );
+    }
+
+    #[test]
+    fn compact_flag_wins_over_pipe() {
+        assert_eq!(
+            resolve_output_mode(false, true, false),
+            OutputMode::Compact,
+        );
+    }
+
+    #[test]
+    fn pipe_without_flags_produces_json() {
+        assert_eq!(
+            resolve_output_mode(false, false, false),
+            OutputMode::Json,
+        );
+    }
+
+    #[test]
+    fn terminal_without_flags_produces_human() {
+        assert_eq!(
+            resolve_output_mode(false, false, true),
+            OutputMode::Human,
+        );
+    }
+
+    #[test]
+    fn json_flag_wins_even_in_terminal() {
+        assert_eq!(
+            resolve_output_mode(true, false, true),
+            OutputMode::Json,
+        );
     }
 }

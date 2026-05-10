@@ -222,11 +222,13 @@ async fn main() -> anyhow::Result<()> {
                     ("misleading", dimensions::aggregate_misleading(&records))
                 };
 
-                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
-                let use_compact = output::should_use_compact(opts.compact);
-                let use_json = opts.json || (is_pipe && !use_compact);
+                let out_mode = output::resolve_output_mode(
+                    opts.json,
+                    opts.compact,
+                    std::io::IsTerminal::is_terminal(&std::io::stdout()),
+                );
 
-                if use_json {
+                if out_mode == output::OutputMode::Json {
                     let meta = serde_json::json!({
                         "min_sample": dimensions::MIN_SAMPLE,
                         "total_reviews": all_records.len(),
@@ -239,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
                         "meta": meta,
                     });
                     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
-                } else if use_compact {
+                } else if out_mode == output::OutputMode::Compact {
                     println!("{}", stats::format_context_dimension_compact(mode, &slices));
                 } else {
                     let style = output::Style::detect(false);
@@ -273,11 +275,13 @@ async fn main() -> anyhow::Result<()> {
                     ("rolling", dimensions::rolling_window(&records, n, 3))
                 };
 
-                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
-                let use_compact = output::should_use_compact(opts.compact);
-                let use_json = opts.json || (is_pipe && !use_compact);
+                let out_mode = output::resolve_output_mode(
+                    opts.json,
+                    opts.compact,
+                    std::io::IsTerminal::is_terminal(&std::io::stdout()),
+                );
 
-                if use_json {
+                if out_mode == output::OutputMode::Json {
                     let meta = serde_json::json!({
                         "min_sample": dimensions::MIN_SAMPLE,
                         "total_reviews": records.len(),
@@ -288,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
                         "meta": meta,
                     });
                     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
-                } else if use_compact {
+                } else if out_mode == output::OutputMode::Compact {
                     println!("{}", stats::format_dimension_compact(mode, &slices));
                 } else {
                     let style = output::Style::detect(false);
@@ -1035,9 +1039,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let review_start = std::time::Instant::now();
 
     let style = output::Style::detect(opts.no_color);
-    let use_compact = output::should_use_compact(opts.compact);
-    let use_json =
-        !use_compact && (opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    let mode = output::resolve_output_mode(
+        opts.json,
+        opts.compact,
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    );
+    let use_json = mode == output::OutputMode::Json;
+    let use_compact = mode == output::OutputMode::Compact;
     let mut all_findings = Vec::new();
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
