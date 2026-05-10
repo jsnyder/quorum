@@ -472,6 +472,12 @@ fn apply_deterministic_sort(candidates: &mut [crate::feedback_index::SimilarEntr
 
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
 /// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
+///
+/// #124: File-scoped retrieval pipeline:
+/// 1. Deterministic sort for stable tie-breaking
+/// 2. Same-file boost (+0.05 additive similarity)
+/// 3. Top-3 selection with diversity floor
+/// 4. Same-file reservation (replaces weakest if no same-file survived selection)
 fn query_feedback_precedents(
     index: &mut crate::feedback_index::FeedbackIndex,
     file_path: &str,
@@ -497,14 +503,47 @@ fn query_feedback_precedents(
     );
     let similar = index.find_similar(&query, "", 15);
 
-    let candidates: Vec<_> = similar
+    let mut candidates: Vec<_> = similar
         .into_iter()
         .filter(|s| matches!(s.entry.provenance, Provenance::Human | Provenance::PostFix))
         .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp))
         .collect();
 
+    // #124: Deterministic tie-breaking before any selection
+    apply_deterministic_sort(&mut candidates);
+
+    // #124: Boost same-file candidates (+0.05 additive, re-sorts)
+    let candidates = apply_same_file_boost(&candidates, file_path);
+
+    // Select top-3 with diversity floor (#264)
     let selected = select_few_shot_precedents(&candidates);
 
+    // #124: Same-file reservation (diversity-safe)
+    let best_score = candidates.first().map(|s| s.similarity).unwrap_or(0.0);
+    let pre_reservation_has_same_file = selected
+        .iter()
+        .any(|s| normalize_file_path(&s.entry.file_path) == normalize_file_path(file_path));
+    let selected = apply_same_file_reservation(
+        selected,
+        &candidates,
+        file_path,
+        best_score,
+    );
+    let reservation_applied = !pre_reservation_has_same_file
+        && selected
+            .iter()
+            .any(|s| normalize_file_path(&s.entry.file_path) == normalize_file_path(file_path));
+
+    // Observability
+    let norm_review = normalize_file_path(file_path);
+    let same_file_candidates = candidates
+        .iter()
+        .filter(|s| normalize_file_path(&s.entry.file_path) == norm_review)
+        .count();
+    let same_file_selected = selected
+        .iter()
+        .filter(|s| normalize_file_path(&s.entry.file_path) == norm_review)
+        .count();
     let tp_count = selected
         .iter()
         .filter(|s| s.entry.verdict == Verdict::Tp)
@@ -519,6 +558,9 @@ fn query_feedback_precedents(
         selected_count = selected.len(),
         selected_tps = tp_count,
         selected_fps = fp_count,
+        same_file_candidates,
+        same_file_selected,
+        reservation_applied,
         best_similarity = candidates.first().map(|s| s.similarity),
         "Few-shot precedent selection"
     );
@@ -1998,6 +2040,37 @@ mod tests {
             0.0,
         );
         assert!(reserved.is_empty());
+    }
+
+    #[test]
+    fn regression_124_cross_file_feedback_does_not_displace_same_file() {
+        let mut candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.85, "same-file-tp", "src/llm_client.rs"),
+        ];
+        for i in 0..10 {
+            candidates.push(sim_entry_file(
+                if i % 2 == 0 { Verdict::Tp } else { Verdict::Fp },
+                0.90 - (i as f32 * 0.01),
+                &format!("cross-file-{}", i),
+                "src/ast_grep.rs",
+            ));
+        }
+        candidates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+
+        let boosted = apply_same_file_boost(&candidates, "src/llm_client.rs");
+        let selected = select_few_shot_precedents(&boosted);
+        let best_score = boosted.first().map(|s| s.similarity).unwrap_or(0.0);
+        let final_selection = apply_same_file_reservation(
+            selected,
+            &boosted,
+            "src/llm_client.rs",
+            best_score,
+        );
+
+        assert!(
+            final_selection.iter().any(|s| s.entry.file_path == "src/llm_client.rs"),
+            "same-file TP for llm_client.rs must survive despite 10 cross-file entries"
+        );
     }
 
     async fn parse_and_review(
