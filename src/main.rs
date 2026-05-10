@@ -12,6 +12,7 @@ pub use quorum::category;
 pub use quorum::domain;
 pub use quorum::embeddings;
 pub use quorum::feedback;
+pub use quorum::file_util;
 pub use quorum::feedback_index;
 pub use quorum::finding;
 pub use quorum::grounding;

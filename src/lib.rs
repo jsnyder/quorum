@@ -32,6 +32,9 @@ pub mod finding;
 // Leaf module; pulled in here because feedback_index references it.
 pub mod embeddings;
 
+// Shared file-path utilities for same-file precedent matching.
+pub mod file_util;
+
 // Feedback store + entries (serde-only deps, no embeddings).
 pub mod feedback;
 
