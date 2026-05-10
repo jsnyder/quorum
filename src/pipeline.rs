@@ -176,6 +176,10 @@ pub struct PipelineConfig {
     /// Review mode governing prompt selection, severity rubric, and
     /// AST/linter applicability. Default: `Code`.
     pub mode: crate::review_mode::ReviewMode,
+    /// Optional registry client for Phase 2 popularity-tier lookups.
+    /// When `None` (default / Phase 1), the policy relies on the skip-list
+    /// and quality gate only — no network calls to crates.io / npm / PyPI.
+    pub registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>>,
 }
 
 impl Default for PipelineConfig {
@@ -200,6 +204,7 @@ impl Default for PipelineConfig {
             focus: None,
             calibrator_config: CalibratorConfig::default(),
             mode: crate::review_mode::ReviewMode::Code,
+            registry_client: None,
         }
     }
 }
@@ -635,12 +640,16 @@ pub async fn review_file(
                 // cache when no shared one is wired (tests, single-file CLI).
                 let ctx7_t0 = std::time::Instant::now();
                 let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
+                let policy = crate::enrichment_policy::EnrichmentPolicy {
+                    registry: None, // Phase 1: skip-list + quality gate only
+                };
                 let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
                     crate::context_enrichment::enrich_for_review_in_project(
                         &project_root,
                         &redacted_ctx.import_targets,
                         &domain.frameworks,
                         shared.as_ref(),
+                        &policy,
                     )
                 } else {
                     let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
@@ -650,6 +659,7 @@ pub async fn review_file(
                         &redacted_ctx.import_targets,
                         &domain.frameworks,
                         &cached,
+                        &policy,
                     )
                 };
                 let docs = result.docs;
@@ -1143,12 +1153,16 @@ pub async fn review_file_llm_only(
                     domain.frameworks.push(fw.clone());
                 }
             }
+            let policy = crate::enrichment_policy::EnrichmentPolicy {
+                registry: None, // Phase 1: skip-list + quality gate only
+            };
             let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
                 crate::context_enrichment::enrich_for_review_in_project(
                     &project_root,
                     &[],
                     &domain.frameworks,
                     shared.as_ref(),
+                    &policy,
                 )
             } else {
                 let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
@@ -1158,6 +1172,7 @@ pub async fn review_file_llm_only(
                     &[],
                     &domain.frameworks,
                     &cached,
+                    &policy,
                 )
             };
             let docs = result.docs;
