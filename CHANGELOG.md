@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Feedback
+
+- **Per-file few-shot scoping (#124).** Few-shot precedent retrieval now boosts same-file candidates (+0.05 additive similarity bonus) and reserves at least one selection slot for same-file precedents when available. Prevents cross-file feedback from silently displacing relevant precedents. Deterministic tie-breaking by `(similarity, timestamp, file_path)` ensures stable retrieval across runs.
 
 ## [0.20.0] - 2026-05-07
 
