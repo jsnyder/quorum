@@ -457,6 +457,19 @@ fn apply_same_file_reservation<'a>(
     selected
 }
 
+/// Sort few-shot candidates deterministically so that identical similarity scores
+/// produce a stable ordering across runs. Sort key: similarity DESC, timestamp DESC,
+/// file_path ASC.
+fn apply_deterministic_sort(candidates: &mut [crate::feedback_index::SimilarEntry]) {
+    candidates.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.entry.timestamp.cmp(&a.entry.timestamp))
+            .then_with(|| a.entry.file_path.cmp(&b.entry.file_path))
+    });
+}
+
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
 /// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
 fn query_feedback_precedents(
@@ -2756,5 +2769,49 @@ mod tests {
                 .any(|f| matches!(&f.source, Source::LocalAst)),
             "code mode should produce LocalAst findings for eval()",
         );
+    }
+
+    #[test]
+    fn deterministic_tiebreak_by_timestamp_then_path() {
+        use chrono::TimeZone;
+        let t1 = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let t2 = chrono::Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+
+        let mut candidates = vec![
+            crate::feedback_index::SimilarEntry {
+                entry: FeedbackEntry {
+                    file_path: "src/a.rs".into(),
+                    finding_title: "older".into(),
+                    finding_category: "security".into(),
+                    verdict: Verdict::Tp,
+                    reason: "r".into(),
+                    model: None,
+                    timestamp: t1,
+                    provenance: Provenance::Human,
+                    fp_kind: None,
+                    finding_id: None,
+                    rule_id: None,
+                },
+                similarity: 0.90,
+            },
+            crate::feedback_index::SimilarEntry {
+                entry: FeedbackEntry {
+                    file_path: "src/b.rs".into(),
+                    finding_title: "newer".into(),
+                    finding_category: "security".into(),
+                    verdict: Verdict::Fp,
+                    reason: "r".into(),
+                    model: None,
+                    timestamp: t2,
+                    provenance: Provenance::Human,
+                    fp_kind: None,
+                    finding_id: None,
+                    rule_id: None,
+                },
+                similarity: 0.90,
+            },
+        ];
+        apply_deterministic_sort(&mut candidates);
+        assert_eq!(candidates[0].entry.finding_title, "newer", "newer timestamp wins ties");
     }
 }
