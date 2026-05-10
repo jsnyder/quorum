@@ -102,7 +102,8 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
                 id = id[..pos].trim_end();
             }
 
-            // Post-strip cleanup: trailing :: and .
+            // Post-strip cleanup: leading/trailing :: and .
+            id = id.trim_start_matches([':', '.']);
             id = id.trim_end_matches([':', '.']);
 
             if id.len() >= MIN_IDENTIFIER_LEN && !STOPWORDS.contains(id) && looks_like_symbol(id) {
@@ -476,6 +477,12 @@ mod tests {
     fn turbofish_stopword_still_rejected() {
         let ids = extract_identifiers("Use `collect::<Vec<_>>()` here");
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn strips_leading_separator() {
+        let ids = extract_identifiers("The `::some_func` call");
+        assert_eq!(ids, vec!["some_func"]);
     }
 
     #[test]
