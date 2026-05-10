@@ -338,7 +338,7 @@ fn select_few_shot_precedents(
     selected
 }
 
-use crate::file_util::{normalize_file_path, SAME_FILE_BOOST};
+use crate::file_util::{SAME_FILE_BOOST, normalize_file_path};
 
 fn apply_same_file_boost(
     candidates: &[crate::feedback_index::SimilarEntry],

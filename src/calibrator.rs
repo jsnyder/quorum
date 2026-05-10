@@ -832,8 +832,7 @@ pub fn calibrate_with_index(
                     // TP/FP/wontfix accumulation above). Uses effective (boosted) value
                     // so operators can debug suppress/boost decisions accurately.
                     weight: verdict_weight(&s.entry, now) * effective_sim,
-                    provenance: serde_json::to_string(&s.entry.provenance)
-                        .unwrap_or_default(),
+                    provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
                     file_path: s.entry.file_path.clone(),
                     same_file: is_same_file,
                     effective_similarity: Some(effective_sim),
