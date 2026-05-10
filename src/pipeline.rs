@@ -246,8 +246,100 @@ fn truncate_for_review(source: &str, max_lines: usize) -> (String, Option<String
     (truncated, Some(notice))
 }
 
+/// Select up to 3 few-shot precedents from pre-filtered candidates.
+///
+/// Selection rules (issue #264):
+/// 1. Candidates must pass a relative similarity threshold (>= 60% of best score).
+/// 2. Take candidates in similarity-rank order (highest first).
+/// 3. Diversity floor: if both TP and FP exist in candidates, the final
+///    selection must contain at least 1 of each. When filling the 3rd slot
+///    and diversity is not yet met, skip same-verdict candidates to find the
+///    missing type.
+/// 4. If candidates are homogenous (all TP or all FP), fill all 3 slots.
+/// 5. Cap at 3 total.
+fn select_few_shot_precedents(
+    candidates: &[crate::feedback_index::SimilarEntry],
+) -> Vec<&crate::feedback_index::SimilarEntry> {
+    use crate::feedback::Verdict;
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    debug_assert!(
+        candidates
+            .iter()
+            .all(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp)),
+        "select_few_shot_precedents expects only Tp/Fp candidates; filter upstream"
+    );
+    debug_assert!(
+        candidates
+            .windows(2)
+            .all(|w| w[0].similarity >= w[1].similarity),
+        "select_few_shot_precedents expects candidates sorted by descending similarity"
+    );
+
+    let best_score = candidates[0].similarity;
+    let threshold = best_score * 0.6;
+
+    let viable: Vec<_> = candidates
+        .iter()
+        .filter(|s| s.similarity >= threshold)
+        .collect();
+
+    if viable.is_empty() {
+        return Vec::new();
+    }
+
+    let has_tp = viable.iter().any(|s| s.entry.verdict == Verdict::Tp);
+    let has_fp = viable.iter().any(|s| s.entry.verdict == Verdict::Fp);
+    let mixed = has_tp && has_fp;
+
+    let mut selected: Vec<&crate::feedback_index::SimilarEntry> = Vec::new();
+    let mut got_tp = false;
+    let mut got_fp = false;
+
+    for candidate in &viable {
+        if selected.len() >= 3 {
+            break;
+        }
+
+        let is_tp = candidate.entry.verdict == Verdict::Tp;
+
+        if mixed && selected.len() == 2 && (!got_tp || !got_fp) {
+            let dominated = if is_tp { got_tp } else { got_fp };
+            if dominated {
+                continue;
+            }
+        }
+
+        selected.push(candidate);
+        if is_tp {
+            got_tp = true;
+        } else {
+            got_fp = true;
+        }
+    }
+
+    if selected.len() < 3 {
+        let selected_ptrs: Vec<*const crate::feedback_index::SimilarEntry> =
+            selected.iter().map(|s| *s as *const _).collect();
+        for candidate in &viable {
+            if selected.len() >= 3 {
+                break;
+            }
+            let ptr = *candidate as *const _;
+            if !selected_ptrs.contains(&ptr) {
+                selected.push(candidate);
+            }
+        }
+    }
+
+    selected
+}
+
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
-/// Enforces a TP/FP mix to avoid anchoring the LLM toward only one verdict type.
+/// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
 fn query_feedback_precedents(
     index: &mut crate::feedback_index::FeedbackIndex,
     file_path: &str,
@@ -274,52 +366,29 @@ fn query_feedback_precedents(
     let similar = index.find_similar(&query, "", 15);
 
     let candidates: Vec<_> = similar
-        .iter()
-        .filter(|s| s.similarity >= 0.6)
+        .into_iter()
         .filter(|s| matches!(s.entry.provenance, Provenance::Human | Provenance::PostFix))
         .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp))
         .collect();
 
-    // Enforce TP/FP mix: pick up to 2 TPs and up to 1 FP (or vice versa if available)
-    let tps: Vec<_> = candidates
+    let selected = select_few_shot_precedents(&candidates);
+
+    let tp_count = selected
         .iter()
         .filter(|s| s.entry.verdict == Verdict::Tp)
-        .take(2)
-        .collect();
-    let fps: Vec<_> = candidates
+        .count();
+    let fp_count = selected
         .iter()
         .filter(|s| s.entry.verdict == Verdict::Fp)
-        .take(2)
-        .collect();
-
-    let mut selected: Vec<_> = Vec::new();
-    // Take up to 2 TPs
-    selected.extend(tps.iter().take(2));
-    // Fill remaining slots with FPs (up to 3 total)
-    for fp in &fps {
-        if selected.len() >= 3 {
-            break;
-        }
-        selected.push(fp);
-    }
-    // If we still have room and more TPs, fill
-    let remaining_tps: Vec<_> = candidates
-        .iter()
-        .filter(|s| s.entry.verdict == Verdict::Tp)
-        .skip(2)
-        .collect();
-    for tp in &remaining_tps {
-        if selected.len() >= 3 {
-            break;
-        }
-        selected.push(tp);
-    }
-
-    tracing::debug!(
+        .count();
+    tracing::info!(
         query_prefix = &query[..query.len().min(100)],
         candidates_found = candidates.len(),
         selected_count = selected.len(),
-        "Few-shot precedent retrieval"
+        selected_tps = tp_count,
+        selected_fps = fp_count,
+        best_similarity = candidates.first().map(|s| s.similarity),
+        "Few-shot precedent selection"
     );
 
     selected
@@ -1366,6 +1435,207 @@ mod tests {
             rendered.contains("…"),
             "ellipsis (…) must mark truncation; got: {}",
             rendered,
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // #264 — Few-shot precedent selection bias
+    // ---------------------------------------------------------------
+
+    fn sim_entry(
+        verdict: Verdict,
+        similarity: f32,
+        title: &str,
+    ) -> crate::feedback_index::SimilarEntry {
+        crate::feedback_index::SimilarEntry {
+            entry: FeedbackEntry {
+                file_path: "src/foo.rs".into(),
+                finding_title: title.into(),
+                finding_category: "security".into(),
+                verdict,
+                reason: "test reason".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: Provenance::Human,
+                fp_kind: None,
+                finding_id: None,
+                rule_id: None,
+            },
+            similarity,
+        }
+    }
+
+    #[test]
+    fn few_shot_interleaves_by_similarity_rank() {
+        let candidates = vec![
+            sim_entry(Verdict::Fp, 0.95, "fp-best"),
+            sim_entry(Verdict::Tp, 0.90, "tp-second"),
+            sim_entry(Verdict::Fp, 0.85, "fp-third"),
+            sim_entry(Verdict::Tp, 0.80, "tp-fourth"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].entry.finding_title, "fp-best");
+        assert_eq!(selected[1].entry.finding_title, "tp-second");
+        assert_eq!(selected[2].entry.finding_title, "fp-third");
+    }
+
+    #[test]
+    fn few_shot_diversity_floor_pulls_fp_when_top_are_tps() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.95, "tp-best"),
+            sim_entry(Verdict::Tp, 0.92, "tp-second"),
+            sim_entry(Verdict::Fp, 0.80, "fp-third"),
+            sim_entry(Verdict::Tp, 0.75, "tp-fourth"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        let fp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .count();
+        assert!(
+            fp_count >= 1,
+            "diversity floor requires at least 1 FP when available"
+        );
+        let tp_titles: Vec<_> = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Tp)
+            .map(|s| s.entry.finding_title.as_str())
+            .collect();
+        assert!(tp_titles.contains(&"tp-best"));
+        assert!(tp_titles.contains(&"tp-second"));
+    }
+
+    #[test]
+    fn few_shot_diversity_floor_pulls_tp_when_top_are_fps() {
+        let candidates = vec![
+            sim_entry(Verdict::Fp, 0.95, "fp-best"),
+            sim_entry(Verdict::Fp, 0.92, "fp-second"),
+            sim_entry(Verdict::Tp, 0.80, "tp-third"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        let tp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Tp)
+            .count();
+        assert!(
+            tp_count >= 1,
+            "diversity floor requires at least 1 TP when available"
+        );
+    }
+
+    #[test]
+    fn few_shot_homogenous_tps_fills_all_slots() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.95, "tp-a"),
+            sim_entry(Verdict::Tp, 0.90, "tp-b"),
+            sim_entry(Verdict::Tp, 0.85, "tp-c"),
+            sim_entry(Verdict::Tp, 0.80, "tp-d"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(
+            selected.len(),
+            3,
+            "all 3 slots filled with TPs when no FPs exist"
+        );
+    }
+
+    #[test]
+    fn few_shot_homogenous_fps_fills_all_slots() {
+        let candidates = vec![
+            sim_entry(Verdict::Fp, 0.95, "fp-a"),
+            sim_entry(Verdict::Fp, 0.90, "fp-b"),
+            sim_entry(Verdict::Fp, 0.85, "fp-c"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(
+            selected.len(),
+            3,
+            "all 3 slots filled with FPs when no TPs exist"
+        );
+    }
+
+    #[test]
+    fn few_shot_relative_threshold_filters_weak_matches() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 1.0, "tp-strong"),
+            sim_entry(Verdict::Fp, 0.70, "fp-ok"),
+            sim_entry(Verdict::Tp, 0.59, "tp-weak"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 2, "weak match below 60% of best excluded");
+        assert!(selected.iter().all(|s| s.entry.finding_title != "tp-weak"));
+    }
+
+    #[test]
+    fn few_shot_empty_candidates_returns_empty() {
+        let candidates: Vec<crate::feedback_index::SimilarEntry> = vec![];
+        let selected = select_few_shot_precedents(&candidates);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn few_shot_single_candidate_returns_it() {
+        let candidates = vec![sim_entry(Verdict::Tp, 0.90, "only-one")];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn few_shot_two_mixed_candidates_returns_both() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.90, "tp"),
+            sim_entry(Verdict::Fp, 0.85, "fp"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().any(|s| s.entry.verdict == Verdict::Tp));
+        assert!(selected.iter().any(|s| s.entry.verdict == Verdict::Fp));
+    }
+
+    #[test]
+    fn few_shot_threshold_boundary_exactly_60_pct_included() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 1.0, "best"),
+            sim_entry(Verdict::Fp, 0.6, "boundary"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 2, "0.6 is exactly 60% of 1.0 — include it");
+    }
+
+    #[test]
+    fn few_shot_diversity_skip_finds_fp_past_position_3() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 0.95, "tp-1"),
+            sim_entry(Verdict::Tp, 0.90, "tp-2"),
+            sim_entry(Verdict::Tp, 0.85, "tp-3"),
+            sim_entry(Verdict::Fp, 0.80, "fp-4"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        let fp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .count();
+        assert_eq!(fp_count, 1, "must find FP at position 4");
+        assert_eq!(selected[2].entry.finding_title, "fp-4");
+    }
+
+    #[test]
+    fn few_shot_diversity_skipped_when_minority_below_threshold() {
+        let candidates = vec![
+            sim_entry(Verdict::Tp, 1.0, "tp-1"),
+            sim_entry(Verdict::Tp, 0.90, "tp-2"),
+            sim_entry(Verdict::Tp, 0.85, "tp-3"),
+            sim_entry(Verdict::Fp, 0.50, "fp-weak"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        assert!(
+            selected.iter().all(|s| s.entry.verdict == Verdict::Tp),
+            "FP below threshold must not be pulled in by diversity floor"
         );
     }
 

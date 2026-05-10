@@ -1058,49 +1058,31 @@ mod tests {
 
     #[test]
     fn json_flag_wins_over_compact_env() {
-        assert_eq!(
-            resolve_output_mode(true, true, true),
-            OutputMode::Json,
-        );
+        assert_eq!(resolve_output_mode(true, true, true), OutputMode::Json,);
     }
 
     #[test]
     fn json_flag_wins_over_pipe() {
-        assert_eq!(
-            resolve_output_mode(true, false, false),
-            OutputMode::Json,
-        );
+        assert_eq!(resolve_output_mode(true, false, false), OutputMode::Json,);
     }
 
     #[test]
     fn compact_flag_wins_over_pipe() {
-        assert_eq!(
-            resolve_output_mode(false, true, false),
-            OutputMode::Compact,
-        );
+        assert_eq!(resolve_output_mode(false, true, false), OutputMode::Compact,);
     }
 
     #[test]
     fn pipe_without_flags_produces_json() {
-        assert_eq!(
-            resolve_output_mode(false, false, false),
-            OutputMode::Json,
-        );
+        assert_eq!(resolve_output_mode(false, false, false), OutputMode::Json,);
     }
 
     #[test]
     fn terminal_without_flags_produces_human() {
-        assert_eq!(
-            resolve_output_mode(false, false, true),
-            OutputMode::Human,
-        );
+        assert_eq!(resolve_output_mode(false, false, true), OutputMode::Human,);
     }
 
     #[test]
     fn json_flag_wins_even_in_terminal() {
-        assert_eq!(
-            resolve_output_mode(true, false, true),
-            OutputMode::Json,
-        );
+        assert_eq!(resolve_output_mode(true, false, true), OutputMode::Json,);
     }
 }
