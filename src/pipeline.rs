@@ -1465,6 +1465,30 @@ mod tests {
         }
     }
 
+    fn sim_entry_file(
+        verdict: Verdict,
+        similarity: f32,
+        title: &str,
+        file_path: &str,
+    ) -> crate::feedback_index::SimilarEntry {
+        crate::feedback_index::SimilarEntry {
+            entry: FeedbackEntry {
+                file_path: file_path.into(),
+                finding_title: title.into(),
+                finding_category: "security".into(),
+                verdict,
+                reason: "test reason".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: Provenance::Human,
+                fp_kind: None,
+                finding_id: None,
+                rule_id: None,
+            },
+            similarity,
+        }
+    }
+
     #[test]
     fn few_shot_interleaves_by_similarity_rank() {
         let candidates = vec![
