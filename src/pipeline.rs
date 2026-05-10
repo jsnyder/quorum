@@ -246,6 +246,85 @@ fn truncate_for_review(source: &str, max_lines: usize) -> (String, Option<String
     (truncated, Some(notice))
 }
 
+/// Select up to 3 few-shot precedents from pre-filtered candidates.
+///
+/// Selection rules (issue #264):
+/// 1. Candidates must pass a relative similarity threshold (>= 60% of best score).
+/// 2. Take candidates in similarity-rank order (highest first).
+/// 3. Diversity floor: if both TP and FP exist in candidates, the final
+///    selection must contain at least 1 of each. When filling the 3rd slot
+///    and diversity is not yet met, skip same-verdict candidates to find the
+///    missing type.
+/// 4. If candidates are homogenous (all TP or all FP), fill all 3 slots.
+/// 5. Cap at 3 total.
+fn select_few_shot_precedents(
+    candidates: &[crate::feedback_index::SimilarEntry],
+) -> Vec<&crate::feedback_index::SimilarEntry> {
+    use crate::feedback::Verdict;
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let best_score = candidates[0].similarity;
+    let threshold = best_score * 0.6;
+
+    let viable: Vec<_> = candidates
+        .iter()
+        .filter(|s| s.similarity >= threshold)
+        .collect();
+
+    if viable.is_empty() {
+        return Vec::new();
+    }
+
+    let has_tp = viable.iter().any(|s| s.entry.verdict == Verdict::Tp);
+    let has_fp = viable.iter().any(|s| s.entry.verdict == Verdict::Fp);
+    let mixed = has_tp && has_fp;
+
+    let mut selected: Vec<&crate::feedback_index::SimilarEntry> = Vec::new();
+    let mut got_tp = false;
+    let mut got_fp = false;
+
+    for candidate in &viable {
+        if selected.len() >= 3 {
+            break;
+        }
+
+        let is_tp = candidate.entry.verdict == Verdict::Tp;
+
+        if mixed && selected.len() == 2 && (!got_tp || !got_fp) {
+            let dominated = if is_tp { got_tp } else { got_fp };
+            if dominated {
+                continue;
+            }
+        }
+
+        selected.push(candidate);
+        if is_tp {
+            got_tp = true;
+        } else {
+            got_fp = true;
+        }
+    }
+
+    if selected.len() < 3 {
+        let selected_ptrs: Vec<*const crate::feedback_index::SimilarEntry> =
+            selected.iter().map(|s| *s as *const _).collect();
+        for candidate in &viable {
+            if selected.len() >= 3 {
+                break;
+            }
+            let ptr = *candidate as *const _;
+            if !selected_ptrs.contains(&ptr) {
+                selected.push(candidate);
+            }
+        }
+    }
+
+    selected
+}
+
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
 /// Enforces a TP/FP mix to avoid anchoring the LLM toward only one verdict type.
 fn query_feedback_precedents(
