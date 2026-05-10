@@ -170,6 +170,8 @@ mod tests {
                 weight: 1.0,
                 provenance: "human".into(),
                 file_path: "x.rs".into(),
+                same_file: false,
+                effective_similarity: None,
             }],
             action: Some(CalibratorAction::Confirmed),
             input_severity: Severity::Medium,
@@ -177,6 +179,7 @@ mod tests {
             severity_change_reason: Some(SeverityChangeReason::Boosted),
             file_path: None,
             provenance: None,
+            same_file_precedent_count: None,
         }
     }
 

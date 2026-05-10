@@ -113,6 +113,7 @@ fn make_no_match_trace(
             Some(file_path.to_string())
         },
         provenance: None,
+        same_file_precedent_count: None,
     }
 }
 
@@ -152,6 +153,7 @@ fn make_trace_entry(
             Some(file_path.to_string())
         },
         provenance: None,
+        same_file_precedent_count: None,
     }
 }
 
@@ -547,6 +549,8 @@ pub fn calibrate(
                     weight: verdict_weight(e, now),
                     provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
                     file_path: e.file_path.clone(),
+                    same_file: false,
+                    effective_similarity: None,
                 }
             })
             .collect();
@@ -799,6 +803,8 @@ pub fn calibrate_with_index(
                 weight: verdict_weight(&s.entry, now) * s.similarity as f64,
                 provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
                 file_path: s.entry.file_path.clone(),
+                same_file: false,
+                effective_similarity: None,
             })
             .collect();
 
