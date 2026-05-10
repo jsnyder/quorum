@@ -272,6 +272,12 @@ fn select_few_shot_precedents(
             .all(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp)),
         "select_few_shot_precedents expects only Tp/Fp candidates; filter upstream"
     );
+    debug_assert!(
+        candidates
+            .windows(2)
+            .all(|w| w[0].similarity >= w[1].similarity),
+        "select_few_shot_precedents expects candidates sorted by descending similarity"
+    );
 
     let best_score = candidates[0].similarity;
     let threshold = best_score * 0.6;
