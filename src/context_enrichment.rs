@@ -7,9 +7,18 @@ pub struct ContextDoc {
     pub content: String,
 }
 
+/// Metadata returned by a successful Context7 library resolve.
+#[derive(Debug, Clone)]
+pub struct ResolveResult {
+    pub library_id: String,
+    pub benchmark_score: Option<f64>,
+    pub snippet_count: Option<u32>,
+    pub reputation: Option<String>,
+}
+
 /// Trait for fetching framework documentation — allows testing with fake implementations.
 pub trait ContextFetcher: Send + Sync {
-    fn resolve_library(&self, name: &str) -> Option<String>;
+    fn resolve_library(&self, name: &str) -> Option<ResolveResult>;
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String>;
 }
 
@@ -280,10 +289,10 @@ fn try_fetch_one(
     // (and a resolve-failure would double-count `context7_resolve_failed`).
     seen.insert(name.into());
     match fetcher.resolve_library(name) {
-        Some(lib_id) => {
+        Some(resolve) => {
             metrics.context7_resolved += 1;
             let enriched = build_code_aware_query(query, imports);
-            if let Some(content) = fetcher.query_docs(&lib_id, &enriched, 5000) {
+            if let Some(content) = fetcher.query_docs(&resolve.library_id, &enriched, 5000) {
                 docs.push(ContextDoc {
                     library: name.into(),
                     content,
@@ -403,7 +412,7 @@ pub fn format_context_section(docs: &[ContextDoc]) -> String {
 
 /// Cache entry for resolve_library results, with TTL gating.
 struct ResolveCacheEntry {
-    result: Option<String>,
+    result: Option<ResolveResult>,
     cached_at: std::time::Instant,
 }
 
@@ -455,7 +464,7 @@ impl<'a> CachedContextFetcher<'a> {
 }
 
 impl<'a> ContextFetcher for CachedContextFetcher<'a> {
-    fn resolve_library(&self, name: &str) -> Option<String> {
+    fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
         let now = (self.now)();
         if let Ok(mut cache) = self.resolve_cache.lock()
             && let Some(entry) = cache.get(name)
@@ -541,7 +550,7 @@ impl Context7HttpFetcher {
 }
 
 impl ContextFetcher for Context7HttpFetcher {
-    fn resolve_library(&self, name: &str) -> Option<String> {
+    fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
         let api_key = self.api_key.as_ref()?;
 
         let resp = match self.block_on(
@@ -571,12 +580,28 @@ impl ContextFetcher for Context7HttpFetcher {
                 return None;
             }
         };
-        json["results"]
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|r| r.get("id"))
+        let first = json["results"].as_array()?.first()?;
+        let library_id = first.get("id")?.as_str()?.to_string();
+        let benchmark_score = first
+            .get("benchmarkScore")
+            .or_else(|| first.get("benchmark_score"))
+            .and_then(|v| v.as_f64());
+        let snippet_count = first
+            .get("codeSnippets")
+            .or_else(|| first.get("code_snippets"))
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
+        let reputation = first
+            .get("sourceReputation")
+            .or_else(|| first.get("source_reputation"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_string());
+        Some(ResolveResult {
+            library_id,
+            benchmark_score,
+            snippet_count,
+            reputation,
+        })
     }
 
     fn query_docs(&self, library_id: &str, query: &str, max_tokens: usize) -> Option<String> {
@@ -659,8 +684,13 @@ mod test_support {
 
     pub struct Spy;
     impl ContextFetcher for Spy {
-        fn resolve_library(&self, name: &str) -> Option<String> {
-            Some(format!("/lib/{name}"))
+        fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+            Some(ResolveResult {
+                library_id: format!("/lib/{name}"),
+                benchmark_score: Some(80.0),
+                snippet_count: Some(100),
+                reputation: Some("High".into()),
+            })
         }
         fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
             Some(format!("docs for {lib}"))
@@ -678,8 +708,13 @@ mod test_support {
         }
     }
     impl ContextFetcher for CapturingSpy {
-        fn resolve_library(&self, name: &str) -> Option<String> {
-            Some(name.into())
+        fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+            Some(ResolveResult {
+                library_id: name.into(),
+                benchmark_score: Some(80.0),
+                snippet_count: Some(100),
+                reputation: Some("High".into()),
+            })
         }
         fn query_docs(&self, lib: &str, query: &str, _: usize) -> Option<String> {
             self.queries
@@ -1126,7 +1161,7 @@ mod tests {
     fn enrich_for_review_with_empty_inputs_returns_no_docs_and_zero_metrics() {
         struct Spy;
         impl ContextFetcher for Spy {
-            fn resolve_library(&self, _: &str) -> Option<String> {
+            fn resolve_library(&self, _: &str) -> Option<ResolveResult> {
                 None
             }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
@@ -1268,7 +1303,7 @@ axum = "0.7"
             calls: Mutex<u32>,
         }
         impl ContextFetcher for CountingSpy {
-            fn resolve_library(&self, _: &str) -> Option<String> {
+            fn resolve_library(&self, _: &str) -> Option<ResolveResult> {
                 *self.calls.lock().unwrap() += 1;
                 None
             }
@@ -1297,9 +1332,14 @@ axum = "0.7"
             calls: Mutex<u32>,
         }
         impl ContextFetcher for CountingSpy {
-            fn resolve_library(&self, name: &str) -> Option<String> {
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
                 *self.calls.lock().unwrap() += 1;
-                Some(format!("/lib/{name}"))
+                Some(ResolveResult {
+                    library_id: format!("/lib/{name}"),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
                 None
@@ -1309,8 +1349,10 @@ axum = "0.7"
             calls: Mutex::new(0),
         };
         let cached = CachedContextFetcher::new(&inner, 16);
-        assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
-        assert_eq!(cached.resolve_library("react"), Some("/lib/react".into()));
+        let r1 = cached.resolve_library("react");
+        assert_eq!(r1.as_ref().map(|r| r.library_id.as_str()), Some("/lib/react"));
+        let r2 = cached.resolve_library("react");
+        assert_eq!(r2.as_ref().map(|r| r.library_id.as_str()), Some("/lib/react"));
         assert_eq!(*inner.calls.lock().unwrap(), 1);
     }
 
@@ -1322,7 +1364,7 @@ axum = "0.7"
             calls: Mutex<u32>,
         }
         impl ContextFetcher for CountingSpy {
-            fn resolve_library(&self, _: &str) -> Option<String> {
+            fn resolve_library(&self, _: &str) -> Option<ResolveResult> {
                 *self.calls.lock().unwrap() += 1;
                 None
             }
@@ -1358,8 +1400,13 @@ axum = "0.7"
         use crate::dep_manifest::Dependency;
         struct ResolveOkButQueryFails;
         impl ContextFetcher for ResolveOkButQueryFails {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(format!("/lib/{name}"))
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+                Some(ResolveResult {
+                    library_id: format!("/lib/{name}"),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
                 None
@@ -1387,11 +1434,21 @@ axum = "0.7"
         use crate::dep_manifest::Dependency;
         struct PartialSpy;
         impl ContextFetcher for PartialSpy {
-            fn resolve_library(&self, name: &str) -> Option<String> {
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
                 if name == "good" {
-                    Some("/lib/good".into())
+                    Some(ResolveResult {
+                        library_id: "/lib/good".into(),
+                        benchmark_score: None,
+                        snippet_count: None,
+                        reputation: None,
+                    })
                 } else if name == "query_fails" {
-                    Some("/lib/qf".into())
+                    Some(ResolveResult {
+                        library_id: "/lib/qf".into(),
+                        benchmark_score: None,
+                        snippet_count: None,
+                        reputation: None,
+                    })
                 } else {
                     None
                 }
@@ -1567,8 +1624,13 @@ axum = "0.7"
             calls: Arc<AtomicUsize>,
         }
         impl ContextFetcher for CountingFetcher {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(format!("/lib/{}", name))
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+                Some(ResolveResult {
+                    library_id: format!("/lib/{}", name),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(
                 &self,
@@ -1615,9 +1677,14 @@ axum = "0.7"
             calls: Arc<AtomicUsize>,
         }
         impl ContextFetcher for CountingResolver {
-            fn resolve_library(&self, name: &str) -> Option<String> {
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                Some(format!("/lib/{}", name))
+                Some(ResolveResult {
+                    library_id: format!("/lib/{}", name),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
                 None
@@ -1666,8 +1733,13 @@ axum = "0.7"
             calls: Arc<AtomicUsize>,
         }
         impl ContextFetcher for CountingQuery {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(name.into())
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+                Some(ResolveResult {
+                    library_id: name.into(),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(&self, lib: &str, _: &str, _: usize) -> Option<String> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1702,8 +1774,13 @@ axum = "0.7"
     fn cached_fetcher_delegates_resolve() {
         struct StubFetcher;
         impl ContextFetcher for StubFetcher {
-            fn resolve_library(&self, name: &str) -> Option<String> {
-                Some(format!("/resolved/{}", name))
+            fn resolve_library(&self, name: &str) -> Option<ResolveResult> {
+                Some(ResolveResult {
+                    library_id: format!("/resolved/{}", name),
+                    benchmark_score: None,
+                    snippet_count: None,
+                    reputation: None,
+                })
             }
             fn query_docs(&self, _: &str, _: &str, _: usize) -> Option<String> {
                 None
@@ -1713,8 +1790,22 @@ axum = "0.7"
         let inner = StubFetcher;
         let cached = CachedContextFetcher::new(&inner, 16);
         assert_eq!(
-            cached.resolve_library("react"),
+            cached.resolve_library("react").map(|r| r.library_id),
             Some("/resolved/react".into())
         );
+    }
+
+    #[test]
+    fn resolve_result_carries_metadata() {
+        let result = ResolveResult {
+            library_id: "/serde-rs/serde".into(),
+            benchmark_score: Some(83.7),
+            snippet_count: Some(366),
+            reputation: Some("High".into()),
+        };
+        assert_eq!(result.library_id, "/serde-rs/serde");
+        assert_eq!(result.benchmark_score, Some(83.7));
+        assert_eq!(result.snippet_count, Some(366));
+        assert_eq!(result.reputation.as_deref(), Some("High"));
     }
 }
