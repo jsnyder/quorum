@@ -89,13 +89,15 @@ pub fn extract_identifiers(text: &str) -> Vec<&str> {
         .filter_map(|cap| {
             let mut id = cap.get(1).unwrap().as_str().trim();
 
-            // Strip call arguments: truncate at first '('
-            if let Some(pos) = id.find('(') {
+            // Strip generic parameters first: truncate at first '<' if '>' exists.
+            // Must run before arg stripping so `Option<(u32, u32)>` strips to
+            // `Option`, not `Option<` (which would happen if `(` were found first).
+            if id.contains('>') && let Some(pos) = id.find('<') {
                 id = id[..pos].trim_end();
             }
 
-            // Strip generic parameters: truncate at first '<' if '>' exists
-            if id.contains('>') && let Some(pos) = id.find('<') {
+            // Strip call arguments: truncate at first '('
+            if let Some(pos) = id.find('(') {
                 id = id[..pos].trim_end();
             }
 
@@ -519,6 +521,18 @@ mod tests {
     fn multi_segment_generic_filtered_by_length() {
         let ids = extract_identifiers("Type `Foo<A>::Bar<B>` is complex");
         assert!(ids.is_empty(), "Foo is only 3 chars after stripping");
+    }
+
+    #[test]
+    fn generic_with_tuple_inside_not_dropped() {
+        let ids = extract_identifiers("The `Decoder<(u32, u32)>` type wraps a pair");
+        assert_eq!(ids, vec!["Decoder"]);
+    }
+
+    #[test]
+    fn generic_with_fn_syntax_inside_not_dropped() {
+        let ids = extract_identifiers("Use `Callback<fn(i32)>` for handlers");
+        assert_eq!(ids, vec!["Callback"]);
     }
 
     // --- verify_grounding / apply_grounding tests (Task 3) ---
