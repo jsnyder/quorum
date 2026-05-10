@@ -1442,7 +1442,11 @@ mod tests {
     // #264 — Few-shot precedent selection bias
     // ---------------------------------------------------------------
 
-    fn sim_entry(verdict: Verdict, similarity: f32, title: &str) -> crate::feedback_index::SimilarEntry {
+    fn sim_entry(
+        verdict: Verdict,
+        similarity: f32,
+        title: &str,
+    ) -> crate::feedback_index::SimilarEntry {
         crate::feedback_index::SimilarEntry {
             entry: FeedbackEntry {
                 file_path: "src/foo.rs".into(),
@@ -1486,9 +1490,16 @@ mod tests {
         ];
         let selected = select_few_shot_precedents(&candidates);
         assert_eq!(selected.len(), 3);
-        let fp_count = selected.iter().filter(|s| s.entry.verdict == Verdict::Fp).count();
-        assert!(fp_count >= 1, "diversity floor requires at least 1 FP when available");
-        let tp_titles: Vec<_> = selected.iter()
+        let fp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Fp)
+            .count();
+        assert!(
+            fp_count >= 1,
+            "diversity floor requires at least 1 FP when available"
+        );
+        let tp_titles: Vec<_> = selected
+            .iter()
             .filter(|s| s.entry.verdict == Verdict::Tp)
             .map(|s| s.entry.finding_title.as_str())
             .collect();
@@ -1505,8 +1516,14 @@ mod tests {
         ];
         let selected = select_few_shot_precedents(&candidates);
         assert_eq!(selected.len(), 3);
-        let tp_count = selected.iter().filter(|s| s.entry.verdict == Verdict::Tp).count();
-        assert!(tp_count >= 1, "diversity floor requires at least 1 TP when available");
+        let tp_count = selected
+            .iter()
+            .filter(|s| s.entry.verdict == Verdict::Tp)
+            .count();
+        assert!(
+            tp_count >= 1,
+            "diversity floor requires at least 1 TP when available"
+        );
     }
 
     #[test]
@@ -1518,7 +1535,11 @@ mod tests {
             sim_entry(Verdict::Tp, 0.80, "tp-d"),
         ];
         let selected = select_few_shot_precedents(&candidates);
-        assert_eq!(selected.len(), 3, "all 3 slots filled with TPs when no FPs exist");
+        assert_eq!(
+            selected.len(),
+            3,
+            "all 3 slots filled with TPs when no FPs exist"
+        );
     }
 
     #[test]
@@ -1529,7 +1550,11 @@ mod tests {
             sim_entry(Verdict::Fp, 0.85, "fp-c"),
         ];
         let selected = select_few_shot_precedents(&candidates);
-        assert_eq!(selected.len(), 3, "all 3 slots filled with FPs when no TPs exist");
+        assert_eq!(
+            selected.len(),
+            3,
+            "all 3 slots filled with FPs when no TPs exist"
+        );
     }
 
     #[test]
