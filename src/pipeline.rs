@@ -524,12 +524,7 @@ fn query_feedback_precedents(
     let pre_reservation_has_same_file = selected
         .iter()
         .any(|s| normalize_file_path(&s.entry.file_path) == normalize_file_path(file_path));
-    let selected = apply_same_file_reservation(
-        selected,
-        &candidates,
-        file_path,
-        best_score,
-    );
+    let selected = apply_same_file_reservation(selected, &candidates, file_path, best_score);
     let reservation_applied = !pre_reservation_has_same_file
         && selected
             .iter()
@@ -1883,11 +1878,17 @@ mod tests {
 
     #[test]
     fn file_boost_clamps_at_one() {
-        let candidates = vec![
-            sim_entry_file(Verdict::Tp, 0.98, "tp-high", "src/target.rs"),
-        ];
+        let candidates = vec![sim_entry_file(
+            Verdict::Tp,
+            0.98,
+            "tp-high",
+            "src/target.rs",
+        )];
         let boosted = apply_same_file_boost(&candidates, "src/target.rs");
-        assert!(boosted[0].similarity <= 1.0, "boosted score must clamp at 1.0");
+        assert!(
+            boosted[0].similarity <= 1.0,
+            "boosted score must clamp at 1.0"
+        );
     }
 
     #[test]
@@ -1903,12 +1904,18 @@ mod tests {
 
     #[test]
     fn file_boost_uses_normalized_paths() {
-        let candidates = vec![
-            sim_entry_file(Verdict::Tp, 0.80, "tp-dotslash", "./src/target.rs"),
-        ];
+        let candidates = vec![sim_entry_file(
+            Verdict::Tp,
+            0.80,
+            "tp-dotslash",
+            "./src/target.rs",
+        )];
         let boosted = apply_same_file_boost(&candidates, "src/target.rs");
         // ./src/target.rs should match src/target.rs after normalization
-        assert!(boosted[0].similarity > 0.80, "normalized path should match and get boost");
+        assert!(
+            boosted[0].similarity > 0.80,
+            "normalized path should match and get boost"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1925,7 +1932,11 @@ mod tests {
         ];
         let selected = select_few_shot_precedents(&candidates);
         assert_eq!(selected.len(), 3);
-        assert!(selected.iter().all(|s| s.entry.file_path != "src/target.rs"));
+        assert!(
+            selected
+                .iter()
+                .all(|s| s.entry.file_path != "src/target.rs")
+        );
 
         let reserved = apply_same_file_reservation(
             selected,
@@ -1935,7 +1946,9 @@ mod tests {
         );
         assert_eq!(reserved.len(), 3);
         assert!(
-            reserved.iter().any(|s| s.entry.file_path == "src/target.rs"),
+            reserved
+                .iter()
+                .any(|s| s.entry.file_path == "src/target.rs"),
             "reservation must inject same-file candidate"
         );
         // Diversity floor preserved
@@ -1962,8 +1975,14 @@ mod tests {
             reserved.iter().any(|s| s.entry.verdict == Verdict::Fp),
             "diversity floor must be preserved — cannot displace the only FP"
         );
-        let same_file = reserved.iter().filter(|s| s.entry.file_path == "src/target.rs").count();
-        assert_eq!(same_file, 1, "same-file reservation should succeed by displacing a TP");
+        let same_file = reserved
+            .iter()
+            .filter(|s| s.entry.file_path == "src/target.rs")
+            .count();
+        assert_eq!(
+            same_file, 1,
+            "same-file reservation should succeed by displacing a TP"
+        );
     }
 
     #[test]
@@ -1985,8 +2004,14 @@ mod tests {
             reserved.iter().any(|s| s.entry.verdict == Verdict::Tp),
             "diversity floor must be preserved — cannot displace the only TP"
         );
-        let same_file = reserved.iter().filter(|s| s.entry.file_path == "src/target.rs").count();
-        assert_eq!(same_file, 1, "same-file reservation should succeed by displacing an FP");
+        let same_file = reserved
+            .iter()
+            .filter(|s| s.entry.file_path == "src/target.rs")
+            .count();
+        assert_eq!(
+            same_file, 1,
+            "same-file reservation should succeed by displacing an FP"
+        );
     }
 
     #[test]
@@ -2004,8 +2029,14 @@ mod tests {
             candidates[0].similarity,
         );
         assert_eq!(
-            reserved.iter().map(|s| s.entry.finding_title.as_str()).collect::<Vec<_>>(),
-            selected.iter().map(|s| s.entry.finding_title.as_str()).collect::<Vec<_>>(),
+            reserved
+                .iter()
+                .map(|s| s.entry.finding_title.as_str())
+                .collect::<Vec<_>>(),
+            selected
+                .iter()
+                .map(|s| s.entry.finding_title.as_str())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -2025,7 +2056,9 @@ mod tests {
             candidates[0].similarity,
         );
         assert!(
-            reserved.iter().all(|s| s.entry.file_path != "src/target.rs"),
+            reserved
+                .iter()
+                .all(|s| s.entry.file_path != "src/target.rs"),
             "below-threshold same-file must not be injected"
         );
     }
@@ -2034,20 +2067,18 @@ mod tests {
     fn reservation_empty_candidates_returns_selected() {
         let candidates: Vec<crate::feedback_index::SimilarEntry> = vec![];
         let selected: Vec<&crate::feedback_index::SimilarEntry> = vec![];
-        let reserved = apply_same_file_reservation(
-            selected,
-            &candidates,
-            "src/target.rs",
-            0.0,
-        );
+        let reserved = apply_same_file_reservation(selected, &candidates, "src/target.rs", 0.0);
         assert!(reserved.is_empty());
     }
 
     #[test]
     fn regression_124_cross_file_feedback_does_not_displace_same_file() {
-        let mut candidates = vec![
-            sim_entry_file(Verdict::Tp, 0.85, "same-file-tp", "src/llm_client.rs"),
-        ];
+        let mut candidates = vec![sim_entry_file(
+            Verdict::Tp,
+            0.85,
+            "same-file-tp",
+            "src/llm_client.rs",
+        )];
         for i in 0..10 {
             candidates.push(sim_entry_file(
                 if i % 2 == 0 { Verdict::Tp } else { Verdict::Fp },
@@ -2061,15 +2092,13 @@ mod tests {
         let boosted = apply_same_file_boost(&candidates, "src/llm_client.rs");
         let selected = select_few_shot_precedents(&boosted);
         let best_score = boosted.first().map(|s| s.similarity).unwrap_or(0.0);
-        let final_selection = apply_same_file_reservation(
-            selected,
-            &boosted,
-            "src/llm_client.rs",
-            best_score,
-        );
+        let final_selection =
+            apply_same_file_reservation(selected, &boosted, "src/llm_client.rs", best_score);
 
         assert!(
-            final_selection.iter().any(|s| s.entry.file_path == "src/llm_client.rs"),
+            final_selection
+                .iter()
+                .any(|s| s.entry.file_path == "src/llm_client.rs"),
             "same-file TP for llm_client.rs must survive despite 10 cross-file entries"
         );
     }
@@ -2886,6 +2915,9 @@ mod tests {
             },
         ];
         apply_deterministic_sort(&mut candidates);
-        assert_eq!(candidates[0].entry.finding_title, "newer", "newer timestamp wins ties");
+        assert_eq!(
+            candidates[0].entry.finding_title, "newer",
+            "newer timestamp wins ties"
+        );
     }
 }
