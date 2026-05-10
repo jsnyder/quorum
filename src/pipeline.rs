@@ -381,6 +381,82 @@ fn apply_same_file_boost(
     boosted
 }
 
+/// Reserve one slot for a same-file precedent if none was selected naturally.
+///
+/// After `select_few_shot_precedents` picks the top-3, this function checks
+/// whether any of them share a file path with the file under review. If not,
+/// it looks for the highest-similarity same-file candidate from the full pool
+/// that passes the 60%-of-best threshold, and swaps it in for the
+/// lowest-similarity selected entry -- but only if doing so preserves the
+/// diversity floor (at least 1 TP + 1 FP when both exist).
+fn apply_same_file_reservation<'a>(
+    mut selected: Vec<&'a crate::feedback_index::SimilarEntry>,
+    all_candidates: &'a [crate::feedback_index::SimilarEntry],
+    review_file: &str,
+    best_score: f32,
+) -> Vec<&'a crate::feedback_index::SimilarEntry> {
+    use crate::feedback::Verdict;
+
+    let norm_review = normalize_file_path(review_file);
+    let threshold = best_score * 0.6;
+
+    // Already has same-file? No reservation needed.
+    if selected
+        .iter()
+        .any(|s| normalize_file_path(&s.entry.file_path) == norm_review)
+    {
+        return selected;
+    }
+
+    // Find best same-file candidate above threshold from the full pool.
+    let best_same_file = all_candidates
+        .iter()
+        .filter(|s| normalize_file_path(&s.entry.file_path) == norm_review)
+        .filter(|s| s.similarity >= threshold)
+        .max_by(|a, b| {
+            a.similarity
+                .partial_cmp(&b.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+    let same_file = match best_same_file {
+        Some(sf) => sf,
+        None => return selected,
+    };
+
+    // Find the swap target: lowest-similarity entry that won't break diversity.
+    // Diversity = hard constraint: if entry is the sole representative of its
+    // verdict class, it cannot be swapped.
+    let tp_count = selected
+        .iter()
+        .filter(|s| s.entry.verdict == Verdict::Tp)
+        .count();
+    let fp_count = selected
+        .iter()
+        .filter(|s| s.entry.verdict == Verdict::Fp)
+        .count();
+
+    let mut swap_idx = None;
+    for i in (0..selected.len()).rev() {
+        let entry_is_tp = selected[i].entry.verdict == Verdict::Tp;
+        let would_break_diversity = if entry_is_tp {
+            tp_count == 1
+        } else {
+            fp_count == 1
+        };
+        if !would_break_diversity {
+            swap_idx = Some(i);
+            break;
+        }
+    }
+
+    if let Some(idx) = swap_idx {
+        selected[idx] = same_file;
+    }
+
+    selected
+}
+
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
 /// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
 fn query_feedback_precedents(
@@ -1777,6 +1853,138 @@ mod tests {
         let boosted = apply_same_file_boost(&candidates, "src/target.rs");
         // ./src/target.rs should match src/target.rs after normalization
         assert!(boosted[0].similarity > 0.80, "normalized path should match and get boost");
+    }
+
+    // ---------------------------------------------------------------
+    // #124 — Same-file reservation slot with diversity-safe swap
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn reservation_injects_same_file_when_missing() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.95, "tp-cross-1", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.90, "fp-cross", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.85, "tp-cross-2", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.70, "tp-same", "src/target.rs"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        assert_eq!(selected.len(), 3);
+        assert!(selected.iter().all(|s| s.entry.file_path != "src/target.rs"));
+
+        let reserved = apply_same_file_reservation(
+            selected,
+            &candidates,
+            "src/target.rs",
+            candidates[0].similarity,
+        );
+        assert_eq!(reserved.len(), 3);
+        assert!(
+            reserved.iter().any(|s| s.entry.file_path == "src/target.rs"),
+            "reservation must inject same-file candidate"
+        );
+        // Diversity floor preserved
+        assert!(reserved.iter().any(|s| s.entry.verdict == Verdict::Tp));
+        assert!(reserved.iter().any(|s| s.entry.verdict == Verdict::Fp));
+    }
+
+    #[test]
+    fn reservation_preserves_diversity_wont_displace_sole_fp() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.95, "tp-1", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.90, "tp-2", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.85, "fp-only", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.70, "tp-same", "src/target.rs"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        let reserved = apply_same_file_reservation(
+            selected,
+            &candidates,
+            "src/target.rs",
+            candidates[0].similarity,
+        );
+        assert!(
+            reserved.iter().any(|s| s.entry.verdict == Verdict::Fp),
+            "diversity floor must be preserved — cannot displace the only FP"
+        );
+        let same_file = reserved.iter().filter(|s| s.entry.file_path == "src/target.rs").count();
+        assert_eq!(same_file, 1, "same-file reservation should succeed by displacing a TP");
+    }
+
+    #[test]
+    fn reservation_preserves_diversity_wont_displace_sole_tp() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Fp, 0.95, "fp-1", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.90, "fp-2", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.85, "tp-only", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.70, "fp-same", "src/target.rs"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        let reserved = apply_same_file_reservation(
+            selected,
+            &candidates,
+            "src/target.rs",
+            candidates[0].similarity,
+        );
+        assert!(
+            reserved.iter().any(|s| s.entry.verdict == Verdict::Tp),
+            "diversity floor must be preserved — cannot displace the only TP"
+        );
+        let same_file = reserved.iter().filter(|s| s.entry.file_path == "src/target.rs").count();
+        assert_eq!(same_file, 1, "same-file reservation should succeed by displacing an FP");
+    }
+
+    #[test]
+    fn reservation_skipped_when_already_has_same_file() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.95, "tp-same", "src/target.rs"),
+            sim_entry_file(Verdict::Fp, 0.90, "fp-cross", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.85, "tp-cross", "src/other.rs"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        let reserved = apply_same_file_reservation(
+            selected.clone(),
+            &candidates,
+            "src/target.rs",
+            candidates[0].similarity,
+        );
+        assert_eq!(
+            reserved.iter().map(|s| s.entry.finding_title.as_str()).collect::<Vec<_>>(),
+            selected.iter().map(|s| s.entry.finding_title.as_str()).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn reservation_skipped_when_same_file_below_threshold() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.95, "tp-cross-1", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.90, "fp-cross", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.85, "tp-cross-2", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.40, "tp-same-weak", "src/target.rs"),
+        ];
+        let selected = select_few_shot_precedents(&candidates);
+        let reserved = apply_same_file_reservation(
+            selected,
+            &candidates,
+            "src/target.rs",
+            candidates[0].similarity,
+        );
+        assert!(
+            reserved.iter().all(|s| s.entry.file_path != "src/target.rs"),
+            "below-threshold same-file must not be injected"
+        );
+    }
+
+    #[test]
+    fn reservation_empty_candidates_returns_selected() {
+        let candidates: Vec<crate::feedback_index::SimilarEntry> = vec![];
+        let selected: Vec<&crate::feedback_index::SimilarEntry> = vec![];
+        let reserved = apply_same_file_reservation(
+            selected,
+            &candidates,
+            "src/target.rs",
+            0.0,
+        );
+        assert!(reserved.is_empty());
     }
 
     async fn parse_and_review(
