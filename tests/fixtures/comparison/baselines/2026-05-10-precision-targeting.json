@@ -1,0 +1,133 @@
+{
+  "date": "2026-05-10",
+  "branch": "worktree-feat+context7-precision-targeting",
+  "quorum_version": "0.20.0-dev (precision-targeting)",
+  "model": "gpt-5.4",
+  "third_opinion_version": "1.17.0",
+  "notes": "First external corpus comparison. Feedback NOT recorded — preserved as clean test corpus.",
+  "files": [
+    {
+      "name": "index_writer.rs",
+      "source": "https://github.com/quickwit-oss/tantivy/blob/main/src/indexer/index_writer.rs",
+      "language": "rust",
+      "lines": 2588
+    },
+    {
+      "name": "client.py",
+      "source": "https://github.com/encode/httpx/blob/master/httpx/_client.py",
+      "language": "python",
+      "lines": 2019
+    },
+    {
+      "name": "router.ts",
+      "source": "https://github.com/trpc/trpc/blob/main/packages/server/src/unstable-core-do-not-import/router.ts",
+      "language": "typescript",
+      "lines": 565
+    }
+  ],
+  "results": {
+    "index_writer.rs": {
+      "quorum": {
+        "total": 4,
+        "findings": [
+          {"severity": "high", "category": "maintainability", "title": "wait_merging_threads returns early and detaches remaining threads"},
+          {"severity": "high", "category": "correctness", "title": "IndexWriter::new does not enforce MAX_NUM_THREAD"},
+          {"severity": "medium", "category": "performance", "title": "Function test_operation_strategy has cyclomatic complexity 51", "source": "local-ast"},
+          {"severity": "medium", "category": "error-handling", "title": "wait_merging_threads discards the original worker error details"}
+        ]
+      },
+      "pal": {
+        "total": 3,
+        "findings": [
+          {"severity": "high", "title": "MAX_NUM_THREAD not enforced in IndexWriter::new()"},
+          {"severity": "high", "title": "wait_merging_threads returns early, detaches remaining threads"},
+          {"severity": "medium", "title": "rollback() silently discards enqueued operations"}
+        ]
+      },
+      "third_opinion": {
+        "total": 4,
+        "score": 87,
+        "findings": [
+          {"severity": "medium", "title": "MAX_NUM_THREAD declared but never enforced"},
+          {"severity": "medium", "title": "rollback() silently drops queued operations"},
+          {"severity": "low", "title": "Thread join error handling inconsistent across file"},
+          {"severity": "low", "title": "test_writer_options_validation missing MAX_NUM_THREAD case"}
+        ]
+      }
+    },
+    "client.py": {
+      "quorum": {
+        "total": 8,
+        "findings": [
+          {"severity": "high", "category": "correctness", "title": "_merge_url drops query/fragment from relative URLs"},
+          {"severity": "high", "category": "concurrency", "title": "send races with close/aclose despite shared-use API claims"},
+          {"severity": "high", "category": "logic", "title": "_send_handling_redirects allows one redirect past max_redirects"},
+          {"severity": "medium", "category": "maintainability", "title": "AsyncClient.aclose leaks mounted transports on close errors"},
+          {"severity": "medium", "category": "maintainability", "title": "AsyncClient.__aenter__ leaks already-opened transports on failure"},
+          {"severity": "medium", "category": "maintainability", "title": "Client.close leaks mounted transports if base transport close fails"},
+          {"severity": "medium", "category": "maintainability", "title": "Client.__enter__ leaks already-opened transports on partial failure"},
+          {"severity": "medium", "category": "maintainability", "title": "assert-in-prod-code: assert is stripped by python -O", "source": "ast-grep"}
+        ]
+      },
+      "pal": {
+        "total": 3,
+        "findings": [
+          {"severity": "high", "title": "Off-by-one in max_redirects check"},
+          {"severity": "high", "title": "send() races with close()/aclose()"},
+          {"severity": "medium", "title": "Transport leak on close errors"}
+        ]
+      },
+      "third_opinion": {
+        "total": 3,
+        "score": 91,
+        "findings": [
+          {"severity": "medium", "title": "Off-by-one in redirect limit check"},
+          {"severity": "medium", "title": "Client.close() leaks mounted transports on error"},
+          {"severity": "info", "title": "_redirect_headers removes Authorization but not on cross-scheme downgrade"}
+        ]
+      }
+    },
+    "router.ts": {
+      "quorum": {
+        "total": 7,
+        "findings": [
+          {"severity": "high", "category": "correctness", "title": "getProcedureAtPath matches lazy routers by raw prefix"},
+          {"severity": "high", "category": "correctness", "title": "createRouterInner only rejects reserved words at top level"},
+          {"severity": "low", "category": "correctness", "title": "isProcedure accepts any function as a procedure"},
+          {"severity": "medium", "category": "correctness", "title": "isRouter treats any object with _def.router as a router"},
+          {"severity": "medium", "category": "maintainability", "title": "as-any-cast: Type assertion to any bypasses TypeScript type safety", "source": "ast-grep"},
+          {"severity": "medium", "category": "maintainability", "title": "non-null-assertion: Non-null assertion ! bypasses type safety", "source": "ast-grep"},
+          {"severity": "low", "category": "maintainability", "title": "Use of non-null assertion operator ! bypasses type safety", "source": "local-ast"}
+        ]
+      },
+      "pal": {
+        "total": 3,
+        "findings": [
+          {"severity": "high", "title": "getProcedureAtPath prefix matching allows path confusion"},
+          {"severity": "high", "title": "Reserved word check only at top level"},
+          {"severity": "medium", "title": "isProcedure too permissive type guard"}
+        ]
+      },
+      "third_opinion": {
+        "total": 3,
+        "score": 83,
+        "findings": [
+          {"severity": "high", "title": "getProcedureAtPath prefix matching can resolve wrong router"},
+          {"severity": "medium", "title": "Reserved word validation only at top level"},
+          {"severity": "info", "title": "lazy() validates imported modules before accepting as routers"}
+        ]
+      }
+    }
+  },
+  "summary": {
+    "quorum_total": 19,
+    "pal_total": 9,
+    "third_opinion_total": 10,
+    "quorum_unique": 8,
+    "pal_unique": 0,
+    "third_opinion_unique": 2,
+    "shared_across_all_3": 5,
+    "quorum_ast_grep_hits": 3,
+    "quorum_local_ast_hits": 2
+  }
+}
