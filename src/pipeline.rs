@@ -641,7 +641,10 @@ pub async fn review_file(
                 let ctx7_t0 = std::time::Instant::now();
                 let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
                 let policy = crate::enrichment_policy::EnrichmentPolicy {
-                    registry: None, // Phase 1: skip-list + quality gate only
+                    registry: pipeline_config
+                        .registry_client
+                        .as_ref()
+                        .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
                 };
                 let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
                     crate::context_enrichment::enrich_for_review_in_project(
@@ -1154,7 +1157,10 @@ pub async fn review_file_llm_only(
                 }
             }
             let policy = crate::enrichment_policy::EnrichmentPolicy {
-                registry: None, // Phase 1: skip-list + quality gate only
+                registry: pipeline_config
+                    .registry_client
+                    .as_ref()
+                    .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
             };
             let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
                 crate::context_enrichment::enrich_for_review_in_project(

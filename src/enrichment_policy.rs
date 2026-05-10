@@ -274,6 +274,55 @@ impl RegistryClient for CachedRegistryClient<'_> {
     }
 }
 
+// ── Component 4b: Owned Cached Registry ──────────────────────────────────────
+
+/// Owned variant of `CachedRegistryClient` for pipeline use where the inner
+/// client lives inside an `Arc`. Unlike `CachedRegistryClient<'a>`, this
+/// struct owns its inner client via a `Box<dyn RegistryClient>` so it can
+/// be wrapped in `Arc<dyn RegistryClient>` without lifetime constraints.
+pub struct OwnedCachedRegistryClient {
+    inner: Box<dyn RegistryClient>,
+    cache: std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
+    ttl: std::time::Duration,
+}
+
+impl OwnedCachedRegistryClient {
+    pub fn new(inner: Box<dyn RegistryClient>, max_entries: usize) -> Self {
+        let cap = std::num::NonZeroUsize::new(max_entries.max(1)).unwrap();
+        Self {
+            inner,
+            cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
+            ttl: REGISTRY_CACHE_TTL,
+        }
+    }
+}
+
+impl RegistryClient for OwnedCachedRegistryClient {
+    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
+        let key = (name.to_string(), language.to_string());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(entry) = cache.get(&key) {
+                if entry.cached_at.elapsed() < self.ttl {
+                    return entry.downloads;
+                }
+            }
+        }
+        let downloads = self.inner.monthly_downloads(name, language);
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(
+                key,
+                RegistryCacheEntry {
+                    downloads,
+                    cached_at: std::time::Instant::now(),
+                },
+            );
+        }
+        downloads
+    }
+}
+
 // ── Component 5: Usage Relevance Gate ────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -538,6 +587,14 @@ mod tests {
         let second = cached.monthly_downloads("foo", "rust");
         assert_eq!(first, Some(42_000));
         assert_eq!(second, Some(42_000));
+    }
+
+    #[test]
+    fn owned_cached_registry_works() {
+        let inner = Box::new(MockRegistry { downloads: 77_000 });
+        let cached = OwnedCachedRegistryClient::new(inner, 32);
+        assert_eq!(cached.monthly_downloads("foo", "rust"), Some(77_000));
+        assert_eq!(cached.monthly_downloads("foo", "rust"), Some(77_000));
     }
 
     // Usage relevance tests
