@@ -326,7 +326,7 @@ fn select_few_shot_precedents(
 }
 
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
-/// Enforces a TP/FP mix to avoid anchoring the LLM toward only one verdict type.
+/// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
 fn query_feedback_precedents(
     index: &mut crate::feedback_index::FeedbackIndex,
     file_path: &str,
@@ -353,52 +353,29 @@ fn query_feedback_precedents(
     let similar = index.find_similar(&query, "", 15);
 
     let candidates: Vec<_> = similar
-        .iter()
-        .filter(|s| s.similarity >= 0.6)
+        .into_iter()
         .filter(|s| matches!(s.entry.provenance, Provenance::Human | Provenance::PostFix))
         .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Fp))
         .collect();
 
-    // Enforce TP/FP mix: pick up to 2 TPs and up to 1 FP (or vice versa if available)
-    let tps: Vec<_> = candidates
+    let selected = select_few_shot_precedents(&candidates);
+
+    let tp_count = selected
         .iter()
         .filter(|s| s.entry.verdict == Verdict::Tp)
-        .take(2)
-        .collect();
-    let fps: Vec<_> = candidates
+        .count();
+    let fp_count = selected
         .iter()
         .filter(|s| s.entry.verdict == Verdict::Fp)
-        .take(2)
-        .collect();
-
-    let mut selected: Vec<_> = Vec::new();
-    // Take up to 2 TPs
-    selected.extend(tps.iter().take(2));
-    // Fill remaining slots with FPs (up to 3 total)
-    for fp in &fps {
-        if selected.len() >= 3 {
-            break;
-        }
-        selected.push(fp);
-    }
-    // If we still have room and more TPs, fill
-    let remaining_tps: Vec<_> = candidates
-        .iter()
-        .filter(|s| s.entry.verdict == Verdict::Tp)
-        .skip(2)
-        .collect();
-    for tp in &remaining_tps {
-        if selected.len() >= 3 {
-            break;
-        }
-        selected.push(tp);
-    }
-
-    tracing::debug!(
+        .count();
+    tracing::info!(
         query_prefix = &query[..query.len().min(100)],
         candidates_found = candidates.len(),
         selected_count = selected.len(),
-        "Few-shot precedent retrieval"
+        selected_tps = tp_count,
+        selected_fps = fp_count,
+        best_similarity = candidates.first().map(|s| s.similarity),
+        "Few-shot precedent selection"
     );
 
     selected
