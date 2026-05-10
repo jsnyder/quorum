@@ -338,6 +338,49 @@ fn select_few_shot_precedents(
     selected
 }
 
+/// Normalize a file path for comparison: strip leading `./` and trailing `/`.
+fn normalize_file_path(path: &str) -> &str {
+    let p = path.strip_prefix("./").unwrap_or(path);
+    p.strip_suffix('/').unwrap_or(p)
+}
+
+/// Additive similarity boost for candidates whose file path matches the
+/// file currently under review. Paths are compared after normalization.
+/// The returned vector is re-sorted by descending similarity.
+const SAME_FILE_BOOST: f32 = 0.05;
+
+fn apply_same_file_boost(
+    candidates: &[crate::feedback_index::SimilarEntry],
+    review_file: &str,
+) -> Vec<crate::feedback_index::SimilarEntry> {
+    let norm_review = normalize_file_path(review_file);
+
+    let mut boosted: Vec<crate::feedback_index::SimilarEntry> = candidates
+        .iter()
+        .map(|s| {
+            let norm_entry = normalize_file_path(&s.entry.file_path);
+            let boost = if norm_entry == norm_review {
+                SAME_FILE_BOOST
+            } else {
+                0.0
+            };
+            crate::feedback_index::SimilarEntry {
+                entry: s.entry.clone(),
+                similarity: (s.similarity + boost).min(1.0),
+            }
+        })
+        .collect();
+
+    boosted.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.entry.timestamp.cmp(&a.entry.timestamp))
+    });
+
+    boosted
+}
+
 /// Query feedback index for high-confidence human-verified precedents to inject as few-shot examples.
 /// Delegates selection and TP/FP diversity enforcement to [`select_few_shot_precedents`].
 fn query_feedback_precedents(
@@ -1661,6 +1704,79 @@ mod tests {
             selected.iter().all(|s| s.entry.verdict == Verdict::Tp),
             "FP below threshold must not be pulled in by diversity floor"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // #124 — Path normalization and same-file similarity boost
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn normalize_file_path_strips_dot_slash() {
+        assert_eq!(normalize_file_path("./src/foo.rs"), "src/foo.rs");
+    }
+
+    #[test]
+    fn normalize_file_path_strips_trailing_slash() {
+        assert_eq!(normalize_file_path("src/dir/"), "src/dir");
+    }
+
+    #[test]
+    fn normalize_file_path_noop_on_clean() {
+        assert_eq!(normalize_file_path("src/foo.rs"), "src/foo.rs");
+    }
+
+    #[test]
+    fn normalize_file_path_empty_string() {
+        assert_eq!(normalize_file_path(""), "");
+    }
+
+    #[test]
+    fn normalize_file_path_bare_filename() {
+        assert_eq!(normalize_file_path("foo.rs"), "foo.rs");
+    }
+
+    #[test]
+    fn file_boost_promotes_same_file_candidate() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.90, "tp-a", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.82, "fp-cross", "src/other.rs"),
+            sim_entry_file(Verdict::Tp, 0.80, "tp-same", "src/target.rs"),
+            sim_entry_file(Verdict::Fp, 0.75, "fp-same", "src/target.rs"),
+        ];
+        let boosted = apply_same_file_boost(&candidates, "src/target.rs");
+        // After +0.05 boost: tp-same=0.85, fp-same=0.80
+        // Re-sorted: tp-a=0.90, tp-same=0.85, fp-cross=0.82, fp-same=0.80
+        assert_eq!(boosted[1].entry.finding_title, "tp-same");
+    }
+
+    #[test]
+    fn file_boost_clamps_at_one() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.98, "tp-high", "src/target.rs"),
+        ];
+        let boosted = apply_same_file_boost(&candidates, "src/target.rs");
+        assert!(boosted[0].similarity <= 1.0, "boosted score must clamp at 1.0");
+    }
+
+    #[test]
+    fn file_boost_no_effect_when_no_same_file() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.90, "tp-a", "src/other.rs"),
+            sim_entry_file(Verdict::Fp, 0.80, "fp-b", "src/other.rs"),
+        ];
+        let boosted = apply_same_file_boost(&candidates, "src/target.rs");
+        assert_eq!(boosted[0].similarity, 0.90);
+        assert_eq!(boosted[1].similarity, 0.80);
+    }
+
+    #[test]
+    fn file_boost_uses_normalized_paths() {
+        let candidates = vec![
+            sim_entry_file(Verdict::Tp, 0.80, "tp-dotslash", "./src/target.rs"),
+        ];
+        let boosted = apply_same_file_boost(&candidates, "src/target.rs");
+        // ./src/target.rs should match src/target.rs after normalization
+        assert!(boosted[0].similarity > 0.80, "normalized path should match and get boost");
     }
 
     async fn parse_and_review(
