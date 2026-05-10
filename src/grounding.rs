@@ -27,6 +27,7 @@ static STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "is_empty",
         "map",
         "filter",
+        "collect",
         "Result",
         "Option",
         "String",
@@ -465,8 +466,14 @@ mod tests {
 
     #[test]
     fn strips_turbofish_and_trailing_colons() {
+        let ids = extract_identifiers("Use `transform::<Vec<_>>()` here");
+        assert_eq!(ids, vec!["transform"]);
+    }
+
+    #[test]
+    fn turbofish_stopword_still_rejected() {
         let ids = extract_identifiers("Use `collect::<Vec<_>>()` here");
-        assert_eq!(ids, vec!["collect"]);
+        assert!(ids.is_empty());
     }
 
     #[test]
