@@ -1,0 +1,62 @@
+[
+  {
+    "id": "ah-001",
+    "type": "planted",
+    "title": "Hardcoded API secret in source code",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 18,
+    "line_end": 18,
+    "description": "API_SECRET is hardcoded as a string literal 'sk-prod-a1b2c3d4e5f6'. This secret will be committed to version control and exposed to anyone with repository access."
+  },
+  {
+    "id": "ah-002",
+    "type": "planted",
+    "title": "SQL injection via f-string interpolation",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 69,
+    "line_end": 69,
+    "description": "get_product builds a SQL query using an f-string with user-controlled product_id. Even though Flask's route converter provides an int, this pattern is unsafe if copied and sets a dangerous precedent."
+  },
+  {
+    "id": "ah-003",
+    "type": "planted",
+    "title": "Command injection via subprocess shell=True",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 113,
+    "line_end": 118,
+    "description": "search_products passes user-supplied query directly into a shell command string with shell=True. An attacker can inject arbitrary commands via the q parameter (e.g. q='; rm -rf /')."
+  },
+  {
+    "id": "ah-004",
+    "type": "planted",
+    "title": "eval() on user-supplied filter expression",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 142,
+    "line_end": 142,
+    "description": "filter_products calls eval() on the filter_expr field from the request body, allowing arbitrary code execution on the server."
+  },
+  {
+    "id": "ah-005",
+    "type": "planted",
+    "title": "Mutable default argument in function signature",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 174,
+    "line_end": 174,
+    "description": "process_items uses a mutable default argument (items: list = []). The default list is shared across all calls, so items appended in one call persist into subsequent calls with no explicit argument."
+  },
+  {
+    "id": "ah-006",
+    "type": "planted",
+    "title": "open() without explicit encoding",
+    "category": "correctness",
+    "severity": "low",
+    "line_start": 216,
+    "line_end": 216,
+    "description": "import_csv opens a CSV file without specifying encoding='utf-8'. On platforms where the default encoding is not UTF-8 this can produce mojibake or raise UnicodeDecodeError."
+  }
+]

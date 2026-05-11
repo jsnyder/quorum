@@ -1,0 +1,42 @@
+[
+  {
+    "id": "ha-001",
+    "type": "planted",
+    "title": "Hardcoded API key in REST command",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 184,
+    "line_end": 184,
+    "description": "API key sk-live-abc123def456 is hardcoded in the REST command header instead of using !secret."
+  },
+  {
+    "id": "ha-002",
+    "type": "planted",
+    "title": "Jinja2 float without default fallback",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 105,
+    "line_end": 105,
+    "description": "states('sensor.outdoor_temperature') | float will raise when the sensor is unavailable. Use float(0) or float(default)."
+  },
+  {
+    "id": "ha-003",
+    "type": "planted",
+    "title": "Duplicate action key in automation",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 143,
+    "line_end": 147,
+    "description": "Two 'action:' keys in the same automation mapping (lines 131 and 143). The second silently overwrites the first, losing the alarm arm, lights off, and thermostat setback actions."
+  },
+  {
+    "id": "ha-004",
+    "type": "planted",
+    "title": "Automation trigger missing id field",
+    "category": "quality",
+    "severity": "low",
+    "line_start": 14,
+    "line_end": 17,
+    "description": "Trigger lacks an id field, making trace debugging harder. Compare with other automations that include id on their triggers."
+  }
+]

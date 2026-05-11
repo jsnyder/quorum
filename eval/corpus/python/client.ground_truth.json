@@ -1,0 +1,32 @@
+[
+  {
+    "id": "cl-001",
+    "type": "real",
+    "title": "Off-by-one in max_redirects check",
+    "category": "logic",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "_send_handling_redirects allows one redirect past the configured max_redirects limit."
+  },
+  {
+    "id": "cl-002",
+    "type": "real",
+    "title": "send races with close/aclose",
+    "category": "concurrency",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "send() can execute concurrently with close()/aclose() despite the client being shared, leading to use-after-close."
+  },
+  {
+    "id": "cl-003",
+    "type": "real",
+    "title": "Transport leak on close errors",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "Client.close() and AsyncClient.aclose() abort on first transport close error, leaking remaining mounted transports."
+  }
+]

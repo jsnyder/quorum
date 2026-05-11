@@ -7,3 +7,8 @@
 .notion-sync.json
 mutants.out/
 mutants.out.old/
+
+# Eval harness
+eval/results/
+eval/binaries/
+eval/.venv/
