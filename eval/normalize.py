@@ -67,11 +67,11 @@ def normalize_pal(
             tool="pal",
             file=file_path,
             title=f.get("title", ""),
-            category="unknown",
+            category=_norm_category(f.get("category", "unknown")),
             severity=_norm_severity(f.get("severity", "info")),
-            line_start=0,
-            line_end=0,
-            description=f.get("title", ""),
+            line_start=f.get("line", 0),
+            line_end=f.get("line", 0),
+            description=f.get("description", f.get("title", "")),
         )
         for f in findings_list
     ]
@@ -84,12 +84,12 @@ def normalize_third_opinion(
         CanonicalFinding(
             tool="third-opinion",
             file=file_path,
-            title=f.get("title", ""),
-            category="unknown",
+            title=f.get("message", f.get("title", ""))[:120],
+            category=_norm_category(f.get("category", "unknown")),
             severity=_norm_severity(f.get("severity", "info")),
-            line_start=0,
-            line_end=0,
-            description=f.get("title", ""),
+            line_start=f.get("line", 0),
+            line_end=f.get("line", 0),
+            description=f.get("message", f.get("title", "")),
         )
         for f in data.get("findings", [])
     ]

@@ -36,8 +36,10 @@ def test_normalize_quorum_grouped_by_file():
     assert findings[0].file == "src/main.rs"
 
 PAL_FINDINGS = [
-    {"severity": "high", "title": "MAX_NUM_THREAD not enforced in IndexWriter::new()"},
-    {"severity": "medium", "title": "rollback() silently discards enqueued operations"},
+    {"severity": "high", "title": "MAX_NUM_THREAD not enforced in IndexWriter::new()",
+     "category": "correctness", "line": 42, "description": "Thread limit declared but never checked"},
+    {"severity": "medium", "title": "rollback() silently discards enqueued operations",
+     "category": "reliability", "line": 180, "description": "Pending ops dropped on rollback"},
 ]
 
 def test_normalize_pal():
@@ -47,15 +49,16 @@ def test_normalize_pal():
     assert f.tool == "pal"
     assert f.file == "rust/index_writer.rs"
     assert f.severity == "high"
-    assert f.line_start == 0  # PAL doesn't provide line numbers
-    assert f.category == "unknown"
+    assert f.line_start == 42
+    assert f.category == "correctness"
 
 THIRD_OPINION_OUTPUT = {
-    "total": 2,
     "score": 87,
     "findings": [
-        {"severity": "medium", "title": "MAX_NUM_THREAD declared but never enforced"},
-        {"severity": "low", "title": "Thread join error handling inconsistent"},
+        {"severity": "medium", "category": "correctness",
+         "message": "MAX_NUM_THREAD declared but never enforced", "line": 42},
+        {"severity": "low", "category": "error handling",
+         "message": "Thread join error handling inconsistent", "line": 100},
     ],
 }
 
@@ -65,7 +68,9 @@ def test_normalize_third_opinion():
     f = findings[0]
     assert f.tool == "third-opinion"
     assert f.severity == "medium"
-    assert f.line_start == 0
+    assert f.category == "correctness"
+    assert f.line_start == 42
+    assert "MAX_NUM_THREAD" in f.title
 
 QUORUM_GROUPED_JSON = [
     {

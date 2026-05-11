@@ -62,8 +62,12 @@ def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
         print(f"    WARN: {version} non-JSON output on {file_path.name}", file=sys.stderr)
         return []
 
-def run_pal(_file_path: Path) -> list[dict]:
-    print("    PAL: requires manual run or MCP integration", file=sys.stderr)
+def run_pal(file_path: Path, rel_path: str) -> list[dict]:
+    cache_file = EVAL_DIR / "pal_cache" / f"{rel_path}.json"
+    if cache_file.exists():
+        with open(cache_file) as f:
+            return json.load(f)
+    print("    PAL: no cached results (run pal_runner.py first)", file=sys.stderr)
     return []
 
 def run_third_opinion(file_path: Path) -> dict | None:
@@ -71,7 +75,7 @@ def run_third_opinion(file_path: Path) -> dict | None:
         print(f"    third-opinion: not installed, skipping", file=sys.stderr)
         return None
     result = subprocess.run(
-        ["third-opinion", "review", str(file_path), "--json"],
+        ["third-opinion", "review", str(file_path)],
         capture_output=True, text=True, timeout=300,
     )
     try:
@@ -111,7 +115,7 @@ def run_all(
                 raw = run_quorum(binary, abs_path, version)
                 normalized = normalize_quorum(raw, tool, rel_path)
             elif tool == "pal":
-                raw = run_pal(abs_path)
+                raw = run_pal(abs_path, rel_path)
                 normalized = normalize_pal(raw, rel_path)
             elif tool == "third-opinion":
                 raw_dict = run_third_opinion(abs_path)

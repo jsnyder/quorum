@@ -161,7 +161,7 @@ def judge_panel(
                     errors += 1
                     print(f"      Judge {model}: API error: {err_msg}", file=sys.stderr)
                     continue
-                text = body["choices"][0]["message"]["content"]
+                text = body["choices"][0]["message"]["content"] or ""
                 verdict, reason = _parse_verdict(text)
                 votes.append((verdict, reason))
             except Exception as e:
