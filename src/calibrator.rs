@@ -195,6 +195,7 @@ fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calibrate_core_decision(
     finding: &mut Finding,
     config: &CalibratorConfig,

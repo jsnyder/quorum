@@ -766,6 +766,7 @@ fn parse_context7_body(body_text: &str, max_tokens: usize) -> Option<String> {
                 return Some(combined);
             }
         }
+        return None;
     }
 
     let truncated: String = body_text.chars().take(max_tokens * 4).collect();
@@ -2005,8 +2006,6 @@ axum = "0.7"
     fn parse_context7_body_empty_content_and_snippets_returns_none_for_json() {
         let body = r#"{"content":"","snippets":[]}"#;
         let result = parse_context7_body(body, 4000);
-        // Empty content + empty snippets in JSON → falls through to raw truncation,
-        // but the raw text is valid JSON so it gets returned as-is.
-        assert!(result.is_some());
+        assert!(result.is_none());
     }
 }

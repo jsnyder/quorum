@@ -324,12 +324,13 @@ pub fn format_compact_finding(f: &Finding) -> String {
 }
 
 pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
+    let safe_path = strip_control_chars(file_path);
     if findings.is_empty() {
-        return format!("{}: clean", file_path);
+        return format!("{}: clean", safe_path);
     }
 
     let mut lines: Vec<String> = Vec::with_capacity(findings.len() + 2);
-    lines.push(file_path.to_string());
+    lines.push(safe_path);
     lines.extend(findings.iter().map(format_compact_finding));
 
     let critical = findings
