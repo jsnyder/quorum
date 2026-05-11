@@ -2,11 +2,35 @@
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-10
+
+### Review quality
+
+- **Confidence decoupled from LLM self-report (#249, #266).** Finding confidence is now computed from objective signals (AST grounding, ensemble agreement) rather than trusting the LLM's self-assessed confidence score. Removes a source of miscalibration where models reported high confidence on hallucinated findings.
+
+- **Cross-model ensemble agreement (#248, #267).** When `--ensemble` is used, model agreement across families is captured as a confidence signal. Findings confirmed by multiple independent models receive higher confidence; single-model findings are flagged.
+
+- **Grounding confidence signal (#256).** Grounding no longer demotes severity directly. Instead, grounding results feed into the confidence signal, allowing downstream consumers to filter by confidence without losing severity information.
+
+- **Hydration-aware grounding (#259, #260).** Grounder now checks hydration context for symbol existence before penalizing. Diff-fallback warning narrowed to actual path-resolution failures, eliminating false warnings on non-git-repo reviews.
+
+- **max_tokens cap removed (#247, #255).** Removed hardcoded `max_tokens: 16384` from LLM calls. A/B testing showed the cap subtly altered model behavior even when output didn't approach the limit. The `finish_reason=length` truncation guard remains as a safety net.
+
 ### Feedback
 
-- **Per-file few-shot scoping (#124).** Few-shot precedent retrieval now boosts same-file candidates (+0.05 additive similarity bonus) and reserves at least one selection slot for same-file precedents when available. Prevents cross-file feedback from silently displacing relevant precedents. Deterministic tie-breaking by `(similarity, timestamp, file_path)` ensures stable retrieval across runs.
+- **Few-shot selection bias fix (#264).** Eliminated TP-first selection bias in few-shot precedent retrieval. Previously, TP precedents were always selected first, which could crowd out FP precedents that would have provided useful negative signal. Now uses interleaved selection for balanced TP/FP representation.
 
-- **Per-file calibrator boost (#124).** Same-file feedback entries now carry +0.05 additional similarity weight in the calibrator's suppress/boost weight accumulation. Applied after the embedding threshold filter (cannot rescue sub-threshold entries). Calibrator traces include `same_file_precedent_count` and per-precedent `same_file` / `effective_similarity` for observability. `normalize_file_path` and `SAME_FILE_BOOST` extracted to shared `file_util` module.
+- **Per-file few-shot scoping (#124, #286).** Few-shot precedent retrieval now boosts same-file candidates (+0.05 additive similarity bonus) and reserves at least one selection slot for same-file precedents when available. Prevents cross-file feedback from silently displacing relevant precedents. Deterministic tie-breaking by `(similarity, timestamp, file_path)` ensures stable retrieval across runs.
+
+- **Per-file calibrator boost (#124, #293).** Same-file feedback entries now carry +0.05 additional similarity weight in the calibrator's suppress/boost weight accumulation. Applied after the embedding threshold filter (cannot rescue sub-threshold entries). Calibrator traces include `same_file_precedent_count` and per-precedent `same_file` / `effective_similarity` for observability. `normalize_file_path` and `SAME_FILE_BOOST` extracted to shared `file_util` module.
+
+### Context7
+
+- **Precision targeting (#287).** Three-layer decision pipeline for Context7 enrichment: usage gate (must appear in imports), skip-list for mainstream libs (~70 entries), and popularity-tier token budgets. `--live-registry` flag enables download-count lookups (crates.io/npm/PyPI, cached 7d). New telemetry: `context7_skipped_popular`, `context7_budget_reduced`.
+
+### Stats
+
+- **File hotspot view (#18, #274).** `quorum stats --by-file` ranks files by finding frequency from the feedback corpus. `--top N` limits output rows. Useful for identifying files that consistently attract findings.
 
 ## [0.20.0] - 2026-05-07
 
