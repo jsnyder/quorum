@@ -1,0 +1,16 @@
+[project]
+name = "quorum-eval"
+version = "0.1.0"
+description = "Benchmark harness for quorum code review tool"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+run-benchmark = "run_benchmark:main"
