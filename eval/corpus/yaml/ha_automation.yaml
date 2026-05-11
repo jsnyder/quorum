@@ -1,0 +1,188 @@
+# Home Assistant automations for climate control and security monitoring
+# Last updated: 2026-03-15
+
+homeassistant:
+  name: "Main Residence"
+  unit_system: metric
+  time_zone: "America/Chicago"
+
+automation:
+  # ── Climate: Auto-adjust thermostat on arrival ──────────────────────
+  - alias: "Climate - Adjust thermostat on arrival"
+    description: "Set HVAC to comfort mode when someone arrives home"
+    trigger:
+      - platform: state
+        entity_id: group.family_trackers
+        from: "not_home"
+        to: "home"
+    condition:
+      - condition: time
+        after: "06:00:00"
+        before: "23:00:00"
+      - condition: numeric_state
+        entity_id: sensor.outdoor_temperature
+        below: 30
+        above: -10
+    action:
+      - service: climate.set_temperature
+        target:
+          entity_id: climate.main_floor
+        data:
+          temperature: 22
+          hvac_mode: heat_cool
+      - service: notify.mobile_app_james
+        data:
+          title: "Climate"
+          message: "Thermostat adjusted to comfort mode"
+
+  # ── Notifications: Send daily energy report via REST ────────────────
+  - alias: "Notify - Daily energy cost report"
+    description: "Post daily energy usage summary to monitoring endpoint"
+    trigger:
+      - platform: time
+        at: "23:55:00"
+        id: "daily_report_trigger"
+    condition: []
+    action:
+      - service: rest_command.post_energy_report
+        data:
+          payload: >-
+            {
+              "date": "{{ now().strftime('%Y-%m-%d') }}",
+              "kwh": "{{ states('sensor.daily_energy_kwh') }}",
+              "cost": "{{ states('sensor.daily_energy_cost') }}"
+            }
+
+  # ── Security: Motion-activated exterior lights ──────────────────────
+  - alias: "Security - Exterior motion lights"
+    description: "Turn on exterior lights on motion, dim after 5 minutes"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.driveway_motion
+        to: "on"
+        id: "driveway_motion"
+      - platform: state
+        entity_id: binary_sensor.backyard_motion
+        to: "on"
+    condition:
+      - condition: sun
+        after: sunset
+        after_offset: "-00:30:00"
+    action:
+      - service: light.turn_on
+        target:
+          entity_id: >-
+            {% if trigger.entity_id == 'binary_sensor.driveway_motion' %}
+              light.driveway_flood
+            {% else %}
+              light.backyard_flood
+            {% endif %}
+        data:
+          brightness_pct: 100
+      - delay:
+          minutes: 5
+      - service: light.turn_on
+        target:
+          entity_id: >-
+            {% if trigger.entity_id == 'binary_sensor.driveway_motion' %}
+              light.driveway_flood
+            {% else %}
+              light.backyard_flood
+            {% endif %}
+        data:
+          brightness_pct: 30
+
+  # ── Climate: Freeze warning notification ────────────────────────────
+  - alias: "Climate - Freeze warning"
+    description: "Alert when outdoor temperature drops near freezing"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_temperature
+        below: 2
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.outdoor_temperature') | float < 2.0 }}
+    action:
+      - service: notify.mobile_app_james
+        data:
+          title: "Freeze Warning"
+          message: >-
+            Outdoor temperature is {{ states('sensor.outdoor_temperature') }}C.
+            Forecast low: {{ state_attr('weather.home', 'forecast')[0]['templow'] }}C.
+      - service: switch.turn_on
+        target:
+          entity_id: switch.garage_heater
+
+  # ── Presence: Away mode security arm ────────────────────────────────
+  - alias: "Presence - Arm security when away"
+    description: "Arm alarm and shut down non-essential loads when everyone leaves"
+    trigger:
+      - platform: state
+        entity_id: group.family_trackers
+        to: "not_home"
+        for:
+          minutes: 10
+        id: "away_trigger"
+    condition:
+      - condition: state
+        entity_id: alarm_control_panel.home
+        state: "disarmed"
+    action:
+      - service: alarm_control_panel.alarm_arm_away
+        target:
+          entity_id: alarm_control_panel.home
+      - service: light.turn_off
+        target:
+          entity_id: all
+      - service: climate.set_temperature
+        target:
+          entity_id: climate.main_floor
+        data:
+          temperature: 16
+    action:
+      - service: notify.mobile_app_james
+        data:
+          title: "Security"
+          message: "Home armed — away mode activated at {{ now().strftime('%H:%M') }}"
+
+  # ── Utility: Washing machine cycle complete ─────────────────────────
+  - alias: "Utility - Washer cycle complete"
+    description: "Notify when washing machine power drops indicating cycle end"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.washing_machine_power
+        below: 5
+        for:
+          minutes: 3
+        id: "washer_done"
+    condition:
+      - condition: state
+        entity_id: input_boolean.washer_running
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.washer_running
+      - service: notify.mobile_app_james
+        data:
+          title: "Laundry"
+          message: "Washing machine cycle complete"
+      - service: media_player.play_media
+        target:
+          entity_id: media_player.kitchen_speaker
+        data:
+          media_content_id: "media-source://tts/google_translate?message=Washing+machine+is+done"
+          media_content_type: "provider"
+
+# ── REST commands ─────────────────────────────────────────────────────
+rest_command:
+  post_energy_report:
+    url: "https://monitoring.internal.example.com/api/v1/energy"
+    method: POST
+    headers:
+      Authorization: "Bearer sk-live-abc123def456ghi789jkl012"
+      Content-Type: "application/json"
+    payload: "{{ payload }}"
+    timeout: 30
+    verify_ssl: true

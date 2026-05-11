@@ -1,0 +1,52 @@
+[
+  {
+    "id": "sh-001",
+    "type": "planted",
+    "title": "Unquoted variable in rm command",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 53,
+    "line_end": 53,
+    "description": "rm -rf $DEPLOY_DIR/previous/* without quotes is vulnerable to word splitting and glob expansion."
+  },
+  {
+    "id": "sh-002",
+    "type": "planted",
+    "title": "Command injection via eval",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 46,
+    "line_end": 46,
+    "description": "eval on file contents allows arbitrary command execution if the config file is attacker-controlled or writable."
+  },
+  {
+    "id": "sh-003",
+    "type": "planted",
+    "title": "Pipe-to-bash from HTTP URL",
+    "category": "security",
+    "severity": "high",
+    "line_start": 61,
+    "line_end": 61,
+    "description": "curl | bash executes remote code without verification over plain HTTP. MITM or server compromise leads to RCE."
+  },
+  {
+    "id": "sh-004",
+    "type": "planted",
+    "title": "Predictable temporary file path",
+    "category": "security",
+    "severity": "medium",
+    "line_start": 70,
+    "line_end": 70,
+    "description": "Using /tmp/deploy-$$ is predictable. Use mktemp instead to avoid symlink attacks."
+  },
+  {
+    "id": "sh-005",
+    "type": "planted",
+    "title": "chmod 777 on web directory",
+    "category": "security",
+    "severity": "high",
+    "line_start": 95,
+    "line_end": 95,
+    "description": "chmod 777 grants world-writable permissions to the web root, allowing any user to modify served files."
+  }
+]
