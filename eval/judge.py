@@ -136,11 +136,13 @@ def judge_panel(
             f"- Lines: {f.line_start}-{f.line_end}\n- Description: {f.description}\n\n"
             f"## Known bugs in this file\n{gt_summary}\n\n"
             f"Is this finding a genuine bug, vulnerability, or quality issue? "
-            f"Answer with exactly one of: tp, fp, partial. Then one sentence reason.\n"
-            f"Format: VERDICT: <tp|fp|partial> REASON: <reason>"
+            f"Answer with exactly one of: tp, fp, partial.\n"
+            f"If this finding describes the same issue as a known bug (even with "
+            f"different wording), include its ID.\n"
+            f"Format: VERDICT: <tp|fp|partial> MATCH: <id|none> REASON: <reason>"
         )
 
-        votes: list[tuple[str, str]] = []
+        votes: list[tuple[str, str, str | None]] = []
         errors = 0
         for model in models:
             try:
@@ -162,8 +164,8 @@ def judge_panel(
                     print(f"      Judge {model}: API error: {err_msg}", file=sys.stderr)
                     continue
                 text = body["choices"][0]["message"]["content"] or ""
-                verdict, reason = _parse_verdict(text)
-                votes.append((verdict, reason))
+                verdict, reason, mid = _parse_verdict(text)
+                votes.append((verdict, reason, mid))
             except Exception as e:
                 errors += 1
                 print(f"      Judge {model}: exception: {e}", file=sys.stderr)
@@ -177,12 +179,15 @@ def judge_panel(
             continue
 
         verdict_counts: dict[str, int] = {}
-        for v, _ in votes:
+        for v, _, _ in votes:
             verdict_counts[v] = verdict_counts.get(v, 0) + 1
         final_verdict = max(verdict_counts, key=lambda k: verdict_counts[k])
-        reasons = [r for _, r in votes]
+        reasons = [r for _, r, _ in votes]
 
-        judge_type = "panel" if len(set(v for v, _ in votes)) == 1 else "panel-disputed"
+        match_ids = [mid for _, _, mid in votes if mid]
+        matched_gt_id = match_ids[0] if match_ids else None
+
+        judge_type = "panel" if len(set(v for v, _, _ in votes)) == 1 else "panel-disputed"
         if errors > 0:
             judge_type += f"-degraded({len(votes)}/{len(models)})"
 
@@ -192,26 +197,39 @@ def judge_panel(
             finding_title=f.title,
             verdict=final_verdict,
             judge=judge_type,
-            reason=f"Votes: {', '.join(v for v, _ in votes)}. {reasons[0]}",
+            reason=f"Votes: {', '.join(v for v, _, _ in votes)}. {reasons[0]}",
+            matched_ground_truth_id=matched_gt_id,
         ))
 
     return verdicts
 
 
-def _parse_verdict(text: str) -> tuple[str, str]:
+def _parse_verdict(text: str) -> tuple[str, str, str | None]:
     text = text.strip()
+    match_id: str | None = None
     for prefix in ("VERDICT:", "verdict:"):
         if prefix in text:
             after = text.split(prefix, 1)[1].strip()
-            parts = after.split("REASON:", 1) if "REASON:" in after else after.split("reason:", 1) if "reason:" in after else [after, ""]
+            match_id = _extract_match_id(after)
+            after_no_match = re.sub(r"MATCH:\s*\S+\s*", "", after, flags=re.IGNORECASE)
+            parts = after_no_match.split("REASON:", 1) if "REASON:" in after_no_match else after_no_match.split("reason:", 1) if "reason:" in after_no_match else [after_no_match, ""]
             verdict = parts[0].strip().lower()
             reason = parts[1].strip() if len(parts) > 1 else ""
             if verdict in ("tp", "fp", "partial"):
-                return verdict, reason
+                return verdict, reason, match_id
     first_word = text.split()[0].lower().rstrip(".:,") if text else ""
     if first_word in ("tp", "fp", "partial"):
-        return first_word, text
-    return "tp", f"Could not parse verdict, defaulting to TP. Raw: {text[:100]}"
+        return first_word, text, _extract_match_id(text)
+    return "tp", f"Could not parse verdict, defaulting to TP. Raw: {text[:100]}", None
+
+
+def _extract_match_id(text: str) -> str | None:
+    m = re.search(r"MATCH:\s*(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip(".,;")
+        if val.lower() != "none":
+            return val
+    return None
 
 
 def judge_findings(

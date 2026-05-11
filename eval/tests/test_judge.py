@@ -1,4 +1,4 @@
-from judge import match_ground_truth, judge_auto
+from judge import match_ground_truth, judge_auto, _parse_verdict
 from schema import CanonicalFinding, GroundTruthEntry
 
 GT = [
@@ -93,3 +93,24 @@ def test_judge_auto_matches_and_unmatched():
     assert verdicts[0].matched_ground_truth_id == "iw-001"
     assert len(unmatched) == 1
     assert unmatched[0].title == "Completely unrelated finding about style"
+
+def test_parse_verdict_with_match():
+    v, r, m = _parse_verdict("VERDICT: tp MATCH: iw-001 REASON: Matches known bug")
+    assert v == "tp"
+    assert m == "iw-001"
+    assert "Matches known bug" in r
+
+def test_parse_verdict_match_none():
+    v, r, m = _parse_verdict("VERDICT: fp MATCH: none REASON: Not a real bug")
+    assert v == "fp"
+    assert m is None
+
+def test_parse_verdict_no_match_field():
+    v, r, m = _parse_verdict("VERDICT: tp REASON: Genuine issue")
+    assert v == "tp"
+    assert m is None
+
+def test_parse_verdict_fallback():
+    v, r, m = _parse_verdict("tp This is a real bug")
+    assert v == "tp"
+    assert m is None
