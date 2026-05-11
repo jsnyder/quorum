@@ -177,6 +177,24 @@ struct CoreDecision {
 /// Returns a [`CoreDecision`] that the caller uses to update counters and
 /// decide whether to keep the finding in the output vec.
 #[allow(clippy::too_many_arguments)]
+fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
+    t.and_then(|v| {
+        if !v.is_finite() {
+            tracing::warn!(
+                raw = v,
+                "non-finite threshold replaced with None (legacy fallback)"
+            );
+            None
+        } else if !(0.0..=1.0).contains(&v) {
+            let clamped = v.clamp(0.0, 1.0);
+            tracing::warn!(raw = v, clamped, "threshold outside [0,1] clamped");
+            Some(clamped)
+        } else {
+            Some(v)
+        }
+    })
+}
+
 fn calibrate_core_decision(
     finding: &mut Finding,
     config: &CalibratorConfig,
@@ -192,13 +210,17 @@ fn calibrate_core_decision(
     let mut suppressed = false;
     let mut boosted = false;
 
+    let force_threshold = sanitize_threshold(config.force_threshold);
+    let suppress_threshold = sanitize_threshold(config.suppress_threshold);
+    let boost_threshold = sanitize_threshold(config.boost_threshold);
+
     // PR3: compute score once for data-driven threshold decisions.
     let total = tp_weight + fp_weight;
     let score = if total > 0.0 { tp_weight / total } else { 0.5 };
 
     // Full suppress: FP weight only. Wontfix no longer contributes.
     let full_suppress_weight = fp_weight;
-    let suppress_thresh = config.force_threshold.or(config.suppress_threshold);
+    let suppress_thresh = force_threshold.or(suppress_threshold);
     if let Some(thresh) = suppress_thresh {
         // Data-driven path: suppress when score is below the threshold and
         // there is at least some FP evidence.
@@ -265,7 +287,7 @@ fn calibrate_core_decision(
     }
 
     // Boost: TP clearly dominates FP.
-    let boost_thresh = config.force_threshold.or(config.boost_threshold);
+    let boost_thresh = force_threshold.or(boost_threshold);
     let boost_triggered = if let Some(thresh) = boost_thresh {
         // Data-driven path: boost when score is at or above the threshold
         // and there is at least some TP evidence.
@@ -4748,6 +4770,74 @@ mod tests {
         assert!(
             trace.matched_precedents[0].same_file,
             "review path 'src/a.rs' should match entry path './src/a.rs' after normalization",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Threshold validation tests (#291)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn out_of_range_boost_threshold_clamped_allows_pure_tp_boost() {
+        // #291: boost_threshold=1.5 means score (max 1.0) can never reach it,
+        // so pure-TP findings silently never boost. After clamping to 1.0,
+        // score=1.0 >= 1.0 triggers boost.
+        let mut finding = FindingBuilder::new()
+            .title("SQL injection via user input")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            boost_threshold: Some(1.5),
+            ..Default::default()
+        };
+        // tp=1.0, fp=0.0 -> score = 1.0
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(
+            decision.boosted,
+            "boost_threshold > 1.0 should be clamped to 1.0; pure TP must boost"
+        );
+    }
+
+    #[test]
+    fn nan_suppress_threshold_falls_back_to_legacy() {
+        // NaN threshold enters data-driven path but NaN comparison always fails,
+        // silently disabling BOTH data-driven and legacy suppress. With the fix,
+        // NaN is treated as None, enabling the legacy path.
+        let mut finding = FindingBuilder::new()
+            .title("test finding")
+            .category(Category::Security)
+            .severity(Severity::High)
+            .build();
+        let config = CalibratorConfig {
+            suppress_threshold: Some(f64::NAN),
+            ..Default::default()
+        };
+        // tp=0.0, fp=2.0 -> legacy: fp=2.0 >= 1.5 && fp > tp*2 -> suppress.
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.0,
+            2.0,
+            0.0,
+            2.0,
+            vec![],
+            Severity::High,
+            "",
+        );
+        assert!(
+            decision.suppressed,
+            "NaN threshold should fall back to legacy which suppresses at fp=2.0"
         );
     }
 }

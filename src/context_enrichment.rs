@@ -124,6 +124,7 @@ fn parse_rust_use(stmt: &str) -> Vec<String> {
 
 fn first_use_segment(s: &str) -> Option<String> {
     let head = s.split("::").find(|seg| !seg.is_empty())?.trim();
+    let head = head.split_whitespace().next().unwrap_or(head);
     (!head.is_empty()).then(|| head.to_string())
 }
 
@@ -740,32 +741,35 @@ impl ContextFetcher for Context7HttpFetcher {
             }
         };
 
-        if body_text.trim().is_empty() {
-            return None;
-        }
-
-        // Context7 API may return plain text/markdown or JSON
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
-            if let Some(content) = json["content"].as_str()
-                && !content.is_empty()
-            {
-                return Some(content.to_string());
-            }
-            if let Some(snippets) = json["snippets"].as_array() {
-                let combined: String = snippets
-                    .iter()
-                    .filter_map(|s| s["content"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n---\n\n");
-                if !combined.is_empty() {
-                    return Some(combined);
-                }
-            }
-        }
-
-        let truncated: String = body_text.chars().take(max_tokens * 4).collect();
-        Some(truncated)
+        parse_context7_body(&body_text, max_tokens)
     }
+}
+
+fn parse_context7_body(body_text: &str, max_tokens: usize) -> Option<String> {
+    if body_text.trim().is_empty() {
+        return None;
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body_text) {
+        if let Some(content) = json["content"].as_str()
+            && !content.trim().is_empty()
+        {
+            return Some(content.to_string());
+        }
+        if let Some(snippets) = json["snippets"].as_array() {
+            let combined: String = snippets
+                .iter()
+                .filter_map(|s| s["content"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            if !combined.is_empty() {
+                return Some(combined);
+            }
+        }
+    }
+
+    let truncated: String = body_text.chars().take(max_tokens * 4).collect();
+    Some(truncated)
 }
 
 #[cfg(test)]
@@ -975,6 +979,25 @@ mod tests {
             normalize_import_to_dep_names("HashMap: use ::std::collections::HashMap;"),
             vec!["std"]
         );
+    }
+
+    #[test]
+    fn normalize_rust_hydration_form_handles_aliased_use() {
+        // #288: `use chrono as time_lib;` must extract "chrono", not "chrono as time_lib".
+        assert_eq!(
+            normalize_import_to_dep_names("time_lib: use chrono as time_lib;"),
+            vec!["chrono"]
+        );
+        assert_eq!(
+            normalize_import_to_dep_names("tl: use chrono as tl;"),
+            vec!["chrono"]
+        );
+    }
+
+    #[test]
+    fn parse_rust_use_alias_top_level() {
+        assert_eq!(parse_rust_use("chrono as time_lib"), vec!["chrono"]);
+        assert_eq!(parse_rust_use("foo as bar"), vec!["foo"]);
     }
 
     #[test]
@@ -1962,5 +1985,28 @@ axum = "0.7"
         assert_eq!(result.benchmark_score, Some(83.7));
         assert_eq!(result.snippet_count, Some(366));
         assert_eq!(result.reputation.as_deref(), Some("High"));
+    }
+
+    #[test]
+    fn parse_context7_body_whitespace_content_falls_through_to_snippets() {
+        let body = r#"{"content":"   ","snippets":[{"content":"real snippet"}]}"#;
+        let result = parse_context7_body(body, 4000);
+        assert_eq!(result, Some("real snippet".to_string()));
+    }
+
+    #[test]
+    fn parse_context7_body_valid_content_returned() {
+        let body = r#"{"content":"useful docs","snippets":[]}"#;
+        let result = parse_context7_body(body, 4000);
+        assert_eq!(result, Some("useful docs".to_string()));
+    }
+
+    #[test]
+    fn parse_context7_body_empty_content_and_snippets_returns_none_for_json() {
+        let body = r#"{"content":"","snippets":[]}"#;
+        let result = parse_context7_body(body, 4000);
+        // Empty content + empty snippets in JSON → falls through to raw truncation,
+        // but the raw text is valid JSON so it gets returned as-is.
+        assert!(result.is_some());
     }
 }

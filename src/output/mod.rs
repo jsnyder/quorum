@@ -328,7 +328,9 @@ pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
         return format!("{}: clean", file_path);
     }
 
-    let mut lines: Vec<String> = findings.iter().map(format_compact_finding).collect();
+    let mut lines: Vec<String> = Vec::with_capacity(findings.len() + 2);
+    lines.push(file_path.to_string());
+    lines.extend(findings.iter().map(format_compact_finding));
 
     let critical = findings
         .iter()
@@ -795,9 +797,26 @@ mod tests {
         ];
         let out = format_compact_review("src/main.rs", &findings);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[0], "!|security|L42|Bug A");
-        assert_eq!(lines[1], "~|maintainability|L10|Bug B");
-        assert!(lines[2].contains("2 findings"));
+        assert_eq!(lines[0], "src/main.rs");
+        assert_eq!(lines[1], "!|security|L42|Bug A");
+        assert_eq!(lines[2], "~|maintainability|L10|Bug B");
+        assert!(lines[3].contains("2 findings"));
+    }
+
+    #[test]
+    fn compact_review_findings_include_file_header() {
+        let findings = vec![
+            FindingBuilder::new()
+                .title("Bug A")
+                .severity(Severity::Critical)
+                .category("security".into())
+                .lines(42, 42)
+                .build(),
+        ];
+        let out = format_compact_review("src/main.rs", &findings);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "src/main.rs", "file header must be first line");
+        assert!(lines[1].contains("Bug A"), "finding follows header");
     }
 
     #[test]
