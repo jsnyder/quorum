@@ -10,14 +10,21 @@ git config core.hooksPath .githooks    # enable pre-commit hooks (fmt, clippy, c
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (662 tests)
+cargo test --bin quorum        # run unit tests (1363 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
+cargo run -- review src/*.rs --ensemble      # cross-model ensemble review
+cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
+cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
+cargo run -- review file.rs --live-registry  # enable download-count popularity lookups
+cargo run -- review file.rs --framework home-assistant  # override framework detection
 cargo run -- stats --by-repo                 # dimensional stats by repo
 cargo run -- stats --by-caller               # dimensional stats by caller
+cargo run -- stats --by-file                 # file hotspot ranking from feedback
+cargo run -- stats --by-file --top 10        # top N file hotspots
 cargo run -- stats --rolling 50              # rolling 50-review windows
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
@@ -34,6 +41,7 @@ QUORUM_BASE_URL=https://litellm.example.com   # OpenAI-compatible endpoint
 QUORUM_API_KEY=sk-...                          # enables LLM review
 QUORUM_MODEL=gpt-5.4                           # default model
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
+QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)
 
 # HTTP timeouts (#117, v0.18.0+)
 QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
@@ -115,6 +123,8 @@ The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kin
 
 **pyproject.toml precedence:** `[project].dependencies` (PEP 621) wins over `[tool.poetry.dependencies]`. Either section *present but with the wrong TOML type* (e.g. a string instead of an array/table) is treated as "explicitly empty" — we do **not** fall back to `requirements.txt`, since the user clearly intended to declare deps in pyproject. A warning is logged via `tracing::warn` so the malformed manifest is visible. Falling through would silently surface stale or unrelated deps.
 
+**Precision targeting (v0.21.0+, #287):** three-layer decision pipeline filters enrichment to reduce noise. Layer 1: usage gate (dep must appear in the file's imports). Layer 2: skip-list for ~70 mainstream libs (React, lodash, etc.) whose docs add bulk without novelty. Layer 3: popularity-tier token budgets (niche libs get full budget, popular libs get reduced). `--live-registry` or `QUORUM_CONTEXT7_LIVE_REGISTRY=1` enables download-count lookups (crates.io/npm/PyPI, cached 7d) for data-driven tier assignment. New telemetry: `context7_skipped_popular`, `context7_budget_reduced`.
+
 **Bootstrap failure (CR8):** when `Context7HttpFetcher::new()` fails at `run_review` start, `PipelineConfig.context7_disabled` is set to `true` and per-file enrichment is skipped cleanly via the `context7_skip_reason` predicate in `src/pipeline.rs`. Without this, each file would re-fail `Context7HttpFetcher::new()?` and abort the whole review.
 
 ## Context Injection (v0.16.0+)
@@ -131,4 +141,4 @@ The `context7_resolved`, `context7_resolve_failed`, and `context7_query_failed` 
 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 
-Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--rolling N`. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.
+Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--by-file`, `--rolling N`. `--by-file` ranks files by finding frequency from feedback (hotspot detection); `--top N` limits output rows. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.
