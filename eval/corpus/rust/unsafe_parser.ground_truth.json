@@ -1,0 +1,52 @@
+[
+  {
+    "id": "up-001",
+    "type": "planted",
+    "title": "Unsafe pointer dereference without bounds check",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 38,
+    "line_end": 41,
+    "description": "read_byte_unchecked uses raw pointer arithmetic (ptr.add(index)) without verifying index < data.len(). Callers like validate_printable_ascii pass an external len parameter that may exceed the slice bounds, causing undefined behavior."
+  },
+  {
+    "id": "up-002",
+    "type": "planted",
+    "title": "unwrap() on user-supplied input parsing",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 65,
+    "line_end": 65,
+    "description": "parse_port calls .parse::<u16>().unwrap() on user-provided input. Non-numeric or out-of-range input will panic instead of returning a meaningful error."
+  },
+  {
+    "id": "up-003",
+    "type": "planted",
+    "title": "Silent error context loss in From<ParseError> for AppError",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 90,
+    "line_end": 94,
+    "description": "The From<ParseError> impl discards the original error's kind, offset, and message, replacing them with a generic 'parse error' string. This makes debugging impossible since all parse errors look identical after conversion."
+  },
+  {
+    "id": "up-004",
+    "type": "planted",
+    "title": "Buffer overread from unchecked payload length",
+    "category": "security",
+    "severity": "critical",
+    "line_start": 191,
+    "line_end": 193,
+    "description": "next_frame reads payload_len from the wire (untrusted input) and indexes remaining[14..14+payload_len] without checking that 14+payload_len <= remaining.len(). A crafted message with a large payload_len causes a panic (in debug) or buffer overread. The max_payload_size field exists but is never consulted."
+  },
+  {
+    "id": "up-005",
+    "type": "planted",
+    "title": "Panic in Drop impl via unwrap()",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 303,
+    "line_end": 311,
+    "description": "Connection's Drop impl calls write_ack().unwrap(). If write_ack ever returns Err (currently infallible but the signature says Result), this will panic during drop, which can abort the process during stack unwinding."
+  }
+]

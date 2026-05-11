@@ -1,0 +1,52 @@
+[
+  {
+    "id": "ar-001",
+    "type": "planted",
+    "title": "innerHTML assignment enables XSS",
+    "category": "security",
+    "severity": "high",
+    "line_start": 60,
+    "line_end": 60,
+    "description": "renderProductCard sets element.innerHTML to a string derived from product.name, which may contain user-controlled content. An attacker can inject script tags or event handlers via the product name."
+  },
+  {
+    "id": "ar-002",
+    "type": "planted",
+    "title": "JSON.parse with unsafe type assertion",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 66,
+    "line_end": 66,
+    "description": "parseAdminConfig casts the result of JSON.parse directly to AdminConfig with 'as'. No runtime validation ensures the parsed object matches the interface, so missing or wrong-typed fields will cause runtime errors downstream."
+  },
+  {
+    "id": "ar-003",
+    "type": "planted",
+    "title": "ReDoS via new RegExp from user input",
+    "category": "security",
+    "severity": "high",
+    "line_start": 97,
+    "line_end": 97,
+    "description": "The search endpoint constructs new RegExp(q, 'i') from the user-supplied query parameter. A crafted regex (e.g. '(a+)+$') can cause catastrophic backtracking, leading to denial of service."
+  },
+  {
+    "id": "ar-004",
+    "type": "planted",
+    "title": "Tautological .length >= 0 check",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 174,
+    "line_end": 174,
+    "description": "The condition ids.length >= 0 is always true for any array (length is never negative). The else branch on line 185 is dead code. The intended check was likely ids.length > 0."
+  },
+  {
+    "id": "ar-005",
+    "type": "planted",
+    "title": "Unsafe 'as any' cast bypasses type checking",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 191,
+    "line_end": 191,
+    "description": "The admin config endpoint casts req to 'any' to access user.admin, bypassing TypeScript's type system. If the auth middleware is misconfigured or missing, this silently reads undefined instead of producing a compile-time error."
+  }
+]
