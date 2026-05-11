@@ -126,7 +126,7 @@ def judge_panel(
     for f in findings:
         start = max(0, f.line_start - 25)
         end = min(len(source_lines), f.line_end + 25) if f.line_end > 0 else min(len(source_lines), 50)
-        excerpt = "\n".join(f"{i+start+1}: {l}" for i, l in enumerate(source_lines[start:end]))
+        excerpt = "\n".join(f"{i+start+1}: {line}" for i, line in enumerate(source_lines[start:end]))
 
         prompt = (
             f"You are judging a code review finding.\n\n"
@@ -239,7 +239,7 @@ def judge_findings(
     gt_map = _load_all_ground_truth(corpus_dir)
     all_verdicts: list[Verdict] = []
 
-    for _tool, findings in all_findings.items():
+    for findings in all_findings.values():
         by_file: dict[str, list[CanonicalFinding]] = {}
         for f in findings:
             by_file.setdefault(f.file, []).append(f)

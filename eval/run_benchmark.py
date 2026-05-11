@@ -67,7 +67,7 @@ def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
     finally:
         shutil.rmtree(quorum_home, ignore_errors=True)
 
-def run_pal(file_path: Path, rel_path: str) -> list[dict]:
+def run_pal(_file_path: Path, rel_path: str) -> list[dict]:
     cache_file = EVAL_DIR / "pal_cache" / f"{rel_path}.json"
     if cache_file.exists():
         try:
@@ -81,7 +81,7 @@ def run_pal(file_path: Path, rel_path: str) -> list[dict]:
 
 def run_third_opinion(file_path: Path) -> dict | None:
     if not _tool_available("third-opinion"):
-        print(f"    third-opinion: not installed, skipping", file=sys.stderr)
+        print("    third-opinion: not installed, skipping", file=sys.stderr)
         return None
     result = subprocess.run(
         ["third-opinion", "review", str(file_path)],

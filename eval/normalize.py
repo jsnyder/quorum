@@ -29,8 +29,9 @@ def normalize_quorum(
 ) -> list[CanonicalFinding]:
     findings = []
     if isinstance(data, dict):
-        # {file_path: [findings...]} grouped format
         for fp, file_findings in data.items():
+            if not isinstance(file_findings, list):
+                continue
             for f in file_findings:
                 findings.append(_quorum_finding(f, tool_name, fp))
     elif isinstance(data, list):
