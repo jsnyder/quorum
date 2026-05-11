@@ -9,7 +9,9 @@ SEVERITY_NORMALIZE = {
     "warning": "medium",
 }
 
-def _norm_severity(s: str) -> str:
+def _norm_severity(s) -> str:
+    if not isinstance(s, str):
+        return "info"
     return SEVERITY_NORMALIZE.get(s.lower(), "info")
 
 def _norm_category(c) -> str:

@@ -29,7 +29,8 @@ def compute_metrics(
     total = len(verdicts)
 
     effective_tp = tp + 0.5 * partial
-    precision = effective_tp / total if total > 0 else 0.0
+    judged = tp + fp + partial
+    precision = effective_tp / judged if judged > 0 else 0.0
     # Recall = unique known bugs found / total known bugs
     gt_matched = {v.matched_ground_truth_id for v in verdicts
                   if v.verdict in ("tp", "partial") and v.matched_ground_truth_id}

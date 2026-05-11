@@ -111,8 +111,8 @@ def judge_panel(
         return [
             Verdict(
                 file=f.file, tool=f.tool, finding_title=f.title,
-                verdict="tp", judge="panel-skipped",
-                reason="No QUORUM_API_KEY set, defaulting to TP",
+                verdict="unknown", judge="panel-skipped",
+                reason="No QUORUM_API_KEY set",
             )
             for f in findings
         ]
@@ -173,8 +173,8 @@ def judge_panel(
         if not votes:
             verdicts.append(Verdict(
                 file=f.file, tool=f.tool, finding_title=f.title,
-                verdict="tp", judge="panel-error",
-                reason=f"All {errors} judges errored, defaulting to TP",
+                verdict="unknown", judge="panel-error",
+                reason=f"All {errors} judges errored",
             ))
             continue
 
@@ -220,7 +220,7 @@ def _parse_verdict(text: str) -> tuple[str, str, str | None]:
     first_word = text.split()[0].lower().rstrip(".:,") if text else ""
     if first_word in ("tp", "fp", "partial"):
         return first_word, text, _extract_match_id(text)
-    return "tp", f"Could not parse verdict, defaulting to TP. Raw: {text[:100]}", None
+    return "unknown", f"Could not parse verdict. Raw: {text[:100]}", None
 
 
 def _extract_match_id(text: str) -> str | None:

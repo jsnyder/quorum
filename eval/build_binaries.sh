@@ -22,12 +22,14 @@ build_version() {
     echo "  $ver: building from ref $ver ..."
     local tmpdir
     tmpdir="$(mktemp -d)"
+    trap 'git -C "$REPO_ROOT" worktree remove --force "$tmpdir" 2>/dev/null || true; rm -rf "$tmpdir" 2>/dev/null || true' EXIT
 
     git -C "$REPO_ROOT" worktree add --detach "$tmpdir" "$ver" 2>/dev/null
     (cd "$tmpdir" && cargo build --release --quiet)
     cp "$tmpdir/target/release/quorum" "$out"
     git -C "$REPO_ROOT" worktree remove --force "$tmpdir" 2>/dev/null || true
     rm -rf "$tmpdir" 2>/dev/null || true
+    trap - EXIT
 
     echo "  $ver: built -> $out"
 }

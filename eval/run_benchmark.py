@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,8 @@ def corpus_files() -> list[tuple[str, Path]]:
 
 def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
     env = os.environ.copy()
-    env["QUORUM_HOME"] = tempfile.mkdtemp()
+    quorum_home = tempfile.mkdtemp()
+    env["QUORUM_HOME"] = quorum_home
     env.setdefault("QUORUM_MODEL", "gpt-5.4")
     env.setdefault("QUORUM_ALLOWED_BASE_URL_HOSTS", "litellm.5745.house")
 
@@ -52,21 +54,28 @@ def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
     if "--skip-context7" in flags:
         cmd.append("--skip-context7")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
-    if result.returncode == 3:
-        print(f"    WARN: {version} tool error on {file_path.name}: {result.stderr.strip()[:200]}", file=sys.stderr)
-        return []
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(f"    WARN: {version} non-JSON output on {file_path.name}", file=sys.stderr)
-        return []
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+        if result.returncode == 3:
+            print(f"    WARN: {version} tool error on {file_path.name}: {result.stderr.strip()[:200]}", file=sys.stderr)
+            return []
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            print(f"    WARN: {version} non-JSON output on {file_path.name}", file=sys.stderr)
+            return []
+    finally:
+        shutil.rmtree(quorum_home, ignore_errors=True)
 
 def run_pal(file_path: Path, rel_path: str) -> list[dict]:
     cache_file = EVAL_DIR / "pal_cache" / f"{rel_path}.json"
     if cache_file.exists():
-        with open(cache_file) as f:
-            return json.load(f)
+        try:
+            with open(cache_file) as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"    PAL: corrupted cache for {rel_path}, skipping", file=sys.stderr)
+            return []
     print("    PAL: no cached results (run pal_runner.py first)", file=sys.stderr)
     return []
 
@@ -134,8 +143,6 @@ def main():
     parser = argparse.ArgumentParser(description="Quorum benchmark harness")
     parser.add_argument("--tool", choices=TOOLS, help="Run a single tool only")
     parser.add_argument("--lang", help="Filter to a single language (e.g., rust)")
-    parser.add_argument("--with-calibration", action="store_true",
-                        help="Second pass with real feedback store")
     parser.add_argument("--output-dir", type=Path,
                         help="Override results directory")
     args = parser.parse_args()

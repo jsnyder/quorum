@@ -43,6 +43,15 @@ def test_recall_counts_unique_gt():
     assert m.recall == 1 / 3  # only 1 unique gt match despite 3 TPs
     assert m.tp_count == 3
 
+def test_unknown_excluded_from_metrics():
+    m = compute_metrics(
+        [_v("t", "tp", gt_id="gt-1"), _v("t", "unknown"), _v("t", "unknown")],
+        total_known_bugs=2,
+    )
+    assert m.tp_count == 1
+    assert m.precision == 1.0  # 1 TP out of 1 judged (unknowns excluded)
+    assert m.total_findings == 3
+
 def test_empty_findings():
     m = compute_metrics([], total_known_bugs=5)
     assert m.precision == 0.0

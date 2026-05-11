@@ -114,3 +114,12 @@ def test_parse_verdict_fallback():
     v, r, m = _parse_verdict("tp This is a real bug")
     assert v == "tp"
     assert m is None
+
+def test_parse_verdict_unparseable_returns_unknown():
+    v, r, m = _parse_verdict("I think this is probably fine")
+    assert v == "unknown"
+    assert "Could not parse" in r
+
+def test_parse_verdict_empty_returns_unknown():
+    v, r, m = _parse_verdict("")
+    assert v == "unknown"

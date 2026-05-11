@@ -1,4 +1,4 @@
-from normalize import normalize_quorum, normalize_pal, normalize_third_opinion
+from normalize import normalize_quorum, normalize_pal, normalize_third_opinion, _norm_severity
 
 QUORUM_OUTPUT = [
     {
@@ -107,6 +107,17 @@ def test_normalize_quorum_grouped_json():
     assert findings[0].severity == "critical"
     assert findings[0].file == "rust/index_writer.rs"
     assert findings[1].line_start == 160
+
+def test_norm_severity_non_string():
+    """Fix 5: non-string severity (int, None) should not crash."""
+    assert _norm_severity(42) == "info"
+    assert _norm_severity(None) == "info"
+
+
+def test_norm_severity_normal():
+    assert _norm_severity("high") == "high"
+    assert _norm_severity("WARNING") == "medium"
+
 
 def test_normalize_quorum_with_meta():
     data = [

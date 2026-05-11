@@ -9,6 +9,7 @@ Usage: uv run python pal_runner.py [--lang rust] [--model gpt-5.4]
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -59,7 +60,9 @@ def review_file(file_path: Path, rel_path: str, base_url: str, api_key: str, mod
         print(f"  ERROR: {err}", file=sys.stderr)
         return []
 
-    text = body["choices"][0]["message"]["content"]
+    text = body["choices"][0]["message"]["content"] or ""
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text.strip())
     try:
         parsed = json.loads(text)
         if isinstance(parsed, list):
@@ -105,10 +108,13 @@ def main():
 
         print(f"  {rel_path}: reviewing...", end="", flush=True)
         findings = review_file(abs_path, rel_path, base_url, api_key, args.model)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "w") as f:
-            json.dump(findings, f, indent=2)
-        print(f" {len(findings)} findings")
+        if findings:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump(findings, f, indent=2)
+            print(f" {len(findings)} findings")
+        else:
+            print(f" 0 findings (not cached, will retry next run)")
 
     print("Done. Results in pal_cache/")
 
