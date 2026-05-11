@@ -1,0 +1,12 @@
+id: ts-test-fixed-wait
+language: TypeScript
+severity: warning
+message: "Avoid fixed-duration waits with setTimeout in tests. They lead to flaky and slow tests. Use async utilities from your test framework to wait for specific events or conditions."
+rule:
+  pattern: setTimeout($$$)
+  inside:
+    stopBy: end
+    kind: call_expression
+    has:
+      field: "function"
+      regex: "^(it|test|beforeEach|afterEach)$"

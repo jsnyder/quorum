@@ -1125,6 +1125,54 @@ rule:
                 "bind-in-event-listener",
                 2,
             ),
+            (
+                "rules/python/tests/db-connection-no-context-manager.py",
+                "py",
+                "db-connection-no-context-manager",
+                3,
+            ),
+            (
+                "rules/python/tests/flask-unsafe-form-access.py",
+                "py",
+                "flask-unsafe-form-access",
+                2,
+            ),
+            (
+                "rules/python/tests/bare-except-with-logic.py",
+                "py",
+                "bare-except-with-logic",
+                2,
+            ),
+            (
+                "rules/python/tests/use-sys-exit.py",
+                "py",
+                "use-sys-exit",
+                1,
+            ),
+            (
+                "rules/rust/tests/unwrap-on-duration-since.rs",
+                "rs",
+                "unwrap-on-duration-since",
+                1,
+            ),
+            (
+                "rules/typescript/tests/ts-test-fixed-wait.ts",
+                "ts",
+                "ts-test-fixed-wait",
+                3,
+            ),
+            (
+                "rules/typescript/tests/ts-weak-crypto-random.ts",
+                "ts",
+                "ts-weak-crypto-random",
+                3,
+            ),
+            (
+                "rules/typescript/tests/ts-regex-word-merge.ts",
+                "ts",
+                "ts-regex-word-merge",
+                2,
+            ),
         ];
 
         let mut failures = Vec::new();

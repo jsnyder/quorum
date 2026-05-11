@@ -1,0 +1,13 @@
+id: db-connection-no-context-manager
+language: Python
+severity: warning
+message: "A database connection was opened but not within a `with` statement. This can lead to connection leaks if exceptions occur. Use a context manager (`with ... as conn:`) to ensure connections are closed."
+rule:
+  kind: assignment
+  pattern: $VAR = $LIB.connect($$$)
+  not:
+    inside:
+      kind: with_item
+constraints:
+  LIB:
+    regex: '^(sqlite3|psycopg2|mysql\.connector)$'

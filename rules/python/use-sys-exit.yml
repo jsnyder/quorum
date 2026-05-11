@@ -1,0 +1,6 @@
+id: use-sys-exit
+language: Python
+severity: hint
+message: "`exit()` is intended for use in the interactive interpreter. In scripts, `sys.exit()` is preferred as it is always available and more conventional."
+rule:
+  pattern: exit($$$)

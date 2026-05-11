@@ -1,0 +1,27 @@
+id: bare-except-with-logic
+language: Python
+severity: warning
+message: "A bare `except:` with logic inside catches all exceptions, including SystemExit and KeyboardInterrupt. This can hide bugs and make it hard to stop the program. Specify the exception type(s) you intend to catch (e.g., `except Exception:`)."
+rule:
+  kind: except_clause
+  all:
+    - not:
+        has:
+          kind: identifier
+    - not:
+        has:
+          kind: attribute
+    - not:
+        has:
+          kind: call
+    - not:
+        has:
+          kind: list
+    - not:
+        has:
+          kind: tuple
+  has:
+    kind: block
+    has:
+      not:
+        kind: pass_statement

@@ -1,0 +1,9 @@
+id: ts-regex-word-merge
+language: TypeScript
+severity: warning
+message: "This regex replaces punctuation with an empty string, which can incorrectly merge adjacent words (e.g., 'hello.world' becomes 'helloworld'). Consider replacing with a space ' ' instead of an empty string '' to preserve word boundaries."
+rule:
+  pattern: $S.replace($REGEX, '')
+constraints:
+  REGEX:
+    regex: "(\\^|\\\\W)"
