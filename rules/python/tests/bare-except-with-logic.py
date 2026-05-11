@@ -8,7 +8,7 @@ try:
     do_something()
 except:  # ruleid: bare-except-with-logic
     logger.error("Failed")
-    return None
+    pass
 
 # FP: should NOT match
 try:
