@@ -30,7 +30,10 @@ def compute_metrics(
 
     effective_tp = tp + 0.5 * partial
     precision = effective_tp / total if total > 0 else 0.0
-    recall = tp / total_known_bugs if total_known_bugs > 0 else 0.0
+    # Recall = unique known bugs found / total known bugs
+    gt_matched = {v.matched_ground_truth_id for v in verdicts
+                  if v.verdict in ("tp", "partial") and v.matched_ground_truth_id}
+    recall = len(gt_matched) / total_known_bugs if total_known_bugs > 0 else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
     files = set(v.file for v in verdicts)

@@ -44,7 +44,8 @@ def corpus_files() -> list[tuple[str, Path]]:
 def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
     env = os.environ.copy()
     env["QUORUM_HOME"] = tempfile.mkdtemp()
-    env["QUORUM_MODEL"] = os.environ.get("QUORUM_MODEL", "gpt-5.4")
+    env.setdefault("QUORUM_MODEL", "gpt-5.4")
+    env.setdefault("QUORUM_ALLOWED_BASE_URL_HOSTS", "litellm.5745.house")
 
     cmd = [str(binary), "review", str(file_path), "--json", "--parallel", "1"]
     flags = COMPAT.get(version, {}).get("flags", [])
@@ -53,7 +54,7 @@ def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
 
     result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
     if result.returncode == 3:
-        print(f"    WARN: {version} tool error on {file_path.name}", file=sys.stderr)
+        print(f"    WARN: {version} tool error on {file_path.name}: {result.stderr.strip()[:200]}", file=sys.stderr)
         return []
     try:
         return json.loads(result.stdout)

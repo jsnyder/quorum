@@ -27,12 +27,23 @@ def normalize_quorum(
 ) -> list[CanonicalFinding]:
     findings = []
     if isinstance(data, dict):
+        # {file_path: [findings...]} grouped format
         for fp, file_findings in data.items():
             for f in file_findings:
                 findings.append(_quorum_finding(f, tool_name, fp))
     elif isinstance(data, list):
-        for f in data:
-            findings.append(_quorum_finding(f, tool_name, file_path or "unknown"))
+        # Filter out _meta entries, then detect format
+        items = [d for d in data if isinstance(d, dict) and "_meta" not in d]
+        if items and "findings" in items[0]:
+            # [{file: "...", findings: [...]}] grouped-by-file format (--json output)
+            for group in items:
+                fp = file_path or group.get("file", "unknown")
+                for f in group.get("findings", []):
+                    findings.append(_quorum_finding(f, tool_name, fp))
+        else:
+            # flat list of finding dicts
+            for f in items:
+                findings.append(_quorum_finding(f, tool_name, file_path or "unknown"))
     return findings
 
 def _quorum_finding(f: dict, tool: str, file_path: str) -> CanonicalFinding:

@@ -66,3 +66,61 @@ def test_normalize_third_opinion():
     assert f.tool == "third-opinion"
     assert f.severity == "medium"
     assert f.line_start == 0
+
+QUORUM_GROUPED_JSON = [
+    {
+        "file": "/abs/path/to/index_writer.rs",
+        "findings": [
+            {
+                "id": "01KTEST",
+                "title": "UB on oversized len",
+                "description": "bounds not checked",
+                "severity": "critical",
+                "category": "security",
+                "source": {"llm": "gpt-5.4"},
+                "line_start": 44,
+                "line_end": 49,
+            },
+            {
+                "id": "01KTEST2",
+                "title": "Panic in Drop",
+                "description": "unwrap in drop",
+                "severity": "high",
+                "category": "correctness",
+                "source": {"llm": "gpt-5.4"},
+                "line_start": 160,
+                "line_end": 165,
+            },
+        ],
+    }
+]
+
+def test_normalize_quorum_grouped_json():
+    findings = normalize_quorum(QUORUM_GROUPED_JSON, "quorum-v0.21.0", "rust/index_writer.rs")
+    assert len(findings) == 2
+    assert findings[0].title == "UB on oversized len"
+    assert findings[0].severity == "critical"
+    assert findings[0].file == "rust/index_writer.rs"
+    assert findings[1].line_start == 160
+
+def test_normalize_quorum_with_meta():
+    data = [
+        {"_meta": {"linters": {"enabled": ["shellcheck"]}}},
+        {
+            "file": "/abs/path/deploy.sh",
+            "findings": [
+                {
+                    "title": "Pipe to bash",
+                    "severity": "high",
+                    "category": "security",
+                    "line_start": 60,
+                    "line_end": 60,
+                    "description": "curl | bash",
+                },
+            ],
+        },
+    ]
+    findings = normalize_quorum(data, "quorum-v0.21.0", "bash/deploy.sh")
+    assert len(findings) == 1
+    assert findings[0].title == "Pipe to bash"
+    assert findings[0].file == "bash/deploy.sh"

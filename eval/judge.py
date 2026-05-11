@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from pathlib import Path
 
 import httpx
@@ -119,7 +120,7 @@ def judge_panel(
     source_lines = source_file.read_text().splitlines() if source_file.exists() else []
     gt_summary = "\n".join(f"- [{g.id}] {g.title} ({g.severity})" for g in ground_truth)
 
-    models = ["claude-sonnet-4-20250514", "gemini-2.5-pro"]
+    models = ["claude-sonnet-4", "gemini-2.5-pro"]
     verdicts = []
 
     for f in findings:
@@ -140,6 +141,7 @@ def judge_panel(
         )
 
         votes: list[tuple[str, str]] = []
+        errors = 0
         for model in models:
             try:
                 resp = httpx.post(
@@ -153,11 +155,26 @@ def judge_panel(
                     },
                     timeout=60,
                 )
-                text = resp.json()["choices"][0]["message"]["content"]
+                body = resp.json()
+                if "choices" not in body:
+                    err_msg = body.get("error", {}).get("message", str(body)[:100])
+                    errors += 1
+                    print(f"      Judge {model}: API error: {err_msg}", file=sys.stderr)
+                    continue
+                text = body["choices"][0]["message"]["content"]
                 verdict, reason = _parse_verdict(text)
                 votes.append((verdict, reason))
             except Exception as e:
-                votes.append(("tp", f"Judge error: {e}"))
+                errors += 1
+                print(f"      Judge {model}: exception: {e}", file=sys.stderr)
+
+        if not votes:
+            verdicts.append(Verdict(
+                file=f.file, tool=f.tool, finding_title=f.title,
+                verdict="tp", judge="panel-error",
+                reason=f"All {errors} judges errored, defaulting to TP",
+            ))
+            continue
 
         verdict_counts: dict[str, int] = {}
         for v, _ in votes:
@@ -165,12 +182,16 @@ def judge_panel(
         final_verdict = max(verdict_counts, key=lambda k: verdict_counts[k])
         reasons = [r for _, r in votes]
 
+        judge_type = "panel" if len(set(v for v, _ in votes)) == 1 else "panel-disputed"
+        if errors > 0:
+            judge_type += f"-degraded({len(votes)}/{len(models)})"
+
         verdicts.append(Verdict(
             file=f.file,
             tool=f.tool,
             finding_title=f.title,
             verdict=final_verdict,
-            judge="panel" if len(set(v for v, _ in votes)) == 1 else "panel-disputed",
+            judge=judge_type,
             reason=f"Votes: {', '.join(v for v, _ in votes)}. {reasons[0]}",
         ))
 
