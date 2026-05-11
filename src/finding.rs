@@ -124,7 +124,11 @@ impl Finding {
         let base = match &self.source {
             Source::LocalAst => 0.95,
             Source::Linter(_) => 0.90,
-            Source::Llm(_) => self.grounding_confidence.unwrap_or(0.5),
+            Source::Llm(_) => self
+                .grounding_confidence
+                .filter(|c| c.is_finite())
+                .map(|c| c.clamp(0.0, 1.0))
+                .unwrap_or(0.5),
         };
         let cal_factor = match self.calibrator_action {
             Some(CalibratorAction::Confirmed) => 1.1,
@@ -880,5 +884,42 @@ mod tests {
         // 1.0 * 1.0 * (0.85 + 0.099) = 0.949
         assert!(f.confidence.unwrap() < 1.0);
         assert!(f.confidence.unwrap() > 0.9);
+    }
+
+    #[test]
+    fn confidence_nan_grounding_uses_default() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(f32::NAN);
+        f.compute_confidence();
+        let c = f.confidence.unwrap();
+        assert!(c.is_finite(), "NaN grounding must not propagate");
+        assert!((c - 0.5).abs() < 0.01, "should fall back to 0.5 default");
+    }
+
+    #[test]
+    fn confidence_inf_grounding_uses_default() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(f32::INFINITY);
+        f.compute_confidence();
+        let c = f.confidence.unwrap();
+        assert!(c.is_finite(), "Inf grounding must not propagate");
+        assert!((c - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_out_of_range_grounding_clamped() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Llm("gpt-5.4".into()))
+            .build();
+        f.grounding_confidence = Some(1.5);
+        f.compute_confidence();
+        assert!(
+            f.confidence.unwrap() <= 1.0,
+            "grounding > 1.0 must be clamped"
+        );
     }
 }
