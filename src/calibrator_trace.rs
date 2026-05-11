@@ -12,6 +12,10 @@ pub struct PrecedentTrace {
     pub weight: f64,
     pub provenance: String,
     pub file_path: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_file: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_similarity: Option<f64>,
 }
 
 /// Why the calibrator did (or did not) change a finding's severity.
@@ -79,6 +83,8 @@ pub struct CalibratorTraceEntry {
     pub file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<TraceProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_file_precedent_count: Option<usize>,
 }
 
 #[cfg(test)]
@@ -102,6 +108,8 @@ mod tests {
                 weight: 1.5,
                 provenance: "human".into(),
                 file_path: "src/db.py".into(),
+                same_file: false,
+                effective_similarity: None,
             }],
             action: Some(CalibratorAction::Confirmed),
             input_severity: Severity::Medium,
@@ -109,6 +117,7 @@ mod tests {
             severity_change_reason: None,
             file_path: None,
             provenance: None,
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -132,6 +141,7 @@ mod tests {
             severity_change_reason: None,
             file_path: None,
             provenance: None,
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -174,6 +184,7 @@ mod tests {
             severity_change_reason: None,
             file_path: None,
             provenance: None,
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -214,6 +225,7 @@ mod tests {
             severity_change_reason: None,
             file_path: Some("src/main.rs".to_string()),
             provenance: None,
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"file_path\":\"src/main.rs\""));
@@ -229,6 +241,80 @@ mod tests {
             trace.file_path, None,
             "old entries should parse with None file_path"
         );
+    }
+
+    #[test]
+    fn precedent_trace_same_file_true_serializes() {
+        let pt = PrecedentTrace {
+            finding_title: "SQL injection".into(),
+            verdict: Verdict::Fp,
+            similarity: 0.85,
+            weight: 0.85,
+            provenance: "human".into(),
+            file_path: "src/a.rs".into(),
+            same_file: true,
+            effective_similarity: Some(0.90),
+        };
+        let json = serde_json::to_string(&pt).unwrap();
+        assert!(json.contains("\"same_file\":true"));
+        assert!(json.contains("\"effective_similarity\":0.9"));
+    }
+
+    #[test]
+    fn precedent_trace_same_file_false_omitted() {
+        let pt = PrecedentTrace {
+            finding_title: "test".into(),
+            verdict: Verdict::Tp,
+            similarity: 0.85,
+            weight: 0.85,
+            provenance: "human".into(),
+            file_path: "src/b.rs".into(),
+            same_file: false,
+            effective_similarity: None,
+        };
+        let json = serde_json::to_string(&pt).unwrap();
+        assert!(
+            !json.contains("same_file"),
+            "same_file: false must be omitted"
+        );
+        assert!(
+            !json.contains("effective_similarity"),
+            "effective_similarity: None must be omitted"
+        );
+    }
+
+    #[test]
+    fn trace_entry_same_file_count_serializes_and_backward_compat() {
+        let trace = CalibratorTraceEntry {
+            finding_title: "x".into(),
+            finding_category: "y".into(),
+            tp_weight: 1.0,
+            fp_weight: 0.5,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.5,
+            soft_fp_weight: 0.5,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Medium,
+            output_severity: Severity::Medium,
+            severity_change_reason: None,
+            file_path: None,
+            provenance: None,
+            same_file_precedent_count: Some(2),
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(json.contains("\"same_file_precedent_count\":2"));
+
+        // Backward compat: old JSON without the field deserializes to None
+        let old_json = r#"{"finding_title":"x","finding_category":"y","tp_weight":1.0,"fp_weight":0.5,"wontfix_weight":0.0,"full_suppress_weight":0.5,"soft_fp_weight":0.5,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
+        let old: CalibratorTraceEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old.same_file_precedent_count, None);
+
+        // Old PrecedentTrace JSON without same_file fields
+        let old_pt_json = r#"{"finding_title":"x","verdict":"tp","similarity":0.9,"weight":0.9,"provenance":"human","file_path":"src/a.rs"}"#;
+        let old_pt: PrecedentTrace = serde_json::from_str(old_pt_json).unwrap();
+        assert!(!old_pt.same_file);
+        assert_eq!(old_pt.effective_similarity, None);
     }
 
     #[test]
@@ -274,6 +360,7 @@ mod tests {
                 quorum_version: Some("0.19.0".into()),
                 ..Default::default()
             }),
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -313,6 +400,7 @@ mod tests {
             severity_change_reason: None,
             file_path: None,
             provenance: None,
+            same_file_precedent_count: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(

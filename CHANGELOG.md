@@ -6,6 +6,8 @@
 
 - **Per-file few-shot scoping (#124).** Few-shot precedent retrieval now boosts same-file candidates (+0.05 additive similarity bonus) and reserves at least one selection slot for same-file precedents when available. Prevents cross-file feedback from silently displacing relevant precedents. Deterministic tie-breaking by `(similarity, timestamp, file_path)` ensures stable retrieval across runs.
 
+- **Per-file calibrator boost (#124).** Same-file feedback entries now carry +0.05 additional similarity weight in the calibrator's suppress/boost weight accumulation. Applied after the embedding threshold filter (cannot rescue sub-threshold entries). Calibrator traces include `same_file_precedent_count` and per-precedent `same_file` / `effective_similarity` for observability. `normalize_file_path` and `SAME_FILE_BOOST` extracted to shared `file_util` module.
+
 ## [0.20.0] - 2026-05-07
 
 ### Review quality

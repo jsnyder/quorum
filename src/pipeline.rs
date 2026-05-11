@@ -343,16 +343,7 @@ fn select_few_shot_precedents(
     selected
 }
 
-/// Normalize a file path for comparison: strip leading `./` and trailing `/`.
-fn normalize_file_path(path: &str) -> &str {
-    let p = path.strip_prefix("./").unwrap_or(path);
-    p.strip_suffix('/').unwrap_or(p)
-}
-
-/// Additive similarity boost for candidates whose file path matches the
-/// file currently under review. Paths are compared after normalization.
-/// The returned vector is re-sorted by descending similarity.
-const SAME_FILE_BOOST: f32 = 0.05;
+use crate::file_util::{SAME_FILE_BOOST, normalize_file_path};
 
 fn apply_same_file_boost(
     candidates: &[crate::feedback_index::SimilarEntry],

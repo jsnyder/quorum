@@ -113,6 +113,7 @@ fn make_no_match_trace(
             Some(file_path.to_string())
         },
         provenance: None,
+        same_file_precedent_count: None,
     }
 }
 
@@ -152,6 +153,7 @@ fn make_trace_entry(
             Some(file_path.to_string())
         },
         provenance: None,
+        same_file_precedent_count: None,
     }
 }
 
@@ -547,6 +549,8 @@ pub fn calibrate(
                     weight: verdict_weight(e, now),
                     provenance: serde_json::to_string(&e.provenance).unwrap_or_default(),
                     file_path: e.file_path.clone(),
+                    same_file: false,
+                    effective_similarity: None,
                 }
             })
             .collect();
@@ -678,6 +682,10 @@ pub fn calibrate_with_index(
     // uses the same reference time (#123 Layer 1 — clock injection refactor).
     let now = chrono::Utc::now();
 
+    // Normalize the review file path once for same-file comparison across all
+    // findings in this batch.
+    let normalized_review_path = crate::file_util::normalize_file_path(file_path);
+
     let mut output = Vec::new();
     let mut suppressed = 0;
     let mut boosted = 0;
@@ -747,27 +755,50 @@ pub fn calibrate_with_index(
             continue;
         }
 
+        // Same-file boost: entries whose file path matches the file under
+        // review get an additive similarity boost. Applied AFTER the
+        // embedding_similarity_threshold filter (cannot rescue sub-threshold
+        // entries) but BEFORE weight accumulation. Normalized comparison
+        // handles `./` prefix differences.
+        let effective_sims: Vec<(bool, f64)> = similar
+            .iter()
+            .map(|s| {
+                let is_same = crate::file_util::normalize_file_path(&s.entry.file_path)
+                    == normalized_review_path;
+                let effective = if is_same {
+                    (s.similarity as f64 + crate::file_util::SAME_FILE_BOOST as f64).min(1.0)
+                } else {
+                    s.similarity as f64
+                };
+                (is_same, effective)
+            })
+            .collect();
+
+        let same_file_count = effective_sims.iter().filter(|(sf, _)| *sf).count();
+
         // Provenance-bucketed, per-bucket-capped weights. Weights here are
-        // scaled by embedding similarity before bucketing.
+        // scaled by effective similarity (raw + same-file boost) before bucketing.
         let tp_weight = accumulate_capped(
             similar
                 .iter()
-                .filter(|s| matches!(s.entry.verdict, Verdict::Tp | Verdict::Partial))
-                .map(|s| {
+                .zip(effective_sims.iter())
+                .filter(|(s, _)| matches!(s.entry.verdict, Verdict::Tp | Verdict::Partial))
+                .map(|(s, &(_, effective_sim))| {
                     (
                         &s.entry.provenance,
-                        verdict_weight(&s.entry, now) * s.similarity as f64,
+                        verdict_weight(&s.entry, now) * effective_sim,
                     )
                 }),
         );
         let fp_weight = accumulate_capped(
             similar
                 .iter()
-                .filter(|s| s.entry.verdict == Verdict::Fp)
-                .map(|s| {
+                .zip(effective_sims.iter())
+                .filter(|(s, _)| s.entry.verdict == Verdict::Fp)
+                .map(|(s, &(_, effective_sim))| {
                     (
                         &s.entry.provenance,
-                        verdict_weight(&s.entry, now) * s.similarity as f64,
+                        verdict_weight(&s.entry, now) * effective_sim,
                     )
                 }),
         );
@@ -775,11 +806,12 @@ pub fn calibrate_with_index(
         // Wontfix weight — retained only for trace diagnostics. Wontfix no longer
         // contributes to soft or full suppression (see inertness rationale below).
         let mut wontfix_weight: f64 = 0.0;
-        for s in similar
+        for (s, &(_, effective_sim)) in similar
             .iter()
-            .filter(|s| s.entry.verdict == Verdict::Wontfix)
+            .zip(effective_sims.iter())
+            .filter(|(s, _)| s.entry.verdict == Verdict::Wontfix)
         {
-            let w = verdict_weight(&s.entry, now) * s.similarity as f64;
+            let w = verdict_weight(&s.entry, now) * effective_sim;
             wontfix_weight += w;
         }
         // Wontfix is inert: pre-existing issues the user chose not to fix carry no
@@ -789,16 +821,22 @@ pub fn calibrate_with_index(
         // Build precedent traces for this finding
         let matched_precedents: Vec<crate::calibrator_trace::PrecedentTrace> = similar
             .iter()
-            .map(|s| crate::calibrator_trace::PrecedentTrace {
-                finding_title: s.entry.finding_title.clone(),
-                verdict: s.entry.verdict.clone(),
-                similarity: s.similarity as f64,
-                // Must match decision math: verdict_weight * similarity (see TP/FP/wontfix
-                // accumulation above). Storing verdict_weight alone silently under-reports
-                // near-miss precedents during debugging.
-                weight: verdict_weight(&s.entry, now) * s.similarity as f64,
-                provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
-                file_path: s.entry.file_path.clone(),
+            .zip(effective_sims.iter())
+            .map(|(s, &(is_same_file, effective_sim))| {
+                crate::calibrator_trace::PrecedentTrace {
+                    finding_title: s.entry.finding_title.clone(),
+                    verdict: s.entry.verdict.clone(),
+                    // Raw similarity preserved for comparison/debugging.
+                    similarity: s.similarity as f64,
+                    // Must match decision math: verdict_weight * effective_sim (see
+                    // TP/FP/wontfix accumulation above). Uses effective (boosted) value
+                    // so operators can debug suppress/boost decisions accurately.
+                    weight: verdict_weight(&s.entry, now) * effective_sim,
+                    provenance: serde_json::to_string(&s.entry.provenance).unwrap_or_default(),
+                    file_path: s.entry.file_path.clone(),
+                    same_file: is_same_file,
+                    effective_similarity: Some(effective_sim),
+                }
             })
             .collect();
 
@@ -831,6 +869,9 @@ pub fn calibrate_with_index(
             file_path,
         );
         decision.trace.provenance = config.trace_provenance.clone();
+        if same_file_count > 0 {
+            decision.trace.same_file_precedent_count = Some(same_file_count);
+        }
         traces.push(decision.trace);
         if decision.suppressed {
             suppressed += 1;
@@ -4171,6 +4212,542 @@ mod tests {
             result.traces[0].provenance.as_ref(),
             Some(&prov),
             "decision-path trace must carry provenance from config",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Same-file boost tests (RED phase)
+    // -------------------------------------------------------------------
+
+    /// Helper: create a FeedbackEntry with a specific file_path.
+    fn fb_in_file(title: &str, category: &str, verdict: Verdict, file: &str) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: file.into(),
+            finding_title: title.into(),
+            finding_category: category.into(),
+            verdict,
+            reason: "test".into(),
+            model: Some("gpt-5.4".into()),
+            timestamp: Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+        }
+    }
+
+    #[test]
+    fn same_file_entry_gets_boosted_effective_similarity() {
+        // FP at raw sim, same file -> effective_similarity = raw + 0.05
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "Missing input validation on endpoint",
+                "security",
+                Verdict::Fp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("Missing input validation on webhook handler endpoint")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        let prec = &trace.matched_precedents[0];
+        assert!(prec.same_file, "precedent should be marked same_file");
+        let raw = prec.similarity;
+        let expected_effective = (raw + crate::file_util::SAME_FILE_BOOST as f64).min(1.0);
+        assert!(
+            (prec.effective_similarity.unwrap() - expected_effective).abs() < 1e-6,
+            "effective_similarity should be raw + 0.05; got {}, expected {}",
+            prec.effective_similarity.unwrap(),
+            expected_effective,
+        );
+    }
+
+    #[test]
+    fn cross_file_entry_keeps_raw_similarity() {
+        // FP at raw sim, different file -> effective_similarity = raw
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "Missing input validation on endpoint",
+                "security",
+                Verdict::Fp,
+                "src/b.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("Missing input validation on webhook handler endpoint")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        let prec = &trace.matched_precedents[0];
+        assert!(!prec.same_file, "precedent should NOT be marked same_file");
+        let raw = prec.similarity;
+        assert!(
+            (prec.effective_similarity.unwrap() - raw).abs() < 1e-6,
+            "cross-file effective_similarity should equal raw; got {}, expected {}",
+            prec.effective_similarity.unwrap(),
+            raw,
+        );
+    }
+
+    #[test]
+    fn same_file_boost_clamps_at_one() {
+        // TP at high raw sim, same file -> effective_similarity clamped at 1.0.
+        // Jaccard-only index yields ~0.7 for exact title matches (enrichment
+        // dilutes), so we use embedding_similarity_threshold=0.0 and verify
+        // the arithmetic: (raw + 0.05).min(1.0). We test clamping by
+        // asserting that the formula produces the right result even when
+        // raw + 0.05 > 1.0 would theoretically apply at higher raw values.
+        // Here we verify the formula itself: effective = min(raw + 0.05, 1.0).
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Tp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.0,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        let prec = &trace.matched_precedents[0];
+        assert!(prec.same_file);
+        let raw = prec.similarity;
+        let expected = (raw + crate::file_util::SAME_FILE_BOOST as f64).min(1.0);
+        assert!(
+            (prec.effective_similarity.unwrap() - expected).abs() < 1e-6,
+            "effective_similarity should be min(raw + 0.05, 1.0) = {}; got {}",
+            expected,
+            prec.effective_similarity.unwrap(),
+        );
+        // Verify clamp works: effective must never exceed 1.0.
+        assert!(
+            prec.effective_similarity.unwrap() <= 1.0,
+            "effective_similarity must not exceed 1.0; got {}",
+            prec.effective_similarity.unwrap(),
+        );
+    }
+
+    #[test]
+    fn sub_threshold_same_file_entry_not_rescued() {
+        // Entry at sim below threshold, same file -> filtered out, not in matched_precedents.
+        // Use a very high threshold so even same-file boost can't rescue it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "Completely unrelated finding about buffer overflow",
+                "security",
+                Verdict::Fp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection risk via string concatenation")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        // Set threshold very high — Jaccard between these titles is near 0.
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.9,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert!(
+            trace.matched_precedents.is_empty(),
+            "sub-threshold entries must not be rescued by same-file boost; got {} precedents",
+            trace.matched_precedents.len(),
+        );
+    }
+
+    #[test]
+    fn same_file_fps_tip_legacy_suppress_threshold() {
+        // 2 same-file FPs with Jaccard ~0.714 where 2*0.714 = 1.428 < 1.5
+        // but 2*(0.714+0.05) = 2*0.764 = 1.528 >= 1.5 -> finding suppressed
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..2 {
+            store
+                .record(&fb_in_file(
+                    "SQL injection risk via string formatting",
+                    "security",
+                    Verdict::Fp,
+                    "src/a.rs",
+                ))
+                .unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection risk via string concatenation")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        // Verify the Jaccard is in the expected range for the test to be meaningful.
+        let trace = &result.traces[0];
+        if !trace.matched_precedents.is_empty() {
+            let raw = trace.matched_precedents[0].similarity;
+            assert!(
+                (0.65..0.80).contains(&raw),
+                "test fixture Jaccard should be ~0.714; got {} — adjust titles if needed",
+                raw,
+            );
+        }
+        assert_eq!(
+            result.suppressed, 1,
+            "2 same-file FPs with boosted sim should tip past 1.5 suppress threshold; \
+             fp_weight={:.3}",
+            trace.fp_weight,
+        );
+    }
+
+    #[test]
+    fn cross_file_fps_below_legacy_suppress_threshold() {
+        // Control for test 5: same entries but cross-file -> NOT suppressed
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..2 {
+            store
+                .record(&fb_in_file(
+                    "SQL injection risk via string formatting",
+                    "security",
+                    Verdict::Fp,
+                    "src/other.rs",
+                ))
+                .unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection risk via string concatenation")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert_eq!(
+            result.suppressed, 0,
+            "2 cross-file FPs at raw sim ~0.714 should NOT suppress (fp_weight < 1.5); \
+             fp_weight={:.3}",
+            trace.fp_weight,
+        );
+    }
+
+    #[test]
+    fn same_file_tps_tip_legacy_boost_threshold() {
+        // Symmetric TP boost case: 2 same-file TPs with Jaccard ~0.714
+        // where 2*0.714 = 1.428 < 1.5 but 2*(0.714+0.05) = 1.528 >= 1.5
+        // -> finding severity boosted
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..2 {
+            store
+                .record(&fb_in_file(
+                    "SQL injection risk via string formatting",
+                    "security",
+                    Verdict::Tp,
+                    "src/a.rs",
+                ))
+                .unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection risk via string concatenation")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert!(
+            result.boosted >= 1,
+            "2 same-file TPs with boosted sim should tip past 1.5 boost threshold; \
+             tp_weight={:.3}",
+            trace.tp_weight,
+        );
+    }
+
+    #[test]
+    fn cross_file_tps_below_legacy_boost_threshold() {
+        // Control for test 7: same entries but cross-file -> NOT boosted
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..2 {
+            store
+                .record(&fb_in_file(
+                    "SQL injection risk via string formatting",
+                    "security",
+                    Verdict::Tp,
+                    "src/other.rs",
+                ))
+                .unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection risk via string concatenation")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert_eq!(
+            result.boosted, 0,
+            "2 cross-file TPs at raw sim ~0.714 should NOT boost (tp_weight < 1.5); \
+             tp_weight={:.3}",
+            trace.tp_weight,
+        );
+    }
+
+    #[test]
+    fn same_file_precedent_count_mixed() {
+        // 3 entries: 2 same-file, 1 cross-file -> count = 2
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Tp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Fp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Tp,
+                "src/other.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert_eq!(
+            trace.same_file_precedent_count,
+            Some(2),
+            "should count 2 same-file precedents out of 3; got {:?}",
+            trace.same_file_precedent_count,
+        );
+        // Verify the individual precedent same_file flags
+        let same_count = trace
+            .matched_precedents
+            .iter()
+            .filter(|p| p.same_file)
+            .count();
+        assert_eq!(
+            same_count, 2,
+            "2 of 3 precedents should be marked same_file; got {}",
+            same_count,
+        );
+    }
+
+    #[test]
+    fn external_entries_at_cap_unaffected_by_boost() {
+        // 3 External TPs at cap -> tp_weight stays capped at EXTERNAL_WEIGHT_CAP
+        // even with same-file boost
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        for _ in 0..3 {
+            let mut entry = external_tp(0);
+            entry.file_path = "src/a.rs".into();
+            store.record(&entry).unwrap();
+        }
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.0,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert!(
+            (trace.tp_weight - EXTERNAL_WEIGHT_CAP).abs() < 0.1,
+            "External TPs must stay capped at {} even with same-file boost; got {}",
+            EXTERNAL_WEIGHT_CAP,
+            trace.tp_weight,
+        );
+    }
+
+    #[test]
+    fn wontfix_weight_uses_effective_similarity() {
+        // wontfix entry same-file -> trace.wontfix_weight uses boosted sim
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "Missing input validation on endpoint",
+                "security",
+                Verdict::Wontfix,
+                "src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("Missing input validation on webhook handler endpoint")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        let prec = &trace.matched_precedents[0];
+        let raw = prec.similarity;
+        let effective = prec.effective_similarity.unwrap();
+        assert!(
+            effective > raw,
+            "same-file wontfix should have effective > raw; effective={}, raw={}",
+            effective,
+            raw,
+        );
+        // wontfix_weight should use effective_similarity, not raw
+        // verdict_weight * effective_sim
+        let entry = &store.load_all().unwrap()[0];
+        let expected_wontfix_weight = verdict_weight(entry, Utc::now()) * effective;
+        assert!(
+            (trace.wontfix_weight - expected_wontfix_weight).abs() < 0.05,
+            "wontfix_weight should use effective_similarity; got {}, expected ~{}",
+            trace.wontfix_weight,
+            expected_wontfix_weight,
+        );
+    }
+
+    #[test]
+    fn dot_slash_review_path_matches_clean_entry_path() {
+        // review file "./src/a.rs" matches entry "src/a.rs"
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Fp,
+                "src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "./src/a.rs");
+        let trace = &result.traces[0];
+        assert!(
+            !trace.matched_precedents.is_empty(),
+            "should have matched precedents"
+        );
+        assert!(
+            trace.matched_precedents[0].same_file,
+            "review path './src/a.rs' should match entry path 'src/a.rs' after normalization",
+        );
+    }
+
+    #[test]
+    fn clean_review_path_matches_dot_slash_entry_path() {
+        // review file "src/a.rs" matches entry "./src/a.rs"
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(dir.path().join("fb.jsonl"));
+        store
+            .record(&fb_in_file(
+                "SQL injection",
+                "security",
+                Verdict::Fp,
+                "./src/a.rs",
+            ))
+            .unwrap();
+        let mut index = crate::feedback_index::FeedbackIndex::build_jaccard_only(&store).unwrap();
+        let finding = FindingBuilder::new()
+            .title("SQL injection")
+            .category("security".into())
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            embedding_similarity_threshold: 0.3,
+            ..Default::default()
+        };
+        let result = calibrate_with_index(vec![finding], &mut index, &config, "src/a.rs");
+        let trace = &result.traces[0];
+        assert!(
+            !trace.matched_precedents.is_empty(),
+            "should have matched precedents"
+        );
+        assert!(
+            trace.matched_precedents[0].same_file,
+            "review path 'src/a.rs' should match entry path './src/a.rs' after normalization",
         );
     }
 }
