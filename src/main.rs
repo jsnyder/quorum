@@ -1005,25 +1005,24 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         || std::env::var("QUORUM_CONTEXT7_LIVE_REGISTRY")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-    let registry_client: Option<
-        std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>,
-    > = if live_registry && !opts.skip_context7 && !context7_disabled {
-        match crate::enrichment_policy::HttpRegistryClient::new() {
-            Ok(http) => {
-                let cached = crate::enrichment_policy::OwnedCachedRegistryClient::new(
-                    Box::new(http),
-                    128,
-                );
-                Some(std::sync::Arc::new(cached))
+    let registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>> =
+        if live_registry && !opts.skip_context7 && !context7_disabled {
+            match crate::enrichment_policy::HttpRegistryClient::new() {
+                Ok(http) => {
+                    let cached = crate::enrichment_policy::OwnedCachedRegistryClient::new(
+                        Box::new(http),
+                        128,
+                    );
+                    Some(std::sync::Arc::new(cached))
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to initialize registry client: {e}");
+                    None
+                }
             }
-            Err(e) => {
-                eprintln!("Warning: failed to initialize registry client: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     let pipeline_cfg = PipelineConfig {
         models,

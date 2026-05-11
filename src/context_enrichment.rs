@@ -337,7 +337,15 @@ pub fn enrich_for_review_with_policy(
             continue;
         }
         if let Some(query) = curated_query_for(fw) {
-            try_fetch_one(fw, &query, imports, fetcher, &mut docs, &mut metrics, &mut seen);
+            try_fetch_one(
+                fw,
+                &query,
+                imports,
+                fetcher,
+                &mut docs,
+                &mut metrics,
+                &mut seen,
+            );
         }
     }
 
@@ -1384,9 +1392,10 @@ axum = "0.7"
 
     #[test]
     fn popular_dep_is_skipped_by_policy() {
-        let deps = vec![
-            crate::dep_manifest::Dependency { name: "serde".into(), language: "rust".into() },
-        ];
+        let deps = vec![crate::dep_manifest::Dependency {
+            name: "serde".into(),
+            language: "rust".into(),
+        }];
         let imports = vec!["Deserialize: use serde::Deserialize;".into()];
         let fetcher = test_support::Spy;
         let policy = crate::enrichment_policy::EnrichmentPolicy::default();
@@ -1394,14 +1403,18 @@ axum = "0.7"
         let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
         assert!(result.docs.is_empty(), "serde should be skipped");
         assert_eq!(result.metrics.context7_skipped_popular, 1);
-        assert_eq!(result.metrics.context7_resolved, 0, "no resolve for mainstream dep");
+        assert_eq!(
+            result.metrics.context7_resolved, 0,
+            "no resolve for mainstream dep"
+        );
     }
 
     #[test]
     fn niche_dep_gets_enriched_by_policy() {
-        let deps = vec![
-            crate::dep_manifest::Dependency { name: "fastembed".into(), language: "rust".into() },
-        ];
+        let deps = vec![crate::dep_manifest::Dependency {
+            name: "fastembed".into(),
+            language: "rust".into(),
+        }];
         let imports = vec![
             "TextEmbedding: use fastembed::TextEmbedding;".into(),
             "EmbeddingModel: use fastembed::EmbeddingModel;".into(),
@@ -1486,9 +1499,15 @@ axum = "0.7"
         };
         let cached = CachedContextFetcher::new(&inner, 16);
         let r1 = cached.resolve_library("react");
-        assert_eq!(r1.as_ref().map(|r| r.library_id.as_str()), Some("/lib/react"));
+        assert_eq!(
+            r1.as_ref().map(|r| r.library_id.as_str()),
+            Some("/lib/react")
+        );
         let r2 = cached.resolve_library("react");
-        assert_eq!(r2.as_ref().map(|r| r.library_id.as_str()), Some("/lib/react"));
+        assert_eq!(
+            r2.as_ref().map(|r| r.library_id.as_str()),
+            Some("/lib/react")
+        );
         assert_eq!(*inner.calls.lock().unwrap(), 1);
     }
 

@@ -1,20 +1,21 @@
-/// Precision-targeting logic for Context7 enrichment.
-///
-/// Determines whether a dependency should receive Context7-enriched docs,
-/// and if so, how large a token budget to allocate.
-///
-/// Decision tree:
-///   1. Usage gate: if the dep appears 0 times in file imports → skip.
-///   2. Mainstream skip-list: if the LLM already knows the dep well → skip.
-///   3. Popularity tier (via registry): high-popularity deps get smaller budgets
-///      since the LLM's training data already covers them.
-///   4. Quality gate: Context7 docs with low benchmark score or few snippets
-///      are not worth injecting (would add noise, not signal).
-///   5. Usage multiplier: heavier usage in the file → more budget.
+//! Precision-targeting logic for Context7 enrichment.
+//!
+//! Determines whether a dependency should receive Context7-enriched docs,
+//! and if so, how large a token budget to allocate.
+//!
+//! Decision tree:
+//!   1. Usage gate: if the dep appears 0 times in file imports → skip.
+//!   2. Mainstream skip-list: if the LLM already knows the dep well → skip.
+//!   3. Popularity tier (via registry): high-popularity deps get smaller budgets
+//!      since the LLM's training data already covers them.
+//!   4. Quality gate: Context7 docs with low benchmark score or few snippets
+//!      are not worth injecting (would add noise, not signal).
+//!   5. Usage multiplier: heavier usage in the file → more budget.
 
 // ── Component 1: Mainstream Skip-List ────────────────────────────────────────
 
-/// Bundled skip-list of libraries the LLM knows well from training data.
+// Bundled skip-list of libraries the LLM knows well from training data.
+/// Returns true if `dep_name` is in the built-in mainstream skip-list for `language`.
 pub fn is_mainstream(dep_name: &str, language: &str) -> bool {
     let normalized = dep_name.to_lowercase().replace('-', "_");
     let list: &[&str] = match language {
@@ -221,8 +222,7 @@ impl HttpRegistryClient {
 impl RegistryClient for HttpRegistryClient {
     fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
         let url = Self::registry_url(name, language)?;
-        let resp =
-            crate::llm_client::block_on_async(self.http.get(&url).send()).ok()?;
+        let resp = crate::llm_client::block_on_async(self.http.get(&url).send()).ok()?;
         if !resp.status().is_success() {
             tracing::debug!(
                 name,
@@ -232,8 +232,7 @@ impl RegistryClient for HttpRegistryClient {
             );
             return None;
         }
-        let json: serde_json::Value =
-            crate::llm_client::block_on_async(resp.json()).ok()?;
+        let json: serde_json::Value = crate::llm_client::block_on_async(resp.json()).ok()?;
         Self::parse_downloads(&json, language)
     }
 }
@@ -245,8 +244,7 @@ struct RegistryCacheEntry {
     cached_at: std::time::Instant,
 }
 
-const REGISTRY_CACHE_TTL: std::time::Duration =
-    std::time::Duration::from_secs(7 * 24 * 3600);
+const REGISTRY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
 pub struct CachedRegistryClient<'a> {
     inner: &'a dyn RegistryClient,
@@ -275,10 +273,10 @@ fn cached_lookup(
     let key = (name.to_string(), language.to_string());
     {
         let mut c = cache.lock().unwrap();
-        if let Some(entry) = c.get(&key) {
-            if entry.cached_at.elapsed() < ttl {
-                return entry.downloads;
-            }
+        if let Some(entry) = c.get(&key)
+            && entry.cached_at.elapsed() < ttl
+        {
+            return entry.downloads;
         }
     }
     let downloads = inner.monthly_downloads(name, language);
@@ -366,14 +364,9 @@ impl UsageLevel {
 
 // ── EnrichmentPolicy ─────────────────────────────────────────────────────────
 
+#[derive(Default)]
 pub struct EnrichmentPolicy<'a> {
     pub registry: Option<&'a dyn RegistryClient>,
-}
-
-impl Default for EnrichmentPolicy<'_> {
-    fn default() -> Self {
-        Self { registry: None }
-    }
 }
 
 impl EnrichmentPolicy<'_> {
@@ -696,9 +689,6 @@ mod tests {
             snippet_count: Some(500),
             reputation: Some("High".into()),
         };
-        assert_eq!(
-            policy.token_budget_for("bar", "rust", &[], &resolve),
-            0
-        );
+        assert_eq!(policy.token_budget_for("bar", "rust", &[], &resolve), 0);
     }
 }
