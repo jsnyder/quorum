@@ -1,5 +1,5 @@
 from judge import match_ground_truth, judge_auto
-from schema import CanonicalFinding, GroundTruthEntry, Verdict
+from schema import CanonicalFinding, GroundTruthEntry
 
 GT = [
     GroundTruthEntry(

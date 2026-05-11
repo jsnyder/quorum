@@ -1,4 +1,3 @@
-import json
 from normalize import normalize_quorum, normalize_pal, normalize_third_opinion
 
 QUORUM_OUTPUT = [

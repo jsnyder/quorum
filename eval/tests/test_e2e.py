@@ -2,9 +2,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from schema import CanonicalFinding, GroundTruthEntry, save_verdicts
+from schema import CanonicalFinding, GroundTruthEntry
 from judge import judge_auto
-from scorecard import compute_metrics, generate_scorecard
+from scorecard import generate_scorecard
 
 
 def test_full_pipeline_mock():
@@ -54,7 +54,7 @@ def test_full_pipeline_mock():
 
     # Auto-judge both tools
     verdicts_a, unmatched_a = judge_auto(tool_a_findings, gt)
-    verdicts_b, unmatched_b = judge_auto(tool_b_findings, gt)
+    verdicts_b, _unmatched_b = judge_auto(tool_b_findings, gt)
 
     assert len(verdicts_a) == 1  # matched SQL injection
     assert verdicts_a[0].matched_ground_truth_id == "t-001"

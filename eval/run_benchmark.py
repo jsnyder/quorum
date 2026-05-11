@@ -61,8 +61,8 @@ def run_quorum(binary: Path, file_path: Path, version: str) -> list[dict]:
         print(f"    WARN: {version} non-JSON output on {file_path.name}", file=sys.stderr)
         return []
 
-def run_pal(file_path: Path) -> list[dict]:
-    print(f"    PAL: requires manual run or MCP integration", file=sys.stderr)
+def run_pal(_file_path: Path) -> list[dict]:
+    print("    PAL: requires manual run or MCP integration", file=sys.stderr)
     return []
 
 def run_third_opinion(file_path: Path) -> dict | None:

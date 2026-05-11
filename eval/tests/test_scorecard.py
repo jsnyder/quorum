@@ -1,5 +1,5 @@
-from scorecard import compute_metrics, ToolMetrics
-from schema import Verdict, CanonicalFinding, GroundTruthEntry
+from scorecard import compute_metrics
+from schema import Verdict
 
 def _v(tool: str, verdict: str, file: str = "rust/index_writer.rs") -> Verdict:
     return Verdict(

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from schema import CanonicalFinding, Verdict, GroundTruthEntry, load_ground_truth
+from schema import CanonicalFinding, Verdict, load_ground_truth
 
 
 @dataclass

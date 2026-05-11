@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from pathlib import Path
@@ -201,7 +200,7 @@ def judge_findings(
     gt_map = _load_all_ground_truth(corpus_dir)
     all_verdicts: list[Verdict] = []
 
-    for tool, findings in all_findings.items():
+    for _tool, findings in all_findings.items():
         by_file: dict[str, list[CanonicalFinding]] = {}
         for f in findings:
             by_file.setdefault(f.file, []).append(f)
