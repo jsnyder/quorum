@@ -102,9 +102,12 @@ def main():
     for rel_path, abs_path in files:
         cache_file = CACHE_DIR / f"{rel_path}.json"
         if cache_file.exists():
-            existing = json.loads(cache_file.read_text())
-            print(f"  {rel_path}: cached ({len(existing)} findings)")
-            continue
+            try:
+                existing = json.loads(cache_file.read_text())
+                print(f"  {rel_path}: cached ({len(existing)} findings)")
+                continue
+            except json.JSONDecodeError:
+                print(f"  {rel_path}: corrupted cache, re-reviewing...")
 
         print(f"  {rel_path}: reviewing...", end="", flush=True)
         findings = review_file(abs_path, rel_path, base_url, api_key, args.model)

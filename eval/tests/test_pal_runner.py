@@ -51,11 +51,33 @@ def test_main_skips_empty_cache(tmp_path):
     with patch("pal_runner.CACHE_DIR", tmp_path / "pal_cache"), \
          patch("pal_runner.review_file", return_value=[]):
         from pal_runner import CACHE_DIR
-        # Simulate what main() does for one file
         findings = []
-        if findings:  # This is how main should work — skip empty
+        if findings:
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_file, "w") as f:
                 json.dump(findings, f, indent=2)
 
     assert not cache_file.exists(), "Empty findings should not be cached"
+
+
+def test_main_corrupted_cache_skips_gracefully(tmp_path):
+    """Corrupted cache in pal_runner main() should skip, not crash."""
+    from pal_runner import main as pal_main
+
+    cache_dir = tmp_path / "pal_cache" / "rust"
+    cache_dir.mkdir(parents=True)
+    cache_file = cache_dir / "index_writer.rs.json"
+    cache_file.write_text("INVALID JSON {{{{")
+
+    corpus_dir = tmp_path / "corpus" / "rust"
+    corpus_dir.mkdir(parents=True)
+    (corpus_dir / "index_writer.rs").write_text("fn main() {}")
+
+    with patch("pal_runner.CACHE_DIR", tmp_path / "pal_cache"), \
+         patch("pal_runner.CORPUS_DIR", tmp_path / "corpus"), \
+         patch("pal_runner.review_file", return_value=[{"title": "test"}]) as mock_review, \
+         patch("sys.argv", ["pal_runner.py", "--lang", "rust"]), \
+         patch.dict("os.environ", {"QUORUM_API_KEY": "sk-test"}):
+        pal_main()
+
+    assert mock_review.called, "Should re-review when cache is corrupted"
