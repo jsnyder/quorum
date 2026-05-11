@@ -1,0 +1,32 @@
+[
+  {
+    "id": "rt-001",
+    "type": "real",
+    "title": "getProcedureAtPath prefix matching resolves wrong router",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "Prefix-based path matching in getProcedureAtPath can match a lazy router with a path that is a prefix of another, resolving to the wrong procedure."
+  },
+  {
+    "id": "rt-002",
+    "type": "real",
+    "title": "Reserved word check only at top level",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "createRouterInner only rejects reserved words (e.g., 'query', 'mutation') at the top-level, allowing them in nested routers."
+  },
+  {
+    "id": "rt-003",
+    "type": "real",
+    "title": "isProcedure type guard too permissive",
+    "category": "correctness",
+    "severity": "low",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "isProcedure accepts any function as a procedure without checking for the expected _def property."
+  }
+]

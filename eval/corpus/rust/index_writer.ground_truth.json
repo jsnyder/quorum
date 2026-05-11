@@ -1,0 +1,32 @@
+[
+  {
+    "id": "iw-001",
+    "type": "real",
+    "title": "MAX_NUM_THREAD not enforced in IndexWriter::new",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "MAX_NUM_THREAD is declared as a constant but IndexWriter::new() never checks it, allowing thread count to exceed the limit."
+  },
+  {
+    "id": "iw-002",
+    "type": "real",
+    "title": "wait_merging_threads returns early and detaches remaining threads",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "On first thread join error, function returns early leaving remaining threads detached with no cleanup."
+  },
+  {
+    "id": "iw-003",
+    "type": "real",
+    "title": "rollback silently discards enqueued operations",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 1,
+    "line_end": 50,
+    "description": "rollback() clears queued operations without logging or returning the count, silently dropping user work."
+  }
+]
