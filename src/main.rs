@@ -40,6 +40,7 @@ mod enrichment_policy;
 mod formatting;
 mod glyphs;
 mod http_server;
+mod judge;
 mod linter;
 mod llm_client;
 mod mcp;
