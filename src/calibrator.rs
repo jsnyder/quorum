@@ -114,6 +114,7 @@ fn make_no_match_trace(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: None,
     }
 }
 
@@ -154,6 +155,7 @@ fn make_trace_entry(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: None,
     }
 }
 
