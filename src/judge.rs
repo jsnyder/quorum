@@ -186,14 +186,14 @@ pub struct JudgeResult {
 /// - Findings with `judge: Required` that are rejected get dropped.
 /// - Findings with `judge: Optional` that are rejected get confidence
 ///   clamped to 0.05.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn judge_findings(
+#[allow(clippy::too_many_arguments)]
+pub async fn judge_findings<J: JudgeLlm>(
     findings: &mut Vec<Finding>,
     source_code: &str,
     metadata: &HashMap<String, RuleMetadata>,
     cache: &HashMap<String, CacheEntry>,
     cache_path: &Path,
-    llm_call: Option<&dyn Fn(&str) -> Option<String>>,
+    llm: Option<&J>,
 ) -> JudgeResult {
     let start = std::time::Instant::now();
     let mut result = JudgeResult::default();
@@ -235,7 +235,10 @@ pub fn judge_findings(
 
     // Phase 2: Batch LLM call for uncached findings
     if !to_judge.is_empty() {
-        if let Some(llm) = llm_call {
+        if let Some(llm) = llm {
+            if to_judge.len() > 50 {
+                tracing::warn!(count = to_judge.len(), "large batch of speculative findings for judge");
+            }
             let items: Vec<_> = to_judge
                 .iter()
                 .map(|&i| {
@@ -253,7 +256,7 @@ pub fn judge_findings(
             let prompt = build_judge_prompt(source_code, &items);
             result.calls += 1;
 
-            if let Some(response) = llm(&prompt)
+            if let Some(response) = llm.call(&prompt).await
                 && let Ok(verdicts) = serde_json::from_str::<Vec<JudgeResponseItem>>(&response)
             {
                 for v in &verdicts {
@@ -292,6 +295,8 @@ pub fn judge_findings(
                         }
                     }
                 }
+            } else if to_judge.iter().any(|&i| findings[i].judge_verdict.is_none()) {
+                tracing::warn!("judge LLM returned no usable response");
             }
 
             // Any remaining unjudged findings (LLM didn't return verdict): mark uncertain
@@ -433,8 +438,8 @@ mod tests {
         assert_eq!(verdicts[1].verdict, "fp");
     }
 
-    #[test]
-    fn judge_skips_high_precision_rules() {
+    #[tokio::test]
+    async fn judge_skips_high_precision_rules() {
         let mut findings = vec![{
             let mut f = FindingBuilder::new()
                 .source(Source::Linter("ast-grep".into()))
@@ -459,14 +464,15 @@ mod tests {
             &metadata,
             &HashMap::new(),
             &cache_path,
-            None,
-        );
+            None::<&MockJudge>,
+        )
+        .await;
         assert_eq!(result.skipped, 1);
         assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Skipped));
     }
 
-    #[test]
-    fn judge_approves_with_mock_llm() {
+    #[tokio::test]
+    async fn judge_approves_with_mock_llm() {
         let mut findings = vec![{
             let mut f = FindingBuilder::new()
                 .source(Source::Linter("ast-grep".into()))
@@ -486,10 +492,10 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         let cache_path = dir.path().join("cache.jsonl");
-        let mock_llm = |_prompt: &str| -> Option<String> {
-            Some(
+        let mock = MockJudge {
+            response: Some(
                 r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"tp","confidence":0.85,"reason":"valid"}]"#.into(),
-            )
+            ),
         };
         let result = judge_findings(
             &mut findings,
@@ -497,8 +503,9 @@ mod tests {
             &metadata,
             &HashMap::new(),
             &cache_path,
-            Some(&mock_llm),
-        );
+            Some(&mock),
+        )
+        .await;
         assert_eq!(result.approved, 1);
         assert_eq!(result.calls, 1);
         assert_eq!(findings.len(), 1);
@@ -509,8 +516,8 @@ mod tests {
         assert_eq!(loaded.len(), 1);
     }
 
-    #[test]
-    fn judge_drops_required_rejected() {
+    #[tokio::test]
+    async fn judge_drops_required_rejected() {
         let mut findings = vec![{
             let mut f = FindingBuilder::new()
                 .source(Source::Linter("ast-grep".into()))
@@ -530,10 +537,10 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         let cache_path = dir.path().join("cache.jsonl");
-        let mock_llm = |_prompt: &str| -> Option<String> {
-            Some(
+        let mock = MockJudge {
+            response: Some(
                 r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"fp","confidence":0.92,"reason":"intentional top-level handler"}]"#.into(),
-            )
+            ),
         };
         let result = judge_findings(
             &mut findings,
@@ -541,8 +548,9 @@ mod tests {
             &metadata,
             &HashMap::new(),
             &cache_path,
-            Some(&mock_llm),
-        );
+            Some(&mock),
+        )
+        .await;
         assert_eq!(result.rejected, 1);
         assert!(
             findings.is_empty(),
@@ -550,8 +558,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn judge_uses_cache_hit() {
+    #[tokio::test]
+    async fn judge_uses_cache_hit() {
         let mut findings = vec![{
             let mut f = FindingBuilder::new()
                 .source(Source::Linter("ast-grep".into()))
@@ -590,15 +598,16 @@ mod tests {
             &metadata,
             &cache,
             &cache_path,
-            None,
-        );
+            None::<&MockJudge>,
+        )
+        .await;
         assert_eq!(result.cache_hits, 1);
         assert_eq!(result.approved, 1);
         assert_eq!(result.calls, 0);
     }
 
-    #[test]
-    fn judge_flow_end_to_end_with_cache() {
+    #[tokio::test]
+    async fn judge_flow_end_to_end_with_cache() {
         let mut findings = vec![
             {
                 let mut f = FindingBuilder::new()
@@ -643,8 +652,8 @@ mod tests {
         let cache = HashMap::new();
 
         // Mock LLM: always approve
-        let mock_llm = |_prompt: &str| -> Option<String> {
-            Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"tp","confidence":0.85,"reason":"valid"}]"#.into())
+        let mock = MockJudge {
+            response: Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"tp","confidence":0.85,"reason":"valid"}]"#.into()),
         };
 
         let result = judge_findings(
@@ -653,8 +662,9 @@ mod tests {
             &metadata,
             &cache,
             &cache_path,
-            Some(&mock_llm),
-        );
+            Some(&mock),
+        )
+        .await;
 
         assert_eq!(result.approved, 1);
         assert_eq!(result.skipped, 1);
@@ -668,8 +678,8 @@ mod tests {
         assert_eq!(loaded_cache.len(), 1);
     }
 
-    #[test]
-    fn judge_drops_required_rejected_findings() {
+    #[tokio::test]
+    async fn judge_drops_required_rejected_findings() {
         let mut findings = vec![
             {
                 let mut f = FindingBuilder::new()
@@ -714,8 +724,8 @@ mod tests {
         let cache = HashMap::new();
 
         // Mock LLM: rejects the speculative finding
-        let mock_llm = |_prompt: &str| -> Option<String> {
-            Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"fp","confidence":0.92,"reason":"intentional"}]"#.into())
+        let mock = MockJudge {
+            response: Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"fp","confidence":0.92,"reason":"intentional"}]"#.into()),
         };
 
         let result = judge_findings(
@@ -724,8 +734,9 @@ mod tests {
             &metadata,
             &cache,
             &cache_path,
-            Some(&mock_llm),
-        );
+            Some(&mock),
+        )
+        .await;
 
         assert_eq!(result.rejected, 1);
         assert_eq!(result.skipped, 1);

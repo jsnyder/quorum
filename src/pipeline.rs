@@ -723,30 +723,34 @@ pub async fn review_file(
     // Only runs on ast-grep findings (index 1+), not local AST (index 0).
     let mut judge_metrics = JudgeMetrics::default();
     if pipeline_config.judge_enabled && !rule_metadata.is_empty() {
-        let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
-        let home_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let cache_path = home_dir.join(".quorum").join("judge_cache.jsonl");
-        let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
+        {
+            let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
+            let home_dir = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let cache_path = home_dir.join(".quorum").join("judge_cache.jsonl");
+            let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
+            drop(_span);
 
-        for source_findings in all_sources.iter_mut().skip(1) {
-            let result = crate::judge::judge_findings(
-                source_findings,
-                source,
-                &rule_metadata,
-                &cache,
-                &cache_path,
-                None, // LLM client not wired yet -- cache-only + skip for now
-            );
-            judge_metrics.approved += result.approved;
-            judge_metrics.rejected += result.rejected;
-            judge_metrics.uncertain += result.uncertain;
-            judge_metrics.skipped += result.skipped;
-            judge_metrics.cache_hits += result.cache_hits;
-            judge_metrics.calls += result.calls;
-            judge_metrics.latency_ms += result.latency_ms;
+            for source_findings in all_sources.iter_mut().skip(1) {
+                let result = crate::judge::judge_findings(
+                    source_findings,
+                    source,
+                    &rule_metadata,
+                    &cache,
+                    &cache_path,
+                    None::<&crate::judge::OpenAiJudge>, // LLM client not wired yet -- cache-only + skip for now
+                )
+                .await;
+                judge_metrics.approved += result.approved;
+                judge_metrics.rejected += result.rejected;
+                judge_metrics.uncertain += result.uncertain;
+                judge_metrics.skipped += result.skipped;
+                judge_metrics.cache_hits += result.cache_hits;
+                judge_metrics.calls += result.calls;
+                judge_metrics.latency_ms += result.latency_ms;
+            }
         }
         tracing::info!(
             phase = "judge",
