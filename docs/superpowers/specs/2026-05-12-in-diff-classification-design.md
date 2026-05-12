@@ -106,7 +106,7 @@ This is an intentional semantic change when `--diff-file` is active: a project w
 
 Findings are split into two groups per file:
 
-```
+```text
 -- src/main.rs (3 findings) ----------------------------------------
 
   ! [critical] SQL injection in query builder (line 42)
@@ -131,7 +131,7 @@ Findings are split into two groups per file:
 
 Pre-existing findings get a `[pre]` prefix:
 
-```
+```text
 !|critical|42|SQL injection in query builder
 ~|medium|88|Missing error handling
 [pre] -|low|3|Unused import

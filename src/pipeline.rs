@@ -1532,6 +1532,18 @@ pub async fn review_file_llm_only(
         grounded
     };
 
+    let mut merged = merged;
+    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+        classify_in_diff(&mut merged, &diff_lines);
+    }
+
     // Calibrate
     let has_feedback =
         !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
