@@ -237,6 +237,21 @@ fn compatible_languages(ext: &str) -> Vec<SupportLang> {
     }
 }
 
+/// Map `SupportLang` to a stable lowercase string for rule_id construction.
+fn lang_name(lang: &SupportLang) -> &'static str {
+    match lang {
+        SupportLang::Python => "python",
+        SupportLang::TypeScript => "typescript",
+        SupportLang::Tsx => "tsx",
+        SupportLang::JavaScript => "javascript",
+        SupportLang::Rust => "rust",
+        SupportLang::Bash => "bash",
+        SupportLang::Yaml => "yaml",
+        SupportLang::Hcl => "hcl",
+        _ => "unknown",
+    }
+}
+
 /// Scan source code with the given rules. Per-rule isolation: one bad rule doesn't block others.
 /// Returns findings with normalized line numbers (1-indexed) and Source::Linter("ast-grep").
 pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> Vec<Finding> {
@@ -296,7 +311,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some(format!("ast-grep:{}/{}", lang_name(lang), rule.id)),
                 });
             }
         }
@@ -1468,6 +1483,38 @@ rule:
         assert_eq!(
             dup_findings, 1,
             "duplicate rule id must not double-fire on the same match; got {dup_findings}"
+        );
+    }
+
+    // ── rule_id population tests ──
+
+    #[test]
+    fn scan_file_populates_rule_id_with_language_and_rule_name() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let rules = load_rules(&project_dir, fake_home.path());
+        let source = "const x = foo as any;";
+        let findings = scan_file(source, "ts", &rules);
+        assert!(!findings.is_empty());
+        assert_eq!(
+            findings[0].rule_id.as_deref(),
+            Some("ast-grep:typescript/as-any-cast")
+        );
+    }
+
+    #[test]
+    fn scan_file_python_rule_id_uses_python_prefix() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let rules = load_rules(&project_dir, fake_home.path());
+        let source = "try:\n    x()\nexcept:\n    pass\n";
+        let findings = scan_file(source, "py", &rules);
+        // Should find bare-except-pass rule
+        let bep = findings.iter().find(|f| f.title.contains("bare-except-pass"));
+        assert!(bep.is_some(), "should find bare-except-pass rule");
+        assert_eq!(
+            bep.unwrap().rule_id.as_deref(),
+            Some("ast-grep:python/bare-except-pass")
         );
     }
 
