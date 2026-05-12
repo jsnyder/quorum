@@ -1,11 +1,44 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
 use ast_grep_config::{GlobalRules, RuleConfig, Severity as AstSeverity, from_yaml_string};
 use ast_grep_language::{LanguageExt, SupportLang};
 
-use crate::finding::{Finding, Severity, Source};
+use crate::finding::{Finding, JudgeRequirement, PrecisionTier, Severity, Source};
+
+/// Optional metadata block that rule authors can embed in ast-grep YAML rules
+/// to declare precision tier and judge requirements. Example:
+///
+/// ```yaml
+/// metadata:
+///   precision: speculative
+///   judge: required
+/// ```
+///
+/// Rules without a `metadata` block default to `precision: high, judge: skip`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RuleMetadata {
+    #[serde(default)]
+    pub precision: PrecisionTier,
+    #[serde(default)]
+    pub judge: JudgeRequirement,
+}
+
+#[derive(serde::Deserialize)]
+struct YamlWithMetadata {
+    #[serde(default)]
+    metadata: Option<RuleMetadata>,
+}
+
+/// Parse the optional `metadata` block from an ast-grep YAML rule string.
+/// Returns `RuleMetadata::default()` when the block is absent or unparseable.
+pub fn parse_rule_metadata(yaml_str: &str) -> RuleMetadata {
+    serde_yaml::from_str::<YamlWithMetadata>(yaml_str)
+        .ok()
+        .and_then(|y| y.metadata)
+        .unwrap_or_default()
+}
 
 /// Maximum size for a single ast-grep YAML rule file. Files exceeding this
 /// are skipped with a warning instead of being read into memory. Intended
@@ -96,8 +129,12 @@ pub fn ext_to_language(ext: &str) -> Option<SupportLang> {
 
 /// Load ast-grep rules from bundled `rules/<lang>/` and user `~/.quorum/rules/<lang>/` directories.
 /// Skips malformed rules with a warning. Returns sorted rule list for deterministic ordering.
-pub fn load_rules(project_dir: &Path, home_dir: &Path) -> Vec<RuleConfig<SupportLang>> {
+pub fn load_rules(
+    project_dir: &Path,
+    home_dir: &Path,
+) -> (Vec<RuleConfig<SupportLang>>, HashMap<String, RuleMetadata>) {
     let mut rules = Vec::new();
+    let mut metadata_map: HashMap<String, RuleMetadata> = HashMap::new();
     // Dedup key is `(language, id)` — bundled rules legitimately reuse ids
     // across grammars (e.g. `bind-all-interfaces` in both python and
     // javascript). Within a single grammar, a duplicate id is the bug:
@@ -184,6 +221,7 @@ pub fn load_rules(project_dir: &Path, home_dir: &Path) -> Vec<RuleConfig<Support
                         continue;
                     }
                 };
+                let meta = parse_rule_metadata(&yaml);
                 match from_yaml_string::<SupportLang>(&yaml, &globals) {
                     Ok(parsed) => {
                         for rule in parsed {
@@ -202,6 +240,7 @@ pub fn load_rules(project_dir: &Path, home_dir: &Path) -> Vec<RuleConfig<Support
                                 );
                                 continue;
                             }
+                            metadata_map.insert(rule.id.clone(), meta.clone());
                             rules.push(rule);
                         }
                     }
@@ -218,7 +257,7 @@ pub fn load_rules(project_dir: &Path, home_dir: &Path) -> Vec<RuleConfig<Support
     }
 
     rules.sort_by(|a, b| a.id.cmp(&b.id));
-    rules
+    (rules, metadata_map)
 }
 
 /// Returns the set of ast-grep languages compatible with a file extension.
@@ -254,7 +293,12 @@ fn lang_name(lang: &SupportLang) -> &'static str {
 
 /// Scan source code with the given rules. Per-rule isolation: one bad rule doesn't block others.
 /// Returns findings with normalized line numbers (1-indexed) and Source::Linter("ast-grep").
-pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> Vec<Finding> {
+pub fn scan_file(
+    source: &str,
+    ext: &str,
+    rules: &[RuleConfig<SupportLang>],
+    metadata: &HashMap<String, RuleMetadata>,
+) -> Vec<Finding> {
     if source.is_empty() {
         return Vec::new();
     }
@@ -289,6 +333,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     AstSeverity::Off => Severity::Low,
                 };
 
+                let meta = metadata.get(rule.id.as_str()).cloned().unwrap_or_default();
                 findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: format!("{}: {}", rule.id, message),
@@ -314,7 +359,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     rule_id: Some(format!("ast-grep:{}/{}", lang_name(lang), rule.id)),
                     judge_verdict: None,
                     judge_confidence: None,
-                    precision_tier: None,
+                    precision_tier: Some(meta.precision),
                 });
             }
         }
@@ -427,7 +472,7 @@ mod tests {
     fn load_rules_from_bundled_dir() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
+        let (rules, _metadata) = load_rules(&project_dir, fake_home.path());
         assert!(!rules.is_empty(), "should load bundled rules from rules/");
     }
 
@@ -445,7 +490,7 @@ rule:
   pattern: console.log($$$ARGS)
 "#;
         std::fs::write(user_rules_dir.join("user-test.yml"), rule_yaml).unwrap();
-        let rules = load_rules(empty_project.path(), home.path());
+        let (rules, _metadata) = load_rules(empty_project.path(), home.path());
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "user-test-rule");
     }
@@ -464,7 +509,7 @@ rule:
   pattern: console.log($$$ARGS)
 "#;
         std::fs::write(user_rules_dir.join("extra.yml"), rule_yaml).unwrap();
-        let rules = load_rules(&project_dir, home.path());
+        let (rules, _metadata) = load_rules(&project_dir, home.path());
         let ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"as-any-cast"), "should include bundled rule");
         assert!(ids.contains(&"user-extra-rule"), "should include user rule");
@@ -487,7 +532,7 @@ rule:
 "#;
         std::fs::write(rules_dir.join("good.yml"), good_yaml).unwrap();
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(project.path(), fake_home.path());
+        let (rules, _metadata) = load_rules(project.path(), fake_home.path());
         assert_eq!(rules.len(), 1, "should skip bad rule, keep good one");
         assert_eq!(rules[0].id, "good-rule");
     }
@@ -496,7 +541,7 @@ rule:
     fn load_rules_missing_rules_dir_returns_empty() {
         let empty = tempfile::tempdir().unwrap();
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(empty.path(), fake_home.path());
+        let (rules, _metadata) = load_rules(empty.path(), fake_home.path());
         assert!(rules.is_empty());
     }
 
@@ -504,8 +549,8 @@ rule:
     fn load_rules_deterministic_order() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules1 = load_rules(&project_dir, fake_home.path());
-        let rules2 = load_rules(&project_dir, fake_home.path());
+        let (rules1, _meta1) = load_rules(&project_dir, fake_home.path());
+        let (rules2, _meta2) = load_rules(&project_dir, fake_home.path());
         let ids1: Vec<&str> = rules1.iter().map(|r| r.id.as_str()).collect();
         let ids2: Vec<&str> = rules2.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids1, ids2, "rule ordering should be deterministic");
@@ -517,8 +562,8 @@ rule:
     fn scan_file_finds_match() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules);
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
         assert!(!findings.is_empty(), "should find as-any-cast");
         let f = &findings[0];
         assert!(f.title.contains("as-any-cast"));
@@ -537,7 +582,7 @@ rule:
 "#;
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file("console.log('hello');", "ts", &rules);
+        let findings = scan_file("console.log('hello');", "ts", &rules, &HashMap::new());
         assert_eq!(findings[0].severity, Severity::Low);
     }
 
@@ -552,7 +597,7 @@ rule:
 "#;
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file("eval('code');", "ts", &rules);
+        let findings = scan_file("eval('code');", "ts", &rules, &HashMap::new());
         assert_eq!(findings[0].severity, Severity::High);
     }
 
@@ -568,7 +613,7 @@ rule:
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
         let source = "const a = 1;\nconst b = 2;\neval('code');\n";
-        let findings = scan_file(source, "ts", &rules);
+        let findings = scan_file(source, "ts", &rules, &HashMap::new());
         assert_eq!(
             findings[0].line_start, 3,
             "line numbers should be 1-indexed"
@@ -578,7 +623,7 @@ rule:
     #[test]
     fn scan_file_unsupported_extension_returns_empty() {
         let rules = vec![];
-        let findings = scan_file("some code", "go", &rules);
+        let findings = scan_file("some code", "go", &rules, &HashMap::new());
         assert!(findings.is_empty());
     }
 
@@ -586,8 +631,8 @@ rule:
     fn scan_file_empty_source_returns_empty() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("", "ts", &rules);
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        let findings = scan_file("", "ts", &rules, &metadata);
         assert!(findings.is_empty());
     }
 
@@ -595,8 +640,8 @@ rule:
     fn scan_file_finding_has_evidence() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules);
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
         assert!(!findings.is_empty());
         assert!(
             !findings[0].evidence.is_empty(),
@@ -608,8 +653,8 @@ rule:
     fn scan_file_source_is_ast_grep_linter() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules);
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
         for f in &findings {
             assert_eq!(f.source, Source::Linter("ast-grep".into()));
         }
@@ -685,6 +730,7 @@ rule:
             "async fn run() { runtime.block_on(async { 1 }); }",
             "rs",
             &rules,
+            &HashMap::new(),
         );
         assert!(!findings.is_empty(), "should flag block_on inside async fn");
     }
@@ -698,7 +744,12 @@ rule:
         let yaml = std::fs::read_to_string(path).unwrap();
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file("fn run() { runtime.block_on(async { 1 }); }", "rs", &rules);
+        let findings = scan_file(
+            "fn run() { runtime.block_on(async { 1 }); }",
+            "rs",
+            &rules,
+            &HashMap::new(),
+        );
         assert!(findings.is_empty(), "must NOT flag in sync fn");
     }
 
@@ -862,7 +913,7 @@ rule:
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let rules_dir = project_dir.join("rules");
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
 
         let mut tested = 0;
         for lang_entry in std::fs::read_dir(&rules_dir).unwrap() {
@@ -892,7 +943,7 @@ rule:
                     continue;
                 }
                 let source = std::fs::read_to_string(&fixture_path).unwrap();
-                let findings = scan_file(&source, ext, &rules);
+                let findings = scan_file(&source, ext, &rules, &metadata);
                 assert!(
                     !findings.is_empty(),
                     "bundled rule should match fixture: {}",
@@ -934,7 +985,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let setheader = "res.setHeader('Access-Control-Allow-Origin', '*');";
-        let findings = scan_file(setheader, "ts", &rules);
+        let findings = scan_file(setheader, "ts", &rules, &HashMap::new());
         assert!(
             !findings.is_empty(),
             "should flag setHeader('Access-Control-Allow-Origin', '*')"
@@ -945,7 +996,7 @@ rule:
         );
 
         let header_fn = "res.header('Access-Control-Allow-Origin', '*');";
-        let findings2 = scan_file(header_fn, "ts", &rules);
+        let findings2 = scan_file(header_fn, "ts", &rules, &HashMap::new());
         assert!(
             !findings2.is_empty(),
             "should flag res.header('Access-Control-Allow-Origin', '*')"
@@ -965,7 +1016,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let unrelated = "res.setHeader('X-Custom-Flag', '*');";
-        let findings = scan_file(unrelated, "ts", &rules);
+        let findings = scan_file(unrelated, "ts", &rules, &HashMap::new());
         assert!(
             findings.is_empty(),
             "should NOT flag unrelated header with '*' value"
@@ -989,7 +1040,7 @@ rule:
             "res.setHeader(\"ACCESS-CONTROL-ALLOW-ORIGIN\", \"*\");",
             "res.setHeader('Access-control-allow-Origin', '*');",
         ] {
-            let findings = scan_file(lowered, "ts", &rules);
+            let findings = scan_file(lowered, "ts", &rules, &HashMap::new());
             assert!(
                 !findings.is_empty(),
                 "should flag case variant: {}",
@@ -1011,7 +1062,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let next_style = "response.headers.set('Access-Control-Allow-Origin', '*');";
-        let findings = scan_file(next_style, "ts", &rules);
+        let findings = scan_file(next_style, "ts", &rules, &HashMap::new());
         assert!(
             !findings.is_empty(),
             "should flag Next.js/Fetch-style headers.set(..., '*')"
@@ -1026,7 +1077,7 @@ rule:
     fn mining_2026_04_rules_scan_correctly() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
 
         let cases: &[(&str, &str, &str, usize)] = &[
             (
@@ -1199,7 +1250,7 @@ rule:
             let src_path = project_dir.join(path);
             let source = std::fs::read_to_string(&src_path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", src_path.display()));
-            let findings = scan_file(&source, ext, &rules);
+            let findings = scan_file(&source, ext, &rules, &metadata);
             let matches = findings
                 .iter()
                 .filter(|f| f.title.contains(rule_id))
@@ -1228,7 +1279,7 @@ rule:
         // rule loads.
         let project_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let empty_home = tempfile::tempdir().expect("empty home for test");
-        let rules = load_rules(project_dir, empty_home.path());
+        let (rules, _metadata) = load_rules(project_dir, empty_home.path());
         assert!(
             !rules.is_empty(),
             "bundled rules must still load after #120 hardening"
@@ -1271,7 +1322,7 @@ rule:
         ).unwrap();
         symlink(&evil_target, user_rules.join("python")).expect("symlink");
 
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
         assert!(
             ids.contains(&"safe-rule".to_string()),
@@ -1312,7 +1363,7 @@ rule:
         ).unwrap();
         symlink(&outside, user_python.join("smuggled.yml")).expect("symlink");
 
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
         assert!(
             ids.contains(&"real-rule".to_string()),
@@ -1359,7 +1410,7 @@ rule:
 
         // load_rules must complete (no hang on open) AND not load any
         // rule from the socket file.
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
         assert!(
             ids.contains(&"real-rule".to_string()),
@@ -1400,7 +1451,7 @@ rule:
         let oversized = format!("{prefix}  {padding}\n");
         std::fs::write(user_python.join("oversized.yml"), oversized).unwrap();
 
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
         assert!(
             ids.contains(&"small-rule".to_string()),
@@ -1446,7 +1497,7 @@ rule:
 "#;
         std::fs::write(user_ts.join("shared.yml"), user_yaml).unwrap();
 
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let count = rules.iter().filter(|r| r.id == "shared-id").count();
         assert_eq!(
             count,
@@ -1477,8 +1528,8 @@ rule:
         std::fs::create_dir_all(&user_ts).unwrap();
         std::fs::write(user_ts.join("b.yml"), yaml).unwrap();
 
-        let rules = load_rules(project.path(), home.path());
-        let findings = scan_file("eval('x');", "ts", &rules);
+        let (rules, metadata) = load_rules(project.path(), home.path());
+        let findings = scan_file("eval('x');", "ts", &rules, &metadata);
         let dup_findings = findings
             .iter()
             .filter(|f| f.title.contains("dup-rule"))
@@ -1495,9 +1546,9 @@ rule:
     fn scan_file_populates_rule_id_with_language_and_rule_name() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         let source = "const x = foo as any;";
-        let findings = scan_file(source, "ts", &rules);
+        let findings = scan_file(source, "ts", &rules, &metadata);
         assert!(!findings.is_empty());
         assert_eq!(
             findings[0].rule_id.as_deref(),
@@ -1509,11 +1560,13 @@ rule:
     fn scan_file_python_rule_id_uses_python_prefix() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
-        let rules = load_rules(&project_dir, fake_home.path());
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         let source = "try:\n    x()\nexcept:\n    pass\n";
-        let findings = scan_file(source, "py", &rules);
+        let findings = scan_file(source, "py", &rules, &metadata);
         // Should find bare-except-pass rule
-        let bep = findings.iter().find(|f| f.title.contains("bare-except-pass"));
+        let bep = findings
+            .iter()
+            .find(|f| f.title.contains("bare-except-pass"));
         assert!(bep.is_some(), "should find bare-except-pass rule");
         assert_eq!(
             bep.unwrap().rule_id.as_deref(),
@@ -1555,7 +1608,7 @@ rule:
         std::fs::create_dir_all(&user_quorum).unwrap();
         symlink(&evil_root, user_quorum.join("rules")).expect("symlink");
 
-        let rules = load_rules(project.path(), home.path());
+        let (rules, _metadata) = load_rules(project.path(), home.path());
         let ids: Vec<_> = rules.iter().map(|r| r.id.clone()).collect();
         assert!(
             ids.contains(&"safe-rule".to_string()),
@@ -1565,5 +1618,84 @@ rule:
             !ids.contains(&"evil-toplevel".to_string()),
             "rule loaded via symlinked top-level ~/.quorum/rules must be rejected; ids={ids:?}"
         );
+    }
+
+    // ── Rule metadata parsing tests ──
+
+    #[test]
+    fn parse_metadata_from_yaml_with_metadata_block() {
+        let yaml = r#"
+id: test-rule
+language: Python
+severity: warning
+message: "test"
+rule:
+  pattern: "eval($X)"
+metadata:
+  precision: speculative
+  judge: required
+"#;
+        let meta = parse_rule_metadata(yaml);
+        assert_eq!(meta.precision, PrecisionTier::Speculative);
+        assert_eq!(meta.judge, JudgeRequirement::Required);
+    }
+
+    #[test]
+    fn parse_metadata_defaults_when_no_metadata_block() {
+        let yaml = r#"
+id: test-rule
+language: Python
+severity: warning
+message: "test"
+rule:
+  pattern: "eval($X)"
+"#;
+        let meta = parse_rule_metadata(yaml);
+        assert_eq!(meta.precision, PrecisionTier::High);
+        assert_eq!(meta.judge, JudgeRequirement::Skip);
+    }
+
+    #[test]
+    fn parse_metadata_partial_fields_default() {
+        let yaml = r#"
+id: test-rule
+language: Python
+severity: warning
+message: "test"
+rule:
+  pattern: "eval($X)"
+metadata:
+  precision: medium
+"#;
+        let meta = parse_rule_metadata(yaml);
+        assert_eq!(meta.precision, PrecisionTier::Medium);
+        assert_eq!(meta.judge, JudgeRequirement::Skip);
+    }
+
+    #[test]
+    fn scan_file_sets_precision_tier_from_metadata() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        let source = "const x = foo as any;";
+        let findings = scan_file(source, "ts", &rules, &metadata);
+        assert!(!findings.is_empty());
+        // Default rules (no metadata block) should have precision High
+        assert_eq!(findings[0].precision_tier, Some(PrecisionTier::High));
+    }
+
+    #[test]
+    fn load_rules_populates_metadata_map() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let (rules, metadata) = load_rules(&project_dir, fake_home.path());
+        // Every loaded rule should have a metadata entry
+        for rule in &rules {
+            assert!(
+                metadata.contains_key(&rule.id),
+                "metadata map missing entry for rule id: {}",
+                rule.id
+            );
+        }
     }
 }

@@ -1017,7 +1017,10 @@ mod tests {
         let f = FindingBuilder::new()
             .rule_id("ast-grep:python/bare-except-pass")
             .build();
-        assert_eq!(f.rule_id.as_deref(), Some("ast-grep:python/bare-except-pass"));
+        assert_eq!(
+            f.rule_id.as_deref(),
+            Some("ast-grep:python/bare-except-pass")
+        );
     }
 
     #[test]

@@ -5396,10 +5396,7 @@ resource "aws_instance" "web" {
         );
         let f = eval_finding.unwrap();
         assert!(
-            f.rule_id
-                .as_ref()
-                .unwrap()
-                .starts_with("local-ast:python/"),
+            f.rule_id.as_ref().unwrap().starts_with("local-ast:python/"),
             "rule_id should start with local-ast:python/, got {:?}",
             f.rule_id
         );

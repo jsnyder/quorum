@@ -200,10 +200,7 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                     if slices.iter().any(|s| s.low_sample) {
-                        println!(
-                            "\n* = low sample (<{} entries)",
-                            dimensions::MIN_SAMPLE
-                        );
+                        println!("\n* = low sample (<{} entries)", dimensions::MIN_SAMPLE);
                     }
                 }
                 std::process::exit(0);
