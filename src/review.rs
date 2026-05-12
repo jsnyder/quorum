@@ -160,6 +160,7 @@ impl LlmFinding {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         }
     }
 }

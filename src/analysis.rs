@@ -72,6 +72,7 @@ pub fn analyze_complexity(
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -259,6 +260,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         judge_verdict: None,
         judge_confidence: None,
         precision_tier: None,
+                    in_diff: None,
         });
     }
 
@@ -299,6 +301,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
     }
@@ -342,6 +345,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -376,6 +380,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -405,6 +410,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -448,6 +454,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                     } else if arg_text.contains(".format(") {
                         findings.push(Finding {
@@ -476,6 +483,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                     }
                 }
@@ -524,6 +532,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                 }
             }
@@ -589,6 +598,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                     });
             }
         }
@@ -670,6 +680,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
             }
         }
@@ -712,6 +723,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                 }
             }
@@ -772,6 +784,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -810,6 +823,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
         }
     }
@@ -850,6 +864,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
         }
     }
@@ -1219,6 +1234,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                 } else {
                     seen_keys.push((key_text, key_line));
@@ -1261,6 +1277,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
 
@@ -1292,6 +1309,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
 
@@ -1332,6 +1350,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                     });
                 }
             }
@@ -1375,6 +1394,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 judge_verdict: None,
                                 judge_confidence: None,
                                 precision_tier: None,
+                    in_diff: None,
                                 });
                     }
                 }
@@ -1422,6 +1442,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                     }
                 }
@@ -1462,6 +1483,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                     }
                 }
@@ -1536,6 +1558,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                         judge_verdict: None,
                                         judge_confidence: None,
                                         precision_tier: None,
+                    in_diff: None,
                                         });
                             }
 
@@ -1567,6 +1590,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                         judge_verdict: None,
                                         judge_confidence: None,
                                         precision_tier: None,
+                    in_diff: None,
                                         });
                             }
                         }
@@ -1617,6 +1641,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -1670,6 +1695,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     judge_verdict: None,
                                     judge_confidence: None,
                                     precision_tier: None,
+                    in_diff: None,
                                 });
                             }
                         }
@@ -1707,6 +1733,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -1746,6 +1773,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -1782,6 +1810,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
             }
         }
@@ -1820,6 +1849,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
             }
         }
@@ -1865,6 +1895,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                     });
                 }
             }
@@ -1930,6 +1961,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -1973,6 +2005,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
 
@@ -2004,6 +2037,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
         }
 
@@ -2035,6 +2069,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
         }
     }
@@ -2095,6 +2130,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                 }
             }
@@ -2138,6 +2174,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
         }
     }
@@ -2173,6 +2210,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
     }
@@ -2215,6 +2253,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
     }
@@ -2268,6 +2307,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                 break;
             }
@@ -2316,6 +2356,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
             }
         }
@@ -2349,6 +2390,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
         judge_verdict: None,
         judge_confidence: None,
         precision_tier: None,
+                    in_diff: None,
         });
     }
 }
@@ -2386,6 +2428,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+                    in_diff: None,
             });
     }
 
@@ -2432,6 +2475,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
     }
@@ -2469,6 +2513,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
 
@@ -2505,6 +2550,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                         });
                         break;
                     }
@@ -2551,6 +2597,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                     });
                     break;
                 }
@@ -2606,6 +2653,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                 }
             }
@@ -2647,6 +2695,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -2699,6 +2748,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                             judge_verdict: None,
                             judge_confidence: None,
                             precision_tier: None,
+                    in_diff: None,
                             });
                             break;
                         }
@@ -2740,6 +2790,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
                 });
             }
         }
@@ -2850,6 +2901,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                 judge_verdict: None,
                                 judge_confidence: None,
                                 precision_tier: None,
+                    in_diff: None,
                                 });
             }
         }
@@ -2897,6 +2949,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                                 judge_verdict: None,
                                 judge_confidence: None,
                                 precision_tier: None,
+                    in_diff: None,
                                 });
                     }
                 }
@@ -2972,6 +3025,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: None,
+                    in_diff: None,
                     });
         }
     }
@@ -3072,6 +3126,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
         judge_verdict: None,
         judge_confidence: None,
         precision_tier: None,
+                    in_diff: None,
         });
     }
 
@@ -3173,6 +3228,7 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                    in_diff: None,
             });
         }
     }
@@ -3279,6 +3335,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                         judge_verdict: None,
                         judge_confidence: None,
                         precision_tier: None,
+                    in_diff: None,
                         });
                     }
                 }
@@ -3320,6 +3377,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+                    in_diff: None,
         });
     }
 
@@ -3351,6 +3409,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
         judge_verdict: None,
         judge_confidence: None,
         precision_tier: None,
+                    in_diff: None,
         });
     }
 
@@ -3385,6 +3444,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+                    in_diff: None,
         });
     }
     if entrypoint_count > 1 {
@@ -3417,6 +3477,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+                    in_diff: None,
         });
     }
 
