@@ -1696,10 +1696,11 @@ metadata:
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         // Every loaded rule should have a metadata entry
         for rule in &rules {
+            let key = format!("ast-grep:{}/{}", lang_name(&rule.language), rule.id);
             assert!(
-                metadata.contains_key(&rule.id),
-                "metadata map missing entry for rule id: {}",
-                rule.id
+                metadata.contains_key(&key),
+                "metadata map missing entry for rule key: {}",
+                key
             );
         }
     }
