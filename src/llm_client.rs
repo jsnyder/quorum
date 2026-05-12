@@ -763,6 +763,53 @@ impl OpenAiClient {
         }
     }
 
+    pub async fn judge_completion(
+        &self,
+        model: &str,
+        prompt: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<LlmResponse> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0,
+            "max_tokens": 2048
+        });
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let req = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body);
+        let resp = self.send_with_retry(req).await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_text = read_capped_error_body(resp).await;
+            let truncated = sanitize_error_body(&error_text);
+            anyhow::bail!("Judge API Error ({}): {}", status.as_u16(), truncated);
+        }
+
+        let json: serde_json::Value = resp.json().await?;
+        let usage = parse_usage(&json);
+
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Unexpected judge API response: no choices[0].message.content")
+            })?;
+
+        Ok(LlmResponse {
+            content: content.to_string(),
+            usage,
+        })
+    }
+
     /// #117: send a request with retry on transient 429/5xx + bounded by
     /// `overall_retry_deadline`. Honors `Retry-After` when supplied by
     /// upstream and the wait fits the remaining budget; otherwise uses
@@ -2920,5 +2967,27 @@ mod tests {
              Current length: {} chars",
             prompt.len()
         );
+    }
+
+    #[tokio::test]
+    async fn judge_completion_returns_content() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[{\"rule_id\":\"test\",\"verdict\":\"tp\",\"confidence\":0.9,\"reason\":\"ok\"}]"}, "finish_reason": "stop"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let resp = client
+            .judge_completion("test-model", "test prompt", "system")
+            .await
+            .unwrap();
+        assert!(resp.content.contains("\"verdict\":\"tp\""));
     }
 }

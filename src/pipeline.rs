@@ -198,6 +198,10 @@ pub struct PipelineConfig {
     pub judge_enabled: bool,
     /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-5-nano)
     pub judge_model: String,
+    /// Shared OpenAI client for judge LLM calls. When `Some` and
+    /// `judge_enabled` is true, an `OpenAiJudge` is constructed per file.
+    /// When `None`, judge runs in cache-only mode (existing behavior).
+    pub judge_client: Option<std::sync::Arc<crate::llm_client::OpenAiClient>>,
 }
 
 impl Default for PipelineConfig {
@@ -225,6 +229,7 @@ impl Default for PipelineConfig {
             registry_client: None,
             judge_enabled: false,
             judge_model: "gpt-5-nano".into(),
+            judge_client: None,
         }
     }
 }
@@ -723,30 +728,41 @@ pub async fn review_file(
     // Only runs on ast-grep findings (index 1+), not local AST (index 0).
     let mut judge_metrics = JudgeMetrics::default();
     if pipeline_config.judge_enabled && !rule_metadata.is_empty() {
-        let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
-        let home_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let cache_path = home_dir.join(".quorum").join("judge_cache.jsonl");
-        let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
+        {
+            let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
+            let home_dir = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let cache_path = home_dir.join(".quorum").join("judge_cache.jsonl");
+            let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
+            drop(_span);
 
-        for source_findings in all_sources.iter_mut().skip(1) {
-            let result = crate::judge::judge_findings(
-                source_findings,
-                source,
-                &rule_metadata,
-                &cache,
-                &cache_path,
-                None, // LLM client not wired yet -- cache-only + skip for now
-            );
-            judge_metrics.approved += result.approved;
-            judge_metrics.rejected += result.rejected;
-            judge_metrics.uncertain += result.uncertain;
-            judge_metrics.skipped += result.skipped;
-            judge_metrics.cache_hits += result.cache_hits;
-            judge_metrics.calls += result.calls;
-            judge_metrics.latency_ms += result.latency_ms;
+            let judge = pipeline_config.judge_client.as_ref().map(|client| {
+                crate::judge::OpenAiJudge::new(
+                    std::sync::Arc::clone(client),
+                    pipeline_config.judge_model.clone(),
+                )
+            });
+
+            for source_findings in all_sources.iter_mut().skip(1) {
+                let result = crate::judge::judge_findings(
+                    source_findings,
+                    source,
+                    &rule_metadata,
+                    &cache,
+                    &cache_path,
+                    judge.as_ref(),
+                )
+                .await;
+                judge_metrics.approved += result.approved;
+                judge_metrics.rejected += result.rejected;
+                judge_metrics.uncertain += result.uncertain;
+                judge_metrics.skipped += result.skipped;
+                judge_metrics.cache_hits += result.cache_hits;
+                judge_metrics.calls += result.calls;
+                judge_metrics.latency_ms += result.latency_ms;
+            }
         }
         tracing::info!(
             phase = "judge",
