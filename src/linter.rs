@@ -296,6 +296,9 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             grounding_confidence: None,
             model_agreement: None,
             rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         });
     }
 
@@ -360,6 +363,9 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             grounding_confidence: None,
             model_agreement: None,
             rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         });
     }
 
@@ -412,6 +418,9 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 grounding_confidence: None,
                 model_agreement: None,
                 rule_id: None,
+                judge_verdict: None,
+                judge_confidence: None,
+                precision_tier: None,
             });
         }
     }
@@ -478,6 +487,9 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             grounding_confidence: None,
             model_agreement: None,
             rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         });
     }
     Ok(findings)
@@ -527,6 +539,9 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 grounding_confidence: None,
                 model_agreement: None,
                 rule_id: None,
+                judge_verdict: None,
+                judge_confidence: None,
+                precision_tier: None,
             });
         }
     }
@@ -593,6 +608,9 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             grounding_confidence: None,
             model_agreement: None,
             rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         });
     }
     Ok(findings)
@@ -643,6 +661,9 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 grounding_confidence: None,
                 model_agreement: None,
                 rule_id: None,
+                judge_verdict: None,
+                judge_confidence: None,
+                precision_tier: None,
             });
         }
     }

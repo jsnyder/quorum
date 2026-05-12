@@ -312,6 +312,9 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     grounding_confidence: None,
                     model_agreement: None,
                     rule_id: Some(format!("ast-grep:{}/{}", lang_name(lang), rule.id)),
+                    judge_verdict: None,
+                    judge_confidence: None,
+                    precision_tier: None,
                 });
             }
         }

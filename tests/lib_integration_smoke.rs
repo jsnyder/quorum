@@ -42,6 +42,9 @@ fn lib_exports_are_reachable_from_integration_tests() {
         grounding_confidence: None,
         model_agreement: None,
         rule_id: None,
+        judge_verdict: None,
+        judge_confidence: None,
+        precision_tier: None,
     };
 
     // calibrate(...) must be callable with no precedents — exercises the
