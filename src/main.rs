@@ -1068,10 +1068,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 );
             }
             Ok(t) => {
+                let expected = if has_composite {
+                    "expected finite value"
+                } else {
+                    "expected finite value in [0.0, 1.0]"
+                };
                 tracing::warn!(
                     raw = %v,
                     parsed = t,
-                    "ignoring QUORUM_FORCE_THRESHOLD: expected finite value in [0.0, 1.0]"
+                    "ignoring QUORUM_FORCE_THRESHOLD: {expected}"
                 );
             }
             Err(e) => {
