@@ -1093,6 +1093,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         calibrator_config,
         mode: opts.mode,
         registry_client,
+        judge_enabled: opts.judge
+            || std::env::var("QUORUM_JUDGE")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+        judge_model: opts
+            .judge_model
+            .clone()
+            .or_else(|| std::env::var("QUORUM_JUDGE_MODEL").ok())
+            .unwrap_or_else(|| "gpt-5-nano".into()),
         ..Default::default()
     };
 
@@ -1389,6 +1398,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 suppressed: sup_result.suppressed.len(),
                                 context_telemetry: None,
                                 enrichment_metrics: Default::default(),
+                                judge_metrics: Default::default(),
                             };
                             return (idx, Ok((result, sup_result.suppressed)));
                         }
@@ -1588,6 +1598,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             fp_kind_utilization_rate: feedback::compute_fp_kind_utilization_rate(
                 &pipeline_cfg.feedback,
             ),
+            judge_calls: file_results.iter().map(|r| r.judge_metrics.calls).sum(),
+            judge_approved: file_results.iter().map(|r| r.judge_metrics.approved).sum(),
+            judge_rejected: file_results.iter().map(|r| r.judge_metrics.rejected).sum(),
+            judge_uncertain: file_results.iter().map(|r| r.judge_metrics.uncertain).sum(),
+            judge_skipped: file_results.iter().map(|r| r.judge_metrics.skipped).sum(),
+            judge_cache_hits: file_results.iter().map(|r| r.judge_metrics.cache_hits).sum(),
+            judge_latency_ms: file_results.iter().map(|r| r.judge_metrics.latency_ms).sum(),
         };
         let _ = telem_store.record(&telem_entry);
 

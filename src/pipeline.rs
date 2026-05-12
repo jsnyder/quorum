@@ -121,6 +121,20 @@ pub struct FileReviewResult {
     /// Per-file Context7 enrichment counters (resolved/resolve_failed/query_failed).
     /// Aggregated into TelemetryEntry by main.rs.
     pub enrichment_metrics: crate::context_enrichment::EnrichmentMetrics,
+    /// Per-file judge telemetry counters. Aggregated into TelemetryEntry by main.rs.
+    pub judge_metrics: JudgeMetrics,
+}
+
+/// Per-file judge result counters, propagated from pipeline to TelemetryEntry.
+#[derive(Clone, Debug, Default)]
+pub struct JudgeMetrics {
+    pub approved: u32,
+    pub rejected: u32,
+    pub uncertain: u32,
+    pub skipped: u32,
+    pub cache_hits: u32,
+    pub calls: u32,
+    pub latency_ms: u64,
 }
 
 pub struct PipelineConfig {
@@ -180,6 +194,10 @@ pub struct PipelineConfig {
     /// When `None` (default / Phase 1), the policy relies on the skip-list
     /// and quality gate only — no network calls to crates.io / npm / PyPI.
     pub registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>>,
+    /// Enable LLM micro-judge for speculative AST rules (--judge / QUORUM_JUDGE=1)
+    pub judge_enabled: bool,
+    /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-5-nano)
+    pub judge_model: String,
 }
 
 impl Default for PipelineConfig {
@@ -205,6 +223,8 @@ impl Default for PipelineConfig {
             calibrator_config: CalibratorConfig::default(),
             mode: crate::review_mode::ReviewMode::Code,
             registry_client: None,
+            judge_enabled: false,
+            judge_model: "gpt-5-nano".into(),
         }
     }
 }
@@ -670,6 +690,8 @@ pub async fn review_file(
 
     // Source 2: ast-grep library rules (skipped for prose reviews)
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
+        std::collections::HashMap::new();
     if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
         let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
         let t0 = std::time::Instant::now();
@@ -678,7 +700,8 @@ pub async fn review_file(
             .or_else(|_| std::env::var("USERPROFILE"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        let (rules, rule_metadata) = ast_grep::load_rules(&project_root, &home_dir);
+        let (rules, loaded_metadata) = ast_grep::load_rules(&project_root, &home_dir);
+        rule_metadata = loaded_metadata;
         let mut ag_count = 0;
         if !rules.is_empty() {
             let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
@@ -692,6 +715,45 @@ pub async fn review_file(
             duration_ms = t0.elapsed().as_millis() as u64,
             rules = rules.len(),
             findings = ag_count,
+            "phase complete"
+        );
+    }
+
+    // Source 2b: Judge speculative AST findings (if enabled).
+    // Only runs on ast-grep findings (index 1+), not local AST (index 0).
+    let mut judge_metrics = JudgeMetrics::default();
+    if pipeline_config.judge_enabled && !rule_metadata.is_empty() {
+        let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
+        let home_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let cache_path = home_dir.join(".quorum").join("judge_cache.jsonl");
+        let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
+
+        for source_findings in all_sources.iter_mut().skip(1) {
+            let result = crate::judge::judge_findings(
+                source_findings,
+                source,
+                &rule_metadata,
+                &cache,
+                &cache_path,
+                None, // LLM client not wired yet -- cache-only + skip for now
+            );
+            judge_metrics.approved += result.approved;
+            judge_metrics.rejected += result.rejected;
+            judge_metrics.uncertain += result.uncertain;
+            judge_metrics.skipped += result.skipped;
+            judge_metrics.cache_hits += result.cache_hits;
+            judge_metrics.calls += result.calls;
+            judge_metrics.latency_ms += result.latency_ms;
+        }
+        tracing::info!(
+            phase = "judge",
+            approved = judge_metrics.approved,
+            rejected = judge_metrics.rejected,
+            skipped = judge_metrics.skipped,
+            cache_hits = judge_metrics.cache_hits,
             "phase complete"
         );
     }
@@ -1095,6 +1157,7 @@ pub async fn review_file(
         suppressed: suppressed_count,
         context_telemetry,
         enrichment_metrics,
+        judge_metrics,
     })
 }
 
@@ -1514,6 +1577,7 @@ pub async fn review_file_llm_only(
         suppressed: suppressed_count,
         context_telemetry: None,
         enrichment_metrics,
+        judge_metrics: JudgeMetrics::default(),
     })
 }
 

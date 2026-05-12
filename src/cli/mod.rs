@@ -497,6 +497,14 @@ pub struct ReviewOpts {
     /// Review mode: code (default), plan, docs
     #[arg(long, default_value = "code")]
     pub mode: crate::review_mode::ReviewMode,
+
+    /// Enable LLM micro-judge for speculative AST rules (also: QUORUM_JUDGE=1)
+    #[arg(long)]
+    pub judge: bool,
+
+    /// Model for judge calls (default: gpt-5-nano, also: QUORUM_JUDGE_MODEL)
+    #[arg(long)]
+    pub judge_model: Option<String>,
 }
 
 /// CLI surface for `--fp-kind` (#123 Layer 1). Variants map onto
