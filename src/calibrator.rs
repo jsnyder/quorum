@@ -191,7 +191,7 @@ struct CoreDecision {
 /// Returns a [`CoreDecision`] that the caller uses to update counters and
 /// decide whether to keep the finding in the output vec.
 #[allow(clippy::too_many_arguments)]
-fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
+fn sanitize_threshold(t: Option<f64>, composite: bool) -> Option<f64> {
     t.and_then(|v| {
         if !v.is_finite() {
             tracing::warn!(
@@ -199,7 +199,7 @@ fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
                 "non-finite threshold replaced with None (legacy fallback)"
             );
             None
-        } else if !(0.0..=1.0).contains(&v) {
+        } else if !composite && !(0.0..=1.0).contains(&v) {
             let clamped = v.clamp(0.0, 1.0);
             tracing::warn!(raw = v, clamped, "threshold outside [0,1] clamped");
             Some(clamped)
@@ -225,9 +225,10 @@ fn calibrate_core_decision(
     let mut suppressed = false;
     let mut boosted = false;
 
-    let force_threshold = sanitize_threshold(config.force_threshold);
-    let suppress_threshold = sanitize_threshold(config.suppress_threshold);
-    let boost_threshold = sanitize_threshold(config.boost_threshold);
+    let has_composite = config.model.is_some();
+    let force_threshold = sanitize_threshold(config.force_threshold, has_composite);
+    let suppress_threshold = sanitize_threshold(config.suppress_threshold, has_composite);
+    let boost_threshold = sanitize_threshold(config.boost_threshold, has_composite);
 
     // PR3: compute score once for data-driven threshold decisions.
     let total = tp_weight + fp_weight;

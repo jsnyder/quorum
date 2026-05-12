@@ -8,6 +8,18 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static RULE_PREFIX_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-z0-9_-]+:\s*").unwrap());
+static BACKTICK_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"`[^`]+`").unwrap());
+static NUMBER_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\b\d+\b").unwrap());
+static WHITESPACE_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+pub static WORD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"[a-z_]+").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMeta {
@@ -53,25 +65,12 @@ impl CalibratorModel {
     /// replaces numbers with N, and collapses whitespace.
     pub fn title_family(title: &str) -> String {
         let mut t = title.to_lowercase();
-        // Strip rule-id prefix (e.g. "bare-except-pass: ")
-        if let Some(m) = regex::Regex::new(r"^[a-z0-9_-]+:\s*")
-            .ok()
-            .and_then(|re| re.find(&t))
-        {
+        if let Some(m) = RULE_PREFIX_RE.find(&t) {
             t = t[m.end()..].to_string();
         }
-        // Replace backtick-quoted identifiers
-        if let Ok(re) = regex::Regex::new(r"`[^`]+`") {
-            t = re.replace_all(&t, "``").to_string();
-        }
-        // Replace numbers
-        if let Ok(re) = regex::Regex::new(r"\b\d+\b") {
-            t = re.replace_all(&t, "N").to_string();
-        }
-        // Collapse whitespace
-        if let Ok(re) = regex::Regex::new(r"\s+") {
-            t = re.replace_all(&t, " ").to_string();
-        }
+        t = BACKTICK_RE.replace_all(&t, "``").to_string();
+        t = NUMBER_RE.replace_all(&t, "N").to_string();
+        t = WHITESPACE_RE.replace_all(&t, " ").to_string();
         t.trim().to_string()
     }
 
@@ -81,10 +80,7 @@ impl CalibratorModel {
     /// vocabulary, and returns the mean. Unknown words contribute 0.0.
     pub fn word_lor_score(&self, title: &str) -> f64 {
         let lower = title.to_lowercase();
-        let words: Vec<&str> = regex::Regex::new(r"[a-z_]+")
-            .ok()
-            .map(|re| re.find_iter(&lower).map(|m| m.as_str()).collect())
-            .unwrap_or_default();
+        let words: Vec<&str> = WORD_RE.find_iter(&lower).map(|m| m.as_str()).collect();
         if words.is_empty() {
             return 0.0;
         }
@@ -123,7 +119,11 @@ impl CalibratorModel {
             + self.weights.language_fp_inv * (1.0 - lang_fp)
     }
 
-    /// Map a file path to a language string for language_fp_rate lookup.
+    /// Map a file path to a language string for `language_fp_rate` lookup.
+    ///
+    /// Covers the same languages quorum supports for AST analysis. Extensions
+    /// outside this set map to `"other"`, which may fall back to
+    /// `global_fp_rate` if `other` has fewer than `LANG_MIN_SUPPORT` entries.
     pub fn file_ext_language(path: &str) -> &'static str {
         match std::path::Path::new(path)
             .extension()

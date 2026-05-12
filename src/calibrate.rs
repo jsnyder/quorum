@@ -651,6 +651,12 @@ const LANG_MIN_SUPPORT: usize = 5;
 /// Builds lookup tables for word log-odds, family FP rates, and language FP
 /// rates from the feedback corpus. Wontfix verdicts are treated as negative
 /// (alongside FP) for the purpose of FP rate computation.
+/// Build lookup tables from the feedback corpus.
+///
+/// `wontfix` is treated as negative (alongside `fp`) because it signals
+/// findings that are valid but not worth fixing — useful FP-rate signal for
+/// suppression. This differs from threshold fitting which excludes wontfix
+/// to keep the PR-curve clean.
 pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<CalibratorModel> {
     let mut word_tp: HashMap<String, usize> = HashMap::new();
     let mut word_fp: HashMap<String, usize> = HashMap::new();
@@ -985,10 +991,10 @@ struct TraceInfo {
 
 fn tokenize_title(title: &str) -> Vec<String> {
     let lower = title.to_lowercase();
-    regex::Regex::new(r"[a-z_]+")
-        .ok()
-        .map(|re| re.find_iter(&lower).map(|m| m.as_str().to_string()).collect())
-        .unwrap_or_default()
+    crate::calibrator_model::WORD_RE
+        .find_iter(&lower)
+        .map(|m| m.as_str().to_string())
+        .collect()
 }
 
 #[cfg(test)]

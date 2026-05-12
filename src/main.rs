@@ -1020,11 +1020,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         ..Default::default()
     };
     let thresholds_path = qhome.join("calibrator_thresholds.toml");
-    if let Some(tc) =
-        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
-    {
-        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
-        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+    let loaded_tc =
+        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy());
+    if let Some(tc) = loaded_tc.as_ref() {
+        calibrator_config.suppress_threshold = tc.suppress.as_ref().map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.as_ref().map(|p| p.threshold);
         tracing::info!(
             suppress = ?calibrator_config.suppress_threshold,
             boost = ?calibrator_config.boost_threshold,
@@ -1044,6 +1044,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             "loaded composite calibrator model"
         );
         calibrator_config.model = Some(model);
+    }
+    if loaded_tc
+        .as_ref()
+        .is_some_and(|tc| tc.composite_model)
+        && calibrator_config.model.is_none()
+    {
+        tracing::warn!(
+            "calibrator_thresholds.toml declares composite_model=true but \
+             calibrator_model.toml is missing; clearing thresholds to fall \
+             back to defaults"
+        );
+        calibrator_config.suppress_threshold = None;
+        calibrator_config.boost_threshold = None;
     }
     // QUORUM_FORCE_THRESHOLD overrides both suppress and boost.
     if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
