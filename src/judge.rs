@@ -98,6 +98,36 @@ pub trait JudgeLlm: Send + Sync {
     async fn call(&self, prompt: &str) -> Option<String>;
 }
 
+const JUDGE_SYSTEM_PROMPT: &str =
+    "You are a code review judge. Respond with ONLY a JSON array, no other text.";
+
+pub struct OpenAiJudge {
+    client: std::sync::Arc<crate::llm_client::OpenAiClient>,
+    model: String,
+}
+
+impl OpenAiJudge {
+    pub fn new(client: std::sync::Arc<crate::llm_client::OpenAiClient>, model: String) -> Self {
+        Self { client, model }
+    }
+}
+
+impl JudgeLlm for OpenAiJudge {
+    async fn call(&self, prompt: &str) -> Option<String> {
+        match self
+            .client
+            .judge_completion(&self.model, prompt, JUDGE_SYSTEM_PROMPT)
+            .await
+        {
+            Ok(response) => Some(response.content),
+            Err(e) => {
+                tracing::warn!(model = %self.model, error = %e, "judge LLM call failed");
+                None
+            }
+        }
+    }
+}
+
 /// Build the LLM prompt for judging a batch of AST-detected findings.
 ///
 /// Each finding tuple is `(rule_id, title, line_start, line_end, evidence)`.
