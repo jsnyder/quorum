@@ -1213,6 +1213,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1554,6 +1555,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let halluc_120d = FeedbackEntry {
             timestamp: now - chrono::Duration::days(120),
@@ -1611,6 +1613,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^-1 ≈ 0.36788 — tight tolerance kills 120→119 mutant.
@@ -1634,6 +1637,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         assert!(
@@ -1661,6 +1665,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let trust_entry = FeedbackEntry {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
@@ -1708,6 +1713,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^(-40/120) ≈ 0.7165 — uses 120d default branch.
@@ -1739,6 +1745,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_oos(1), make_oos(2), make_oos(3)];
         let findings = vec![
@@ -1775,6 +1782,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_halluc(1), make_halluc(2), make_halluc(3)];
         let findings = vec![
@@ -1820,6 +1828,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let entries = vec![make_oos(1), make_oos(2), make_oos(3)];
         for e in &entries {
@@ -2159,6 +2168,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
@@ -2192,6 +2202,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2247,6 +2258,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let auto_fp = FeedbackEntry {
             file_path: "test.py".into(),
@@ -2260,6 +2272,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
@@ -2300,6 +2313,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let recent_fp = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -2313,6 +2327,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2350,6 +2365,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2375,6 +2391,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let weight = verdict_weight(&old_entry, Utc::now());
         assert!(
@@ -2405,6 +2422,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2438,6 +2456,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
@@ -2469,6 +2488,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2634,6 +2654,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -3240,6 +3261,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3351,6 +3373,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
@@ -3377,6 +3400,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let cases: &[(&str, Option<f32>)] = &[
             ("None", None),
@@ -3411,6 +3435,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
@@ -3436,6 +3461,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3544,6 +3570,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -4258,6 +4285,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 

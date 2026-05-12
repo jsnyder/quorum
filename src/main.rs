@@ -1973,6 +1973,7 @@ fn run_feedback_inner(
         fp_kind,
         finding_id: None,
         rule_id: None,
+        in_diff: None,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
@@ -2044,6 +2045,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             agent: agent.to_string(),
             agent_model: opts.agent_model.clone(),
             confidence: opts.confidence,
+            in_diff: None,
         };
         if let Some(parent) = feedback_path.parent() {
             let _ = std::fs::create_dir_all(parent);

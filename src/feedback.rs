@@ -117,6 +117,11 @@ pub struct FeedbackEntry {
     /// sources (LLM, linter, custom AST patterns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<String>,
+
+    /// Whether the finding was inside the reviewed diff. `None` for backward-compat
+    /// with pre-#310 entries and when no diff context is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_diff: Option<bool>,
 }
 
 /// Input for recording a verdict from an external review agent.
@@ -134,6 +139,7 @@ pub struct ExternalVerdictInput {
     pub agent: String,
     pub agent_model: Option<String>,
     pub confidence: Option<f32>,
+    pub in_diff: Option<bool>,
 }
 
 /// #123 Layer 1 (Task 10): adoption telemetry for the FpKind taxonomy.
@@ -251,6 +257,7 @@ impl From<ExternalVerdictInputWire> for ExternalVerdictInput {
             agent: w.agent,
             agent_model: w.agent_model,
             confidence: w.confidence,
+            in_diff: None,
         }
     }
 }
@@ -805,6 +812,7 @@ impl FeedbackStore {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: input.in_diff,
         };
         self.record(&entry)
     }
@@ -832,6 +840,7 @@ impl FeedbackStore {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         self.record(&entry)
     }
@@ -929,6 +938,7 @@ mod tests {
             fp_kind,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1080,6 +1090,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1155,6 +1166,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         assert_eq!(entry.provenance, Provenance::Human);
     }
@@ -1329,6 +1341,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         store.record(&entry).unwrap();
         let all = store.load_all().unwrap();
@@ -1436,6 +1449,7 @@ mod tests {
             agent: "pal".into(),
             agent_model: Some("gemini-3-pro-preview".into()),
             confidence: Some(0.85),
+            in_diff: None,
         };
         store.record_external(input).unwrap();
         let all = store.load_all().unwrap();
@@ -1471,6 +1485,7 @@ mod tests {
                 agent: "  PaL  ".into(),
                 agent_model: None,
                 confidence: None,
+                in_diff: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1493,6 +1508,7 @@ mod tests {
                 agent: "   ".into(),
                 agent_model: None,
                 confidence: None,
+                in_diff: None,
             })
             .expect_err("empty agent must be rejected");
         assert!(
@@ -1514,6 +1530,7 @@ mod tests {
                 agent: "pal".into(),
                 agent_model: None,
                 confidence: None,
+                in_diff: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1533,6 +1550,7 @@ mod tests {
                 agent: "pal".into(),
                 agent_model: None,
                 confidence: Some(1.5),
+                in_diff: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1562,6 +1580,7 @@ mod tests {
                 agent: "pal".into(),
                 agent_model: None,
                 confidence: None,
+                in_diff: None,
             })
             .expect_err("ContextMisleading must be rejected for External provenance");
         assert!(
@@ -1637,6 +1656,7 @@ mod tests {
                 agent: "pal".into(),
                 agent_model: None,
                 confidence: None,
+                in_diff: None,
             })
             .expect_err("Wontfix must be rejected for External provenance");
         assert!(
@@ -2345,6 +2365,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(
@@ -2371,6 +2392,7 @@ mod tests {
             fp_kind: None,
             finding_id: Some("01HXYZ1234567890ABCDEFGHJK".into()),
             rule_id: Some("python/eval-non-literal".into()),
+            in_diff: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
@@ -2397,6 +2419,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: Some("python/md5-usage".into()),
+            in_diff: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(
@@ -2442,6 +2465,46 @@ mod tests {
         assert!(
             !resaved.contains("\"rule_id\""),
             "resave must not introduce rule_id key: {resaved}"
+        );
+    }
+
+    #[test]
+    fn feedback_in_diff_serde_round_trip() {
+        let entry = FeedbackEntry {
+            file_path: "src/auth.rs".into(),
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "confirmed".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(true),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            json.contains("\"in_diff\":true"),
+            "in_diff:true must be present in JSON, got: {json}"
+        );
+        let back: FeedbackEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.in_diff, Some(true));
+    }
+
+    #[test]
+    fn feedback_in_diff_omitted_is_none() {
+        // JSON without in_diff field deserializes as None (backward compat).
+        let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(entry.in_diff, None, "legacy entries must deserialize in_diff as None");
+
+        // And re-serializing a None in_diff entry must not introduce the key.
+        let resaved = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !resaved.contains("\"in_diff\""),
+            "None in_diff must be omitted from JSON, got: {resaved}"
         );
     }
 }

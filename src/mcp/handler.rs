@@ -176,6 +176,7 @@ impl QuorumHandler {
                 agent,
                 agent_model: params.agent_model,
                 confidence: params.confidence,
+                in_diff: None,
             };
             self.feedback_store
                 .record_external(input)
@@ -203,6 +204,7 @@ impl QuorumHandler {
             fp_kind,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         self.feedback_store

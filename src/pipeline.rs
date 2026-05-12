@@ -1610,6 +1610,7 @@ mod tests {
             fp_kind,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1711,6 +1712,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
+                in_diff: None,
             },
             similarity,
         }
@@ -1735,6 +1737,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
+                in_diff: None,
             },
             similarity,
         }
@@ -2975,6 +2978,7 @@ mod tests {
                     fp_kind: None,
                     finding_id: None,
                     rule_id: None,
+                    in_diff: None,
                 },
                 similarity: 0.90,
             },
@@ -2991,6 +2995,7 @@ mod tests {
                     fp_kind: None,
                     finding_id: None,
                     rule_id: None,
+                    in_diff: None,
                 },
                 similarity: 0.90,
             },
