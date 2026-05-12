@@ -160,7 +160,7 @@ fn make_trace_entry(
         },
         provenance: None,
         same_file_precedent_count: None,
-        in_diff: None,
+        in_diff: finding.in_diff,
     }
 }
 
@@ -4880,6 +4880,23 @@ mod tests {
             decision.suppressed,
             "NaN threshold should fall back to legacy which suppresses at fp=2.0"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Task 7: make_trace_entry propagates in_diff from finding (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn trace_entry_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(true);
+        let trace = make_trace_entry(
+            &finding, 1.0, 0.0, 0.0, 0.0, 0.0, vec![], None,
+            crate::finding::Severity::Medium, None, "test.rs",
+        );
+        assert_eq!(trace.in_diff, Some(true));
     }
 
     // -------------------------------------------------------------------
