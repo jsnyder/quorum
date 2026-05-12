@@ -43,6 +43,9 @@ fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
         return;
     }
     for finding in findings {
+        if !finding.is_valid() {
+            continue;
+        }
         let overlaps = changed_lines.iter().any(|(start, end)| {
             finding.line_start <= *end && finding.line_end >= *start
         });
@@ -51,7 +54,9 @@ fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
 }
 ```
 
-Any overlap between the finding's line range and a changed hunk counts as in-diff (inclusive approach).
+Any overlap between the finding's line range and a changed hunk counts as in-diff (inclusive approach). Invalid findings (malformed line ranges) are skipped via `Finding::is_valid()` to avoid classifying nonsensical coordinates.
+
+Note: this is line-range based, not semantic ownership. A function spanning lines 1-500 where only line 250 changed will be tagged `in_diff: true`. This is deliberate -- the finding touches changed code and is relevant to the PR.
 
 ### Pipeline placement
 
@@ -93,6 +98,8 @@ The same `in_diff_factor` applies when building lookup tables (word LOR, family 
 
 After calibration, only findings where `in_diff != Some(false)` contribute to severity-based exit codes (0/1/2). Pre-existing findings are informational. `in_diff: None` (full-file review, no diff context) contributes normally.
 
+This is an intentional semantic change when `--diff-file` is active: a project with only pre-existing critical findings exits 0 ("nothing wrong with your change") instead of 2. This matches the expected CI behavior -- `--diff-file` means "judge only what I changed."
+
 ## 4. Output Formatting
 
 ### Human mode (`src/output/mod.rs`)
@@ -116,6 +123,7 @@ Findings are split into two groups per file:
 
 - "Pre-existing" header only appears when out-of-diff findings exist
 - In-diff findings render first, pre-existing after a visual separator
+- Within each group, preserve the existing sort order (don't re-sort)
 - No severity downgrade -- grouping does the work
 - Summary line: `"3 findings (2 in this change, 1 pre-existing)"`
 
@@ -145,7 +153,7 @@ Pre-existing findings get a `[pre]` prefix:
 
 For feedback on findings from the current review session, callers should propagate the finding's `in_diff` value. For historical/manual feedback where the diff context is unknown, `in_diff` stays `None`.
 
-Both `record_human()` and `record_external()` in `FeedbackStore` pass through `in_diff`.
+Both `record_human()` and `record_external()` in `FeedbackStore` pass through `in_diff`. `ExternalVerdictInput` also gains `in_diff: Option<bool>` for field parity (unlike `fp_kind`, which is dropped on the External path, `in_diff` is a simple informational field with no validation concerns).
 
 ### Stats
 
@@ -173,3 +181,15 @@ Existing `--by-file` and `--by-repo` views include an in-diff/out-of-diff breakd
 5. **Stamp-after-collection.** One function, zero constructor changes, follows existing pipeline patterns (calibrator actions are also stamped post-collection).
 6. **Gate on --diff-file flag, not changed_lines emptiness.** Avoids false `in_diff: true` when full-file fallback ranges are used.
 7. **inferust/statsmodels deferred to #312.** No regression fitting needed for a constant multiplier.
+
+## 8. Test Requirements (from review)
+
+- Round-trip serde tests for all three structs with `in_diff` present, absent, and `None`
+- Boundary overlap: `finding.line_end == hunk.start` and `finding.line_start == hunk.end`
+- Large-span findings (line 1-500, hunk at line 250) tagged `in_diff: true`
+- Invalid findings (`line_start=0`) skipped by classifier
+- Full-file fallback (`changed_lines = [(1, total)]`) does not stamp `in_diff`
+- Compound discount threshold tests: External + out-of-diff = 0.49x, AutoCalibrate + out-of-diff = 0.35x
+- Both calibrate join paths (`join_feedback_and_traces_with_options` and `rescore_samples_with_model`) apply identical `in_diff` weighting
+- Exit code: only in-diff findings contribute when `--diff-file` is active
+- Output grouping preserves sort order within each group
