@@ -724,22 +724,24 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
 
     let global_fp_rate = total_fp as f64 / total as f64;
 
-    // Word log-odds: log((fp_rate + eps) / (tp_rate + eps))
+    // Word log-odds only make sense once both classes have support.
     let eps = 0.5; // Laplace smoothing
     let mut word_lor_map: HashMap<String, f64> = HashMap::new();
-    let all_words: HashSet<&String> = word_tp.keys().chain(word_fp.keys()).collect();
-    for w in all_words {
-        let tp_count = word_tp.get(w).copied().unwrap_or(0);
-        let fp_count = word_fp.get(w).copied().unwrap_or(0);
-        let support = tp_count + fp_count;
-        if support < WORD_MIN_SUPPORT {
-            continue;
-        }
-        let tp_rate = (tp_count as f64 + eps) / (total_tp as f64 + eps);
-        let fp_rate = (fp_count as f64 + eps) / (total_fp as f64 + eps);
-        let lor = (fp_rate / tp_rate).ln();
-        if lor.is_finite() {
-            word_lor_map.insert(w.clone(), lor);
+    if total_tp > 0 && total_fp > 0 {
+        let all_words: HashSet<&String> = word_tp.keys().chain(word_fp.keys()).collect();
+        for w in all_words {
+            let tp_count = word_tp.get(w).copied().unwrap_or(0);
+            let fp_count = word_fp.get(w).copied().unwrap_or(0);
+            let support = tp_count + fp_count;
+            if support < WORD_MIN_SUPPORT {
+                continue;
+            }
+            let tp_rate = (tp_count as f64 + eps) / (total_tp as f64 + eps);
+            let fp_rate = (fp_count as f64 + eps) / (total_fp as f64 + eps);
+            let lor = (fp_rate / tp_rate).ln();
+            if lor.is_finite() {
+                word_lor_map.insert(w.clone(), lor);
+            }
         }
     }
 
@@ -828,8 +830,6 @@ pub fn rescore_samples_with_model(
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let norm = normalize_title(&title);
         let info = TraceInfo {
-            title: title.clone(),
-            file_path: fp.clone(),
             tp_weight: tp_w,
             fp_weight: fp_w,
         };
@@ -968,8 +968,8 @@ pub fn rescore_samples_with_model(
             if total > 0.0 {
                 let precedent_score = info.tp_weight / total;
                 if precedent_score.is_finite() {
-                    let lang = CalibratorModel::file_ext_language(&info.file_path);
-                    let composite = model.composite_score(precedent_score, &info.title, lang);
+                    let lang = CalibratorModel::file_ext_language(&fp);
+                    let composite = model.composite_score(precedent_score, &title, lang);
                     if composite.is_finite() {
                         samples.push((composite, is_positive));
                     }
@@ -983,8 +983,6 @@ pub fn rescore_samples_with_model(
 
 #[derive(Clone)]
 struct TraceInfo {
-    title: String,
-    file_path: String,
     tp_weight: f64,
     fp_weight: f64,
 }
