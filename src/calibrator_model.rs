@@ -14,10 +14,8 @@ static RULE_PREFIX_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^[a-z0-9_-]+:\s*").unwrap());
 static BACKTICK_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"`[^`]+`").unwrap());
-static NUMBER_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\b\d+\b").unwrap());
-static WHITESPACE_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+static NUMBER_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\b\d+\b").unwrap());
+static WHITESPACE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
 pub static WORD_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"[a-z_]+").unwrap());
 
@@ -95,12 +93,7 @@ impl CalibratorModel {
     ///
     /// Known families (present in `family_fp_rate`) use the family-specific
     /// FP rate; novel families fall back to `global_fp_rate`.
-    pub fn composite_score(
-        &self,
-        precedent_score: f64,
-        title: &str,
-        file_ext_lang: &str,
-    ) -> f64 {
+    pub fn composite_score(&self, precedent_score: f64, title: &str, file_ext_lang: &str) -> f64 {
         let family = Self::title_family(title);
         let family_fp = self
             .family_fp_rate
@@ -189,9 +182,7 @@ mod tests {
     #[test]
     fn title_family_normalization() {
         assert_eq!(
-            CalibratorModel::title_family(
-                "bare-except-pass: Function `process_data` has 42 lines"
-            ),
+            CalibratorModel::title_family("bare-except-pass: Function `process_data` has 42 lines"),
             "function `` has N lines"
         );
         assert_eq!(
@@ -242,11 +233,8 @@ mod tests {
     #[test]
     fn composite_score_known_family() {
         let model = make_model();
-        let score = model.composite_score(
-            0.8,
-            "function `foo` has cyclomatic complexity 42",
-            "rust",
-        );
+        let score =
+            model.composite_score(0.8, "function `foo` has cyclomatic complexity 42", "rust");
         // title_family -> "function `` has cyclomatic complexity N"
         // family_fp = 0.30 (known)
         // lang_fp = 0.328 (rust)
@@ -261,11 +249,7 @@ mod tests {
     #[test]
     fn composite_score_novel_family() {
         let model = make_model();
-        let score = model.composite_score(
-            0.8,
-            "some totally new finding pattern",
-            "python",
-        );
+        let score = model.composite_score(0.8, "some totally new finding pattern", "python");
         // title_family -> "some totally new finding pattern" (not in family_fp_rate)
         // family_fp = global_fp_rate = 0.27 (fallback)
         // lang_fp = 0.208 (python)
@@ -298,30 +282,12 @@ mod tests {
             CalibratorModel::file_ext_language("app/page.ts"),
             "typescript"
         );
-        assert_eq!(
-            CalibratorModel::file_ext_language("config.yaml"),
-            "yaml"
-        );
-        assert_eq!(
-            CalibratorModel::file_ext_language("script.sh"),
-            "bash"
-        );
-        assert_eq!(
-            CalibratorModel::file_ext_language("main.py"),
-            "python"
-        );
-        assert_eq!(
-            CalibratorModel::file_ext_language("index.js"),
-            "javascript"
-        );
-        assert_eq!(
-            CalibratorModel::file_ext_language("main.tf"),
-            "terraform"
-        );
-        assert_eq!(
-            CalibratorModel::file_ext_language("Dockerfile"),
-            "other"
-        );
+        assert_eq!(CalibratorModel::file_ext_language("config.yaml"), "yaml");
+        assert_eq!(CalibratorModel::file_ext_language("script.sh"), "bash");
+        assert_eq!(CalibratorModel::file_ext_language("main.py"), "python");
+        assert_eq!(CalibratorModel::file_ext_language("index.js"), "javascript");
+        assert_eq!(CalibratorModel::file_ext_language("main.tf"), "terraform");
+        assert_eq!(CalibratorModel::file_ext_language("Dockerfile"), "other");
     }
 
     #[test]

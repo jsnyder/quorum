@@ -2322,11 +2322,7 @@ mod tests {
 
     // --- compute_calibrator_model tests ---
 
-    fn make_model_feedback(
-        title: &str,
-        verdict: &str,
-        file_path: &str,
-    ) -> serde_json::Value {
+    fn make_model_feedback(title: &str, verdict: &str, file_path: &str) -> serde_json::Value {
         serde_json::json!({
             "finding_title": title,
             "verdict": verdict,
@@ -2365,9 +2361,7 @@ mod tests {
         );
         // Novel family not in map (only 2 entries, below FAMILY_MIN_SUPPORT=3)
         assert!(
-            !model
-                .family_fp_rate
-                .contains_key("missing error handling"),
+            !model.family_fp_rate.contains_key("missing error handling"),
             "family with < 3 entries should not be in model"
         );
         // Global FP rate: 2 FP out of 5 total = 0.4

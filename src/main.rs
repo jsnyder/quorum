@@ -1045,10 +1045,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         );
         calibrator_config.model = Some(model);
     }
-    if loaded_tc
-        .as_ref()
-        .is_some_and(|tc| tc.composite_model)
-        && calibrator_config.model.is_none()
+    if loaded_tc.as_ref().is_some_and(|tc| tc.composite_model) && calibrator_config.model.is_none()
     {
         tracing::warn!(
             "calibrator_thresholds.toml declares composite_model=true but \

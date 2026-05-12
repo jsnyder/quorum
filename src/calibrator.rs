@@ -5049,13 +5049,8 @@ mod tests {
                 ("sql".into(), 2.0),
                 ("injection".into(), 1.5),
             ]),
-            family_fp_rate: HashMap::from([
-                ("use of `` may panic at runtime".into(), 0.90),
-            ]),
-            language_fp_rate: HashMap::from([
-                ("rust".into(), 0.328),
-                ("python".into(), 0.208),
-            ]),
+            family_fp_rate: HashMap::from([("use of `` may panic at runtime".into(), 0.90)]),
+            language_fp_rate: HashMap::from([("rust".into(), 0.328), ("python".into(), 0.208)]),
         }
     }
 
@@ -5077,8 +5072,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.6,  // tp_weight
-            0.4,  // fp_weight (raw score = 0.6)
+            0.6, // tp_weight
+            0.4, // fp_weight (raw score = 0.6)
             0.0,
             0.4,
             vec![],
@@ -5117,8 +5112,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.6,  // tp_weight
-            0.4,  // fp_weight (raw score = 0.6, above 0.5 suppress threshold)
+            0.6, // tp_weight
+            0.4, // fp_weight (raw score = 0.6, above 0.5 suppress threshold)
             0.0,
             0.4,
             vec![],
@@ -5153,8 +5148,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            2.0,  // tp_weight
-            0.1,  // fp_weight (raw score = 0.952)
+            2.0, // tp_weight
+            0.1, // fp_weight (raw score = 0.952)
             0.0,
             0.1,
             vec![],
