@@ -32,6 +32,20 @@ pub struct TelemetryEntry {
     /// with pre-bump rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fp_kind_utilization_rate: Option<f32>,
+    #[serde(default)]
+    pub judge_calls: u32,
+    #[serde(default)]
+    pub judge_approved: u32,
+    #[serde(default)]
+    pub judge_rejected: u32,
+    #[serde(default)]
+    pub judge_uncertain: u32,
+    #[serde(default)]
+    pub judge_skipped: u32,
+    #[serde(default)]
+    pub judge_cache_hits: u32,
+    #[serde(default)]
+    pub judge_latency_ms: u64,
 }
 
 /// Structured per-line parse failure surfaced by `load_all_with_stats`.
@@ -284,6 +298,13 @@ mod tests {
             context7_skipped_popular: 0,
             context7_budget_reduced: 0,
             fp_kind_utilization_rate: None,
+            judge_calls: 0,
+            judge_approved: 0,
+            judge_rejected: 0,
+            judge_uncertain: 0,
+            judge_skipped: 0,
+            judge_cache_hits: 0,
+            judge_latency_ms: 0,
         }
     }
 
@@ -317,6 +338,13 @@ mod tests {
         assert_eq!(entry.context7_query_failed, 0);
         assert_eq!(entry.context7_skipped_popular, 0);
         assert_eq!(entry.context7_budget_reduced, 0);
+        assert_eq!(entry.judge_calls, 0);
+        assert_eq!(entry.judge_approved, 0);
+        assert_eq!(entry.judge_rejected, 0);
+        assert_eq!(entry.judge_uncertain, 0);
+        assert_eq!(entry.judge_skipped, 0);
+        assert_eq!(entry.judge_cache_hits, 0);
+        assert_eq!(entry.judge_latency_ms, 0);
     }
 
     #[test]

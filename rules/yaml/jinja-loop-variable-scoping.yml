@@ -1,0 +1,10 @@
+id: jinja-loop-variable-scoping
+language: Yaml
+severity: warning
+message: "Variable set inside Jinja for-loop may not persist outside the loop scope due to Jinja2 scoping rules."
+rule:
+  kind: block_scalar
+  regex: "\\{%.*for\\s.*%\\}.*\\{%.*set\\s+\\w+.*%\\}"
+metadata:
+  precision: speculative
+  judge: required

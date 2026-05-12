@@ -1,0 +1,11 @@
+id: discarded-result
+language: Rust
+severity: warning
+message: "Result value discarded with `let _ =`. If the error is intentional, add a comment explaining why."
+rule:
+  pattern: let _ = $EXPR;
+  has:
+    kind: call_expression
+metadata:
+  precision: speculative
+  judge: required

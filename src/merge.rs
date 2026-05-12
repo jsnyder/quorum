@@ -28,6 +28,22 @@ pub fn merge_findings(
                         existing.evidence.push(e.clone());
                     }
                 }
+                // Mixed-source confidence: take max of judge/grounding confidence
+                if let Some(jc) = finding.judge_confidence {
+                    match existing.judge_confidence {
+                        Some(ec) => existing.judge_confidence = Some(ec.max(jc)),
+                        None => existing.judge_confidence = Some(jc),
+                    }
+                }
+                if finding.judge_verdict.is_some() && existing.judge_verdict.is_none() {
+                    existing.judge_verdict = finding.judge_verdict.clone();
+                }
+                if let Some(gc) = finding.grounding_confidence {
+                    match existing.grounding_confidence {
+                        Some(ec) => existing.grounding_confidence = Some(ec.max(gc)),
+                        None => existing.grounding_confidence = Some(gc),
+                    }
+                }
                 if let Source::Llm(ref model) = finding.source {
                     llm_model_names[idx].insert(model.clone());
                 }

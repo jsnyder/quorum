@@ -25,6 +25,10 @@ fn finding_with_new_fields_roundtrips() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
+        judge_verdict: None,
+        judge_confidence: None,
+        precision_tier: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -79,6 +83,10 @@ fn new_fields_omitted_from_json_when_none() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
+        judge_verdict: None,
+        judge_confidence: None,
+        precision_tier: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -87,6 +95,10 @@ fn new_fields_omitted_from_json_when_none() {
     assert!(!json.contains("cited_lines"));
     assert!(!json.contains("grounding_confidence"));
     assert!(!json.contains("model_agreement"));
+    assert!(!json.contains("rule_id"));
+    assert!(!json.contains("judge_verdict"));
+    assert!(!json.contains("judge_confidence"));
+    assert!(!json.contains("precision_tier"));
 }
 
 #[test]
@@ -113,6 +125,10 @@ fn category_serializes_as_kebab_case_in_finding() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
+        judge_verdict: None,
+        judge_confidence: None,
+        precision_tier: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();

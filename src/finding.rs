@@ -39,6 +39,33 @@ pub enum CalibratorAction {
     Added,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrecisionTier {
+    #[default]
+    High,
+    Medium,
+    Speculative,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JudgeRequirement {
+    Required,
+    Optional,
+    #[default]
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JudgeVerdict {
+    Approved,
+    Rejected,
+    Uncertain,
+    Skipped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Source {
@@ -113,6 +140,14 @@ pub struct Finding {
     pub grounding_confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_agreement: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_verdict: Option<JudgeVerdict>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision_tier: Option<PrecisionTier>,
 }
 
 impl Finding {
@@ -121,15 +156,24 @@ impl Finding {
     }
 
     pub fn compute_confidence(&mut self) {
-        let base = match &self.source {
-            Source::LocalAst => 0.95,
-            Source::Linter(_) => 0.90,
-            Source::Llm(_) => self
+        let base = match (&self.source, &self.precision_tier) {
+            (Source::LocalAst, Some(PrecisionTier::High)) | (Source::LocalAst, None) => 0.95,
+            (Source::LocalAst, Some(PrecisionTier::Medium)) => 0.80,
+            (Source::LocalAst, Some(PrecisionTier::Speculative)) => 0.50,
+            (Source::Linter(_), Some(PrecisionTier::High)) | (Source::Linter(_), None) => 0.90,
+            (Source::Linter(_), Some(PrecisionTier::Medium)) => 0.75,
+            (Source::Linter(_), Some(PrecisionTier::Speculative)) => 0.45,
+            (Source::Llm(_), _) => self
                 .grounding_confidence
                 .filter(|c| c.is_finite())
                 .map(|c| c.clamp(0.0, 1.0))
                 .unwrap_or(0.5),
         };
+        let base = self
+            .judge_confidence
+            .filter(|c| c.is_finite())
+            .map(|c| c.clamp(0.0, 1.0))
+            .unwrap_or(base);
         let cal_factor = match self.calibrator_action {
             Some(CalibratorAction::Confirmed) => 1.1,
             Some(CalibratorAction::Disputed) => 0.6,
@@ -202,6 +246,10 @@ impl FindingBuilder {
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
+                judge_verdict: None,
+                judge_confidence: None,
+                precision_tier: None,
             },
         }
     }
@@ -314,6 +362,11 @@ impl FindingBuilder {
         self
     }
 
+    pub fn rule_id(mut self, r: &str) -> Self {
+        self.inner.rule_id = Some(r.into());
+        self
+    }
+
     pub fn build(self) -> Finding {
         self.inner
     }
@@ -399,6 +452,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -436,6 +493,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -466,6 +527,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -498,6 +563,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         assert!(f.is_valid());
     }
@@ -526,6 +595,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         assert!(f.is_valid());
     }
@@ -554,6 +627,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         assert!(!f.is_valid());
     }
@@ -582,6 +659,10 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
         };
         assert!(!f.is_valid());
     }
@@ -921,5 +1002,173 @@ mod tests {
             f.confidence.unwrap() <= 1.0,
             "grounding > 1.0 must be clamped"
         );
+    }
+
+    // -- rule_id field --
+
+    #[test]
+    fn finding_rule_id_defaults_to_none() {
+        let f = FindingBuilder::new().build();
+        assert_eq!(f.rule_id, None);
+    }
+
+    #[test]
+    fn finding_rule_id_set_via_builder() {
+        let f = FindingBuilder::new()
+            .rule_id("ast-grep:python/bare-except-pass")
+            .build();
+        assert_eq!(
+            f.rule_id.as_deref(),
+            Some("ast-grep:python/bare-except-pass")
+        );
+    }
+
+    #[test]
+    fn finding_rule_id_survives_json_roundtrip() {
+        let f = FindingBuilder::new()
+            .rule_id("local-ast:complexity")
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        let parsed: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.rule_id.as_deref(), Some("local-ast:complexity"));
+    }
+
+    #[test]
+    fn finding_without_rule_id_omits_from_json() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("rule_id"));
+    }
+
+    #[test]
+    fn legacy_json_without_rule_id_deserializes_as_none() {
+        let json = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"similar_precedent":[]}"#;
+        let f: Finding = serde_json::from_str(json).unwrap();
+        assert_eq!(f.rule_id, None);
+    }
+
+    // -- PrecisionTier / JudgeRequirement / JudgeVerdict --
+
+    #[test]
+    fn precision_tier_default_is_high() {
+        let tier: PrecisionTier = Default::default();
+        assert_eq!(tier, PrecisionTier::High);
+    }
+
+    #[test]
+    fn precision_tier_serde_roundtrip() {
+        let tier = PrecisionTier::Speculative;
+        let json = serde_json::to_string(&tier).unwrap();
+        assert_eq!(json, "\"speculative\"");
+        let parsed: PrecisionTier = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, PrecisionTier::Speculative);
+    }
+
+    #[test]
+    fn judge_requirement_default_is_skip() {
+        let req: JudgeRequirement = Default::default();
+        assert_eq!(req, JudgeRequirement::Skip);
+    }
+
+    #[test]
+    fn judge_verdict_serde_roundtrip() {
+        let v = JudgeVerdict::Approved;
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, "\"approved\"");
+        let parsed: JudgeVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, JudgeVerdict::Approved);
+    }
+
+    #[test]
+    fn finding_judge_fields_default_to_none() {
+        let f = FindingBuilder::new().build();
+        assert_eq!(f.judge_verdict, None);
+        assert_eq!(f.judge_confidence, None);
+        assert_eq!(f.precision_tier, None);
+    }
+
+    #[test]
+    fn finding_with_judge_fields_survives_roundtrip() {
+        let mut f = FindingBuilder::new().build();
+        f.judge_verdict = Some(JudgeVerdict::Approved);
+        f.judge_confidence = Some(0.85);
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        let json = serde_json::to_string(&f).unwrap();
+        let parsed: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.judge_verdict, Some(JudgeVerdict::Approved));
+        assert_eq!(parsed.judge_confidence, Some(0.85));
+        assert_eq!(parsed.precision_tier, Some(PrecisionTier::Speculative));
+    }
+
+    #[test]
+    fn finding_without_judge_fields_omits_from_json() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("judge_verdict"));
+        assert!(!json.contains("judge_confidence"));
+        assert!(!json.contains("precision_tier"));
+    }
+
+    // -- Tier-aware confidence --
+
+    #[test]
+    fn confidence_speculative_local_ast_is_050() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.50).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_medium_local_ast_is_080() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Medium);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.80).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_medium_linter_is_075() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        f.precision_tier = Some(PrecisionTier::Medium);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_speculative_linter_is_045() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.45).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_judge_overrides_base() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.judge_confidence = Some(0.85);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.85).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_no_tier_matches_legacy_behavior() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = None;
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_judge_nan_falls_back_to_base() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.judge_confidence = Some(f32::NAN);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.95).abs() < 0.01);
     }
 }

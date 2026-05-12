@@ -1,0 +1,30 @@
+# Fixture: jinja-loop-variable-scoping
+# match: set before for-loop, reassigned inside (scoping issue)
+bad_template:
+  sensor:
+    - name: "Counter loses state"
+      state: >
+        {% set count = 0 %}
+        {% for item in items %}
+          {% set count = count + 1 %}
+        {% endfor %}
+        {{ count }}
+
+# no-match: uses namespace() for proper mutable state in loop
+good_template:
+  sensor:
+    - name: "Counter works correctly"
+      state: >
+        {% set ns = namespace(count=0) %}
+        {% for item in items %}
+          {% set ns.count = ns.count + 1 %}
+        {% endfor %}
+        {{ ns.count }}
+
+# no-match: set without for-loop
+simple_template:
+  sensor:
+    - name: "Simple assignment"
+      state: >
+        {% set value = 42 %}
+        {{ value }}
