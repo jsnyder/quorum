@@ -320,6 +320,16 @@ impl FindingBuilder {
         self
     }
 
+    pub fn line_start(mut self, start: u32) -> Self {
+        self.inner.line_start = start;
+        self
+    }
+
+    pub fn line_end(mut self, end: u32) -> Self {
+        self.inner.line_end = end;
+        self
+    }
+
     pub fn evidence(mut self, e: &str) -> Self {
         self.inner.evidence.push(e.into());
         self
