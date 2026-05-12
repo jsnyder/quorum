@@ -1,0 +1,6 @@
+id: flask-unsafe-form-access
+language: Python
+severity: warning
+message: "Directly accessing `request.form['key']` can raise a `KeyError` if the key is missing. Use `request.form.get('key')` to handle missing keys gracefully."
+rule:
+  pattern: request.form['$KEY']

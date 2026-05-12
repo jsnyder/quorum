@@ -1,0 +1,10 @@
+id: ts-weak-crypto-random
+language: TypeScript
+severity: error
+message: "crypto.randomBytes() called with less than 8 bytes (64 bits) of entropy. This is insufficient for generating secure random identifiers, as it may lead to collisions."
+rule:
+  pattern: crypto.randomBytes($BYTES)
+constraints:
+  BYTES:
+    kind: number
+    regex: "^[0-7]$"

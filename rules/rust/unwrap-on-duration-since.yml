@@ -1,0 +1,6 @@
+id: unwrap-on-duration-since
+language: Rust
+severity: warning
+message: "`duration_since()` returns a Result because it can fail if the start time is earlier than the provided time. Calling `.unwrap()` on it can cause a panic if the system clock is set incorrectly or the input is unexpected."
+rule:
+  pattern: $TIME.duration_since($$$).unwrap()
