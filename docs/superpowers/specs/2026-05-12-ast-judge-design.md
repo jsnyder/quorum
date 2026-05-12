@@ -155,7 +155,7 @@ Batched per-file: one LLM call per file containing all findings that need judgin
 ]
 ```
 
-Verdicts: `tp` (keep, use judge confidence), `fp` (floor confidence at 0.15), `uncertain` (keep with reduced confidence).
+Verdicts: `tp` (keep, use judge confidence), `fp` (reject — see gating logic), `uncertain` (keep with reduced confidence).
 
 ### 2.4 Gating logic
 
@@ -167,12 +167,33 @@ for each AST/ast-grep finding:
     Optional -> judge if available, pass through if judge offline
 ```
 
-Findings rejected by the judge (`fp` verdict) are not dropped. They get:
-- `confidence` floored at 0.15
-- `calibrator_action: Some(Disputed)`
-- Ranked very low in output
+**Rejection behavior depends on judge requirement:**
+- `judge: required` + `fp` verdict → **drop the finding entirely**. It does not enter merge or output. Telemetry records the rejection.
+- `judge: optional` + `fp` verdict → **clamp confidence to 0.05** and mark `judge_verdict: Rejected`. Finding appears in output only at the lowest rank.
+- `uncertain` verdict → keep the finding, use judge confidence (typically 0.3-0.5), mark `judge_verdict: Uncertain`.
 
-This avoids silently suppressing true positives.
+This is safe because speculative rules are opt-in (`--judge` flag) and we have per-rule telemetry to detect over-suppression via `stats --by-rule`.
+
+### 2.4.1 Judge verdict field
+
+Add a dedicated field to `Finding` rather than overloading `calibrator_action` (which reflects human feedback):
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JudgeVerdict {
+    Approved,
+    Rejected,
+    Uncertain,
+    Skipped,
+}
+
+// On Finding:
+#[serde(default, skip_serializing_if = "Option::is_none")]
+pub judge_verdict: Option<JudgeVerdict>,
+```
+
+`Skipped` = high-precision rule that bypassed the judge. `None` = judge feature not enabled.
 
 ### 2.5 Confidence model changes
 
@@ -213,22 +234,50 @@ let base = self.judge_confidence
 
 Existing high-precision rules behave identically (precision_tier defaults to None, judge_confidence stays None).
 
-### 2.6 Cost control
+### 2.5.1 Merge precedence for mixed-source findings
+
+When an AST finding (with `judge_confidence`) merges with an LLM finding (with `grounding_confidence`) in `merge_findings`, the merged finding takes `max(judge_confidence, grounding_confidence)`. Both sources independently confirmed the issue, so the higher confidence wins. The merged finding retains `judge_verdict` from the AST side and `grounding_status` from the LLM side.
+
+### 2.6 Caching
+
+Two complementary caching layers minimize redundant judge calls:
+
+**Layer 1: Local verdict cache** at `~/.quorum/judge_cache.jsonl`. Keyed on `sha256(rule_id + evidence_text)` where evidence_text is the matched AST node text (already captured at finding construction). Fields:
+
+```json
+{
+  "cache_key": "a1b2c3...",
+  "rule_id": "ast-grep:python/broad-exception-catch",
+  "verdict": "tp",
+  "confidence": 0.85,
+  "reason": "...",
+  "timestamp": "2026-05-12T00:00:00Z"
+}
+```
+
+TTL: 7 days (matches registry cache). On cache hit, skip the LLM call entirely and apply the cached verdict. Primary benefit: **repeat runs on unfixed findings** — the most common case during iterative development.
+
+**Layer 2: LiteLLM prompt caching** — achieved by building judge prompts deterministically. Findings sorted by `(rule_id, line_start)` before prompt construction ensures stable cache keys. This is free and covers identical full-file re-reviews.
+
+Cache invalidation: evidence_text changes when the matched code changes, so the sha256 key naturally invalidates. No manual cache busting needed.
+
+### 2.7 Cost control
 
 - Only speculative/medium rules with `judge: required|optional` hit the judge
 - High-precision rules bypass entirely (zero additional cost for existing rules)
+- Local verdict cache eliminates re-judging unfixed findings across runs
 - Judge uses a configurable model (default: fast/cheap model)
 - If zero findings need judging for a file, no judge call is made
 - Judge timeout: 5 seconds per file, fail-open (findings pass through unjudged with metadata baseline confidence)
 - `QUORUM_JUDGE_MODEL` env var for model selection
 
-### 2.7 Feature flag
+### 2.8 Feature flag
 
 - `--judge` CLI flag or `QUORUM_JUDGE=1` env var to enable
 - Off by default until validated on the pilot rule set
 - When disabled, speculative rules still fire but use their metadata baseline confidence (no LLM call)
 
-### 2.8 Telemetry
+### 2.9 Telemetry
 
 New counters on `TelemetryEntry`:
 
@@ -240,6 +289,8 @@ New counters on `TelemetryEntry`:
 | `judge_uncertain` | Findings marked uncertain |
 | `judge_skipped` | Findings that bypassed judge (high precision) |
 | `judge_timeout` | Calls that timed out (fail-open) |
+| `judge_cache_hits` | Findings resolved from local verdict cache |
+| `judge_latency_ms` | Total judge wall-clock time (LLM + cache lookups) |
 
 All counters use `serde(default)` for backward compat.
 
@@ -285,9 +336,9 @@ Rules 6 and 7 are broader variants of existing high-precision rules (`nullish-co
 
 ### Phase 2
 - `src/ast_grep.rs` -- parse `metadata` block, add `RuleMetadata`/`PrecisionTier`/`JudgeRequirement` types
-- `src/finding.rs` -- add `judge_confidence`, `precision_tier` fields, update `compute_confidence`
+- `src/finding.rs` -- add `judge_confidence`, `judge_verdict`, `precision_tier` fields, update `compute_confidence`
 - `src/pipeline.rs` -- insert judge stage between AST collection and merge
-- `src/judge.rs` -- new module: judge trait, LLM judge implementation, batching, timeout
+- `src/judge.rs` -- new module: judge trait, LLM judge implementation, batching, timeout, verdict cache
 - `src/telemetry.rs` -- add judge counters
 - `src/main.rs` -- `--judge` flag, `QUORUM_JUDGE_MODEL` env var
 - `rules/python/` -- add 5 new speculative rule YAMLs
