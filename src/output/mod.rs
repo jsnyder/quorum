@@ -397,12 +397,14 @@ pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
 }
 
 pub fn compute_exit_code(findings: &[Finding]) -> i32 {
+    let dominated = |f: &&Finding| f.in_diff != Some(false);
     if findings
         .iter()
+        .filter(dominated)
         .any(|f| matches!(f.severity, Severity::Critical | Severity::High))
     {
         2
-    } else if findings.iter().any(|f| f.severity == Severity::Medium) {
+    } else if findings.iter().filter(dominated).any(|f| f.severity == Severity::Medium) {
         1
     } else {
         0
@@ -1230,5 +1232,47 @@ mod tests {
         let f = FindingBuilder::new().build(); // in_diff = None
         let line = format_compact_finding(&f);
         assert!(!line.starts_with("[pre]"));
+    }
+
+    // -- exit code scoped to in-diff findings --
+
+    #[test]
+    fn exit_code_ignores_pre_existing_critical() {
+        let mut f = FindingBuilder::new()
+            .severity(Severity::Critical)
+            .build();
+        f.in_diff = Some(false); // pre-existing
+        assert_eq!(compute_exit_code(&[f]), 0);
+    }
+
+    #[test]
+    fn exit_code_counts_in_diff_critical() {
+        let mut f = FindingBuilder::new()
+            .severity(Severity::Critical)
+            .build();
+        f.in_diff = Some(true);
+        assert_eq!(compute_exit_code(&[f]), 2);
+    }
+
+    #[test]
+    fn exit_code_counts_none_diff_context_normally() {
+        let f = FindingBuilder::new()
+            .severity(Severity::Critical)
+            .build(); // in_diff = None
+        assert_eq!(compute_exit_code(&[f]), 2);
+    }
+
+    #[test]
+    fn exit_code_mixed_in_diff_and_pre_existing() {
+        let mut in_diff = FindingBuilder::new()
+            .severity(Severity::Medium)
+            .build();
+        in_diff.in_diff = Some(true);
+        let mut pre = FindingBuilder::new()
+            .severity(Severity::Critical)
+            .build();
+        pre.in_diff = Some(false);
+        // Only the medium in-diff counts -> exit 1, not 2
+        assert_eq!(compute_exit_code(&[in_diff, pre]), 1);
     }
 }
