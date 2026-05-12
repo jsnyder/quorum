@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::calibrator_model::{CalibratorModel, ModelMeta, ScoreWeights};
 use crate::metrics;
 use crate::threshold_config::{PathThreshold, ThresholdConfig};
 
@@ -634,6 +635,360 @@ pub fn backfill_file_paths(
     }
 
     stats
+}
+
+/// Minimum support (total TP+FP) for a word to be included in the word_lor vocabulary.
+const WORD_MIN_SUPPORT: usize = 5;
+
+/// Minimum support (total entries) for a family to get its own FP rate.
+const FAMILY_MIN_SUPPORT: usize = 3;
+
+/// Minimum support (total entries) for a language to get its own FP rate.
+const LANG_MIN_SUPPORT: usize = 5;
+
+/// Compute a `CalibratorModel` from feedback entries.
+///
+/// Builds lookup tables for word log-odds, family FP rates, and language FP
+/// rates from the feedback corpus. Wontfix verdicts are treated as negative
+/// (alongside FP) for the purpose of FP rate computation.
+pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<CalibratorModel> {
+    let mut word_tp: HashMap<String, usize> = HashMap::new();
+    let mut word_fp: HashMap<String, usize> = HashMap::new();
+    let mut family_tp: HashMap<String, usize> = HashMap::new();
+    let mut family_fp: HashMap<String, usize> = HashMap::new();
+    let mut lang_tp: HashMap<String, usize> = HashMap::new();
+    let mut lang_fp: HashMap<String, usize> = HashMap::new();
+    let mut total_tp: usize = 0;
+    let mut total_fp: usize = 0;
+
+    for entry in feedback {
+        let verdict = entry["verdict"].as_str().unwrap_or("");
+        let is_positive = match verdict {
+            "tp" | "partial" => true,
+            "fp" | "wontfix" => false,
+            _ => continue,
+        };
+        let title = entry["finding_title"].as_str().unwrap_or("");
+        if title.is_empty() {
+            continue;
+        }
+        let file_path = entry["file_path"].as_str().unwrap_or("");
+
+        if is_positive {
+            total_tp += 1;
+        } else {
+            total_fp += 1;
+        }
+
+        // Word counts
+        let words = tokenize_title(title);
+        for w in &words {
+            if is_positive {
+                *word_tp.entry(w.clone()).or_default() += 1;
+            } else {
+                *word_fp.entry(w.clone()).or_default() += 1;
+            }
+        }
+
+        // Family counts
+        let family = CalibratorModel::title_family(title);
+        if !family.is_empty() {
+            if is_positive {
+                *family_tp.entry(family.clone()).or_default() += 1;
+            } else {
+                *family_fp.entry(family).or_default() += 1;
+            }
+        }
+
+        // Language counts
+        if !file_path.is_empty() {
+            let lang = CalibratorModel::file_ext_language(file_path).to_string();
+            if is_positive {
+                *lang_tp.entry(lang.clone()).or_default() += 1;
+            } else {
+                *lang_fp.entry(lang).or_default() += 1;
+            }
+        }
+    }
+
+    let total = total_tp + total_fp;
+    if total == 0 {
+        return None;
+    }
+
+    let global_fp_rate = total_fp as f64 / total as f64;
+
+    // Word log-odds: log((fp_rate + eps) / (tp_rate + eps))
+    let eps = 0.5; // Laplace smoothing
+    let mut word_lor_map: HashMap<String, f64> = HashMap::new();
+    let all_words: HashSet<&String> = word_tp.keys().chain(word_fp.keys()).collect();
+    for w in all_words {
+        let tp_count = word_tp.get(w).copied().unwrap_or(0);
+        let fp_count = word_fp.get(w).copied().unwrap_or(0);
+        let support = tp_count + fp_count;
+        if support < WORD_MIN_SUPPORT {
+            continue;
+        }
+        let tp_rate = (tp_count as f64 + eps) / (total_tp as f64 + eps);
+        let fp_rate = (fp_count as f64 + eps) / (total_fp as f64 + eps);
+        let lor = (fp_rate / tp_rate).ln();
+        if lor.is_finite() {
+            word_lor_map.insert(w.clone(), lor);
+        }
+    }
+
+    // Family FP rates
+    let mut family_fp_rate_map: HashMap<String, f64> = HashMap::new();
+    let all_families: HashSet<&String> = family_tp.keys().chain(family_fp.keys()).collect();
+    for fam in all_families {
+        let tp = family_tp.get(fam).copied().unwrap_or(0);
+        let fp = family_fp.get(fam).copied().unwrap_or(0);
+        let support = tp + fp;
+        if support < FAMILY_MIN_SUPPORT {
+            continue;
+        }
+        family_fp_rate_map.insert(fam.clone(), fp as f64 / support as f64);
+    }
+
+    // Language FP rates
+    let mut lang_fp_rate_map: HashMap<String, f64> = HashMap::new();
+    let all_langs: HashSet<&String> = lang_tp.keys().chain(lang_fp.keys()).collect();
+    for lang in all_langs {
+        let tp = lang_tp.get(lang).copied().unwrap_or(0);
+        let fp = lang_fp.get(lang).copied().unwrap_or(0);
+        let support = tp + fp;
+        if support < LANG_MIN_SUPPORT {
+            continue;
+        }
+        lang_fp_rate_map.insert(lang.clone(), fp as f64 / support as f64);
+    }
+
+    Some(CalibratorModel {
+        meta: ModelMeta {
+            computed_at: chrono::Utc::now().to_rfc3339(),
+            feedback_count: total,
+            global_fp_rate,
+        },
+        weights: ScoreWeights {
+            score: 0.5,
+            word_lor: 1.5,
+            family_fp_inv: 1.0,
+            language_fp_inv: 0.5,
+        },
+        word_lor: word_lor_map,
+        family_fp_rate: family_fp_rate_map,
+        language_fp_rate: lang_fp_rate_map,
+    })
+}
+
+/// Re-score join samples using composite scores from a model.
+///
+/// Takes the raw `(score, label)` pairs from the join and replaces each score
+/// with the composite score, using the corresponding feedback entry's title and
+/// file path for family/language lookup.
+pub fn rescore_samples_with_model(
+    feedback: &[serde_json::Value],
+    traces: &[serde_json::Value],
+    model: &CalibratorModel,
+    filter: &JoinFilter,
+    disable_fuzzy: bool,
+) -> Vec<(f64, bool)> {
+    // We need to re-join to get the title+file_path for each sample.
+    // The join logic is complex, so we reconstruct by walking the same join
+    // path but extracting composite scores instead of raw scores.
+    let filtered_traces: Vec<&serde_json::Value> =
+        traces.iter().filter(|t| filter.accepts(t)).collect();
+
+    // Build the same index structures as join_feedback_and_traces_with_options
+    let mut raw_map: HashMap<(String, String), TraceInfo> = HashMap::new();
+    let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut norm_map: HashMap<(String, String), TraceInfo> = HashMap::new();
+    let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut file_traces: HashMap<String, Vec<(String, TraceInfo)>> = HashMap::new();
+    let mut norm_title_only: HashMap<String, TraceInfo> = HashMap::new();
+    let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut raw_title_only: HashMap<String, TraceInfo> = HashMap::new();
+    let mut raw_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
+    let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
+
+    for t in &filtered_traces {
+        let title = t["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = t["file_path"].as_str().unwrap_or("").to_string();
+        let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let norm = normalize_title(&title);
+        let info = TraceInfo {
+            title: title.clone(),
+            file_path: fp.clone(),
+            tp_weight: tp_w,
+            fp_weight: fp_w,
+        };
+
+        if fp.is_empty() {
+            match raw_title_only.entry(title.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_title_only_ambiguous.insert(title.clone());
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_for_ambiguous = norm.clone();
+                match norm_title_only.entry(norm) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_title_only_ambiguous.insert(norm_for_ambiguous);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info);
+                    }
+                }
+            }
+        } else {
+            raw_titles_with_file_scoped.insert(title.clone());
+            if !norm.is_empty() {
+                norm_titles_with_file_scoped.insert(norm.clone());
+            }
+            let raw_key = (title, fp.clone());
+            match raw_map.entry(raw_key.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_ambiguous.insert(raw_key);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_key = (norm.clone(), fp.clone());
+                match norm_map.entry(norm_key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_ambiguous.insert(norm_key);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info.clone());
+                    }
+                }
+                file_traces.entry(fp).or_default().push((norm, info));
+            }
+        }
+    }
+
+    for key in &raw_ambiguous {
+        raw_map.remove(key);
+    }
+    for key in &norm_ambiguous {
+        norm_map.remove(key);
+    }
+    for key in &raw_title_only_ambiguous {
+        raw_title_only.remove(key);
+    }
+    for key in &norm_title_only_ambiguous {
+        norm_title_only.remove(key);
+    }
+    for title in &raw_titles_with_file_scoped {
+        raw_title_only.remove(title);
+    }
+    for norm in &norm_titles_with_file_scoped {
+        norm_title_only.remove(norm);
+    }
+
+    let mut samples = Vec::new();
+
+    for f in feedback {
+        let verdict = f["verdict"].as_str().unwrap_or("");
+        let is_positive = match verdict {
+            "tp" | "partial" => true,
+            "fp" => false,
+            _ => continue,
+        };
+        let title = f["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = f["file_path"].as_str().unwrap_or("").to_string();
+        let norm = normalize_title(&title);
+
+        let matched = raw_map
+            .get(&(title.clone(), fp.clone()))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_map.get(&(norm.clone(), fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy
+                    && !norm.is_empty()
+                    && !fp.is_empty()
+                    && let Some(candidates) = file_traces.get(&fp)
+                {
+                    let mut best_score = 0.0_f64;
+                    let mut second_best = 0.0_f64;
+                    let mut best_info: Option<&TraceInfo> = None;
+                    for (cand_norm, info) in candidates {
+                        let j = token_jaccard(&norm, cand_norm);
+                        if j > best_score {
+                            second_best = best_score;
+                            best_score = j;
+                            best_info = Some(info);
+                        } else if j > second_best {
+                            second_best = j;
+                        }
+                    }
+                    if best_score >= FUZZY_THRESHOLD
+                        && (best_score - second_best) >= FUZZY_AMBIGUITY_MARGIN
+                    {
+                        return best_info;
+                    }
+                }
+                None
+            })
+            .or_else(|| raw_title_only.get(&title))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_title_only.get(&norm)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(info) = matched {
+            let total = info.tp_weight + info.fp_weight;
+            if total > 0.0 {
+                let precedent_score = info.tp_weight / total;
+                if precedent_score.is_finite() {
+                    let lang = CalibratorModel::file_ext_language(&info.file_path);
+                    let composite = model.composite_score(precedent_score, &info.title, lang);
+                    if composite.is_finite() {
+                        samples.push((composite, is_positive));
+                    }
+                }
+            }
+        }
+    }
+
+    samples
+}
+
+#[derive(Clone)]
+struct TraceInfo {
+    title: String,
+    file_path: String,
+    tp_weight: f64,
+    fp_weight: f64,
+}
+
+fn tokenize_title(title: &str) -> Vec<String> {
+    let lower = title.to_lowercase();
+    regex::Regex::new(r"[a-z_]+")
+        .ok()
+        .map(|re| re.find_iter(&lower).map(|m| m.as_str().to_string()).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1956,6 +2311,155 @@ mod tests {
                 || traces[3]["file_path"].is_null()
                 || traces[3]["file_path"].as_str() == Some(""),
             "no match: should not be stamped"
+        );
+    }
+
+    // --- compute_calibrator_model tests ---
+
+    fn make_model_feedback(
+        title: &str,
+        verdict: &str,
+        file_path: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "finding_title": title,
+            "verdict": verdict,
+            "file_path": file_path,
+            "finding_category": "test",
+            "reason": "test",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "provenance": "human"
+        })
+    }
+
+    #[test]
+    fn compute_model_from_feedback() {
+        let feedback = vec![
+            // 3 entries for same family -> known family
+            make_model_feedback("Function `a` has complexity 10", "fp", "test.rs"),
+            make_model_feedback("Function `b` has complexity 20", "fp", "test.rs"),
+            make_model_feedback("Function `c` has complexity 5", "tp", "test.rs"),
+            // 2 entries for another family -> below threshold, novel
+            make_model_feedback("Missing error handling", "tp", "lib.rs"),
+            make_model_feedback("Missing error handling", "tp", "main.rs"),
+        ];
+        let model = compute_calibrator_model(&feedback).unwrap();
+        // Known family: "function `` has complexity N"
+        assert!(
+            model
+                .family_fp_rate
+                .contains_key("function `` has complexity N"),
+            "family with 3+ entries should be in model, got keys: {:?}",
+            model.family_fp_rate.keys().collect::<Vec<_>>()
+        );
+        let rate = model.family_fp_rate["function `` has complexity N"];
+        assert!(
+            (rate - 0.6667).abs() < 0.01,
+            "2 FP / 3 total = 0.667, got {rate}"
+        );
+        // Novel family not in map (only 2 entries, below FAMILY_MIN_SUPPORT=3)
+        assert!(
+            !model
+                .family_fp_rate
+                .contains_key("missing error handling"),
+            "family with < 3 entries should not be in model"
+        );
+        // Global FP rate: 2 FP out of 5 total = 0.4
+        assert!(
+            (model.meta.global_fp_rate - 0.4).abs() < 0.01,
+            "global FP rate should be 0.4, got {}",
+            model.meta.global_fp_rate
+        );
+    }
+
+    #[test]
+    fn compute_model_wontfix_treated_as_negative() {
+        let feedback = vec![
+            make_model_feedback("Bug A", "tp", "a.rs"),
+            make_model_feedback("Bug A", "tp", "b.rs"),
+            make_model_feedback("Bug A", "wontfix", "c.rs"),
+            make_model_feedback("Bug A", "wontfix", "d.rs"),
+            make_model_feedback("Bug A", "wontfix", "e.rs"),
+        ];
+        let model = compute_calibrator_model(&feedback).unwrap();
+        // 3 wontfix + 2 tp = 5 total, 3 negative -> global_fp_rate = 0.6
+        assert!(
+            (model.meta.global_fp_rate - 0.6).abs() < 0.01,
+            "wontfix should count as negative, got {}",
+            model.meta.global_fp_rate
+        );
+    }
+
+    #[test]
+    fn compute_model_empty_feedback_returns_none() {
+        let feedback: Vec<serde_json::Value> = vec![];
+        assert!(compute_calibrator_model(&feedback).is_none());
+    }
+
+    #[test]
+    fn compute_model_word_lor_signs() {
+        // Create enough feedback to pass min_support for words
+        let mut feedback = Vec::new();
+        for i in 0..10 {
+            feedback.push(make_model_feedback(
+                "hardcoded secret in config",
+                "fp",
+                &format!("f{i}.py"),
+            ));
+        }
+        for i in 0..10 {
+            feedback.push(make_model_feedback(
+                "SQL injection via user input",
+                "tp",
+                &format!("g{i}.py"),
+            ));
+        }
+        let model = compute_calibrator_model(&feedback).unwrap();
+        // "hardcoded" should have positive lor (FP-leaning)
+        if let Some(&lor) = model.word_lor.get("hardcoded") {
+            assert!(
+                lor > 0.0,
+                "hardcoded should be FP-leaning (positive lor), got {lor}"
+            );
+        }
+        // "sql" should have negative lor (TP-leaning)
+        if let Some(&lor) = model.word_lor.get("sql") {
+            assert!(
+                lor < 0.0,
+                "sql should be TP-leaning (negative lor), got {lor}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_model_language_fp_rates() {
+        let mut feedback = Vec::new();
+        // 6 rust findings: 4 FP, 2 TP -> fp_rate = 0.667
+        for i in 0..4 {
+            feedback.push(make_model_feedback("Bug", "fp", &format!("f{i}.rs")));
+        }
+        for i in 0..2 {
+            feedback.push(make_model_feedback("Bug", "tp", &format!("g{i}.rs")));
+        }
+        // 5 python findings: 1 FP, 4 TP -> fp_rate = 0.2
+        feedback.push(make_model_feedback("Bug", "fp", "a.py"));
+        for i in 0..4 {
+            feedback.push(make_model_feedback("Bug", "tp", &format!("h{i}.py")));
+        }
+        let model = compute_calibrator_model(&feedback).unwrap();
+        assert!(
+            model.language_fp_rate.contains_key("rust"),
+            "rust should have fp rate"
+        );
+        assert!(
+            (model.language_fp_rate["rust"] - 0.6667).abs() < 0.01,
+            "rust fp rate should be ~0.667, got {}",
+            model.language_fp_rate["rust"]
+        );
+        assert!(
+            (model.language_fp_rate["python"] - 0.2).abs() < 0.01,
+            "python fp rate should be 0.2, got {}",
+            model.language_fp_rate["python"]
         );
     }
 }
