@@ -338,6 +338,13 @@ mod tests {
         assert_eq!(entry.context7_query_failed, 0);
         assert_eq!(entry.context7_skipped_popular, 0);
         assert_eq!(entry.context7_budget_reduced, 0);
+        assert_eq!(entry.judge_calls, 0);
+        assert_eq!(entry.judge_approved, 0);
+        assert_eq!(entry.judge_rejected, 0);
+        assert_eq!(entry.judge_uncertain, 0);
+        assert_eq!(entry.judge_skipped, 0);
+        assert_eq!(entry.judge_cache_hits, 0);
+        assert_eq!(entry.judge_latency_ms, 0);
     }
 
     #[test]

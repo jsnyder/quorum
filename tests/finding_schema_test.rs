@@ -95,6 +95,10 @@ fn new_fields_omitted_from_json_when_none() {
     assert!(!json.contains("cited_lines"));
     assert!(!json.contains("grounding_confidence"));
     assert!(!json.contains("model_agreement"));
+    assert!(!json.contains("rule_id"));
+    assert!(!json.contains("judge_verdict"));
+    assert!(!json.contains("judge_confidence"));
+    assert!(!json.contains("precision_tier"));
 }
 
 #[test]

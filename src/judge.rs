@@ -223,10 +223,11 @@ pub fn judge_findings(
                 && let Ok(verdicts) = serde_json::from_str::<Vec<JudgeResponseItem>>(&response)
             {
                 for v in &verdicts {
-                    if let Some(&i) = to_judge
+                    if let Some(pos) = to_judge
                         .iter()
-                        .find(|&&i| findings[i].rule_id.as_deref() == Some(&v.rule_id))
+                        .position(|&i| findings[i].rule_id.as_deref() == Some(&v.rule_id))
                     {
+                        let i = to_judge.swap_remove(pos);
                         let verdict = parse_verdict(&v.verdict);
                         let confidence = v.confidence.clamp(0.0, 1.0);
                         findings[i].judge_verdict = Some(verdict.clone());
@@ -275,7 +276,22 @@ pub fn judge_findings(
         }
     }
 
-    // Phase 3: Apply rejection policy
+    // Phase 3: Clamp confidence for Optional+Rejected, then drop Required+Rejected
+    for f in findings.iter_mut() {
+        let meta = f
+            .rule_id
+            .as_ref()
+            .and_then(|rid| metadata.get(rid.as_str()))
+            .cloned()
+            .unwrap_or_default();
+
+        if meta.judge == JudgeRequirement::Optional
+            && f.judge_verdict == Some(JudgeVerdict::Rejected)
+        {
+            f.judge_confidence = Some(0.05);
+        }
+    }
+
     findings.retain(|f| {
         let meta = f
             .rule_id
@@ -284,18 +300,8 @@ pub fn judge_findings(
             .cloned()
             .unwrap_or_default();
 
-        // Required + Rejected: drop finding entirely
-        if meta.judge == JudgeRequirement::Required
-            && f.judge_verdict == Some(JudgeVerdict::Rejected)
-        {
-            return false;
-        }
-
-        // Optional + Rejected: finding survives but confidence is clamped.
-        // judge_confidence is already set; compute_confidence will pick it up
-        // via the judge_confidence arm, pushing it to bottom of rankings.
-
-        true
+        !(meta.judge == JudgeRequirement::Required
+            && f.judge_verdict == Some(JudgeVerdict::Rejected))
     });
 
     result.latency_ms = start.elapsed().as_millis() as u64;

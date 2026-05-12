@@ -180,7 +180,13 @@ async fn main() -> anyhow::Result<()> {
                             "filter": opts.rule,
                         },
                     });
-                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                    match serde_json::to_string_pretty(&payload) {
+                        Ok(json) => println!("{json}"),
+                        Err(e) => {
+                            eprintln!("error: failed to serialize --by-rule output: {e}");
+                            std::process::exit(3);
+                        }
+                    }
                 } else {
                     println!(
                         "{:<55} {:>4} {:>4} {:>4} {:>4} {:>6} {:>5}",
@@ -1100,7 +1106,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         judge_model: opts
             .judge_model
             .clone()
-            .or_else(|| std::env::var("QUORUM_JUDGE_MODEL").ok())
+            .or_else(|| {
+                std::env::var("QUORUM_JUDGE_MODEL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_else(|| "gpt-5-nano".into()),
         ..Default::default()
     };

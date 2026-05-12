@@ -34,10 +34,13 @@ struct YamlWithMetadata {
 /// Parse the optional `metadata` block from an ast-grep YAML rule string.
 /// Returns `RuleMetadata::default()` when the block is absent or unparseable.
 pub fn parse_rule_metadata(yaml_str: &str) -> RuleMetadata {
-    serde_yaml::from_str::<YamlWithMetadata>(yaml_str)
-        .ok()
-        .and_then(|y| y.metadata)
-        .unwrap_or_default()
+    match serde_yaml::from_str::<YamlWithMetadata>(yaml_str) {
+        Ok(y) => y.metadata.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "ast-grep: failed to parse rule metadata block");
+            RuleMetadata::default()
+        }
+    }
 }
 
 /// Maximum size for a single ast-grep YAML rule file. Files exceeding this
@@ -240,7 +243,9 @@ pub fn load_rules(
                                 );
                                 continue;
                             }
-                            metadata_map.insert(rule.id.clone(), meta.clone());
+                            let meta_key =
+                                format!("ast-grep:{}/{}", lang_name(&rule.language), rule.id);
+                            metadata_map.insert(meta_key, meta.clone());
                             rules.push(rule);
                         }
                     }
@@ -321,6 +326,8 @@ pub fn scan_file(
         }
         let root = lang.ast_grep(source);
         for rule in lang_rules {
+            let meta_key = format!("ast-grep:{}/{}", lang_name(lang), rule.id);
+            let meta = metadata.get(meta_key.as_str()).cloned().unwrap_or_default();
             let matches: Vec<_> = root.root().find_all(&rule.matcher).collect();
             for m in matches {
                 let start_line = m.start_pos().line() as u32 + 1;
@@ -332,8 +339,6 @@ pub fn scan_file(
                     AstSeverity::Info | AstSeverity::Hint => Severity::Low,
                     AstSeverity::Off => Severity::Low,
                 };
-
-                let meta = metadata.get(rule.id.as_str()).cloned().unwrap_or_default();
                 findings.push(Finding {
                     id: crate::finding::new_finding_ulid(),
                     title: format!("{}: {}", rule.id, message),
@@ -356,10 +361,10 @@ pub fn scan_file(
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: Some(format!("ast-grep:{}/{}", lang_name(lang), rule.id)),
+                    rule_id: Some(meta_key.clone()),
                     judge_verdict: None,
                     judge_confidence: None,
-                    precision_tier: Some(meta.precision),
+                    precision_tier: Some(meta.precision.clone()),
                 });
             }
         }

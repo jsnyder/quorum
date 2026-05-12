@@ -752,8 +752,11 @@ pub async fn review_file(
             phase = "judge",
             approved = judge_metrics.approved,
             rejected = judge_metrics.rejected,
+            uncertain = judge_metrics.uncertain,
             skipped = judge_metrics.skipped,
             cache_hits = judge_metrics.cache_hits,
+            calls = judge_metrics.calls,
+            latency_ms = judge_metrics.latency_ms,
             "phase complete"
         );
     }
