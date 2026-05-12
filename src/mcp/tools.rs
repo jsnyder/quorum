@@ -92,6 +92,10 @@ pub struct FeedbackTool {
     /// without `reference`) is rejected by serde at deserialization.
     #[serde(default, rename = "fpKind", skip_serializing_if = "Option::is_none")]
     pub fp_kind: Option<crate::feedback::FpKind>,
+    /// Whether the finding was inside the diff (true), outside (false), or
+    /// unknown (omitted). Flows through both Human and External paths.
+    #[serde(default, rename = "inDiff", skip_serializing_if = "Option::is_none")]
+    pub in_diff: Option<bool>,
 }
 
 #[mcp_tool(
