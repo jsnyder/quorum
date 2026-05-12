@@ -1,0 +1,17 @@
+id: nullish-coalescing-broad
+language: TypeScript
+severity: info
+message: "Using || where ?? may be intended. If 0, empty string, or false are valid values, use nullish coalescing (??) instead."
+rule:
+  kind: binary_expression
+  all:
+    - has:
+        field: operator
+        regex: "^\\|\\|$"
+  not:
+    inside:
+      kind: if_statement
+      stopBy: neighbor
+metadata:
+  precision: speculative
+  judge: required

@@ -1,0 +1,9 @@
+id: logging-debug-leak
+language: Python
+severity: info
+message: "Debug-level logging may leak sensitive data in production. Ensure debug logging is disabled in production configuration."
+rule:
+  pattern: logging.debug($$$ARGS)
+metadata:
+  precision: speculative
+  judge: required

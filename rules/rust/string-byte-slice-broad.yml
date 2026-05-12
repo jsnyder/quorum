@@ -1,0 +1,9 @@
+id: string-byte-slice-broad
+language: Rust
+severity: warning
+message: "String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices."
+rule:
+  pattern: "&$S[$$$RANGE]"
+metadata:
+  precision: speculative
+  judge: required

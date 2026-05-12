@@ -1,0 +1,10 @@
+id: string-format-sql
+language: TypeScript
+severity: warning
+message: "String interpolation in SQL query may indicate SQL injection risk. Use parameterized queries."
+rule:
+  kind: template_string
+  regex: "(?i)(SELECT|INSERT|UPDATE|DELETE|DROP)\\s"
+metadata:
+  precision: speculative
+  judge: required
