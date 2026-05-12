@@ -544,4 +544,140 @@ mod tests {
         assert_eq!(result.approved, 1);
         assert_eq!(result.calls, 0);
     }
+
+    #[test]
+    fn judge_flow_end_to_end_with_cache() {
+        let mut findings = vec![
+            {
+                let mut f = FindingBuilder::new()
+                    .title("broad-exception-catch: Catching broad Exception")
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:python/broad-exception-catch")
+                    .evidence("except Exception as e:")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::Speculative);
+                f
+            },
+            {
+                let mut f = FindingBuilder::new()
+                    .title("as-any-cast: as any cast")
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:typescript/as-any-cast")
+                    .evidence("foo as any")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::High);
+                f
+            },
+        ];
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:python/broad-exception-catch".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        metadata.insert(
+            "ast-grep:typescript/as-any-cast".into(),
+            RuleMetadata {
+                precision: PrecisionTier::High,
+                judge: JudgeRequirement::Skip,
+            },
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+        let cache = HashMap::new();
+
+        // Mock LLM: always approve
+        let mock_llm = |_prompt: &str| -> Option<String> {
+            Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"tp","confidence":0.85,"reason":"valid"}]"#.into())
+        };
+
+        let result = judge_findings(
+            &mut findings,
+            "source code here",
+            &metadata,
+            &cache,
+            &cache_path,
+            Some(&mock_llm),
+        );
+
+        assert_eq!(result.approved, 1);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(findings.len(), 2); // none dropped (approved)
+        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Approved));
+        assert_eq!(findings[0].judge_confidence, Some(0.85));
+        assert_eq!(findings[1].judge_verdict, Some(JudgeVerdict::Skipped)); // skipped
+
+        // Verify cache was written
+        let loaded_cache = load_cache(&cache_path).unwrap();
+        assert_eq!(loaded_cache.len(), 1);
+    }
+
+    #[test]
+    fn judge_drops_required_rejected_findings() {
+        let mut findings = vec![
+            {
+                let mut f = FindingBuilder::new()
+                    .title("broad-exception-catch: Catching broad Exception")
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:python/broad-exception-catch")
+                    .evidence("except Exception as e:")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::Speculative);
+                f
+            },
+            {
+                let mut f = FindingBuilder::new()
+                    .title("as-any-cast: as any cast")
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:typescript/as-any-cast")
+                    .evidence("foo as any")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::High);
+                f
+            },
+        ];
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:python/broad-exception-catch".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        metadata.insert(
+            "ast-grep:typescript/as-any-cast".into(),
+            RuleMetadata {
+                precision: PrecisionTier::High,
+                judge: JudgeRequirement::Skip,
+            },
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+        let cache = HashMap::new();
+
+        // Mock LLM: rejects the speculative finding
+        let mock_llm = |_prompt: &str| -> Option<String> {
+            Some(r#"[{"rule_id":"ast-grep:python/broad-exception-catch","verdict":"fp","confidence":0.92,"reason":"intentional"}]"#.into())
+        };
+
+        let result = judge_findings(
+            &mut findings,
+            "code",
+            &metadata,
+            &cache,
+            &cache_path,
+            Some(&mock_llm),
+        );
+
+        assert_eq!(result.rejected, 1);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(findings.len(), 1); // speculative finding was DROPPED
+        assert_eq!(findings[0].title, "as-any-cast: as any cast"); // only the high-precision one remains
+    }
 }
