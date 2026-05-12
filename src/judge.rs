@@ -276,7 +276,7 @@ pub async fn judge_findings<J: JudgeLlm>(
                             .map(|s| s.as_str())
                             .unwrap_or("");
                         let key = verdict_cache_key(&v.rule_id, evidence);
-                        let _ = write_cache_entry(
+                        if let Err(e) = write_cache_entry(
                             cache_path,
                             &CacheEntry {
                                 cache_key: key,
@@ -286,7 +286,13 @@ pub async fn judge_findings<J: JudgeLlm>(
                                 reason: v.reason.clone(),
                                 timestamp: Utc::now(),
                             },
-                        );
+                        ) {
+                            tracing::warn!(
+                                path = %cache_path.display(),
+                                error = %e,
+                                "failed to persist judge cache entry"
+                            );
+                        }
 
                         match verdict {
                             JudgeVerdict::Approved => result.approved += 1,
