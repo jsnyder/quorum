@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn redact_bearer_token() {
         let input =
-            r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"#;
+            r#"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"#; // nosemgrep: detected-jwt-token
         let output = redact_secrets(input);
         assert!(!output.contains("eyJhbGciOiJIUzI1NiJ9"));
     }
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn redact_aws_temporary_credentials() {
-        let input = "AWS_KEY=ASIAXXX1234567890123";
+        let input = "AWS_KEY=ASIAXXX1234567890123"; // nosemgrep: detected-aws-access-key-id-value
         let output = redact_secrets(input);
         assert!(!output.contains("ASIAXXX123456789"));
     }
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn redact_stripe_key() {
-        let input = "STRIPE_KEY=sk_live_abc123def456ghi789jkl012";
+        let input = "STRIPE_KEY=sk_live_abc123def456ghi789jkl012"; // nosemgrep: detected-stripe-api-key
         let output = redact_secrets(input);
         assert!(!output.contains("sk_live_"));
     }

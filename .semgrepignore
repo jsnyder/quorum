@@ -1,0 +1,8 @@
+# Intentionally vulnerable test corpus (planted bugs for benchmarking detection)
+eval/corpus/
+
+# External comparison corpus (third-party code snapshots, not ours)
+eval/external_corpus/
+
+# Test fixtures contain fake secrets/tokens to verify redaction works
+# nosemgrep inline comments handle these on a per-line basis

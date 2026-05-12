@@ -1870,7 +1870,7 @@ mod tests {
         // `[A-Za-z0-9_-]+` truncated JWT bearer tokens at the first dot,
         // leaving the bulk of `header.payload.signature` visible. Real JWTs
         // are base64url with `=` padding plus `.` separators between segments.
-        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"; // nosemgrep: detected-jwt-token
         let raw = format!("401 unauthorized: bearer {jwt}");
         let s = sanitize_error_body(&raw);
         assert!(!s.contains(jwt), "JWT must be fully scrubbed; got: {s}");
