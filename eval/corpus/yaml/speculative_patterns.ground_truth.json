@@ -1,0 +1,50 @@
+[
+    {
+        "id": "sp-yaml-001",
+        "type": "planted",
+        "rule": "jinja-loop-variable-scoping",
+        "expected_verdict": "approved",
+        "title": "Counter variable set inside for-loop does not persist",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 15,
+        "line_end": 22,
+        "description": "count is set to 0 before the loop, then incremented with {% set count = count + 1 %} inside the loop. Due to Jinja2 scoping, the outer count stays 0 after the loop. The template always reports 0 lights."
+    },
+    {
+        "id": "sp-yaml-002",
+        "type": "planted",
+        "rule": "jinja-loop-variable-scoping",
+        "expected_verdict": "approved",
+        "title": "Max-tracking variables reset after loop exit",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 34,
+        "line_end": 43,
+        "description": "max_temp and hottest are set before the loop and reassigned inside it. The outer scope sees the original values (0 and 'none') after the loop ends."
+    },
+    {
+        "id": "sp-yaml-003",
+        "type": "planted",
+        "rule": "jinja-loop-variable-scoping",
+        "expected_verdict": "rejected",
+        "title": "Loop-local formatting variable (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 55,
+        "line_end": 59,
+        "description": "label is set inside the for loop but only used within the same iteration for formatting. The scoping issue does not apply since label does not need to persist outside the loop."
+    },
+    {
+        "id": "sp-yaml-004",
+        "type": "planted",
+        "rule": "jinja-loop-variable-scoping",
+        "expected_verdict": "rejected",
+        "title": "namespace() correctly persists loop state (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 71,
+        "line_end": 78,
+        "description": "Uses Jinja2 namespace() object which correctly persists attribute mutations across loop iterations. The set ns.count pattern is the recommended fix for the scoping issue."
+    }
+]

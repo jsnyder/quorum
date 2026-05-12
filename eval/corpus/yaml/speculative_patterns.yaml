@@ -1,0 +1,92 @@
+# Eval corpus file exercising speculative AST patterns for YAML/Jinja2.
+# Simulates Home Assistant automations with Jinja2 templates.
+
+# --- TRUE POSITIVE: jinja-loop-variable-scoping ---
+# Variable set inside for-loop does not persist outside the loop.
+automation:
+  - alias: "Summarize active lights"
+    trigger:
+      - platform: time_pattern
+        minutes: "/30"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Active Lights"
+          message: >
+            {% set count = 0 %}
+            {% for light in states.light %}
+              {% if light.state == 'on' %}
+                {% set count = count + 1 %}
+              {% endif %}
+            {% endfor %}
+            There are {{ count }} lights on.
+
+  # --- TRUE POSITIVE: jinja-loop-variable-scoping ---
+  # Variable reassigned in loop body; outer scope sees stale value.
+  - alias: "Find hottest sensor"
+    trigger:
+      - platform: time_pattern
+        hours: "/1"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Temperature Alert"
+          message: >
+            {% set max_temp = 0 %}
+            {% set hottest = 'none' %}
+            {% for sensor in states.sensor %}
+              {% if sensor.state | float > max_temp %}
+                {% set max_temp = sensor.state | float %}
+                {% set hottest = sensor.name %}
+              {% endif %}
+            {% endfor %}
+            Hottest: {{ hottest }} at {{ max_temp }}C
+
+  # --- FALSE POSITIVE: jinja-loop-variable-scoping ---
+  # Variable set inside loop is loop-local (only used within iteration).
+  - alias: "List formatted sensors"
+    trigger:
+      - platform: time_pattern
+        hours: "/6"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Sensor Report"
+          message: >
+            {% for sensor in states.sensor %}
+              {% set label = sensor.friendly_name | default(sensor.name) | title %}
+              - {{ label }}: {{ sensor.state }}
+            {% endfor %}
+
+  # --- FALSE POSITIVE: jinja-loop-variable-scoping ---
+  # Loop uses namespace() which correctly persists across iterations.
+  - alias: "Count open doors (namespace)"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Door Status"
+          message: >
+            {% set ns = namespace(count=0) %}
+            {% for door in states.binary_sensor %}
+              {% if door.state == 'on' %}
+                {% set ns.count = ns.count + 1 %}
+              {% endif %}
+            {% endfor %}
+            Open doors: {{ ns.count }}
+
+  # --- Non-speculative automation for context ---
+  - alias: "Turn off lights at midnight"
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.auto_lights
+        state: "on"
+    action:
+      - service: light.turn_off
+        target:
+          entity_id: all

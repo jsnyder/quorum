@@ -1,0 +1,98 @@
+[
+    {
+        "id": "sp-ts-001",
+        "type": "planted",
+        "rule": "string-format-sql",
+        "expected_verdict": "approved",
+        "title": "SQL injection via template literal in SELECT query",
+        "category": "security",
+        "severity": "critical",
+        "line_start": 6,
+        "line_end": 6,
+        "description": "User-supplied name is interpolated directly into a SQL SELECT query without parameterization, enabling SQL injection."
+    },
+    {
+        "id": "sp-ts-002",
+        "type": "planted",
+        "rule": "string-format-sql",
+        "expected_verdict": "approved",
+        "title": "Table name injection in DELETE query",
+        "category": "security",
+        "severity": "critical",
+        "line_start": 13,
+        "line_end": 13,
+        "description": "Table name and days parameter interpolated into DELETE query. The table name cannot be parameterized with $1, making this a real injection vector."
+    },
+    {
+        "id": "sp-ts-003",
+        "type": "planted",
+        "rule": "string-format-sql",
+        "expected_verdict": "rejected",
+        "title": "SQL keyword in error message, not a query (false positive)",
+        "category": "security",
+        "severity": "medium",
+        "line_start": 20,
+        "line_end": 20,
+        "description": "Template literal contains 'SELECT' but is a user-facing error message, not a database query. No injection risk."
+    },
+    {
+        "id": "sp-ts-004",
+        "type": "planted",
+        "rule": "string-format-sql",
+        "expected_verdict": "rejected",
+        "title": "SQL keywords in logging/documentation string (false positive)",
+        "category": "security",
+        "severity": "medium",
+        "line_start": 26,
+        "line_end": 26,
+        "description": "Template literal mentions UPDATE and INSERT but describes a migration, not an executed query."
+    },
+    {
+        "id": "sp-ts-005",
+        "type": "planted",
+        "rule": "nullish-coalescing-broad",
+        "expected_verdict": "approved",
+        "title": "|| on port number treats 0 as falsy",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 32,
+        "line_end": 32,
+        "description": "config.port || 3000 treats port 0 as falsy, falling through to 3000. Port 0 is valid (OS-assigned) and should be preserved with ??."
+    },
+    {
+        "id": "sp-ts-006",
+        "type": "planted",
+        "rule": "nullish-coalescing-broad",
+        "expected_verdict": "approved",
+        "title": "|| on string treats empty string as falsy",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 38,
+        "line_end": 38,
+        "description": "user.name || 'Anonymous' treats empty string as falsy. If a user explicitly sets name to '' it gets overwritten with 'Anonymous'."
+    },
+    {
+        "id": "sp-ts-007",
+        "type": "planted",
+        "rule": "nullish-coalescing-broad",
+        "expected_verdict": "rejected",
+        "title": "|| is correct when empty string should use default (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 44,
+        "line_end": 44,
+        "description": "label || 'Untitled' intentionally treats empty string as invalid input. The || behavior is the desired semantics."
+    },
+    {
+        "id": "sp-ts-008",
+        "type": "planted",
+        "rule": "nullish-coalescing-broad",
+        "expected_verdict": "rejected",
+        "title": "|| on booleans is idiomatic (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 50,
+        "line_end": 50,
+        "description": "flag || false is a standard boolean default pattern. Using ?? here would be semantically identical for boolean|undefined."
+    }
+]

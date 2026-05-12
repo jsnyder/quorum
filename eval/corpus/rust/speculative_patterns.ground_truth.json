@@ -1,0 +1,110 @@
+[
+    {
+        "id": "sp-rs-001",
+        "type": "planted",
+        "rule": "string-byte-slice-broad",
+        "expected_verdict": "approved",
+        "title": "Byte slice on user string panics on multi-byte characters",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 8,
+        "line_end": 8,
+        "description": "&name[..16] panics if name contains multi-byte UTF-8 characters before byte 16. Should use name.get(..16) or char_indices."
+    },
+    {
+        "id": "sp-rs-002",
+        "type": "planted",
+        "rule": "string-byte-slice-broad",
+        "expected_verdict": "approved",
+        "title": "Byte slice with runtime length on arbitrary string",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 14,
+        "line_end": 14,
+        "description": "&s[..len] panics if len falls on a non-ASCII character boundary. Should use s.get(..len)."
+    },
+    {
+        "id": "sp-rs-003",
+        "type": "planted",
+        "rule": "string-byte-slice-broad",
+        "expected_verdict": "rejected",
+        "title": "Byte slice on &[u8] not a string (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 20,
+        "line_end": 20,
+        "description": "&data[..4] is byte slicing on a byte array, not a string. No UTF-8 boundary risk. The rule fires syntactically but the type is &[u8]."
+    },
+    {
+        "id": "sp-rs-004",
+        "type": "planted",
+        "rule": "string-byte-slice-broad",
+        "expected_verdict": "rejected",
+        "title": "Byte slice after char_indices boundary validation (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 31,
+        "line_end": 31,
+        "description": "&s[..byte_pos] where byte_pos was computed from char_indices().nth(). The boundary is guaranteed valid by the char_indices API."
+    },
+    {
+        "id": "sp-rs-005",
+        "type": "planted",
+        "rule": "discarded-result",
+        "expected_verdict": "approved",
+        "title": "File write_all error silently discarded",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 38,
+        "line_end": 38,
+        "description": "let _ = file.write_all() discards the io::Result. Write failures (disk full, broken pipe) go undetected."
+    },
+    {
+        "id": "sp-rs-006",
+        "type": "planted",
+        "rule": "discarded-result",
+        "expected_verdict": "approved",
+        "title": "File flush error silently discarded",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 39,
+        "line_end": 39,
+        "description": "let _ = file.flush() discards the io::Result. Flush failures mean data may not reach disk."
+    },
+    {
+        "id": "sp-rs-007",
+        "type": "planted",
+        "rule": "discarded-result",
+        "expected_verdict": "approved",
+        "title": "HashMap try_reserve error silently dropped",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 45,
+        "line_end": 45,
+        "description": "let _ = cache.try_reserve() discards the allocation error. OOM condition goes undetected; subsequent inserts may panic."
+    },
+    {
+        "id": "sp-rs-008",
+        "type": "planted",
+        "rule": "discarded-result",
+        "expected_verdict": "rejected",
+        "title": "JoinHandle discard is intentional fire-and-forget (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 51,
+        "line_end": 53,
+        "description": "let _ = std::thread::spawn() discards the JoinHandle. This is the idiomatic fire-and-forget pattern — the background task runs independently."
+    },
+    {
+        "id": "sp-rs-009",
+        "type": "planted",
+        "rule": "discarded-result",
+        "expected_verdict": "rejected",
+        "title": "mpsc send discard after shutdown is expected (false positive)",
+        "category": "correctness",
+        "severity": "medium",
+        "line_start": 59,
+        "line_end": 59,
+        "description": "let _ = tx.send(()) discards the SendError. After shutdown the receiver may be dropped; send failure is the expected happy path."
+    }
+]

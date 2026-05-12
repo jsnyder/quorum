@@ -3,8 +3,16 @@ language: Yaml
 severity: warning
 message: "Variable set inside Jinja for-loop may not persist outside the loop scope due to Jinja2 scoping rules."
 rule:
-  kind: block_scalar
-  regex: "\\{%.*for\\s.*%\\}.*\\{%.*set\\s+\\w+.*%\\}"
+  any:
+    - all:
+        - kind: block_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+[\\s\\S]*?\\{%\\s*endfor"
+    - all:
+        - kind: plain_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+[\\s\\S]*?\\{%\\s*endfor"
+    - all:
+        - kind: double_quote_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+[\\s\\S]*?\\{%\\s*endfor"
 metadata:
   precision: speculative
   judge: required

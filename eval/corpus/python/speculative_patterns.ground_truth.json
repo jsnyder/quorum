@@ -1,0 +1,98 @@
+[
+    {
+        "id": "sp-py-001",
+        "type": "planted",
+        "rule": "missing-await",
+        "expected_verdict": "approved",
+        "title": "Unawaited coroutine from aiohttp session.get",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 11,
+        "line_end": 11,
+        "description": "session.get(url) returns a coroutine that is never awaited. The HTTP request is silently dropped."
+    },
+    {
+        "id": "sp-py-002",
+        "type": "planted",
+        "rule": "missing-await",
+        "expected_verdict": "approved",
+        "title": "Async validate_item called without await in loop",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 22,
+        "line_end": 22,
+        "description": "validate_item is an async function called without await. Each iteration creates an unawaited coroutine, so no validation actually runs."
+    },
+    {
+        "id": "sp-py-003",
+        "type": "planted",
+        "rule": "missing-await",
+        "expected_verdict": "rejected",
+        "title": "Sync json.dumps call inside async function (false positive)",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 30,
+        "line_end": 30,
+        "description": "json.dumps is a synchronous function. Calling it without await inside an async function is correct."
+    },
+    {
+        "id": "sp-py-004",
+        "type": "planted",
+        "rule": "missing-await",
+        "expected_verdict": "rejected",
+        "title": "Sync list.append inside async function (false positive)",
+        "category": "correctness",
+        "severity": "high",
+        "line_start": 41,
+        "line_end": 41,
+        "description": "list.append is synchronous. The AST rule may fire because it sees a function call inside async without await, but this is correct."
+    },
+    {
+        "id": "sp-py-005",
+        "type": "planted",
+        "rule": "logging-debug-leak",
+        "expected_verdict": "approved",
+        "title": "Password logged at debug level",
+        "category": "security",
+        "severity": "high",
+        "line_start": 48,
+        "line_end": 48,
+        "description": "logging.debug includes the raw password string. If debug logging is enabled in production, credentials are written to log files."
+    },
+    {
+        "id": "sp-py-006",
+        "type": "planted",
+        "rule": "logging-debug-leak",
+        "expected_verdict": "approved",
+        "title": "API token logged at debug level",
+        "category": "security",
+        "severity": "high",
+        "line_start": 55,
+        "line_end": 55,
+        "description": "logging.debug exposes the API token. Tokens in log files can be harvested by anyone with log access."
+    },
+    {
+        "id": "sp-py-007",
+        "type": "planted",
+        "rule": "logging-debug-leak",
+        "expected_verdict": "rejected",
+        "title": "Non-sensitive request metadata in debug log (false positive)",
+        "category": "security",
+        "severity": "medium",
+        "line_start": 62,
+        "line_end": 62,
+        "description": "logging.debug logs request_id and HTTP method, which are non-sensitive operational data. This is a safe use of debug logging."
+    },
+    {
+        "id": "sp-py-008",
+        "type": "planted",
+        "rule": "logging-debug-leak",
+        "expected_verdict": "rejected",
+        "title": "Timing metrics in debug log (false positive)",
+        "category": "security",
+        "severity": "medium",
+        "line_start": 69,
+        "line_end": 69,
+        "description": "logging.debug logs operation name and elapsed time. No sensitive data is present."
+    }
+]

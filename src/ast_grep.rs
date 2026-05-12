@@ -146,10 +146,12 @@ pub fn load_rules(
     let mut seen_ids: HashSet<(SupportLang, String)> = HashSet::new();
     let globals = GlobalRules::default();
 
-    let bundled_dir = project_dir.join("rules");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bundled_dir = manifest_dir.join("rules");
+    let project_dir_rules = project_dir.join("rules");
     let user_dir = home_dir.join(".quorum").join("rules");
 
-    for rules_dir in [&bundled_dir, &user_dir] {
+    for rules_dir in [&bundled_dir, &project_dir_rules, &user_dir] {
         // #120: top-level rules-root check. symlink_metadata does NOT follow
         // symlinks, unlike is_dir(). Without this, a symlink at the rules
         // root itself (e.g. ~/.quorum/rules -> /etc/) bypasses every other
