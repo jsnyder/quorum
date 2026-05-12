@@ -1136,6 +1136,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1262,6 +1263,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: rule_id.map(String::from),
+            in_diff: None,
         }
     }
 

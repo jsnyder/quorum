@@ -85,6 +85,10 @@ pub struct CalibratorTraceEntry {
     pub provenance: Option<TraceProvenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub same_file_precedent_count: Option<usize>,
+    /// Whether the finding was inside the reviewed diff. `None` for backward-compat
+    /// with pre-#310 trace lines and when no diff context is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_diff: Option<bool>,
 }
 
 #[cfg(test)]
@@ -118,6 +122,7 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -142,6 +147,7 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -185,6 +191,7 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -226,6 +233,7 @@ mod tests {
             file_path: Some("src/main.rs".to_string()),
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"file_path\":\"src/main.rs\""));
@@ -301,6 +309,7 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: Some(2),
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"same_file_precedent_count\":2"));
@@ -361,6 +370,7 @@ mod tests {
                 ..Default::default()
             }),
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -401,11 +411,60 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
             !json.contains("provenance"),
             "None provenance must be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn trace_entry_in_diff_serde_round_trip() {
+        let trace = CalibratorTraceEntry {
+            finding_title: "SQL injection".into(),
+            finding_category: "security".into(),
+            tp_weight: 1.0,
+            fp_weight: 0.0,
+            wontfix_weight: 0.0,
+            full_suppress_weight: 0.0,
+            soft_fp_weight: 0.0,
+            matched_precedents: vec![],
+            action: None,
+            input_severity: Severity::Medium,
+            output_severity: Severity::Medium,
+            severity_change_reason: None,
+            file_path: None,
+            provenance: None,
+            same_file_precedent_count: None,
+            in_diff: Some(false),
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(
+            json.contains("\"in_diff\":false"),
+            "in_diff:false must be present in JSON, got: {json}"
+        );
+        let parsed: CalibratorTraceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.in_diff, Some(false));
+
+        // None is omitted
+        let trace_none = CalibratorTraceEntry {
+            in_diff: None,
+            ..trace.clone()
+        };
+        let json_none = serde_json::to_string(&trace_none).unwrap();
+        assert!(
+            !json_none.contains("in_diff"),
+            "None in_diff must be omitted from JSON"
+        );
+
+        // Old trace JSON without in_diff deserializes to None
+        let old_json = r#"{"finding_title":"SQL injection","finding_category":"security","tp_weight":1.0,"fp_weight":0.0,"wontfix_weight":0.0,"full_suppress_weight":0.0,"soft_fp_weight":0.0,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
+        let old: CalibratorTraceEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            old.in_diff, None,
+            "old trace lines must deserialize in_diff as None"
         );
     }
 }

@@ -6,6 +6,11 @@ use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::finding::{CalibratorAction, Finding, Severity};
 
+/// Weight multiplier applied to verdicts where `in_diff = Some(false)`.
+/// Verdicts on findings that were outside the reviewed diff carry less signal
+/// (the reviewer may not have had full context), so we discount them by 30%.
+const OUT_OF_DIFF_WEIGHT: f64 = 0.7;
+
 #[derive(Debug, Clone)]
 pub struct CalibrationResult {
     pub findings: Vec<Finding>,
@@ -114,6 +119,7 @@ fn make_no_match_trace(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: finding.in_diff,
     }
 }
 
@@ -154,6 +160,7 @@ fn make_trace_entry(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: finding.in_diff,
     }
 }
 
@@ -437,7 +444,12 @@ fn verdict_weight(entry: &FeedbackEntry, now: chrono::DateTime<chrono::Utc>) -> 
     let age_days = (now - entry.timestamp).num_days().unsigned_abs() as f64;
     let recency_weight = (-age_days / recency_tau_days).exp();
 
-    provenance_weight * recency_weight
+    let in_diff_factor = match entry.in_diff {
+        Some(false) => OUT_OF_DIFF_WEIGHT,
+        _ => 1.0,
+    };
+
+    provenance_weight * recency_weight * in_diff_factor
 }
 
 /// Calibrate findings using feedback precedent.
@@ -1211,6 +1223,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1552,6 +1565,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let halluc_120d = FeedbackEntry {
             timestamp: now - chrono::Duration::days(120),
@@ -1609,6 +1623,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^-1 ≈ 0.36788 — tight tolerance kills 120→119 mutant.
@@ -1632,6 +1647,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         assert!(
@@ -1659,6 +1675,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let trust_entry = FeedbackEntry {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
@@ -1706,6 +1723,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^(-40/120) ≈ 0.7165 — uses 120d default branch.
@@ -1737,6 +1755,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_oos(1), make_oos(2), make_oos(3)];
         let findings = vec![
@@ -1773,6 +1792,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_halluc(1), make_halluc(2), make_halluc(3)];
         let findings = vec![
@@ -1818,6 +1838,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let entries = vec![make_oos(1), make_oos(2), make_oos(3)];
         for e in &entries {
@@ -2157,6 +2178,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
@@ -2190,6 +2212,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2245,6 +2268,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let auto_fp = FeedbackEntry {
             file_path: "test.py".into(),
@@ -2258,6 +2282,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
@@ -2298,6 +2323,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let recent_fp = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -2311,6 +2337,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2348,6 +2375,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2373,6 +2401,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let weight = verdict_weight(&old_entry, Utc::now());
         assert!(
@@ -2403,6 +2432,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2436,6 +2466,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
@@ -2467,6 +2498,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2632,6 +2664,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -3238,6 +3271,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3349,6 +3383,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
@@ -3375,6 +3410,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let cases: &[(&str, Option<f32>)] = &[
             ("None", None),
@@ -3409,6 +3445,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
@@ -3434,6 +3471,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3542,6 +3580,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -4256,6 +4295,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -4840,5 +4880,129 @@ mod tests {
             decision.suppressed,
             "NaN threshold should fall back to legacy which suppresses at fp=2.0"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Task 7: make_trace_entry propagates in_diff from finding (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn trace_entry_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(true);
+        let trace = make_trace_entry(
+            &finding,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            vec![],
+            None,
+            crate::finding::Severity::Medium,
+            None,
+            "test.rs",
+        );
+        assert_eq!(trace.in_diff, Some(true));
+    }
+
+    #[test]
+    fn no_match_trace_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(false);
+        let trace = make_no_match_trace(&finding, "test.rs");
+        assert_eq!(trace.in_diff, Some(false));
+    }
+
+    // -------------------------------------------------------------------
+    // Task 6: OUT_OF_DIFF_WEIGHT discount in verdict_weight (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn verdict_weight_in_diff_none_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: None,
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_in_diff_true_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(true),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_out_of_diff_applies_discount() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_external_out_of_diff_compounds() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Fp,
+            reason: "nah".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.49).abs() < 0.02);
     }
 }

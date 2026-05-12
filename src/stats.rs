@@ -1279,6 +1279,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: Some(format!("FID-{i}")),
                 rule_id: None,
+                in_diff: None,
             })
             .unwrap();
         }
@@ -1295,6 +1296,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
+                in_diff: None,
             })
             .unwrap();
         }

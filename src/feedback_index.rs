@@ -535,6 +535,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -861,6 +862,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let e_fp = FeedbackEntry {
             verdict: Verdict::Fp,

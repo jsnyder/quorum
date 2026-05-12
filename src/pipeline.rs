@@ -1098,6 +1098,18 @@ pub async fn review_file(
         grounded
     };
 
+    let mut merged = merged;
+    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+        classify_in_diff(&mut merged, &diff_lines);
+    }
+
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback =
         !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
@@ -1520,6 +1532,18 @@ pub async fn review_file_llm_only(
         grounded
     };
 
+    let mut merged = merged;
+    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+        classify_in_diff(&mut merged, &diff_lines);
+    }
+
     // Calibrate
     let has_feedback =
         !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
@@ -1584,6 +1608,25 @@ pub async fn review_file_llm_only(
     })
 }
 
+/// Stamp each finding with `in_diff` based on line-range overlap with changed hunks.
+///
+/// Only called when `--diff-file` was explicitly provided. Invalid findings
+/// (malformed line ranges) are skipped.
+fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
+    if changed_lines.is_empty() {
+        return;
+    }
+    for finding in findings {
+        if !finding.is_valid() {
+            continue;
+        }
+        let overlaps = changed_lines
+            .iter()
+            .any(|(start, end)| finding.line_start <= *end && finding.line_end >= *start);
+        finding.in_diff = Some(overlaps);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1610,6 +1653,7 @@ mod tests {
             fp_kind,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1711,6 +1755,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
+                in_diff: None,
             },
             similarity,
         }
@@ -1735,6 +1780,7 @@ mod tests {
                 fp_kind: None,
                 finding_id: None,
                 rule_id: None,
+                in_diff: None,
             },
             similarity,
         }
@@ -2975,6 +3021,7 @@ mod tests {
                     fp_kind: None,
                     finding_id: None,
                     rule_id: None,
+                    in_diff: None,
                 },
                 similarity: 0.90,
             },
@@ -2991,6 +3038,7 @@ mod tests {
                     fp_kind: None,
                     finding_id: None,
                     rule_id: None,
+                    in_diff: None,
                 },
                 similarity: 0.90,
             },
@@ -3000,5 +3048,61 @@ mod tests {
             candidates[0].entry.finding_title, "newer",
             "newer timestamp wins ties"
         );
+    }
+
+    // -- classify_in_diff --
+
+    #[test]
+    fn classify_in_diff_tags_overlapping_findings() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().line_start(10).line_end(20).build(),
+            FindingBuilder::new().line_start(50).line_end(60).build(),
+            FindingBuilder::new().line_start(100).line_end(100).build(),
+        ];
+        let changed = vec![(15, 25)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(findings[1].in_diff, Some(false));
+        assert_eq!(findings[2].in_diff, Some(false));
+    }
+
+    #[test]
+    fn classify_in_diff_boundary_overlap() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().line_start(10).line_end(20).build(),
+            FindingBuilder::new().line_start(30).line_end(40).build(),
+        ];
+        let changed = vec![(20, 30)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(findings[1].in_diff, Some(true));
+    }
+
+    #[test]
+    fn classify_in_diff_empty_changed_lines_is_noop() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![FindingBuilder::new().build()];
+        classify_in_diff(&mut findings, &[]);
+        assert_eq!(findings[0].in_diff, None);
+    }
+
+    #[test]
+    fn classify_in_diff_skips_invalid_findings() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![FindingBuilder::new().line_start(0).line_end(0).build()];
+        let changed = vec![(1, 100)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, None);
+    }
+
+    #[test]
+    fn classify_in_diff_large_span_finding() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![FindingBuilder::new().line_start(1).line_end(500).build()];
+        let changed = vec![(250, 260)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(true));
     }
 }

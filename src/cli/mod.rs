@@ -611,6 +611,11 @@ pub struct FeedbackOpts {
     /// orphaned deferrals (still records the entry though).
     #[arg(long, requires = "fp_kind")]
     pub fp_tracked_in: Option<String>,
+
+    /// Whether the finding was inside the diff (true), outside (false), or
+    /// unknown (omitted). Flows through both Human and External paths.
+    #[arg(long)]
+    pub in_diff: Option<bool>,
 }
 
 impl FeedbackOpts {

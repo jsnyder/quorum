@@ -1932,6 +1932,7 @@ fn run_feedback_inner(
     blamed_chunks: Option<&str>,
     category: Option<&str>,
     fp_kind: Option<feedback::FpKind>,
+    in_diff: Option<bool>,
     json: bool,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
@@ -1973,6 +1974,7 @@ fn run_feedback_inner(
         fp_kind,
         finding_id: None,
         rule_id: None,
+        in_diff,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
@@ -2044,6 +2046,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             agent: agent.to_string(),
             agent_model: opts.agent_model.clone(),
             confidence: opts.confidence,
+            in_diff: opts.in_diff,
         };
         if let Some(parent) = feedback_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -2128,6 +2131,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.blamed_chunks.as_deref(),
             opts.category.as_deref(),
             fp_kind,
+            opts.in_diff,
             opts.json,
             &feedback_path,
         );
@@ -2465,6 +2469,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2488,6 +2493,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2504,6 +2510,7 @@ mod feedback_tests {
             "SQL injection",
             "tp",
             "Real issue",
+            None,
             None,
             None,
             None,
@@ -2529,6 +2536,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2550,6 +2558,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2567,6 +2576,7 @@ mod feedback_tests {
             "SQL injection",
             "fp",
             "Not a real issue",
+            None,
             None,
             None,
             None,
@@ -2598,6 +2608,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2619,6 +2630,7 @@ mod feedback_tests {
             Some("chunk-abc,chunk-def"),
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );
@@ -2669,6 +2681,7 @@ mod feedback_tests {
             Some("a,,b"),
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );
@@ -2695,6 +2708,7 @@ mod feedback_tests {
             None, // user omitted --blamed-chunks entirely
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );
