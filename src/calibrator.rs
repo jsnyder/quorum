@@ -6,6 +6,11 @@ use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::finding::{CalibratorAction, Finding, Severity};
 
+/// Weight multiplier applied to verdicts where `in_diff = Some(false)`.
+/// Verdicts on findings that were outside the reviewed diff carry less signal
+/// (the reviewer may not have had full context), so we discount them by 30%.
+const OUT_OF_DIFF_WEIGHT: f64 = 0.7;
+
 #[derive(Debug, Clone)]
 pub struct CalibrationResult {
     pub findings: Vec<Finding>,
@@ -439,7 +444,12 @@ fn verdict_weight(entry: &FeedbackEntry, now: chrono::DateTime<chrono::Utc>) -> 
     let age_days = (now - entry.timestamp).num_days().unsigned_abs() as f64;
     let recency_weight = (-age_days / recency_tau_days).exp();
 
-    provenance_weight * recency_weight
+    let in_diff_factor = match entry.in_diff {
+        Some(false) => OUT_OF_DIFF_WEIGHT,
+        _ => 1.0,
+    };
+
+    provenance_weight * recency_weight * in_diff_factor
 }
 
 /// Calibrate findings using feedback precedent.
@@ -4870,5 +4880,93 @@ mod tests {
             decision.suppressed,
             "NaN threshold should fall back to legacy which suppresses at fp=2.0"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Task 6: OUT_OF_DIFF_WEIGHT discount in verdict_weight (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn verdict_weight_in_diff_none_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: None,
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_in_diff_true_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(true),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_out_of_diff_applies_discount() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_external_out_of_diff_compounds() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Fp,
+            reason: "nah".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.49).abs() < 0.02);
     }
 }
