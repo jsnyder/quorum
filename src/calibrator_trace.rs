@@ -89,6 +89,8 @@ pub struct CalibratorTraceEntry {
     /// with pre-#310 trace lines and when no diff context is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_diff: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite_score: Option<f64>,
 }
 
 #[cfg(test)]
@@ -123,6 +125,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -148,6 +151,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -192,6 +196,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -234,6 +239,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"file_path\":\"src/main.rs\""));
@@ -310,6 +316,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: Some(2),
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"same_file_precedent_count\":2"));
@@ -371,6 +378,7 @@ mod tests {
             }),
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -412,6 +420,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: None,
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -439,6 +448,7 @@ mod tests {
             provenance: None,
             same_file_precedent_count: None,
             in_diff: Some(false),
+            composite_score: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(

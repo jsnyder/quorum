@@ -2,6 +2,7 @@
 //! For each finding, searches for similar past findings and their TP/FP verdicts.
 //! FP precedent suppresses findings; TP precedent boosts confidence.
 
+use crate::calibrator_model::CalibratorModel;
 use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::finding::{CalibratorAction, Finding, Severity};
@@ -59,6 +60,9 @@ pub struct CalibratorConfig {
     /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
     /// keeps all tiers active (default).
     pub disable_fuzzy_matching: Option<bool>,
+    /// Composite scoring model. When present, threshold comparisons use
+    /// composite scores instead of raw `tp_weight / total`.
+    pub model: Option<CalibratorModel>,
 }
 
 impl Default for CalibratorConfig {
@@ -75,6 +79,7 @@ impl Default for CalibratorConfig {
             force_threshold: None,
             trace_provenance: None,
             disable_fuzzy_matching: None,
+            model: None,
         }
     }
 }
@@ -120,6 +125,7 @@ fn make_no_match_trace(
         provenance: None,
         same_file_precedent_count: None,
         in_diff: finding.in_diff,
+        composite_score: None,
     }
 }
 
@@ -161,6 +167,7 @@ fn make_trace_entry(
         provenance: None,
         same_file_precedent_count: None,
         in_diff: finding.in_diff,
+        composite_score: None,
     }
 }
 
@@ -224,7 +231,16 @@ fn calibrate_core_decision(
 
     // PR3: compute score once for data-driven threshold decisions.
     let total = tp_weight + fp_weight;
-    let score = if total > 0.0 { tp_weight / total } else { 0.5 };
+    let precedent_score = if total > 0.0 { tp_weight / total } else { 0.5 };
+
+    // Composite scoring: when a model is loaded, use composite score for
+    // threshold comparisons instead of raw precedent score.
+    let lang = CalibratorModel::file_ext_language(file_path);
+    let composite = config
+        .model
+        .as_ref()
+        .map(|m| m.composite_score(precedent_score, &finding.title, lang));
+    let score = composite.unwrap_or(precedent_score);
 
     // Full suppress: FP weight only. Wontfix no longer contributes.
     let full_suppress_weight = fp_weight;
@@ -235,7 +251,7 @@ fn calibrate_core_decision(
         if score < thresh && fp_weight > 0.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
-            let trace = make_trace_entry(
+            let mut trace = make_trace_entry(
                 finding,
                 tp_weight,
                 fp_weight,
@@ -248,6 +264,7 @@ fn calibrate_core_decision(
                 Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
                 file_path,
             );
+            trace.composite_score = composite;
             return CoreDecision {
                 suppressed,
                 boosted,
@@ -260,7 +277,7 @@ fn calibrate_core_decision(
         {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
-            let trace = make_trace_entry(
+            let mut trace = make_trace_entry(
                 finding,
                 tp_weight,
                 fp_weight,
@@ -273,6 +290,7 @@ fn calibrate_core_decision(
                 Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
                 file_path,
             );
+            trace.composite_score = composite;
             return CoreDecision {
                 suppressed,
                 boosted,
@@ -334,7 +352,7 @@ fn calibrate_core_decision(
         reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
     }
 
-    let trace = make_trace_entry(
+    let mut trace = make_trace_entry(
         finding,
         tp_weight,
         fp_weight,
@@ -347,6 +365,7 @@ fn calibrate_core_decision(
         reason,
         file_path,
     );
+    trace.composite_score = composite;
 
     CoreDecision {
         suppressed,
@@ -5004,5 +5023,153 @@ mod tests {
         };
         let w = verdict_weight(&entry, chrono::Utc::now());
         assert!((w - 0.49).abs() < 0.02);
+    }
+
+    // --- Composite scoring tests ---
+
+    fn make_composite_model() -> CalibratorModel {
+        use std::collections::HashMap;
+        CalibratorModel {
+            meta: crate::calibrator_model::ModelMeta {
+                computed_at: "2026-05-12T00:00:00Z".to_string(),
+                feedback_count: 100,
+                global_fp_rate: 0.27,
+            },
+            weights: crate::calibrator_model::ScoreWeights {
+                score: 0.5,
+                word_lor: 1.5,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            word_lor: HashMap::from([
+                ("unwrap".into(), -1.0),
+                ("panic".into(), -0.8),
+                ("runtime".into(), -0.5),
+                ("sql".into(), 2.0),
+                ("injection".into(), 1.5),
+            ]),
+            family_fp_rate: HashMap::from([
+                ("use of `` may panic at runtime".into(), 0.90),
+            ]),
+            language_fp_rate: HashMap::from([
+                ("rust".into(), 0.328),
+                ("python".into(), 0.208),
+            ]),
+        }
+    }
+
+    #[test]
+    fn core_decision_uses_composite_when_model_present() {
+        let model = make_composite_model();
+        // Family "use of `` may panic at runtime" has 90% FP rate -> very low composite
+        let mut finding = finding_at(
+            "use of `unwrap()` may panic at runtime",
+            "correctness",
+            Severity::Medium,
+            "unwrap may panic",
+        );
+        let config = CalibratorConfig {
+            suppress_threshold: Some(1.0),
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.6,  // tp_weight
+            0.4,  // fp_weight (raw score = 0.6)
+            0.0,
+            0.4,
+            vec![],
+            Severity::Medium,
+            "test.rs",
+        );
+        // Composite: 0.5*0.6 + 1.5*word_lor + 1.0*(1-0.90) + 0.5*(1-0.27)
+        // word_lor tokens: use, of, unwrap, may, panic, at, runtime
+        //   unwrap=-1.0, panic=-0.8, runtime=-0.5, rest=0
+        //   avg = (-1.0 + -0.8 + -0.5) / 7 = -0.3286
+        // composite = 0.3 + 1.5*(-0.3286) + 1.0*0.1 + 0.5*0.73
+        //           = 0.3 + (-0.4929) + 0.1 + 0.365 = 0.2721
+        // 0.2721 < 1.0 (suppress threshold) -> suppressed
+        assert!(
+            decision.suppressed,
+            "high-FP family should be suppressed under composite scoring"
+        );
+        assert!(
+            decision.trace.composite_score.is_some(),
+            "composite_score should be set on trace"
+        );
+    }
+
+    #[test]
+    fn core_decision_no_composite_without_model() {
+        let mut finding = finding_at(
+            "use of `unwrap()` may panic at runtime",
+            "correctness",
+            Severity::Medium,
+            "unwrap may panic",
+        );
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.5),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.6,  // tp_weight
+            0.4,  // fp_weight (raw score = 0.6, above 0.5 suppress threshold)
+            0.0,
+            0.4,
+            vec![],
+            Severity::Medium,
+            "test.rs",
+        );
+        // No model -> score = 0.6 > 0.5 threshold -> NOT suppressed
+        assert!(
+            !decision.suppressed,
+            "without model, raw score 0.6 should not be suppressed at 0.5 threshold"
+        );
+        assert!(
+            decision.trace.composite_score.is_none(),
+            "composite_score should be None without model"
+        );
+    }
+
+    #[test]
+    fn core_decision_novel_family_uses_global_fp_rate() {
+        let model = make_composite_model();
+        let mut finding = finding_at(
+            "SQL injection via user input",
+            "security",
+            Severity::High,
+            "SQL injection risk",
+        );
+        let config = CalibratorConfig {
+            boost_threshold: Some(1.0),
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            2.0,  // tp_weight
+            0.1,  // fp_weight (raw score = 0.952)
+            0.0,
+            0.1,
+            vec![],
+            Severity::High,
+            "app.py",
+        );
+        // Novel family (no match in family_fp_rate) -> uses global_fp_rate=0.27
+        // word_lor tokens: sql, injection, via, user, input
+        //   sql=2.0, injection=1.5, rest=0
+        //   avg = (2.0 + 1.5) / 5 = 0.7
+        // composite = 0.5*0.952 + 1.5*0.7 + 1.0*(1-0.27) + 0.5*(1-0.208)
+        //           = 0.476 + 1.05 + 0.73 + 0.396 = 2.652
+        // 2.652 >= 1.0 (boost threshold) -> boost triggered
+        assert!(
+            decision.trace.composite_score.unwrap() > 2.0,
+            "SQL injection should have high composite score"
+        );
     }
 }
