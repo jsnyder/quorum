@@ -1112,6 +1112,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     .filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| "gpt-5-nano".into()),
+        judge_client: llm_client.clone(),
         ..Default::default()
     };
 

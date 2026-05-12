@@ -198,6 +198,10 @@ pub struct PipelineConfig {
     pub judge_enabled: bool,
     /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-5-nano)
     pub judge_model: String,
+    /// Shared OpenAI client for judge LLM calls. When `Some` and
+    /// `judge_enabled` is true, an `OpenAiJudge` is constructed per file.
+    /// When `None`, judge runs in cache-only mode (existing behavior).
+    pub judge_client: Option<std::sync::Arc<crate::llm_client::OpenAiClient>>,
 }
 
 impl Default for PipelineConfig {
@@ -225,6 +229,7 @@ impl Default for PipelineConfig {
             registry_client: None,
             judge_enabled: false,
             judge_model: "gpt-5-nano".into(),
+            judge_client: None,
         }
     }
 }
@@ -733,6 +738,13 @@ pub async fn review_file(
             let cache = crate::judge::load_cache(&cache_path).unwrap_or_default();
             drop(_span);
 
+            let judge = pipeline_config.judge_client.as_ref().map(|client| {
+                crate::judge::OpenAiJudge::new(
+                    std::sync::Arc::clone(client),
+                    pipeline_config.judge_model.clone(),
+                )
+            });
+
             for source_findings in all_sources.iter_mut().skip(1) {
                 let result = crate::judge::judge_findings(
                     source_findings,
@@ -740,7 +752,7 @@ pub async fn review_file(
                     &rule_metadata,
                     &cache,
                     &cache_path,
-                    None::<&crate::judge::OpenAiJudge>, // LLM client not wired yet -- cache-only + skip for now
+                    judge.as_ref(),
                 )
                 .await;
                 judge_metrics.approved += result.approved;
