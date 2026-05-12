@@ -25,6 +25,7 @@ fn finding_with_new_fields_roundtrips() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -79,6 +80,7 @@ fn new_fields_omitted_from_json_when_none() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -113,6 +115,7 @@ fn category_serializes_as_kebab_case_in_finding() {
         grounding_status: None,
         grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();

@@ -68,7 +68,7 @@ pub fn analyze_complexity(
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:complexity".into()),
                 });
             }
         }
@@ -252,7 +252,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
-        rule_id: None,
+        rule_id: Some("local-ast:rust/unsafe-block".into()),
         });
     }
 
@@ -289,7 +289,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:rust/unwrap-in-non-test".into()),
             });
         }
     }
@@ -329,7 +329,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:python/eval-exec".into()),
                 });
             }
         }
@@ -360,7 +360,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:python/debug-true".into()),
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -386,7 +386,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:python/bind-all-interfaces".into()),
                 });
             }
         }
@@ -426,7 +426,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:python/sql-injection".into()),
                             });
                     } else if arg_text.contains(".format(") {
                         findings.push(Finding {
@@ -451,7 +451,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:python/sql-injection".into()),
                             });
                     }
                 }
@@ -496,7 +496,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:python/open-no-encoding".into()),
                         });
                 }
             }
@@ -558,7 +558,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:python/bare-except-pass".into()),
                     });
             }
         }
@@ -636,7 +636,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:python/hardcoded-secret".into()),
                         });
             }
         }
@@ -675,7 +675,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:python/mutation-during-iteration".into()),
                         });
                 }
             }
@@ -732,7 +732,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:python/exception-disclosure".into()),
                 });
             }
         }
@@ -767,7 +767,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:python/blocking-in-async".into()),
                 });
         }
     }
@@ -804,7 +804,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:python/mutable-default-arg".into()),
                 });
         }
     }
@@ -1170,7 +1170,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:yaml/duplicate-key".into()),
                             });
                 } else {
                     seen_keys.push((key_text, key_line));
@@ -1209,7 +1209,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/ha-no-id".into()),
                 });
             }
 
@@ -1237,7 +1237,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/ha-no-mode".into()),
                 });
             }
 
@@ -1274,7 +1274,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/ha-deprecated-singular".into()),
                     });
                 }
             }
@@ -1314,7 +1314,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
-                                rule_id: None,
+                                rule_id: Some("local-ast:yaml/ha-empty-section".into()),
                                 });
                     }
                 }
@@ -1358,7 +1358,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:yaml/esphome-ota-no-password".into()),
                         });
                     }
                 }
@@ -1395,7 +1395,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:yaml/esphome-api-no-encryption".into()),
                         });
                     }
                 }
@@ -1466,7 +1466,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                         model_agreement: None,
-                                        rule_id: None,
+                                        rule_id: Some("local-ast:yaml/compose-no-new-privileges".into()),
                                         });
                             }
 
@@ -1494,7 +1494,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                         model_agreement: None,
-                                        rule_id: None,
+                                        rule_id: Some("local-ast:yaml/compose-writable-rootfs".into()),
                                         });
                             }
                         }
@@ -1541,7 +1541,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/hardcoded-secret".into()),
                 });
             }
         }
@@ -1591,7 +1591,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     grounding_status: None,
                                     grounding_confidence: None,
                                     model_agreement: None,
-                                    rule_id: None,
+                                    rule_id: Some("local-ast:yaml/entity-id-no-domain".into()),
                                 });
                             }
                         }
@@ -1625,7 +1625,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/entity-id-no-domain".into()),
                 });
             }
         }
@@ -1661,7 +1661,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/service-no-domain".into()),
                 });
             }
         }
@@ -1694,7 +1694,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:yaml/bind-all-interfaces".into()),
                         });
             }
         }
@@ -1729,7 +1729,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:yaml/url-credentials".into()),
                         });
             }
         }
@@ -1771,7 +1771,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/states-no-availability-check".into()),
                     });
                 }
             }
@@ -1833,7 +1833,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:yaml/deprecated-dot-state".into()),
                 });
             }
         }
@@ -1873,7 +1873,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/eval".into()),
             });
         }
 
@@ -1901,7 +1901,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/document-write-xss".into()),
                 });
         }
 
@@ -1929,7 +1929,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/console-log-artifact".into()),
                 });
         }
     }
@@ -1986,7 +1986,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:typescript/hardcoded-secret".into()),
                             });
                 }
             }
@@ -2026,7 +2026,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/innerhtml-xss".into()),
                 });
         }
     }
@@ -2058,7 +2058,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/any-type".into()),
             });
         }
     }
@@ -2097,7 +2097,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:typescript/empty-catch".into()),
             });
         }
     }
@@ -2147,7 +2147,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:typescript/sync-in-async".into()),
                         });
                 break;
             }
@@ -2192,7 +2192,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:typescript/tautological-length".into()),
                             });
             }
         }
@@ -2222,7 +2222,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
-        rule_id: None,
+        rule_id: Some("local-ast:typescript/non-null-assertion".into()),
         });
     }
 }
@@ -2256,7 +2256,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                 grounding_confidence: None,
             model_agreement: None,
-            rule_id: None,
+            rule_id: Some("local-ast:bash/no-shebang".into()),
             });
     }
 
@@ -2299,7 +2299,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:bash/no-set-e".into()),
             });
         }
     }
@@ -2333,7 +2333,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:bash/eval".into()),
             });
         }
 
@@ -2366,7 +2366,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             grounding_status: None,
                             grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:bash/chmod-777".into()),
                         });
                         break;
                     }
@@ -2409,7 +2409,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         grounding_status: None,
                         grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:bash/curl-pipe-bash".into()),
                     });
                     break;
                 }
@@ -2461,7 +2461,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:bash/hardcoded-secret".into()),
                             });
                 }
             }
@@ -2499,7 +2499,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:dockerfile/add-vs-copy".into()),
                 });
             }
         }
@@ -2548,7 +2548,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
-                            rule_id: None,
+                            rule_id: Some("local-ast:dockerfile/hardcoded-secret".into()),
                             });
                             break;
                         }
@@ -2586,7 +2586,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:dockerfile/curl-pipe-bash".into()),
                 });
             }
         }
@@ -2693,7 +2693,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
-                                rule_id: None,
+                                rule_id: Some("local-ast:terraform/hardcoded-secret".into()),
                                 });
             }
         }
@@ -2737,7 +2737,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
-                                rule_id: None,
+                                rule_id: Some("local-ast:terraform/wildcard-iam".into()),
                                 });
                     }
                 }
@@ -2809,7 +2809,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
-                    rule_id: None,
+                    rule_id: Some("local-ast:terraform/open-security-group".into()),
                     });
         }
     }
@@ -2906,7 +2906,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
-        rule_id: None,
+        rule_id: Some("local-ast:terraform/no-version-pin".into()),
         });
     }
 
@@ -3004,7 +3004,7 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
-                rule_id: None,
+                rule_id: Some("local-ast:terraform/no-provider-version".into()),
             });
         }
     }
@@ -3107,7 +3107,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
-                        rule_id: None,
+                        rule_id: Some("local-ast:dockerfile/from-latest".into()),
                         });
                     }
                 }
@@ -3145,7 +3145,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
-            rule_id: None,
+            rule_id: Some("local-ast:dockerfile/no-user".into()),
         });
     }
 
@@ -3173,7 +3173,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
-        rule_id: None,
+        rule_id: Some("local-ast:dockerfile/no-healthcheck".into()),
         });
     }
 
@@ -3204,7 +3204,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
-            rule_id: None,
+            rule_id: Some("local-ast:dockerfile/multiple-cmd".into()),
         });
     }
     if entrypoint_count > 1 {
@@ -3233,7 +3233,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
-            rule_id: None,
+            rule_id: Some("local-ast:dockerfile/multiple-entrypoint".into()),
         });
     }
 
@@ -5184,6 +5184,41 @@ resource "aws_instance" "web" {
                 .any(|f| f.title.contains("version constraint")),
             "Should not warn when provider has version constraint: {:?}",
             findings
+        );
+    }
+
+    #[test]
+    fn complexity_finding_has_rule_id() {
+        // Reuse the proven source from analyze_flags_complex_function which is known
+        // to exceed threshold=5 (CC=8).
+        let source = "fn complex(a: bool, b: bool, c: bool, d: bool) {\n    if a {\n        if b {\n            if c {\n                if d {\n                    return;\n                }\n            }\n        }\n    }\n    if a && b {\n        return;\n    }\n    for x in 0..10 {\n        if x > 5 {\n            break;\n        }\n    }\n}\n";
+        let tree = parse(source, Language::Rust).unwrap();
+        let findings = analyze_complexity(&tree, source, Language::Rust, 5);
+        assert!(
+            !findings.is_empty(),
+            "complex function should produce a complexity finding"
+        );
+        assert_eq!(findings[0].rule_id.as_deref(), Some("local-ast:complexity"));
+    }
+
+    #[test]
+    fn insecure_pattern_has_language_prefixed_rule_id() {
+        let source = "def run(code):\n    result = eval(code)\n    return result\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let findings = analyze_insecure_patterns(&tree, source, Language::Python);
+        let eval_finding = findings.iter().find(|f| f.title.contains("eval"));
+        assert!(
+            eval_finding.is_some(),
+            "should detect eval() call in Python"
+        );
+        let f = eval_finding.unwrap();
+        assert!(
+            f.rule_id
+                .as_ref()
+                .unwrap()
+                .starts_with("local-ast:python/"),
+            "rule_id should start with local-ast:python/, got {:?}",
+            f.rule_id
         );
     }
 }
