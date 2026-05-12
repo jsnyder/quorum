@@ -266,7 +266,7 @@ Cache invalidation: evidence_text changes when the matched code changes, so the 
 - Only speculative/medium rules with `judge: required|optional` hit the judge
 - High-precision rules bypass entirely (zero additional cost for existing rules)
 - Local verdict cache eliminates re-judging unfixed findings across runs
-- Judge uses a configurable model (default: fast/cheap model)
+- Judge uses a configurable model via `QUORUM_JUDGE_MODEL` (default: smallest model capable of reliable JSON classification — e.g., `gpt-5-nano`, `gpt-5.1-codex-mini`, or equivalent. The judge task is structured classification, not open-ended generation, so the cheapest model that follows a JSON schema reliably is optimal)
 - If zero findings need judging for a file, no judge call is made
 - Judge timeout: 5 seconds per file, fail-open (findings pass through unjudged with metadata baseline confidence)
 - `QUORUM_JUDGE_MODEL` env var for model selection
