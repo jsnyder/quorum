@@ -94,6 +94,10 @@ pub fn parse_verdict(s: &str) -> JudgeVerdict {
     }
 }
 
+pub trait JudgeLlm: Send + Sync {
+    async fn call(&self, prompt: &str) -> Option<String>;
+}
+
 /// Build the LLM prompt for judging a batch of AST-detected findings.
 ///
 /// Each finding tuple is `(rule_id, title, line_start, line_end, evidence)`.
@@ -312,6 +316,16 @@ pub fn judge_findings(
 mod tests {
     use super::*;
     use crate::finding::{FindingBuilder, Source};
+
+    struct MockJudge {
+        response: Option<String>,
+    }
+
+    impl JudgeLlm for MockJudge {
+        async fn call(&self, _prompt: &str) -> Option<String> {
+            self.response.clone()
+        }
+    }
 
     #[test]
     fn cache_key_deterministic() {
