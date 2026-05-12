@@ -156,15 +156,24 @@ impl Finding {
     }
 
     pub fn compute_confidence(&mut self) {
-        let base = match &self.source {
-            Source::LocalAst => 0.95,
-            Source::Linter(_) => 0.90,
-            Source::Llm(_) => self
+        let base = match (&self.source, &self.precision_tier) {
+            (Source::LocalAst, Some(PrecisionTier::High)) | (Source::LocalAst, None) => 0.95,
+            (Source::LocalAst, Some(PrecisionTier::Medium)) => 0.80,
+            (Source::LocalAst, Some(PrecisionTier::Speculative)) => 0.50,
+            (Source::Linter(_), Some(PrecisionTier::High)) | (Source::Linter(_), None) => 0.90,
+            (Source::Linter(_), Some(PrecisionTier::Medium)) => 0.75,
+            (Source::Linter(_), Some(PrecisionTier::Speculative)) => 0.45,
+            (Source::Llm(_), _) => self
                 .grounding_confidence
                 .filter(|c| c.is_finite())
                 .map(|c| c.clamp(0.0, 1.0))
                 .unwrap_or(0.5),
         };
+        let base = self
+            .judge_confidence
+            .filter(|c| c.is_finite())
+            .map(|c| c.clamp(0.0, 1.0))
+            .unwrap_or(base);
         let cal_factor = match self.calibrator_action {
             Some(CalibratorAction::Confirmed) => 1.1,
             Some(CalibratorAction::Disputed) => 0.6,
@@ -1095,5 +1104,68 @@ mod tests {
         assert!(!json.contains("judge_verdict"));
         assert!(!json.contains("judge_confidence"));
         assert!(!json.contains("precision_tier"));
+    }
+
+    // -- Tier-aware confidence --
+
+    #[test]
+    fn confidence_speculative_local_ast_is_050() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.50).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_medium_local_ast_is_080() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Medium);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.80).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_medium_linter_is_075() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        f.precision_tier = Some(PrecisionTier::Medium);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_speculative_linter_is_045() {
+        let mut f = FindingBuilder::new()
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.45).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_judge_overrides_base() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = Some(PrecisionTier::Speculative);
+        f.judge_confidence = Some(0.85);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.85).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_no_tier_matches_legacy_behavior() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.precision_tier = None;
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_judge_nan_falls_back_to_base() {
+        let mut f = FindingBuilder::new().source(Source::LocalAst).build();
+        f.judge_confidence = Some(f32::NAN);
+        f.compute_confidence();
+        assert!((f.confidence.unwrap() - 0.95).abs() < 0.01);
     }
 }
