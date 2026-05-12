@@ -1098,15 +1098,11 @@ pub async fn review_file(
         grounded
     };
 
-    // Classify findings as in-diff or pre-existing when --diff-file is active.
     let mut merged = merged;
-    if pipeline_config.diff_ranges.is_some() {
+    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
         let repo_root = find_project_root(file_path);
         let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-        let diff_lines: Vec<(u32, u32)> = pipeline_config
-            .diff_ranges
-            .as_ref()
-            .unwrap()
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
             .iter()
             .filter(|(path, _)| resolver.matches(path))
             .flat_map(|(_, ranges)| ranges.clone())
@@ -3083,9 +3079,7 @@ mod tests {
     #[test]
     fn classify_in_diff_skips_invalid_findings() {
         use crate::finding::FindingBuilder;
-        let mut findings = vec![
-            FindingBuilder::new().line_start(0).line_end(0).build(),
-        ];
+        let mut findings = vec![FindingBuilder::new().line_start(0).line_end(0).build()];
         let changed = vec![(1, 100)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, None);
@@ -3094,9 +3088,7 @@ mod tests {
     #[test]
     fn classify_in_diff_large_span_finding() {
         use crate::finding::FindingBuilder;
-        let mut findings = vec![
-            FindingBuilder::new().line_start(1).line_end(500).build(),
-        ];
+        let mut findings = vec![FindingBuilder::new().line_start(1).line_end(500).build()];
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, Some(true));

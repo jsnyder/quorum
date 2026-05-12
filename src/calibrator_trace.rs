@@ -462,6 +462,9 @@ mod tests {
         // Old trace JSON without in_diff deserializes to None
         let old_json = r#"{"finding_title":"SQL injection","finding_category":"security","tp_weight":1.0,"fp_weight":0.0,"wontfix_weight":0.0,"full_suppress_weight":0.0,"soft_fp_weight":0.0,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
         let old: CalibratorTraceEntry = serde_json::from_str(old_json).unwrap();
-        assert_eq!(old.in_diff, None, "old trace lines must deserialize in_diff as None");
+        assert_eq!(
+            old.in_diff, None,
+            "old trace lines must deserialize in_diff as None"
+        );
     }
 }

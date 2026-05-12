@@ -4893,8 +4893,17 @@ mod tests {
             .build();
         finding.in_diff = Some(true);
         let trace = make_trace_entry(
-            &finding, 1.0, 0.0, 0.0, 0.0, 0.0, vec![], None,
-            crate::finding::Severity::Medium, None, "test.rs",
+            &finding,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            vec![],
+            None,
+            crate::finding::Severity::Medium,
+            None,
+            "test.rs",
         );
         assert_eq!(trace.in_diff, Some(true));
     }

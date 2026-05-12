@@ -2498,7 +2498,10 @@ mod tests {
         // JSON without in_diff field deserializes as None (backward compat).
         let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#;
         let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
-        assert_eq!(entry.in_diff, None, "legacy entries must deserialize in_diff as None");
+        assert_eq!(
+            entry.in_diff, None,
+            "legacy entries must deserialize in_diff as None"
+        );
 
         // And re-serializing a None in_diff entry must not introduce the key.
         let resaved = serde_json::to_string(&entry).unwrap();
