@@ -358,7 +358,11 @@ pub fn format_compact_finding(f: &Finding) -> String {
     if f.based_on_excerpt.is_some() {
         result.push_str(" [excerpt]");
     }
-    result
+    if f.in_diff == Some(false) {
+        format!("[pre] {}", result)
+    } else {
+        result
+    }
 }
 
 pub fn format_compact_review(file_path: &str, findings: &[Finding]) -> String {
@@ -1201,5 +1205,30 @@ mod tests {
         let output = format_review("test.rs", &[f], &style);
         assert!(!output.contains("Pre-existing"));
         assert!(!output.contains("in this change"));
+    }
+
+    // -- compact finding [pre] prefix --
+
+    #[test]
+    fn compact_finding_pre_existing_gets_prefix() {
+        let mut f = FindingBuilder::new().title("Unused import").build();
+        f.in_diff = Some(false);
+        let line = format_compact_finding(&f);
+        assert!(line.starts_with("[pre] "));
+    }
+
+    #[test]
+    fn compact_finding_in_diff_no_prefix() {
+        let mut f = FindingBuilder::new().title("SQL injection").build();
+        f.in_diff = Some(true);
+        let line = format_compact_finding(&f);
+        assert!(!line.starts_with("[pre]"));
+    }
+
+    #[test]
+    fn compact_finding_no_diff_context_no_prefix() {
+        let f = FindingBuilder::new().build(); // in_diff = None
+        let line = format_compact_finding(&f);
+        assert!(!line.starts_with("[pre]"));
     }
 }
