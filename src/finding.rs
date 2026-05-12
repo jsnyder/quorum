@@ -113,6 +113,8 @@ pub struct Finding {
     pub grounding_confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_agreement: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
 }
 
 impl Finding {
@@ -202,6 +204,7 @@ impl FindingBuilder {
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             },
         }
     }
@@ -314,6 +317,11 @@ impl FindingBuilder {
         self
     }
 
+    pub fn rule_id(mut self, r: &str) -> Self {
+        self.inner.rule_id = Some(r.into());
+        self
+    }
+
     pub fn build(self) -> Finding {
         self.inner
     }
@@ -399,6 +407,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -436,6 +445,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -466,6 +476,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -498,6 +509,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         assert!(f.is_valid());
     }
@@ -526,6 +538,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         assert!(f.is_valid());
     }
@@ -554,6 +567,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         assert!(!f.is_valid());
     }
@@ -582,6 +596,7 @@ mod tests {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         };
         assert!(!f.is_valid());
     }
@@ -921,5 +936,45 @@ mod tests {
             f.confidence.unwrap() <= 1.0,
             "grounding > 1.0 must be clamped"
         );
+    }
+
+    // -- rule_id field --
+
+    #[test]
+    fn finding_rule_id_defaults_to_none() {
+        let f = FindingBuilder::new().build();
+        assert_eq!(f.rule_id, None);
+    }
+
+    #[test]
+    fn finding_rule_id_set_via_builder() {
+        let f = FindingBuilder::new()
+            .rule_id("ast-grep:python/bare-except-pass")
+            .build();
+        assert_eq!(f.rule_id.as_deref(), Some("ast-grep:python/bare-except-pass"));
+    }
+
+    #[test]
+    fn finding_rule_id_survives_json_roundtrip() {
+        let f = FindingBuilder::new()
+            .rule_id("local-ast:complexity")
+            .build();
+        let json = serde_json::to_string(&f).unwrap();
+        let parsed: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.rule_id.as_deref(), Some("local-ast:complexity"));
+    }
+
+    #[test]
+    fn finding_without_rule_id_omits_from_json() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("rule_id"));
+    }
+
+    #[test]
+    fn legacy_json_without_rule_id_deserializes_as_none() {
+        let json = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"similar_precedent":[]}"#;
+        let f: Finding = serde_json::from_str(json).unwrap();
+        assert_eq!(f.rule_id, None);
     }
 }

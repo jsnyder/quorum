@@ -296,6 +296,7 @@ pub fn scan_file(source: &str, ext: &str, rules: &[RuleConfig<SupportLang>]) -> 
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }

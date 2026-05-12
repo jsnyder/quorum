@@ -156,6 +156,7 @@ impl LlmFinding {
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         }
     }
 }

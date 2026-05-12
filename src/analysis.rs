@@ -68,6 +68,7 @@ pub fn analyze_complexity(
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
         }
@@ -251,6 +252,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
         });
     }
 
@@ -287,6 +289,7 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
     }
@@ -326,6 +329,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }
@@ -356,6 +360,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
@@ -381,6 +386,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
         }
@@ -420,6 +426,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                     } else if arg_text.contains(".format(") {
                         findings.push(Finding {
@@ -444,6 +451,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                     }
                 }
@@ -488,6 +496,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                 }
             }
@@ -549,6 +558,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                     });
             }
         }
@@ -626,6 +636,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
             }
         }
@@ -664,6 +675,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                 }
             }
@@ -720,6 +732,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
         }
@@ -754,6 +767,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
         }
     }
@@ -790,6 +804,7 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
         }
     }
@@ -1155,6 +1170,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                 } else {
                     seen_keys.push((key_text, key_line));
@@ -1193,6 +1209,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
 
@@ -1220,6 +1237,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
 
@@ -1256,6 +1274,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                     });
                 }
             }
@@ -1295,6 +1314,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
+                                rule_id: None,
                                 });
                     }
                 }
@@ -1338,6 +1358,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                     }
                 }
@@ -1374,6 +1395,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                     }
                 }
@@ -1444,6 +1466,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                         model_agreement: None,
+                                        rule_id: None,
                                         });
                             }
 
@@ -1471,6 +1494,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                                         model_agreement: None,
+                                        rule_id: None,
                                         });
                             }
                         }
@@ -1517,6 +1541,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }
@@ -1566,6 +1591,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                     grounding_status: None,
                                     grounding_confidence: None,
                                     model_agreement: None,
+                                    rule_id: None,
                                 });
                             }
                         }
@@ -1599,6 +1625,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }
@@ -1634,6 +1661,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }
@@ -1666,6 +1694,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
             }
         }
@@ -1700,6 +1729,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
             }
         }
@@ -1741,6 +1771,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                     });
                 }
             }
@@ -1802,6 +1833,7 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                 });
             }
         }
@@ -1841,6 +1873,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
 
@@ -1868,6 +1901,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
         }
 
@@ -1895,6 +1929,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
         }
     }
@@ -1951,6 +1986,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                 }
             }
@@ -1990,6 +2026,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
         }
     }
@@ -2021,6 +2058,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
     }
@@ -2059,6 +2097,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
     }
@@ -2108,6 +2147,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                 break;
             }
@@ -2152,6 +2192,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
             }
         }
@@ -2181,6 +2222,7 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
         });
     }
 }
@@ -2214,6 +2256,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                 grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
             });
     }
 
@@ -2256,6 +2299,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
     }
@@ -2289,6 +2333,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
 
@@ -2321,6 +2366,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             grounding_status: None,
                             grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                         });
                         break;
                     }
@@ -2363,6 +2409,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                         grounding_status: None,
                         grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                     });
                     break;
                 }
@@ -2414,6 +2461,7 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                 }
             }
@@ -2451,6 +2499,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
         }
@@ -2499,6 +2548,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                             model_agreement: None,
+                            rule_id: None,
                             });
                             break;
                         }
@@ -2536,6 +2586,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     grounding_status: None,
                     grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
                 });
             }
         }
@@ -2642,6 +2693,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
+                                rule_id: None,
                                 });
             }
         }
@@ -2685,6 +2737,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                                 model_agreement: None,
+                                rule_id: None,
                                 });
                     }
                 }
@@ -2756,6 +2809,7 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     grounding_status: None,
                     grounding_confidence: None,
                     model_agreement: None,
+                    rule_id: None,
                     });
         }
     }
@@ -2852,6 +2906,7 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
         });
     }
 
@@ -2949,6 +3004,7 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
                 grounding_status: None,
                 grounding_confidence: None,
                 model_agreement: None,
+                rule_id: None,
             });
         }
     }
@@ -3051,6 +3107,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     grounding_status: None,
                     grounding_confidence: None,
                         model_agreement: None,
+                        rule_id: None,
                         });
                     }
                 }
@@ -3088,6 +3145,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         });
     }
 
@@ -3115,6 +3173,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     grounding_status: None,
                     grounding_confidence: None,
         model_agreement: None,
+        rule_id: None,
         });
     }
 
@@ -3145,6 +3204,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         });
     }
     if entrypoint_count > 1 {
@@ -3173,6 +3233,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
             grounding_status: None,
             grounding_confidence: None,
             model_agreement: None,
+            rule_id: None,
         });
     }
 
