@@ -119,7 +119,7 @@ fn make_no_match_trace(
         },
         provenance: None,
         same_file_precedent_count: None,
-        in_diff: None,
+        in_diff: finding.in_diff,
     }
 }
 
@@ -4906,6 +4906,16 @@ mod tests {
             "test.rs",
         );
         assert_eq!(trace.in_diff, Some(true));
+    }
+
+    #[test]
+    fn no_match_trace_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(false);
+        let trace = make_no_match_trace(&finding, "test.rs");
+        assert_eq!(trace.in_diff, Some(false));
     }
 
     // -------------------------------------------------------------------

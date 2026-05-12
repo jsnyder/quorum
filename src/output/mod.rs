@@ -1265,4 +1265,11 @@ mod tests {
         // Only the medium in-diff counts -> exit 1, not 2
         assert_eq!(compute_exit_code(&[in_diff, pre]), 1);
     }
+
+    #[test]
+    fn exit_code_ignores_pre_existing_medium() {
+        let mut f = FindingBuilder::new().severity(Severity::Medium).build();
+        f.in_diff = Some(false);
+        assert_eq!(compute_exit_code(&[f]), 0);
+    }
 }
