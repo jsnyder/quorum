@@ -1603,8 +1603,14 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             judge_rejected: file_results.iter().map(|r| r.judge_metrics.rejected).sum(),
             judge_uncertain: file_results.iter().map(|r| r.judge_metrics.uncertain).sum(),
             judge_skipped: file_results.iter().map(|r| r.judge_metrics.skipped).sum(),
-            judge_cache_hits: file_results.iter().map(|r| r.judge_metrics.cache_hits).sum(),
-            judge_latency_ms: file_results.iter().map(|r| r.judge_metrics.latency_ms).sum(),
+            judge_cache_hits: file_results
+                .iter()
+                .map(|r| r.judge_metrics.cache_hits)
+                .sum(),
+            judge_latency_ms: file_results
+                .iter()
+                .map(|r| r.judge_metrics.latency_ms)
+                .sum(),
         };
         let _ = telem_store.record(&telem_entry);
 

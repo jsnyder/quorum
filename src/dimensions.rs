@@ -531,10 +531,10 @@ pub fn group_by_rule(
             _ => continue,
         };
 
-        if let Some(pattern) = glob_filter {
-            if !glob_match(pattern, rule_id) {
-                continue;
-            }
+        if let Some(pattern) = glob_filter
+            && !glob_match(pattern, rule_id)
+        {
+            continue;
         }
 
         let counts = buckets.entry(rule_id.clone()).or_default();

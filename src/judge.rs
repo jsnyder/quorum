@@ -1,7 +1,7 @@
 use crate::ast_grep::RuleMetadata;
-use crate::finding::{Finding, JudgeRequirement, JudgeVerdict};
 #[cfg(test)]
 use crate::finding::PrecisionTier;
+use crate::finding::{Finding, JudgeRequirement, JudgeVerdict};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -220,8 +220,7 @@ pub fn judge_findings(
             result.calls += 1;
 
             if let Some(response) = llm(&prompt)
-                && let Ok(verdicts) =
-                    serde_json::from_str::<Vec<JudgeResponseItem>>(&response)
+                && let Ok(verdicts) = serde_json::from_str::<Vec<JudgeResponseItem>>(&response)
             {
                 for v in &verdicts {
                     if let Some(&i) = to_judge
@@ -233,8 +232,11 @@ pub fn judge_findings(
                         findings[i].judge_verdict = Some(verdict.clone());
                         findings[i].judge_confidence = Some(confidence);
 
-                        let evidence =
-                            findings[i].evidence.first().map(|s| s.as_str()).unwrap_or("");
+                        let evidence = findings[i]
+                            .evidence
+                            .first()
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
                         let key = verdict_cache_key(&v.rule_id, evidence);
                         let _ = write_cache_entry(
                             cache_path,
