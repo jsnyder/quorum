@@ -1098,6 +1098,22 @@ pub async fn review_file(
         grounded
     };
 
+    // Classify findings as in-diff or pre-existing when --diff-file is active.
+    let mut merged = merged;
+    if pipeline_config.diff_ranges.is_some() {
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+        let diff_lines: Vec<(u32, u32)> = pipeline_config
+            .diff_ranges
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+        classify_in_diff(&mut merged, &diff_lines);
+    }
+
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
     let has_feedback =
         !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
