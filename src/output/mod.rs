@@ -155,9 +155,32 @@ pub fn format_review(file_path: &str, findings: &[Finding], style: &Style) -> St
         return out;
     }
 
-    for f in findings {
+    let has_diff_context = findings.iter().any(|f| f.in_diff.is_some());
+    let (in_diff, pre_existing): (Vec<_>, Vec<_>) = if has_diff_context {
+        findings
+            .iter()
+            .partition(|f| f.in_diff != Some(false))
+    } else {
+        (findings.iter().collect(), vec![])
+    };
+
+    for f in &in_diff {
         out.push_str(&format_finding(f, style));
         out.push('\n');
+    }
+
+    if !pre_existing.is_empty() {
+        out.push_str(&format!(
+            "\n  {dim}-- Pre-existing ({count} finding{s}) --{reset}\n\n",
+            dim = style.dim,
+            count = pre_existing.len(),
+            s = if pre_existing.len() == 1 { "" } else { "s" },
+            reset = style.reset,
+        ));
+        for f in &pre_existing {
+            out.push_str(&format_finding(f, style));
+            out.push('\n');
+        }
     }
 
     // Summary line
@@ -171,16 +194,31 @@ pub fn format_review(file_path: &str, findings: &[Finding], style: &Style) -> St
         .count();
     let info = findings.len() - critical - warning;
 
-    out.push_str(&format!(
-        "  {dim}{count} finding{s} ({critical} critical, {warning} warning, {info} info){reset}\n",
-        dim = style.dim,
-        count = findings.len(),
-        s = if findings.len() == 1 { "" } else { "s" },
-        critical = critical,
-        warning = warning,
-        info = info,
-        reset = style.reset,
-    ));
+    if has_diff_context && !pre_existing.is_empty() {
+        out.push_str(&format!(
+            "  {dim}{count} finding{s} ({in_diff} in this change, {pre} pre-existing) ({critical} critical, {warning} warning, {info} info){reset}\n",
+            dim = style.dim,
+            count = findings.len(),
+            s = if findings.len() == 1 { "" } else { "s" },
+            in_diff = in_diff.len(),
+            pre = pre_existing.len(),
+            critical = critical,
+            warning = warning,
+            info = info,
+            reset = style.reset,
+        ));
+    } else {
+        out.push_str(&format!(
+            "  {dim}{count} finding{s} ({critical} critical, {warning} warning, {info} info){reset}\n",
+            dim = style.dim,
+            count = findings.len(),
+            s = if findings.len() == 1 { "" } else { "s" },
+            critical = critical,
+            warning = warning,
+            info = info,
+            reset = style.reset,
+        ));
+    }
 
     out
 }
@@ -1104,5 +1142,64 @@ mod tests {
     #[test]
     fn json_flag_wins_even_in_terminal() {
         assert_eq!(resolve_output_mode(true, false, true), OutputMode::Json,);
+    }
+
+    // -- in-diff grouping --
+
+    #[test]
+    fn format_review_groups_in_diff_and_pre_existing() {
+        let mut in_diff_finding = FindingBuilder::new()
+            .title("SQL injection")
+            .severity(Severity::Critical)
+            .build();
+        in_diff_finding.in_diff = Some(true);
+
+        let mut pre_existing = FindingBuilder::new()
+            .title("Unused import")
+            .severity(Severity::Info)
+            .build();
+        pre_existing.in_diff = Some(false);
+
+        let style = Style::plain();
+        let output = format_review("src/main.rs", &[in_diff_finding, pre_existing], &style);
+        assert!(output.contains("SQL injection"));
+        assert!(output.contains("Pre-existing"));
+        assert!(output.contains("Unused import"));
+        // In-diff finding should appear before Pre-existing header
+        let sql_pos = output.find("SQL injection").unwrap();
+        let pre_pos = output.find("Pre-existing").unwrap();
+        assert!(sql_pos < pre_pos);
+    }
+
+    #[test]
+    fn format_review_no_pre_existing_header_when_all_in_diff() {
+        let mut f = FindingBuilder::new()
+            .severity(Severity::Medium)
+            .build();
+        f.in_diff = Some(true);
+        let style = Style::plain();
+        let output = format_review("test.rs", &[f], &style);
+        assert!(!output.contains("Pre-existing"));
+    }
+
+    #[test]
+    fn format_review_summary_shows_diff_breakdown() {
+        let mut f1 = FindingBuilder::new().severity(Severity::Medium).build();
+        f1.in_diff = Some(true);
+        let mut f2 = FindingBuilder::new().severity(Severity::Info).build();
+        f2.in_diff = Some(false);
+        let style = Style::plain();
+        let output = format_review("test.rs", &[f1, f2], &style);
+        assert!(output.contains("in this change"));
+        assert!(output.contains("pre-existing"));
+    }
+
+    #[test]
+    fn format_review_no_diff_context_renders_normally() {
+        let f = FindingBuilder::new().build(); // in_diff = None
+        let style = Style::plain();
+        let output = format_review("test.rs", &[f], &style);
+        assert!(!output.contains("Pre-existing"));
+        assert!(!output.contains("in this change"));
     }
 }
