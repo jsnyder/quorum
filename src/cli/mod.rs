@@ -337,8 +337,16 @@ pub struct StatsOpts {
     pub misleading: bool,
 
     /// Rank files by finding frequency from feedback (hotspot detection)
-    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading"])]
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_rule"])]
     pub by_file: bool,
+
+    /// Per-rule TP/FP/precision breakdown from feedback
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file"])]
+    pub by_rule: bool,
+
+    /// Filter rules by glob pattern (e.g. "ast-grep:python/*")
+    #[arg(long, requires = "by_rule")]
+    pub rule: Option<String>,
 
     /// Limit output rows for --by-file (default: show all)
     #[arg(long, requires = "by_file", value_parser = parse_top_n)]
@@ -1609,6 +1617,56 @@ mod tests {
         use clap::Parser;
         let res = Args::try_parse_from(["quorum", "stats", "--top", "5"]);
         assert!(res.is_err(), "--top requires --by-file");
+    }
+
+    #[test]
+    fn stats_by_rule_flag_parses() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "stats", "--by-rule"]);
+        match args.command {
+            Command::Stats(opts) => assert!(opts.by_rule),
+            _ => panic!("expected Stats"),
+        }
+    }
+
+    #[test]
+    fn stats_by_rule_with_filter() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "quorum",
+            "stats",
+            "--by-rule",
+            "--rule",
+            "ast-grep:python/*",
+        ]);
+        match args.command {
+            Command::Stats(opts) => {
+                assert!(opts.by_rule);
+                assert_eq!(opts.rule.as_deref(), Some("ast-grep:python/*"));
+            }
+            _ => panic!("expected Stats"),
+        }
+    }
+
+    #[test]
+    fn stats_by_rule_conflicts_with_by_file() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-rule", "--by-file"]);
+        assert!(res.is_err(), "--by-rule and --by-file should conflict");
+    }
+
+    #[test]
+    fn stats_by_rule_conflicts_with_by_repo() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--by-rule", "--by-repo"]);
+        assert!(res.is_err(), "--by-rule and --by-repo should conflict");
+    }
+
+    #[test]
+    fn stats_rule_without_by_rule_is_rejected() {
+        use clap::Parser;
+        let res = Args::try_parse_from(["quorum", "stats", "--rule", "foo*"]);
+        assert!(res.is_err(), "--rule requires --by-rule");
     }
 
     #[test]

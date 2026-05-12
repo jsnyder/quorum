@@ -506,6 +506,81 @@ pub fn group_by_file(entries: &[FeedbackEntry], top_n: Option<usize>) -> Vec<Fil
     rows
 }
 
+/// Per-rule precision row aggregated from feedback verdicts.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RuleDimensionSlice {
+    pub key: String,
+    pub tp: u32,
+    pub fp: u32,
+    pub partial: u32,
+    pub wontfix: u32,
+    pub total: u32,
+    pub precision: f64,
+    pub low_sample: bool,
+}
+
+pub fn group_by_rule(
+    entries: &[FeedbackEntry],
+    glob_filter: Option<&str>,
+) -> Vec<RuleDimensionSlice> {
+    let mut buckets: HashMap<String, (u32, u32, u32, u32)> = HashMap::new();
+
+    for entry in entries {
+        let rule_id = match &entry.rule_id {
+            Some(r) if !r.is_empty() => r,
+            _ => continue,
+        };
+
+        if let Some(pattern) = glob_filter {
+            if !glob_match(pattern, rule_id) {
+                continue;
+            }
+        }
+
+        let counts = buckets.entry(rule_id.clone()).or_default();
+        match &entry.verdict {
+            Verdict::Tp => counts.0 += 1,
+            Verdict::Fp => counts.1 += 1,
+            Verdict::Partial => counts.2 += 1,
+            Verdict::Wontfix => counts.3 += 1,
+            Verdict::ContextMisleading { .. } => {}
+        }
+    }
+
+    let mut slices: Vec<RuleDimensionSlice> = buckets
+        .into_iter()
+        .map(|(key, (tp, fp, partial, wontfix))| {
+            let total = tp + fp + partial + wontfix;
+            let precision = if tp + fp > 0 {
+                tp as f64 / (tp + fp) as f64
+            } else {
+                0.0
+            };
+            RuleDimensionSlice {
+                key,
+                tp,
+                fp,
+                partial,
+                wontfix,
+                total,
+                precision,
+                low_sample: total < MIN_SAMPLE,
+            }
+        })
+        .collect();
+
+    slices.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.key.cmp(&b.key)));
+    slices
+}
+
+fn glob_match(pattern: &str, value: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        value.starts_with(prefix)
+    } else {
+        value == pattern
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1170,6 +1245,70 @@ mod tests {
         assert_eq!(rows[1].file_path, "noisy.rs");
         assert_eq!(rows[1].tp_count, 0);
         assert_eq!(rows[1].fp_count, 2);
+    }
+
+    // ── group_by_rule tests ──
+
+    fn feedback_entry_with_rule(rule_id: Option<&str>, verdict: Verdict) -> FeedbackEntry {
+        FeedbackEntry {
+            file_path: "test.py".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict,
+            reason: "".into(),
+            model: None,
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: rule_id.map(String::from),
+        }
+    }
+
+    #[test]
+    fn group_by_rule_buckets_by_rule_id() {
+        let entries = vec![
+            feedback_entry_with_rule(Some("local-ast:python/eval-exec"), Verdict::Tp),
+            feedback_entry_with_rule(Some("local-ast:python/eval-exec"), Verdict::Fp),
+            feedback_entry_with_rule(Some("ast-grep:python/bare-except-pass"), Verdict::Tp),
+            feedback_entry_with_rule(None, Verdict::Tp),
+        ];
+        let slices = group_by_rule(&entries, None);
+        assert_eq!(slices.len(), 2, "None entries should be excluded");
+        let eval_slice = slices
+            .iter()
+            .find(|s| s.key == "local-ast:python/eval-exec")
+            .unwrap();
+        assert_eq!(eval_slice.tp, 1);
+        assert_eq!(eval_slice.fp, 1);
+        assert!((eval_slice.precision - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn group_by_rule_filters_by_glob() {
+        let entries = vec![
+            feedback_entry_with_rule(Some("local-ast:python/eval-exec"), Verdict::Tp),
+            feedback_entry_with_rule(Some("ast-grep:typescript/as-any-cast"), Verdict::Tp),
+        ];
+        let slices = group_by_rule(&entries, Some("local-ast:python/*"));
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].key, "local-ast:python/eval-exec");
+    }
+
+    #[test]
+    fn group_by_rule_empty_input() {
+        let slices = group_by_rule(&[], None);
+        assert!(slices.is_empty());
+    }
+
+    #[test]
+    fn group_by_rule_low_sample_flag() {
+        let entries = vec![feedback_entry_with_rule(Some("rule-a"), Verdict::Tp)];
+        let slices = group_by_rule(&entries, None);
+        assert!(
+            slices[0].low_sample,
+            "1 entry < MIN_SAMPLE should be flagged"
+        );
     }
 
     #[test]

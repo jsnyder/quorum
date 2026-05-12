@@ -155,6 +155,60 @@ async fn main() -> anyhow::Result<()> {
             // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
             // Context dims compose with --rolling by restricting aggregation to
             // the chronologically-last N records.
+            if opts.by_rule {
+                let fb_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
+                let entries = match fb_store.load_all() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("error: cannot read feedback store: {e}");
+                        std::process::exit(3);
+                    }
+                };
+                let slices = dimensions::group_by_rule(&entries, opts.rule.as_deref());
+
+                let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+                let use_compact = output::should_use_compact(opts.compact);
+                let use_json = opts.json || (is_pipe && !use_compact);
+
+                if use_json {
+                    let payload = serde_json::json!({
+                        "mode": "by-rule",
+                        "rows": slices,
+                        "meta": {
+                            "total_feedback_entries": entries.len(),
+                            "filter": opts.rule,
+                        },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                } else {
+                    println!(
+                        "{:<55} {:>4} {:>4} {:>4} {:>4} {:>6} {:>5}",
+                        "Rule", "TP", "FP", "Part", "Won't", "Prec%", "Total"
+                    );
+                    println!("{}", "-".repeat(85));
+                    for s in &slices {
+                        println!(
+                            "{:<55} {:>4} {:>4} {:>4} {:>4} {:>5.1}% {:>5}{}",
+                            s.key,
+                            s.tp,
+                            s.fp,
+                            s.partial,
+                            s.wontfix,
+                            s.precision * 100.0,
+                            s.total,
+                            if s.low_sample { " *" } else { "" }
+                        );
+                    }
+                    if slices.iter().any(|s| s.low_sample) {
+                        println!(
+                            "\n* = low sample (<{} entries)",
+                            dimensions::MIN_SAMPLE
+                        );
+                    }
+                }
+                std::process::exit(0);
+            }
+
             if opts.by_file {
                 let fb_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
                 let entries = match fb_store.load_all() {
