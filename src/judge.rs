@@ -743,4 +743,145 @@ mod tests {
         assert_eq!(findings.len(), 1); // speculative finding was DROPPED
         assert_eq!(findings[0].title, "as-any-cast: as any cast"); // only the high-precision one remains
     }
+
+    #[tokio::test]
+    async fn judge_handles_llm_failure_gracefully() {
+        let judge = MockJudge { response: None };
+
+        let mut findings = vec![{
+            let mut f = FindingBuilder::new()
+                .source(Source::Linter("ast-grep".into()))
+                .rule_id("ast-grep:rust/discarded-result")
+                .evidence("let _ = foo()")
+                .build();
+            f.precision_tier = Some(PrecisionTier::Speculative);
+            f
+        }];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:rust/discarded-result".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "fn main() { let _ = foo(); }",
+            &metadata,
+            &HashMap::new(),
+            &cache_path,
+            Some(&judge),
+        )
+        .await;
+
+        assert_eq!(result.uncertain, 1);
+        assert_eq!(result.calls, 1);
+        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+    }
+
+    #[tokio::test]
+    async fn judge_handles_partial_llm_response() {
+        let judge = MockJudge {
+            response: Some(
+                r#"[{"rule_id":"ast-grep:python/missing-await","verdict":"tp","confidence":0.9,"reason":"ok"}]"#
+                    .into(),
+            ),
+        };
+
+        let mut findings = vec![
+            {
+                let mut f = FindingBuilder::new()
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:python/missing-await")
+                    .evidence("await missing")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::Speculative);
+                f
+            },
+            {
+                let mut f = FindingBuilder::new()
+                    .source(Source::Linter("ast-grep".into()))
+                    .rule_id("ast-grep:python/logging-debug-leak")
+                    .evidence("logger.debug(secret)")
+                    .build();
+                f.precision_tier = Some(PrecisionTier::Speculative);
+                f
+            },
+        ];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:python/missing-await".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        metadata.insert(
+            "ast-grep:python/logging-debug-leak".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "source",
+            &metadata,
+            &HashMap::new(),
+            &cache_path,
+            Some(&judge),
+        )
+        .await;
+
+        assert_eq!(result.approved, 1);
+        assert_eq!(result.uncertain, 1);
+    }
+
+    #[tokio::test]
+    async fn judge_handles_malformed_json_response() {
+        let judge = MockJudge {
+            response: Some("not valid json at all {{{".into()),
+        };
+
+        let mut findings = vec![{
+            let mut f = FindingBuilder::new()
+                .source(Source::Linter("ast-grep".into()))
+                .rule_id("ast-grep:python/missing-await")
+                .evidence("await missing")
+                .build();
+            f.precision_tier = Some(PrecisionTier::Speculative);
+            f
+        }];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:python/missing-await".into(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Required,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "async def foo(): bar()",
+            &metadata,
+            &HashMap::new(),
+            &cache_path,
+            Some(&judge),
+        )
+        .await;
+
+        assert_eq!(result.uncertain, 1, "malformed JSON should degrade to Uncertain");
+        assert_eq!(result.calls, 1);
+        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+    }
 }
