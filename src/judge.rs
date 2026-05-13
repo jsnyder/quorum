@@ -94,6 +94,9 @@ fn extract_json_array(response: &str) -> Option<&str> {
     let trimmed = response.trim();
     let start = trimmed.find('[')?;
     let end = trimmed.rfind(']')?;
+    if start > end {
+        return None;
+    }
     Some(&trimmed[start..=end])
 }
 
