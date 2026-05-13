@@ -499,8 +499,9 @@ rule:
 "#;
         std::fs::write(user_rules_dir.join("user-test.yml"), rule_yaml).unwrap();
         let (rules, _metadata) = load_rules(empty_project.path(), home.path());
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].id, "user-test-rule");
+        let ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"user-test-rule"), "should include user rule");
+        assert!(rules.len() > 1, "should also include bundled rules");
     }
 
     #[test]
@@ -528,9 +529,7 @@ rule:
         let project = tempfile::tempdir().unwrap();
         let rules_dir = project.path().join("rules").join("typescript");
         std::fs::create_dir_all(&rules_dir).unwrap();
-        // Malformed rule (missing required fields)
         std::fs::write(rules_dir.join("bad.yml"), "not: valid: yaml: rule:").unwrap();
-        // Valid rule
         let good_yaml = r#"id: good-rule
 language: TypeScript
 severity: warning
@@ -541,16 +540,21 @@ rule:
         std::fs::write(rules_dir.join("good.yml"), good_yaml).unwrap();
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, _metadata) = load_rules(project.path(), fake_home.path());
-        assert_eq!(rules.len(), 1, "should skip bad rule, keep good one");
-        assert_eq!(rules[0].id, "good-rule");
+        let ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"good-rule"), "should keep good rule");
+        assert!(!ids.contains(&"bad"), "should skip bad rule");
     }
 
     #[test]
-    fn load_rules_missing_rules_dir_returns_empty() {
+    fn load_rules_missing_rules_dir_returns_empty_project_and_user() {
         let empty = tempfile::tempdir().unwrap();
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, _metadata) = load_rules(empty.path(), fake_home.path());
-        assert!(rules.is_empty());
+        let bundled_count = rules.len();
+        assert!(bundled_count > 0, "bundled rules should always load");
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let (baseline, _) = load_rules(&project_dir, fake_home.path());
+        assert_eq!(rules.len(), baseline.len(), "no extra rules beyond bundled");
     }
 
     #[test]
