@@ -287,7 +287,14 @@ pub async fn judge_findings<J: JudgeLlm>(
                             for v in &verdicts {
                                 let batch_pos = v
                                     .index
-                                    .filter(|&idx| idx < to_judge.len() && !used[idx])
+                                    .filter(|&idx| {
+                                        idx < to_judge.len()
+                                            && !used[idx]
+                                            && findings[to_judge[idx]]
+                                                .rule_id
+                                                .as_deref()
+                                                == Some(&v.rule_id)
+                                    })
                                     .or_else(|| {
                                         to_judge.iter().enumerate().position(
                                             |(pos, &i)| {
