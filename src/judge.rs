@@ -279,19 +279,23 @@ pub async fn judge_findings<J: JudgeLlm>(
                 if let Some(json_str) = json_extracted {
                     match serde_json::from_str::<Vec<JudgeResponseItem>>(json_str) {
                         Ok(verdicts) => {
+                            let mut used = vec![false; to_judge.len()];
                             for v in &verdicts {
-                                let pos = v
+                                let batch_pos = v
                                     .index
-                                    .and_then(|idx| {
-                                        to_judge.iter().position(|&i_item| i_item == idx)
-                                    })
+                                    .filter(|&idx| idx < to_judge.len() && !used[idx])
                                     .or_else(|| {
-                                        to_judge.iter().position(|&i| {
-                                            findings[i].rule_id.as_deref() == Some(&v.rule_id)
-                                        })
+                                        to_judge.iter().enumerate().position(
+                                            |(pos, &i)| {
+                                                !used[pos]
+                                                    && findings[i].rule_id.as_deref()
+                                                        == Some(&v.rule_id)
+                                            },
+                                        )
                                     });
-                                if let Some(pos) = pos {
-                                    let i = to_judge.swap_remove(pos);
+                                if let Some(pos) = batch_pos {
+                                    used[pos] = true;
+                                    let i = to_judge[pos];
                                     let verdict = parse_verdict(&v.verdict);
                                     let confidence = v.confidence.clamp(0.0, 1.0);
                                     findings[i].judge_verdict = Some(verdict.clone());

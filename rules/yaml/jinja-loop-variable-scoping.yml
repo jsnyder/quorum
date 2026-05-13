@@ -13,6 +13,9 @@ rule:
     - all:
         - kind: double_quote_scalar
         - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+[\\s\\S]*?\\{%\\s*endfor"
+    - all:
+        - kind: single_quote_scalar
+        - regex: "\\{%\\s*for\\b[\\s\\S]*?\\{%\\s*set\\s+\\w+[\\s\\S]*?\\{%\\s*endfor"
 metadata:
   precision: speculative
   judge: required
