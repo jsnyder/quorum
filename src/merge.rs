@@ -285,6 +285,50 @@ mod tests {
     }
 
     #[test]
+    fn merge_non_overlapping_linter_findings_preserved() {
+        let f1 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(10, 10)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(100, 100)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
+        assert_eq!(
+            result.len(),
+            2,
+            "non-overlapping linter findings must stay separate"
+        );
+    }
+
+    #[test]
+    fn merge_overlapping_linter_findings_collapse() {
+        let f1 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(10, 20)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(12, 18)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
+        assert_eq!(
+            result.len(),
+            1,
+            "overlapping linter findings should collapse"
+        );
+    }
+
+    #[test]
     fn merge_different_titles_not_collapsed() {
         let f1 = FindingBuilder::new()
             .title("SQL injection in query builder")

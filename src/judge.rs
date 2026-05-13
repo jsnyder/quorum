@@ -86,6 +86,10 @@ pub struct JudgeResponseItem {
     pub reason: String,
 }
 
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 fn extract_json_array(response: &str) -> Option<&str> {
     let trimmed = response.trim();
     let start = trimmed.find('[')?;
@@ -272,7 +276,7 @@ pub async fn judge_findings<J: JudgeLlm>(
                 if json_extracted.is_none() {
                     tracing::warn!(
                         response_len = response.len(),
-                        response_prefix = &response[..response.len().min(200)],
+                        response_prefix = %truncate_chars(&response, 200),
                         "judge: no JSON array found in LLM response"
                     );
                 }
@@ -306,12 +310,15 @@ pub async fn judge_findings<J: JudgeLlm>(
                                         .first()
                                         .map(|s| s.as_str())
                                         .unwrap_or("");
-                                    let key = verdict_cache_key(&v.rule_id, evidence);
+                                    let canonical_rule_id =
+                                        findings[i].rule_id.as_deref().unwrap_or("");
+                                    let key =
+                                        verdict_cache_key(canonical_rule_id, evidence);
                                     if let Err(e) = write_cache_entry(
                                         cache_path,
                                         &CacheEntry {
                                             cache_key: key,
-                                            rule_id: v.rule_id.clone(),
+                                            rule_id: canonical_rule_id.to_string(),
                                             verdict: verdict.clone(),
                                             confidence,
                                             reason: v.reason.clone(),
@@ -336,7 +343,7 @@ pub async fn judge_findings<J: JudgeLlm>(
                         Err(e) => {
                             tracing::warn!(
                                 error = %e,
-                                json_prefix = &json_str[..json_str.len().min(200)],
+                                json_prefix = %truncate_chars(json_str, 200),
                                 "judge: failed to parse JSON response"
                             );
                         }

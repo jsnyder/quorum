@@ -769,11 +769,13 @@ impl OpenAiClient {
         prompt: &str,
         system_prompt: &str,
     ) -> anyhow::Result<LlmResponse> {
+        let safe_prompt = crate::redact::redact_secrets(prompt);
+        let safe_system = crate::redact::redact_secrets(system_prompt);
         let body = serde_json::json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": safe_system},
+                {"role": "user", "content": safe_prompt}
             ],
             "temperature": 0,
             "max_tokens": 2048
