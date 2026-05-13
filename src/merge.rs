@@ -97,7 +97,10 @@ fn similarity(a: &Finding, b: &Finding) -> f64 {
     // Exception: linter findings (ast-grep) share identical titles per rule,
     // so each match at a different location must be preserved as a separate
     // finding. Only collapse linter findings when their lines also overlap.
-    let both_linter = matches!((&a.source, &b.source), (Source::Linter(_), Source::Linter(_)));
+    let both_linter = matches!(
+        (&a.source, &b.source),
+        (Source::Linter(_), Source::Linter(_))
+    );
     if a.title == b.title && a.category == b.category {
         if both_linter {
             let overlap = line_overlap(a.line_start, a.line_end, b.line_start, b.line_end);

@@ -296,19 +296,15 @@ pub async fn judge_findings<J: JudgeLlm>(
                                     .filter(|&idx| {
                                         idx < to_judge.len()
                                             && !used[idx]
-                                            && findings[to_judge[idx]]
-                                                .rule_id
-                                                .as_deref()
+                                            && findings[to_judge[idx]].rule_id.as_deref()
                                                 == Some(&v.rule_id)
                                     })
                                     .or_else(|| {
-                                        to_judge.iter().enumerate().position(
-                                            |(pos, &i)| {
-                                                !used[pos]
-                                                    && findings[i].rule_id.as_deref()
-                                                        == Some(&v.rule_id)
-                                            },
-                                        )
+                                        to_judge.iter().enumerate().position(|(pos, &i)| {
+                                            !used[pos]
+                                                && findings[i].rule_id.as_deref()
+                                                    == Some(&v.rule_id)
+                                        })
                                     });
                                 if let Some(pos) = batch_pos {
                                     used[pos] = true;
@@ -325,8 +321,7 @@ pub async fn judge_findings<J: JudgeLlm>(
                                         .unwrap_or("");
                                     let canonical_rule_id =
                                         findings[i].rule_id.as_deref().unwrap_or("");
-                                    let key =
-                                        verdict_cache_key(canonical_rule_id, evidence);
+                                    let key = verdict_cache_key(canonical_rule_id, evidence);
                                     if let Err(e) = write_cache_entry(
                                         cache_path,
                                         &CacheEntry {
