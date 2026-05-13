@@ -93,7 +93,21 @@ fn similarity(a: &Finding, b: &Finding) -> f64 {
     // Exact title+category match collapses regardless of line overlap.
     // These are the "4x Catch-all except: pass at different lines" cases
     // that used to leak through as separate findings.
+    //
+    // Exception: linter findings (ast-grep) share identical titles per rule,
+    // so each match at a different location must be preserved as a separate
+    // finding. Only collapse linter findings when their lines also overlap.
+    let both_linter = matches!(
+        (&a.source, &b.source),
+        (Source::Linter(_), Source::Linter(_))
+    );
     if a.title == b.title && a.category == b.category {
+        if both_linter {
+            let overlap = line_overlap(a.line_start, a.line_end, b.line_start, b.line_end);
+            if overlap < 0.5 {
+                return 0.0;
+            }
+        }
         return 1.0;
     }
 
@@ -270,6 +284,50 @@ mod tests {
             joined.contains("3 occurrences") || joined.contains("occurrences: 3"),
             "merged finding should record occurrence count, got evidence: {:?}",
             result[0].evidence
+        );
+    }
+
+    #[test]
+    fn merge_non_overlapping_linter_findings_preserved() {
+        let f1 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(10, 10)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(100, 100)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
+        assert_eq!(
+            result.len(),
+            2,
+            "non-overlapping linter findings must stay separate"
+        );
+    }
+
+    #[test]
+    fn merge_overlapping_linter_findings_collapse() {
+        let f1 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(10, 20)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let f2 = FindingBuilder::new()
+            .title("ignored-io-result")
+            .category("error-handling".into())
+            .lines(12, 18)
+            .source(Source::Linter("ast-grep".into()))
+            .build();
+        let result = merge_findings(vec![vec![f1], vec![f2]], 0.8, 1);
+        assert_eq!(
+            result.len(),
+            1,
+            "overlapping linter findings should collapse"
         );
     }
 

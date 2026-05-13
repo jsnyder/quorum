@@ -196,7 +196,7 @@ pub struct PipelineConfig {
     pub registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>>,
     /// Enable LLM micro-judge for speculative AST rules (--judge / QUORUM_JUDGE=1)
     pub judge_enabled: bool,
-    /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-5-nano)
+    /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-4.1-mini)
     pub judge_model: String,
     /// Shared OpenAI client for judge LLM calls. When `Some` and
     /// `judge_enabled` is true, an `OpenAiJudge` is constructed per file.
@@ -228,7 +228,7 @@ impl Default for PipelineConfig {
             mode: crate::review_mode::ReviewMode::Code,
             registry_client: None,
             judge_enabled: false,
-            judge_model: "gpt-5-nano".into(),
+            judge_model: "gpt-4.1-mini".into(),
             judge_client: None,
         }
     }

@@ -78,10 +78,26 @@ pub fn write_cache_entry(path: &Path, entry: &CacheEntry) -> std::io::Result<()>
 
 #[derive(Debug, Deserialize)]
 pub struct JudgeResponseItem {
+    #[serde(default)]
+    pub index: Option<usize>,
     pub rule_id: String,
     pub verdict: String,
     pub confidence: f32,
     pub reason: String,
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn extract_json_array(response: &str) -> Option<&str> {
+    let trimmed = response.trim();
+    let start = trimmed.find('[')?;
+    let end = trimmed.rfind(']')?;
+    if start > end {
+        return None;
+    }
+    Some(&trimmed[start..=end])
 }
 
 /// Map wire-format verdict strings to the `JudgeVerdict` enum.
@@ -146,8 +162,9 @@ pub fn build_judge_prompt(
 
     for (i, (rule_id, title, start, end, evidence)) in findings.iter().enumerate() {
         prompt.push_str(&format!(
-            "{}. rule_id=\"{}\", title=\"{}\", lines {}-{}, evidence=\"{}\"\n",
+            "{}. [index={}] rule_id=\"{}\", title=\"{}\", lines {}-{}, evidence=\"{}\"\n",
             i + 1,
+            i,
             rule_id,
             title,
             start,
@@ -157,8 +174,8 @@ pub fn build_judge_prompt(
     }
 
     prompt.push_str(
-        "\nRespond with ONLY a JSON array. Each element: \
-         {\"rule_id\": \"...\", \"verdict\": \"tp\"|\"fp\"|\"uncertain\", \
+        "\nRespond with ONLY a JSON array. Each element must include the index field: \
+         {\"index\": N, \"rule_id\": \"...\", \"verdict\": \"tp\"|\"fp\"|\"uncertain\", \
          \"confidence\": 0.0-1.0, \"reason\": \"...\"}\n",
     );
     prompt
@@ -259,56 +276,89 @@ pub async fn judge_findings<J: JudgeLlm>(
             let prompt = build_judge_prompt(source_code, &items);
             result.calls += 1;
 
-            if let Some(response) = llm.call(&prompt).await
-                && let Ok(verdicts) = serde_json::from_str::<Vec<JudgeResponseItem>>(&response)
-            {
-                for v in &verdicts {
-                    if let Some(pos) = to_judge
-                        .iter()
-                        .position(|&i| findings[i].rule_id.as_deref() == Some(&v.rule_id))
-                    {
-                        let i = to_judge.swap_remove(pos);
-                        let verdict = parse_verdict(&v.verdict);
-                        let confidence = v.confidence.clamp(0.0, 1.0);
-                        findings[i].judge_verdict = Some(verdict.clone());
-                        findings[i].judge_confidence = Some(confidence);
+            let raw_response = llm.call(&prompt).await;
+            if let Some(response) = raw_response {
+                let json_extracted = extract_json_array(&response);
+                if json_extracted.is_none() {
+                    tracing::warn!(
+                        response_len = response.len(),
+                        response_prefix = %truncate_chars(&response, 200),
+                        "judge: no JSON array found in LLM response"
+                    );
+                }
+                if let Some(json_str) = json_extracted {
+                    match serde_json::from_str::<Vec<JudgeResponseItem>>(json_str) {
+                        Ok(verdicts) => {
+                            let mut used = vec![false; to_judge.len()];
+                            for v in &verdicts {
+                                let batch_pos = v
+                                    .index
+                                    .filter(|&idx| {
+                                        idx < to_judge.len()
+                                            && !used[idx]
+                                            && findings[to_judge[idx]].rule_id.as_deref()
+                                                == Some(&v.rule_id)
+                                    })
+                                    .or_else(|| {
+                                        to_judge.iter().enumerate().position(|(pos, &i)| {
+                                            !used[pos]
+                                                && findings[i].rule_id.as_deref()
+                                                    == Some(&v.rule_id)
+                                        })
+                                    });
+                                if let Some(pos) = batch_pos {
+                                    used[pos] = true;
+                                    let i = to_judge[pos];
+                                    let verdict = parse_verdict(&v.verdict);
+                                    let confidence = v.confidence.clamp(0.0, 1.0);
+                                    findings[i].judge_verdict = Some(verdict.clone());
+                                    findings[i].judge_confidence = Some(confidence);
 
-                        let evidence = findings[i]
-                            .evidence
-                            .first()
-                            .map(|s| s.as_str())
-                            .unwrap_or("");
-                        let key = verdict_cache_key(&v.rule_id, evidence);
-                        if let Err(e) = write_cache_entry(
-                            cache_path,
-                            &CacheEntry {
-                                cache_key: key,
-                                rule_id: v.rule_id.clone(),
-                                verdict: verdict.clone(),
-                                confidence,
-                                reason: v.reason.clone(),
-                                timestamp: Utc::now(),
-                            },
-                        ) {
-                            tracing::warn!(
-                                path = %cache_path.display(),
-                                error = %e,
-                                "failed to persist judge cache entry"
-                            );
+                                    let evidence = findings[i]
+                                        .evidence
+                                        .first()
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("");
+                                    let canonical_rule_id =
+                                        findings[i].rule_id.as_deref().unwrap_or("");
+                                    let key = verdict_cache_key(canonical_rule_id, evidence);
+                                    if let Err(e) = write_cache_entry(
+                                        cache_path,
+                                        &CacheEntry {
+                                            cache_key: key,
+                                            rule_id: canonical_rule_id.to_string(),
+                                            verdict: verdict.clone(),
+                                            confidence,
+                                            reason: v.reason.clone(),
+                                            timestamp: Utc::now(),
+                                        },
+                                    ) {
+                                        tracing::warn!(
+                                            path = %cache_path.display(),
+                                            error = %e,
+                                            "failed to persist judge cache entry"
+                                        );
+                                    }
+
+                                    match verdict {
+                                        JudgeVerdict::Approved => result.approved += 1,
+                                        JudgeVerdict::Rejected => result.rejected += 1,
+                                        _ => result.uncertain += 1,
+                                    }
+                                }
+                            }
                         }
-
-                        match verdict {
-                            JudgeVerdict::Approved => result.approved += 1,
-                            JudgeVerdict::Rejected => result.rejected += 1,
-                            _ => result.uncertain += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                json_prefix = %truncate_chars(json_str, 200),
+                                "judge: failed to parse JSON response"
+                            );
                         }
                     }
                 }
-            } else if to_judge
-                .iter()
-                .any(|&i| findings[i].judge_verdict.is_none())
-            {
-                tracing::warn!("judge LLM returned no usable response");
+            } else {
+                tracing::warn!("judge LLM returned no response");
             }
 
             // Any remaining unjudged findings (LLM didn't return verdict): mark uncertain

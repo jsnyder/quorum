@@ -769,11 +769,19 @@ impl OpenAiClient {
         prompt: &str,
         system_prompt: &str,
     ) -> anyhow::Result<LlmResponse> {
+        if Self::needs_responses_api(model) {
+            anyhow::bail!(
+                "Judge does not support Responses-only model '{}'; use a chat-completions model",
+                model
+            );
+        }
+        let safe_prompt = crate::redact::redact_secrets(prompt);
+        let safe_system = crate::redact::redact_secrets(system_prompt);
         let body = serde_json::json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": safe_system},
+                {"role": "user", "content": safe_prompt}
             ],
             "temperature": 0,
             "max_tokens": 2048
@@ -797,6 +805,15 @@ impl OpenAiClient {
 
         let json: serde_json::Value = resp.json().await?;
         let usage = parse_usage(&json);
+
+        let finish_reason = json["choices"][0]["finish_reason"]
+            .as_str()
+            .unwrap_or("unknown");
+        if finish_reason == "length" {
+            anyhow::bail!(
+                "Judge response truncated (finish_reason=length); increase max_tokens or reduce batch size"
+            );
+        }
 
         let content = json["choices"][0]["message"]["content"]
             .as_str()
