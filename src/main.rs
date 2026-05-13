@@ -7,6 +7,7 @@
 pub use quorum::analysis;
 pub use quorum::ast_grep;
 pub use quorum::calibrator;
+pub use quorum::calibrator_model;
 pub use quorum::calibrator_trace;
 pub use quorum::category;
 pub use quorum::domain;
@@ -1019,21 +1020,46 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         ..Default::default()
     };
     let thresholds_path = qhome.join("calibrator_thresholds.toml");
-    if let Some(tc) =
-        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy())
-    {
-        calibrator_config.suppress_threshold = tc.suppress.map(|p| p.threshold);
-        calibrator_config.boost_threshold = tc.boost.map(|p| p.threshold);
+    let loaded_tc =
+        quorum::threshold_config::ThresholdConfig::load_from(&thresholds_path.to_string_lossy());
+    if let Some(tc) = loaded_tc.as_ref() {
+        calibrator_config.suppress_threshold = tc.suppress.as_ref().map(|p| p.threshold);
+        calibrator_config.boost_threshold = tc.boost.as_ref().map(|p| p.threshold);
         tracing::info!(
             suppress = ?calibrator_config.suppress_threshold,
             boost = ?calibrator_config.boost_threshold,
+            composite = tc.composite_model,
             "loaded data-driven calibrator thresholds"
         );
     }
+    // Load composite calibrator model if available.
+    let model_path = qhome.join("calibrator_model.toml");
+    if let Some(model) =
+        quorum::calibrator_model::CalibratorModel::load_from(&model_path.to_string_lossy())
+    {
+        tracing::info!(
+            word_lor_entries = model.word_lor.len(),
+            family_rates = model.family_fp_rate.len(),
+            language_rates = model.language_fp_rate.len(),
+            "loaded composite calibrator model"
+        );
+        calibrator_config.model = Some(model);
+    }
+    if loaded_tc.as_ref().is_some_and(|tc| tc.composite_model) && calibrator_config.model.is_none()
+    {
+        tracing::warn!(
+            "calibrator_thresholds.toml declares composite_model=true but \
+             calibrator_model.toml is missing; clearing thresholds to fall \
+             back to defaults"
+        );
+        calibrator_config.suppress_threshold = None;
+        calibrator_config.boost_threshold = None;
+    }
     // QUORUM_FORCE_THRESHOLD overrides both suppress and boost.
     if let Ok(v) = std::env::var("QUORUM_FORCE_THRESHOLD") {
+        let has_composite = calibrator_config.model.is_some();
         match v.parse::<f64>() {
-            Ok(t) if t.is_finite() && (0.0..=1.0).contains(&t) => {
+            Ok(t) if t.is_finite() && (has_composite || (0.0..=1.0).contains(&t)) => {
                 calibrator_config.force_threshold = Some(t);
                 tracing::warn!(
                     threshold = t,
@@ -1042,10 +1068,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 );
             }
             Ok(t) => {
+                let expected = if has_composite {
+                    "expected finite value"
+                } else {
+                    "expected finite value in [0.0, 1.0]"
+                };
                 tracing::warn!(
                     raw = %v,
                     parsed = t,
-                    "ignoring QUORUM_FORCE_THRESHOLD: expected finite value in [0.0, 1.0]"
+                    "ignoring QUORUM_FORCE_THRESHOLD: {expected}"
                 );
             }
             Err(e) => {
@@ -1933,6 +1964,7 @@ fn run_feedback_inner(
     blamed_chunks: Option<&str>,
     category: Option<&str>,
     fp_kind: Option<feedback::FpKind>,
+    in_diff: Option<bool>,
     json: bool,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
@@ -1974,6 +2006,7 @@ fn run_feedback_inner(
         fp_kind,
         finding_id: None,
         rule_id: None,
+        in_diff,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
@@ -2045,6 +2078,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             agent: agent.to_string(),
             agent_model: opts.agent_model.clone(),
             confidence: opts.confidence,
+            in_diff: opts.in_diff,
         };
         if let Some(parent) = feedback_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -2129,6 +2163,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.blamed_chunks.as_deref(),
             opts.category.as_deref(),
             fp_kind,
+            opts.in_diff,
             opts.json,
             &feedback_path,
         );
@@ -2306,11 +2341,36 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     eprintln!("  below threshold:    {}", join_stats.below_threshold);
     eprintln!("  unmatched:          {}", join_stats.unmatched);
 
-    let config = quorum::calibrate::compute_thresholds(
-        &samples,
+    // Compute composite model from feedback
+    let composite_model = quorum::calibrate::compute_calibrator_model(&feedback);
+    let scoring_samples = if let Some(ref model) = composite_model {
+        eprintln!(
+            "\nComposite model: {} word_lor entries, {} family rates, {} language rates",
+            model.word_lor.len(),
+            model.family_fp_rate.len(),
+            model.language_fp_rate.len(),
+        );
+        // Re-score samples using composite scores for threshold computation
+        quorum::calibrate::rescore_samples_with_model(
+            &feedback,
+            &traces,
+            model,
+            &filter,
+            disable_fuzzy,
+        )
+    } else {
+        eprintln!("\nComposite model: not computed (no eligible feedback)");
+        samples.clone()
+    };
+
+    let mut config = quorum::calibrate::compute_thresholds(
+        &scoring_samples,
         opts.suppress_precision,
         opts.boost_precision,
     );
+    if composite_model.is_some() {
+        config.composite_model = true;
+    }
 
     // Print summary
     println!("--- Calibrator Threshold Report ---");
@@ -2345,15 +2405,32 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     } else if config.suppress.is_none() && config.boost.is_none() {
         eprintln!("\nNo thresholds computed (insufficient data). Existing config preserved.");
     } else {
-        let toml_path = qhome.join("calibrator_thresholds.toml");
-        let toml_str = config.to_toml();
         if let Err(e) = std::fs::create_dir_all(&qhome) {
             eprintln!("\nerror: failed to create {}: {e}", qhome.display());
             return 3;
         }
+
+        // Write composite model
+        if let Some(ref model) = composite_model {
+            let model_path = qhome.join("calibrator_model.toml");
+            let model_toml = model.to_toml();
+            match std::fs::write(&model_path, &model_toml) {
+                Ok(()) => {
+                    eprintln!("Wrote {}", model_path.display());
+                }
+                Err(e) => {
+                    eprintln!("error: failed to write {}: {}", model_path.display(), e);
+                    return 3;
+                }
+            }
+        }
+
+        // Write thresholds
+        let toml_path = qhome.join("calibrator_thresholds.toml");
+        let toml_str = config.to_toml();
         match std::fs::write(&toml_path, &toml_str) {
             Ok(()) => {
-                eprintln!("\nWrote {}", toml_path.display());
+                eprintln!("Wrote {}", toml_path.display());
             }
             Err(e) => {
                 eprintln!("\nerror: failed to write {}: {}", toml_path.display(), e);
@@ -2466,6 +2543,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2489,6 +2567,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2505,6 +2584,7 @@ mod feedback_tests {
             "SQL injection",
             "tp",
             "Real issue",
+            None,
             None,
             None,
             None,
@@ -2530,6 +2610,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2551,6 +2632,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2568,6 +2650,7 @@ mod feedback_tests {
             "SQL injection",
             "fp",
             "Not a real issue",
+            None,
             None,
             None,
             None,
@@ -2599,6 +2682,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2620,6 +2704,7 @@ mod feedback_tests {
             Some("chunk-abc,chunk-def"),
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );
@@ -2670,6 +2755,7 @@ mod feedback_tests {
             Some("a,,b"),
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );
@@ -2696,6 +2782,7 @@ mod feedback_tests {
             None, // user omitted --blamed-chunks entirely
             None,
             None, // fp_kind
+            None, // in_diff
             false,
             &path,
         );

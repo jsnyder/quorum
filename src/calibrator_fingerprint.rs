@@ -180,6 +180,8 @@ mod tests {
             file_path: None,
             provenance: None,
             same_file_precedent_count: None,
+            in_diff: None,
+            composite_score: None,
         }
     }
 

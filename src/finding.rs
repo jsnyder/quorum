@@ -148,6 +148,8 @@ pub struct Finding {
     pub judge_confidence: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision_tier: Option<PrecisionTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_diff: Option<bool>,
 }
 
 impl Finding {
@@ -250,6 +252,7 @@ impl FindingBuilder {
                 judge_verdict: None,
                 judge_confidence: None,
                 precision_tier: None,
+                in_diff: None,
             },
         }
     }
@@ -313,6 +316,16 @@ impl FindingBuilder {
 
     pub fn lines(mut self, start: u32, end: u32) -> Self {
         self.inner.line_start = start;
+        self.inner.line_end = end;
+        self
+    }
+
+    pub fn line_start(mut self, start: u32) -> Self {
+        self.inner.line_start = start;
+        self
+    }
+
+    pub fn line_end(mut self, end: u32) -> Self {
         self.inner.line_end = end;
         self
     }
@@ -456,6 +469,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -497,6 +511,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -531,6 +546,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -567,6 +583,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         assert!(f.is_valid());
     }
@@ -599,6 +616,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         assert!(f.is_valid());
     }
@@ -631,6 +649,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         assert!(!f.is_valid());
     }
@@ -663,6 +682,7 @@ mod tests {
             judge_verdict: None,
             judge_confidence: None,
             precision_tier: None,
+            in_diff: None,
         };
         assert!(!f.is_valid());
     }
@@ -1170,5 +1190,39 @@ mod tests {
         f.judge_confidence = Some(f32::NAN);
         f.compute_confidence();
         assert!((f.confidence.unwrap() - 0.95).abs() < 0.01);
+    }
+
+    // -- in_diff field --
+
+    #[test]
+    fn in_diff_serde_round_trip() {
+        let mut f = FindingBuilder::new().build();
+        assert_eq!(f.in_diff, None);
+
+        f.in_diff = Some(true);
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"in_diff\":true"));
+        let parsed: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.in_diff, Some(true));
+
+        f.in_diff = Some(false);
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"in_diff\":false"));
+        let parsed: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.in_diff, Some(false));
+    }
+
+    #[test]
+    fn in_diff_omitted_deserializes_as_none() {
+        let json = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"similar_precedent":[]}"#;
+        let f: Finding = serde_json::from_str(json).unwrap();
+        assert_eq!(f.in_diff, None);
+    }
+
+    #[test]
+    fn in_diff_none_not_serialized() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("in_diff"));
     }
 }

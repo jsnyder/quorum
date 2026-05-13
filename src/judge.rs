@@ -251,7 +251,10 @@ pub async fn judge_findings<J: JudgeLlm>(
     if !to_judge.is_empty() {
         if let Some(llm) = llm {
             if to_judge.len() > 50 {
-                tracing::warn!(count = to_judge.len(), "large batch of speculative findings for judge");
+                tracing::warn!(
+                    count = to_judge.len(),
+                    "large batch of speculative findings for judge"
+                );
             }
             let items: Vec<_> = to_judge
                 .iter()
@@ -941,7 +944,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.uncertain, 1, "malformed JSON should degrade to Uncertain");
+        assert_eq!(
+            result.uncertain, 1,
+            "malformed JSON should degrade to Uncertain"
+        );
         assert_eq!(result.calls, 1);
         assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
     }

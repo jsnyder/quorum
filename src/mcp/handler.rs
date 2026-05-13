@@ -176,6 +176,7 @@ impl QuorumHandler {
                 agent,
                 agent_model: params.agent_model,
                 confidence: params.confidence,
+                in_diff: params.in_diff,
             };
             self.feedback_store
                 .record_external(input)
@@ -203,6 +204,7 @@ impl QuorumHandler {
             fp_kind,
             finding_id: None,
             rule_id: None,
+            in_diff: params.in_diff,
         };
 
         self.feedback_store
@@ -574,6 +576,7 @@ mod tests {
             confidence: None,
             category: None,
             fp_kind: None,
+            in_diff: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -616,6 +619,7 @@ mod tests {
             confidence: None,
             category: None,
             fp_kind: None,
+            in_diff: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -663,6 +667,7 @@ mod tests {
             confidence: None,
             category: None,
             fp_kind: None,
+            in_diff: None,
         };
 
         let err = handler.handle_feedback(params).expect_err("must reject");
@@ -702,6 +707,7 @@ mod tests {
             confidence: Some(0.9),
             category: None,
             fp_kind: None,
+            in_diff: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -749,6 +755,7 @@ mod tests {
             confidence: None,
             category: None,
             fp_kind: None,
+            in_diff: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -1426,6 +1433,7 @@ mod tests {
                 confidence: None,
                 category: None,
                 fp_kind: Some(kind.clone()),
+                in_diff: None,
             };
             handler.handle_feedback(params).unwrap();
 
@@ -1494,6 +1502,7 @@ mod tests {
             confidence: None,
             category: None,
             fp_kind: Some(FpKind::Hallucination),
+            in_diff: None,
         };
         handler.handle_feedback(params).unwrap();
 

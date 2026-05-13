@@ -2,9 +2,15 @@
 //! For each finding, searches for similar past findings and their TP/FP verdicts.
 //! FP precedent suppresses findings; TP precedent boosts confidence.
 
+use crate::calibrator_model::CalibratorModel;
 use crate::category::Category;
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::finding::{CalibratorAction, Finding, Severity};
+
+/// Weight multiplier applied to verdicts where `in_diff = Some(false)`.
+/// Verdicts on findings that were outside the reviewed diff carry less signal
+/// (the reviewer may not have had full context), so we discount them by 30%.
+const OUT_OF_DIFF_WEIGHT: f64 = 0.7;
 
 #[derive(Debug, Clone)]
 pub struct CalibrationResult {
@@ -54,6 +60,9 @@ pub struct CalibratorConfig {
     /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
     /// keeps all tiers active (default).
     pub disable_fuzzy_matching: Option<bool>,
+    /// Composite scoring model. When present, threshold comparisons use
+    /// composite scores instead of raw `tp_weight / total`.
+    pub model: Option<CalibratorModel>,
 }
 
 impl Default for CalibratorConfig {
@@ -70,6 +79,7 @@ impl Default for CalibratorConfig {
             force_threshold: None,
             trace_provenance: None,
             disable_fuzzy_matching: None,
+            model: None,
         }
     }
 }
@@ -114,6 +124,8 @@ fn make_no_match_trace(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: finding.in_diff,
+        composite_score: None,
     }
 }
 
@@ -154,6 +166,8 @@ fn make_trace_entry(
         },
         provenance: None,
         same_file_precedent_count: None,
+        in_diff: finding.in_diff,
+        composite_score: None,
     }
 }
 
@@ -177,7 +191,7 @@ struct CoreDecision {
 /// Returns a [`CoreDecision`] that the caller uses to update counters and
 /// decide whether to keep the finding in the output vec.
 #[allow(clippy::too_many_arguments)]
-fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
+fn sanitize_threshold(t: Option<f64>, composite: bool) -> Option<f64> {
     t.and_then(|v| {
         if !v.is_finite() {
             tracing::warn!(
@@ -185,7 +199,7 @@ fn sanitize_threshold(t: Option<f64>) -> Option<f64> {
                 "non-finite threshold replaced with None (legacy fallback)"
             );
             None
-        } else if !(0.0..=1.0).contains(&v) {
+        } else if !composite && !(0.0..=1.0).contains(&v) {
             let clamped = v.clamp(0.0, 1.0);
             tracing::warn!(raw = v, clamped, "threshold outside [0,1] clamped");
             Some(clamped)
@@ -211,13 +225,23 @@ fn calibrate_core_decision(
     let mut suppressed = false;
     let mut boosted = false;
 
-    let force_threshold = sanitize_threshold(config.force_threshold);
-    let suppress_threshold = sanitize_threshold(config.suppress_threshold);
-    let boost_threshold = sanitize_threshold(config.boost_threshold);
+    let has_composite = config.model.is_some();
+    let force_threshold = sanitize_threshold(config.force_threshold, has_composite);
+    let suppress_threshold = sanitize_threshold(config.suppress_threshold, has_composite);
+    let boost_threshold = sanitize_threshold(config.boost_threshold, has_composite);
 
     // PR3: compute score once for data-driven threshold decisions.
     let total = tp_weight + fp_weight;
-    let score = if total > 0.0 { tp_weight / total } else { 0.5 };
+    let precedent_score = if total > 0.0 { tp_weight / total } else { 0.5 };
+
+    // Composite scoring: when a model is loaded, use composite score for
+    // threshold comparisons instead of raw precedent score.
+    let lang = CalibratorModel::file_ext_language(file_path);
+    let composite = config
+        .model
+        .as_ref()
+        .map(|m| m.composite_score(precedent_score, &finding.title, lang));
+    let score = composite.unwrap_or(precedent_score);
 
     // Full suppress: FP weight only. Wontfix no longer contributes.
     let full_suppress_weight = fp_weight;
@@ -228,7 +252,7 @@ fn calibrate_core_decision(
         if score < thresh && fp_weight > 0.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
-            let trace = make_trace_entry(
+            let mut trace = make_trace_entry(
                 finding,
                 tp_weight,
                 fp_weight,
@@ -241,6 +265,7 @@ fn calibrate_core_decision(
                 Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
                 file_path,
             );
+            trace.composite_score = composite;
             return CoreDecision {
                 suppressed,
                 boosted,
@@ -253,7 +278,7 @@ fn calibrate_core_decision(
         {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
-            let trace = make_trace_entry(
+            let mut trace = make_trace_entry(
                 finding,
                 tp_weight,
                 fp_weight,
@@ -266,6 +291,7 @@ fn calibrate_core_decision(
                 Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
                 file_path,
             );
+            trace.composite_score = composite;
             return CoreDecision {
                 suppressed,
                 boosted,
@@ -327,7 +353,7 @@ fn calibrate_core_decision(
         reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
     }
 
-    let trace = make_trace_entry(
+    let mut trace = make_trace_entry(
         finding,
         tp_weight,
         fp_weight,
@@ -340,6 +366,7 @@ fn calibrate_core_decision(
         reason,
         file_path,
     );
+    trace.composite_score = composite;
 
     CoreDecision {
         suppressed,
@@ -437,7 +464,12 @@ fn verdict_weight(entry: &FeedbackEntry, now: chrono::DateTime<chrono::Utc>) -> 
     let age_days = (now - entry.timestamp).num_days().unsigned_abs() as f64;
     let recency_weight = (-age_days / recency_tau_days).exp();
 
-    provenance_weight * recency_weight
+    let in_diff_factor = match entry.in_diff {
+        Some(false) => OUT_OF_DIFF_WEIGHT,
+        _ => 1.0,
+    };
+
+    provenance_weight * recency_weight * in_diff_factor
 }
 
 /// Calibrate findings using feedback precedent.
@@ -1211,6 +1243,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -1552,6 +1585,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let halluc_120d = FeedbackEntry {
             timestamp: now - chrono::Duration::days(120),
@@ -1609,6 +1643,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^-1 ≈ 0.36788 — tight tolerance kills 120→119 mutant.
@@ -1632,6 +1667,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         assert!(
@@ -1659,6 +1695,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let trust_entry = FeedbackEntry {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
@@ -1706,6 +1743,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^(-40/120) ≈ 0.7165 — uses 120d default branch.
@@ -1737,6 +1775,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_oos(1), make_oos(2), make_oos(3)];
         let findings = vec![
@@ -1773,6 +1812,7 @@ mod tests {
             fp_kind: Some(crate::feedback::FpKind::Hallucination),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![make_halluc(1), make_halluc(2), make_halluc(3)];
         let findings = vec![
@@ -1818,6 +1858,7 @@ mod tests {
             }),
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let entries = vec![make_oos(1), make_oos(2), make_oos(3)];
         for e in &entries {
@@ -2157,6 +2198,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
@@ -2190,6 +2232,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2245,6 +2288,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let auto_fp = FeedbackEntry {
             file_path: "test.py".into(),
@@ -2258,6 +2302,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
@@ -2298,6 +2343,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let recent_fp = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -2311,6 +2357,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2348,6 +2395,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2373,6 +2421,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let weight = verdict_weight(&old_entry, Utc::now());
         assert!(
@@ -2403,6 +2452,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2436,6 +2486,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
@@ -2467,6 +2518,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2632,6 +2684,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
 
         let config = CalibratorConfig::default();
@@ -3238,6 +3291,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3349,6 +3403,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
@@ -3375,6 +3430,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let cases: &[(&str, Option<f32>)] = &[
             ("None", None),
@@ -3409,6 +3465,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
@@ -3434,6 +3491,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -3542,6 +3600,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -4256,6 +4315,7 @@ mod tests {
             fp_kind: None,
             finding_id: None,
             rule_id: None,
+            in_diff: None,
         }
     }
 
@@ -4839,6 +4899,273 @@ mod tests {
         assert!(
             decision.suppressed,
             "NaN threshold should fall back to legacy which suppresses at fp=2.0"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Task 7: make_trace_entry propagates in_diff from finding (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn trace_entry_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(true);
+        let trace = make_trace_entry(
+            &finding,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            vec![],
+            None,
+            crate::finding::Severity::Medium,
+            None,
+            "test.rs",
+        );
+        assert_eq!(trace.in_diff, Some(true));
+    }
+
+    #[test]
+    fn no_match_trace_carries_in_diff_from_finding() {
+        let mut finding = crate::finding::FindingBuilder::new()
+            .severity(crate::finding::Severity::Medium)
+            .build();
+        finding.in_diff = Some(false);
+        let trace = make_no_match_trace(&finding, "test.rs");
+        assert_eq!(trace.in_diff, Some(false));
+    }
+
+    // -------------------------------------------------------------------
+    // Task 6: OUT_OF_DIFF_WEIGHT discount in verdict_weight (#310)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn verdict_weight_in_diff_none_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: None,
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_in_diff_true_is_full_weight() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(true),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_out_of_diff_applies_discount() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Tp,
+            reason: "real".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn verdict_weight_external_out_of_diff_compounds() {
+        let entry = crate::feedback::FeedbackEntry {
+            file_path: "test.rs".into(),
+            finding_title: "test".into(),
+            finding_category: "security".into(),
+            verdict: crate::feedback::Verdict::Fp,
+            reason: "nah".into(),
+            model: None,
+            timestamp: chrono::Utc::now(),
+            provenance: crate::feedback::Provenance::External {
+                agent: "pal".into(),
+                model: None,
+                confidence: None,
+            },
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: Some(false),
+        };
+        let w = verdict_weight(&entry, chrono::Utc::now());
+        assert!((w - 0.49).abs() < 0.02);
+    }
+
+    // --- Composite scoring tests ---
+
+    fn make_composite_model() -> CalibratorModel {
+        use std::collections::HashMap;
+        CalibratorModel {
+            meta: crate::calibrator_model::ModelMeta {
+                computed_at: "2026-05-12T00:00:00Z".to_string(),
+                feedback_count: 100,
+                global_fp_rate: 0.27,
+            },
+            weights: crate::calibrator_model::ScoreWeights {
+                score: 0.5,
+                word_lor: 1.5,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            word_lor: HashMap::from([
+                ("unwrap".into(), -1.0),
+                ("panic".into(), -0.8),
+                ("runtime".into(), -0.5),
+                ("sql".into(), 2.0),
+                ("injection".into(), 1.5),
+            ]),
+            family_fp_rate: HashMap::from([("use of `` may panic at runtime".into(), 0.90)]),
+            language_fp_rate: HashMap::from([("rust".into(), 0.328), ("python".into(), 0.208)]),
+        }
+    }
+
+    #[test]
+    fn core_decision_uses_composite_when_model_present() {
+        let model = make_composite_model();
+        // Family "use of `` may panic at runtime" has 90% FP rate -> very low composite
+        let mut finding = finding_at(
+            "use of `unwrap()` may panic at runtime",
+            "correctness",
+            Severity::Medium,
+            "unwrap may panic",
+        );
+        let config = CalibratorConfig {
+            suppress_threshold: Some(1.0),
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.6, // tp_weight
+            0.4, // fp_weight (raw score = 0.6)
+            0.0,
+            0.4,
+            vec![],
+            Severity::Medium,
+            "test.rs",
+        );
+        // Composite: 0.5*0.6 + 1.5*word_lor + 1.0*(1-0.90) + 0.5*(1-0.27)
+        // word_lor tokens: use, of, unwrap, may, panic, at, runtime
+        //   unwrap=-1.0, panic=-0.8, runtime=-0.5, rest=0
+        //   avg = (-1.0 + -0.8 + -0.5) / 7 = -0.3286
+        // composite = 0.3 + 1.5*(-0.3286) + 1.0*0.1 + 0.5*0.73
+        //           = 0.3 + (-0.4929) + 0.1 + 0.365 = 0.2721
+        // 0.2721 < 1.0 (suppress threshold) -> suppressed
+        assert!(
+            decision.suppressed,
+            "high-FP family should be suppressed under composite scoring"
+        );
+        assert!(
+            decision.trace.composite_score.is_some(),
+            "composite_score should be set on trace"
+        );
+    }
+
+    #[test]
+    fn core_decision_no_composite_without_model() {
+        let mut finding = finding_at(
+            "use of `unwrap()` may panic at runtime",
+            "correctness",
+            Severity::Medium,
+            "unwrap may panic",
+        );
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.5),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.6, // tp_weight
+            0.4, // fp_weight (raw score = 0.6, above 0.5 suppress threshold)
+            0.0,
+            0.4,
+            vec![],
+            Severity::Medium,
+            "test.rs",
+        );
+        // No model -> score = 0.6 > 0.5 threshold -> NOT suppressed
+        assert!(
+            !decision.suppressed,
+            "without model, raw score 0.6 should not be suppressed at 0.5 threshold"
+        );
+        assert!(
+            decision.trace.composite_score.is_none(),
+            "composite_score should be None without model"
+        );
+    }
+
+    #[test]
+    fn core_decision_novel_family_uses_global_fp_rate() {
+        let model = make_composite_model();
+        let mut finding = finding_at(
+            "SQL injection via user input",
+            "security",
+            Severity::High,
+            "SQL injection risk",
+        );
+        let config = CalibratorConfig {
+            boost_threshold: Some(1.0),
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            2.0, // tp_weight
+            0.1, // fp_weight (raw score = 0.952)
+            0.0,
+            0.1,
+            vec![],
+            Severity::High,
+            "app.py",
+        );
+        // Novel family (no match in family_fp_rate) -> uses global_fp_rate=0.27
+        // word_lor tokens: sql, injection, via, user, input
+        //   sql=2.0, injection=1.5, rest=0
+        //   avg = (2.0 + 1.5) / 5 = 0.7
+        // composite = 0.5*0.952 + 1.5*0.7 + 1.0*(1-0.27) + 0.5*(1-0.208)
+        //           = 0.476 + 1.05 + 0.73 + 0.396 = 2.652
+        // 2.652 >= 1.0 (boost threshold) -> boost triggered
+        assert!(
+            decision.trace.composite_score.unwrap() > 2.0,
+            "SQL injection should have high composite score"
         );
     }
 }

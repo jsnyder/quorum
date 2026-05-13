@@ -367,6 +367,7 @@ pub fn scan_file(
                     judge_verdict: None,
                     judge_confidence: None,
                     precision_tier: Some(meta.precision.clone()),
+                    in_diff: None,
                 });
             }
         }
