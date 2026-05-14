@@ -143,6 +143,12 @@ async fn main() -> anyhow::Result<()> {
             // hermetic tests and alternate installs). Falls back to
             // `$HOME/.quorum`, then to `./.quorum` as a last resort.
             let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+            let storage_handle = quorum::storage::initialize(&quorum_home)
+                .unwrap_or_else(|e| {
+                    eprintln!("warning: failed to initialize storage: {}. Falling back to JSONL.", e);
+                    let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+                    std::sync::Arc::new(std::sync::Mutex::new(conn))
+                });
 
             // --join-health diagnostic: short-circuit normal dashboard, just
             // report reviews↔feedback finding_id linkage rate. Used to assess
@@ -255,14 +261,11 @@ async fn main() -> anyhow::Result<()> {
                 !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
 
             if want_context_dim {
-                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+                let log = review_log::ReviewLog::with_storage(storage_handle.clone());
                 let all_records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!(
-                            "error: cannot read reviews log at {}: {e}",
-                            log.path().display()
-                        );
+                        eprintln!("error: cannot read reviews log: {e}");
                         std::process::exit(3);
                     }
                 };
@@ -317,14 +320,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if want_classic_dim {
-                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+                let log = review_log::ReviewLog::with_storage(storage_handle.clone());
                 let records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!(
-                            "error: cannot read reviews log at {}: {e}",
-                            log.path().display()
-                        );
+                        eprintln!("error: cannot read reviews log: {e}");
                         std::process::exit(3);
                     }
                 };
@@ -369,8 +369,8 @@ async fn main() -> anyhow::Result<()> {
 
             let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
             let telemetry_store =
-                telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
-            let review_log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+                telemetry::TelemetryStore::with_storage(storage_handle.clone());
+            let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
                 Ok(report) => {
@@ -425,7 +425,16 @@ async fn main() -> anyhow::Result<()> {
 fn format_join_health(quorum_home: &std::path::Path) -> String {
     use std::fmt::Write;
 
-    let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+    let storage_handle = match quorum::storage::initialize(quorum_home) {
+        Ok(h) => h,
+        Err(e) => {
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
+            return out;
+        }
+    };
+    let log = review_log::ReviewLog::with_storage(storage_handle);
     let reviews = match log.load_all() {
         Ok(r) => r,
         Err(e) => {
@@ -434,7 +443,7 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
             // health — silent zeros would defeat the point.
             let mut out = String::new();
             writeln!(out, "Linkage health").unwrap();
-            writeln!(out, "  ERROR: failed to read reviews.jsonl: {e}").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
             return out;
         }
     };
@@ -844,6 +853,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // stats/feedback. Without this, `review` could ingest from one inbox
     // and calibrate against a different feedback log (#95 review feedback).
     let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let storage_handle = quorum::storage::initialize(&qhome)
+        .unwrap_or_else(|e| {
+            eprintln!("warning: failed to initialize storage: {}. Falling back to JSONL.", e);
+            let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+            std::sync::Arc::new(std::sync::Mutex::new(conn))
+        });
     let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
@@ -1590,8 +1605,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // outer-scope `qhome` resolved via quorum_dir() so review/telemetry/
     // reviews_jsonl all live in the same dir.
     {
-        let telem_path = qhome.join("telemetry.jsonl");
-        let telem_store = telemetry::TelemetryStore::new(telem_path);
+        let telem_store = telemetry::TelemetryStore::with_storage(storage_handle.clone());
         let mut finding_counts = std::collections::HashMap::new();
         for f in &all_findings {
             let sev = format!("{:?}", f.severity).to_lowercase();
@@ -1657,8 +1671,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let _ = telem_store.record(&telem_entry);
 
         // Per-review record for dimensional stats (by-repo, by-caller, rolling).
-        let reviews_path = qhome.join("reviews.jsonl");
-        let review_log = review_log::ReviewLog::new(reviews_path);
+        let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
         let first_file = opts.files.first().map(|p| p.as_path());
         let repo = first_file.and_then(review_log::detect_repo);
         let invoked_from = review_log::detect_invoked_from(opts.caller.as_deref());
