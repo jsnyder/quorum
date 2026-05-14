@@ -51,7 +51,15 @@ pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
                 e
             );
             let backup = quorum_home.join("quorum.db.corrupt");
-            let _ = std::fs::rename(&db_path, &backup);
+            if let Err(re) = std::fs::rename(&db_path, &backup) {
+                eprintln!("warning: failed to rename corrupt database: {}", re);
+            }
+            for ext in &["-wal", "-shm"] {
+                let sidecar = quorum_home.join(format!("quorum.db{ext}"));
+                if sidecar.exists() {
+                    let _ = std::fs::remove_file(&sidecar);
+                }
+            }
             open_and_migrate(&db_path)
                 .context("failed to create fresh database after corruption recovery")?
         }
@@ -61,6 +69,14 @@ pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
     migrate_telemetry_jsonl(&conn, quorum_home)?;
 
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Create an in-memory database with the full schema applied.
+/// Used as a fallback when the on-disk database cannot be opened.
+pub fn in_memory_handle() -> StorageHandle {
+    let conn = Connection::open_in_memory().expect("in-memory DB");
+    run_migrations(&conn).expect("in-memory schema migration");
+    Arc::new(Mutex::new(conn))
 }
 
 /// Open the database, configure pragmas, run an integrity check, and

@@ -145,11 +145,10 @@ async fn main() -> anyhow::Result<()> {
             let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
             let storage_handle = quorum::storage::initialize(&quorum_home).unwrap_or_else(|e| {
                 eprintln!(
-                    "warning: failed to initialize storage: {}. Falling back to JSONL.",
+                    "warning: failed to initialize storage: {}. Using in-memory database.",
                     e
                 );
-                let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
-                std::sync::Arc::new(std::sync::Mutex::new(conn))
+                quorum::storage::in_memory_handle()
             });
 
             // --join-health diagnostic: short-circuit normal dashboard, just
@@ -856,11 +855,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
     let storage_handle = quorum::storage::initialize(&qhome).unwrap_or_else(|e| {
         eprintln!(
-            "warning: failed to initialize storage: {}. Falling back to JSONL.",
+            "warning: failed to initialize storage: {}. Using in-memory database.",
             e
         );
-        let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
-        std::sync::Arc::new(std::sync::Mutex::new(conn))
+        quorum::storage::in_memory_handle()
     });
     let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
