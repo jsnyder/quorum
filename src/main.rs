@@ -143,12 +143,14 @@ async fn main() -> anyhow::Result<()> {
             // hermetic tests and alternate installs). Falls back to
             // `$HOME/.quorum`, then to `./.quorum` as a last resort.
             let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
-            let storage_handle = quorum::storage::initialize(&quorum_home)
-                .unwrap_or_else(|e| {
-                    eprintln!("warning: failed to initialize storage: {}. Falling back to JSONL.", e);
-                    let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
-                    std::sync::Arc::new(std::sync::Mutex::new(conn))
-                });
+            let storage_handle = quorum::storage::initialize(&quorum_home).unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: failed to initialize storage: {}. Falling back to JSONL.",
+                    e
+                );
+                let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+                std::sync::Arc::new(std::sync::Mutex::new(conn))
+            });
 
             // --join-health diagnostic: short-circuit normal dashboard, just
             // report reviews↔feedback finding_id linkage rate. Used to assess
@@ -368,8 +370,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
-            let telemetry_store =
-                telemetry::TelemetryStore::with_storage(storage_handle.clone());
+            let telemetry_store = telemetry::TelemetryStore::with_storage(storage_handle.clone());
             let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
@@ -853,12 +854,14 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // stats/feedback. Without this, `review` could ingest from one inbox
     // and calibrate against a different feedback log (#95 review feedback).
     let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
-    let storage_handle = quorum::storage::initialize(&qhome)
-        .unwrap_or_else(|e| {
-            eprintln!("warning: failed to initialize storage: {}. Falling back to JSONL.", e);
-            let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
-            std::sync::Arc::new(std::sync::Mutex::new(conn))
-        });
+    let storage_handle = quorum::storage::initialize(&qhome).unwrap_or_else(|e| {
+        eprintln!(
+            "warning: failed to initialize storage: {}. Falling back to JSONL.",
+            e
+        );
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+        std::sync::Arc::new(std::sync::Mutex::new(conn))
+    });
     let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();

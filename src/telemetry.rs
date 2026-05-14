@@ -120,12 +120,7 @@ impl RawTelemetryRow {
             .with_timezone(&Utc);
 
         let files: Vec<String> = serde_json::from_str(&self.files_json)
-            .with_context(|| {
-                format!(
-                    "invalid files JSON in telemetry row: {}",
-                    self.files_json
-                )
-            })?;
+            .with_context(|| format!("invalid files JSON in telemetry row: {}", self.files_json))?;
 
         let findings: HashMap<String, usize> = serde_json::from_str(&self.findings_json)
             .with_context(|| {
@@ -409,7 +404,9 @@ impl TelemetryStore {
         let findings_json = serde_json::to_string(&entry.findings)?;
         let ts = entry.ts.to_rfc3339();
 
-        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
         // u64 -> i64 casts are intentional: SQLite INTEGER is signed 64-bit.
         // Token counts and durations are well within i64 range in practice.
@@ -465,7 +462,9 @@ impl TelemetryStore {
     fn load_all_with_stats_sqlite(
         handle: &StorageHandle,
     ) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
-        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
         let raw_rows = Self::query_raw_rows(&conn)?;
 
@@ -1030,10 +1029,7 @@ mod tests {
         assert_eq!(got.context7_query_failed, entry.context7_query_failed);
         assert_eq!(got.context7_skipped_popular, entry.context7_skipped_popular);
         assert_eq!(got.context7_budget_reduced, entry.context7_budget_reduced);
-        assert_eq!(
-            got.fp_kind_utilization_rate,
-            entry.fp_kind_utilization_rate
-        );
+        assert_eq!(got.fp_kind_utilization_rate, entry.fp_kind_utilization_rate);
         assert_eq!(got.judge_calls, entry.judge_calls);
         assert_eq!(got.judge_approved, entry.judge_approved);
         assert_eq!(got.judge_rejected, entry.judge_rejected);

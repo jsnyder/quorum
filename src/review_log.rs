@@ -349,8 +349,8 @@ impl RawReviewRow {
             })?
             .with_timezone(&Utc);
 
-        let suppressed_by_rule: HashMap<String, u32> =
-            serde_json::from_str(&self.suppressed_json).with_context(|| {
+        let suppressed_by_rule: HashMap<String, u32> = serde_json::from_str(&self.suppressed_json)
+            .with_context(|| {
                 format!(
                     "invalid suppressed_by_rule JSON in review {}: {}",
                     self.run_id, self.suppressed_json
@@ -501,7 +501,9 @@ impl ReviewLog {
     fn record_sqlite(handle: &StorageHandle, entry: &ReviewRecord) -> anyhow::Result<()> {
         use rusqlite::params;
 
-        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
         let tx = conn.unchecked_transaction()?;
 
         let context_json = serde_json::to_string(&entry.context)?;
@@ -569,7 +571,9 @@ impl ReviewLog {
     }
 
     fn load_all_sqlite(handle: &StorageHandle) -> anyhow::Result<Vec<ReviewRecord>> {
-        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
         // Pre-load all finding_ids grouped by run_id.
         let mut finding_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -596,9 +600,7 @@ impl ReviewLog {
 
     /// Execute the SELECT query and extract all columns into `RawReviewRow`
     /// structs, keeping the rusqlite `Row` borrow confined to the closure.
-    fn query_raw_rows(
-        conn: &rusqlite::Connection,
-    ) -> anyhow::Result<Vec<RawReviewRow>> {
+    fn query_raw_rows(conn: &rusqlite::Connection) -> anyhow::Result<Vec<RawReviewRow>> {
         let mut stmt = conn.prepare(
             "SELECT
                 run_id, timestamp, quorum_version, repo, invoked_from, model,
