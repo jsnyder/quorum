@@ -168,7 +168,9 @@ pub struct TelemetryStore {
 }
 
 impl TelemetryStore {
-    /// Create a JSONL-backed telemetry store (legacy path).
+    /// Create a TelemetryStore backed by a JSONL file.
+    /// Retained for backward compatibility, migration support, and tests.
+    /// New callers should use `with_storage()`.
     pub fn new(path: PathBuf) -> Self {
         Self {
             backend: Backend::Jsonl(path),
