@@ -1,4 +1,5 @@
 use crate::ast_grep::RuleMetadata;
+use crate::prompt_sanitize::pick_fence_for;
 #[cfg(test)]
 use crate::finding::PrecisionTier;
 use crate::finding::{Finding, JudgeRequirement, JudgeVerdict};
@@ -156,9 +157,14 @@ pub fn build_judge_prompt(
          determine if it is a true positive (tp), false positive (fp), or \
          uncertain based on the surrounding code context.\n\n",
     );
-    prompt.push_str("Source code:\n```\n");
+    let fence = pick_fence_for(source_code);
+    prompt.push_str("Source code:\n");
+    prompt.push_str(&fence);
+    prompt.push('\n');
     prompt.push_str(source_code);
-    prompt.push_str("\n```\n\nFindings to judge:\n");
+    prompt.push('\n');
+    prompt.push_str(&fence);
+    prompt.push_str("\n\nFindings to judge:\n");
 
     let items: Vec<serde_json::Value> = findings
         .iter()
@@ -542,6 +548,27 @@ mod tests {
         assert_eq!(parsed[1]["rule_id"], "rule-b");
         assert_eq!(parsed[1]["index"], 1);
         assert_eq!(parsed[1]["title"], "title with {braces} and [brackets]");
+    }
+
+    #[test]
+    fn build_judge_prompt_uses_dynamic_fence_for_source_with_backticks() {
+        let source = "let x = \"```\"; let y = \"````\";";
+        let prompt = build_judge_prompt(source, &[]);
+        assert!(
+            !prompt.contains("Source code:\n```\n"),
+            "prompt must not use a 3-backtick fence when source contains ```; got:\n{prompt}"
+        );
+        let fence_start = prompt.find("Source code:\n").unwrap() + "Source code:\n".len();
+        let fence_end = prompt[fence_start..].find('\n').unwrap();
+        let fence = &prompt[fence_start..fence_start + fence_end];
+        assert!(
+            fence.len() >= 5,
+            "fence must be longer than the longest backtick run (4) in the source; got: {fence}"
+        );
+        assert!(
+            prompt.contains(source),
+            "source code must still appear in the prompt"
+        );
     }
 
     #[test]
