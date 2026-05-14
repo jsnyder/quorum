@@ -2879,12 +2879,13 @@ mod join_health_tests {
 
     #[test]
     fn join_health_surfaces_review_log_read_error_instead_of_silent_zeros() {
-        // Regression: load_all().unwrap_or_default() silently swallows IO
-        // errors and renders a healthy-looking "0 reviews" line. Make
-        // reviews.jsonl unreadable (here: a directory at that path) and
-        // assert the diagnostic surfaces the failure rather than lying.
+        // Regression: ensure format_join_health surfaces storage errors
+        // rather than silently reporting "0 reviews". Write corrupt data
+        // to quorum.db and block recovery by placing a directory at the
+        // backup path so rename fails and the corrupt file persists.
         let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join("reviews.jsonl")).unwrap();
+        std::fs::write(dir.path().join("quorum.db"), b"not a database").unwrap();
+        std::fs::create_dir(dir.path().join("quorum.db.corrupt")).unwrap();
 
         let out = format_join_health(dir.path());
         assert!(

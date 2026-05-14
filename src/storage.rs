@@ -207,7 +207,7 @@ fn migrate_reviews_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Resul
     use std::io::{BufRead, BufReader};
 
     let jsonl_path = quorum_home.join("reviews.jsonl");
-    if !jsonl_path.exists() {
+    if !jsonl_path.is_file() {
         return Ok(());
     }
 
@@ -410,7 +410,7 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
     use std::io::{BufRead, BufReader};
 
     let jsonl_path = quorum_home.join("telemetry.jsonl");
-    if !jsonl_path.exists() {
+    if !jsonl_path.is_file() {
         return Ok(());
     }
 
