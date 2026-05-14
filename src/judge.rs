@@ -1,8 +1,8 @@
 use crate::ast_grep::RuleMetadata;
-use crate::prompt_sanitize::pick_fence_for;
 #[cfg(test)]
 use crate::finding::PrecisionTier;
 use crate::finding::{Finding, JudgeRequirement, JudgeVerdict};
+use crate::prompt_sanitize::pick_fence_for;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
