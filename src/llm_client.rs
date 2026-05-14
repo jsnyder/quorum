@@ -423,12 +423,10 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         return Ok(());
     }
 
-    let host = parsed
-        .host()
-        .ok_or_else(|| {
-            let safe = redact_userinfo_for_error(base_url);
-            anyhow::anyhow!("base_url {safe:?} has no host")
-        })?;
+    let host = parsed.host().ok_or_else(|| {
+        let safe = redact_userinfo_for_error(base_url);
+        anyhow::anyhow!("base_url {safe:?} has no host")
+    })?;
 
     // Per-branch logic: private/loopback hosts gate on `allow_private_ips`
     // and bypass the allowlist when permitted (user shouldn't have to ALSO
@@ -1808,13 +1806,25 @@ mod tests {
     fn actionable_error_helpers_redact_credentials() {
         let url = "https://admin:s3cret@proxy.example.com/v1";
         let msg = actionable_error_for_private_ip(url, "127.0.0.1");
-        assert!(!msg.contains("s3cret"), "private IP error leaks password: {msg}");
-        assert!(msg.contains("proxy.example.com"), "should preserve host: {msg}");
+        assert!(
+            !msg.contains("s3cret"),
+            "private IP error leaks password: {msg}"
+        );
+        assert!(
+            msg.contains("proxy.example.com"),
+            "should preserve host: {msg}"
+        );
 
         let policy = BaseUrlPolicy::default();
         let msg2 = actionable_error_for_unknown_host(url, "proxy.example.com", &policy);
-        assert!(!msg2.contains("s3cret"), "unknown host error leaks password: {msg2}");
-        assert!(msg2.contains("proxy.example.com"), "should preserve host: {msg2}");
+        assert!(
+            !msg2.contains("s3cret"),
+            "unknown host error leaks password: {msg2}"
+        );
+        assert!(
+            msg2.contains("proxy.example.com"),
+            "should preserve host: {msg2}"
+        );
     }
 
     #[test]
@@ -1823,22 +1833,37 @@ mod tests {
         let err = validate_base_url("http:///path", &policy)
             .unwrap_err()
             .to_string();
-        assert!(!err.contains("password"), "no-host error should not leak anything sensitive: {err}");
+        assert!(
+            !err.contains("password"),
+            "no-host error should not leak anything sensitive: {err}"
+        );
     }
 
     #[test]
     fn redact_userinfo_handles_percent_encoded_password() {
         let result = redact_userinfo_for_error("https://user:p%40ss%23word@host.com/v1");
-        assert!(!result.contains("p%40ss"), "percent-encoded password leaked: {result}");
-        assert!(result.contains("[REDACTED]@"), "should contain redaction marker: {result}");
-        assert!(result.contains("host.com"), "should preserve host: {result}");
+        assert!(
+            !result.contains("p%40ss"),
+            "percent-encoded password leaked: {result}"
+        );
+        assert!(
+            result.contains("[REDACTED]@"),
+            "should contain redaction marker: {result}"
+        );
+        assert!(
+            result.contains("host.com"),
+            "should preserve host: {result}"
+        );
     }
 
     #[test]
     fn redact_userinfo_handles_username_only() {
         let result = redact_userinfo_for_error("https://admin@host.com/v1");
         assert!(!result.contains("admin@"), "username leaked: {result}");
-        assert!(result.contains("[REDACTED]@"), "should contain redaction marker: {result}");
+        assert!(
+            result.contains("[REDACTED]@"),
+            "should contain redaction marker: {result}"
+        );
     }
 
     // --- #119: BaseUrlPolicy::from_env ---

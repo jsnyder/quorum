@@ -506,10 +506,7 @@ mod tests {
         let parsed: Vec<serde_json::Value> =
             serde_json::from_str(json_str).expect("findings must be valid JSON");
         assert_eq!(parsed.len(), 1);
-        assert_eq!(
-            parsed[0]["title"],
-            "title with \"quotes\" and\nnewlines"
-        );
+        assert_eq!(parsed[0]["title"], "title with \"quotes\" and\nnewlines");
         assert_eq!(
             parsed[0]["evidence"],
             "evidence with \\backslash and \"double quotes\""
