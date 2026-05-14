@@ -102,3 +102,6 @@ pub mod review_mode;
 
 // Prose-specific prompt templates for Plan and Docs review modes.
 pub mod prose_prompts;
+
+// SQLite-backed persistent storage (reviews + telemetry).
+pub mod storage;
