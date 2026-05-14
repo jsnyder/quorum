@@ -1,5 +1,5 @@
 use super::plan::{TokenCounter, plan_injection};
-use crate::context::config::ContextConfig;
+use crate::context::config::{ContextConfig, MultiSourceConfig};
 use crate::context::retrieve::{ScoreBreakdown, ScoredChunk};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -56,6 +56,7 @@ fn config_with(budget: u32, tau: f32, max_chunks: u32) -> ContextConfig {
         rerank_recency_floor: 0.25,
         max_source_size_mb: 100,
         ignore: vec![],
+        multi_source: MultiSourceConfig::default(),
     }
 }
 

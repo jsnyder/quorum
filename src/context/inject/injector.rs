@@ -398,6 +398,7 @@ impl std::fmt::Debug for ContextInjector {
 mod tests {
     use super::*;
     use crate::calibrator::Calibrator;
+    use crate::context::config::MultiSourceConfig;
     use crate::context::retrieve::ScoreBreakdown;
     use crate::context::types::{Chunk, ChunkMeta, LineRange, Provenance};
 
@@ -450,6 +451,7 @@ mod tests {
             rerank_recency_floor: 0.25,
             max_source_size_mb: 100,
             ignore: vec![],
+            multi_source: MultiSourceConfig::default(),
         }
     }
 

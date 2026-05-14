@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::config::{ContextConfig, SourceEntry, SourceKind, SourceLocation};
+use super::config::{ContextConfig, MultiSourceConfig, SourceEntry, SourceKind, SourceLocation};
 use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
@@ -28,6 +28,9 @@ fn fixture_source(name: &str) -> SourceEntry {
         paths: Vec::new(),
         weight: None,
         ignore: Vec::new(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     }
 }
 
@@ -67,6 +70,7 @@ fn context_config_with_budget(budget: u32, tau: f32) -> ContextConfig {
         rerank_recency_floor: 0.25,
         max_source_size_mb: 100,
         ignore: Vec::new(),
+        multi_source: MultiSourceConfig::default(),
     }
 }
 
