@@ -402,18 +402,19 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         anyhow::anyhow!("base_url {safe:?} is not a valid URL: {e}")
     })?;
 
-    if !matches!(parsed.scheme(), "http" | "https") {
-        anyhow::bail!(
-            "base_url {base_url:?} must use http or https scheme, got {:?}",
-            parsed.scheme()
-        );
-    }
-
-    // Always-on: embedded credentials. No opt-out — no legitimate use case.
+    // Always-on: embedded credentials. Checked FIRST so no subsequent error
+    // path can echo the raw URL with credentials. No opt-out.
     if !parsed.username().is_empty() || parsed.password().is_some() {
         anyhow::bail!(
             "base_url must not contain embedded credentials (user:password@host). \
              Pass the API key via QUORUM_API_KEY instead."
+        );
+    }
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "base_url must use http or https scheme, got {:?}",
+            parsed.scheme()
         );
     }
 
@@ -1432,6 +1433,20 @@ mod tests {
         let err = validate_base_url("http://user:pass@127.0.0.1:8000/v1", &policy)
             .expect_err("must reject");
         assert!(err.to_string().contains("embedded credentials"));
+    }
+
+    #[test]
+    fn validate_base_url_scheme_error_does_not_leak_credentials() {
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("ftp://admin:s3cret@evil.com/v1", &policy)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("s3cret"), "error leaks password: {err}");
+        assert!(!err.contains("admin"), "error leaks username: {err}");
+        assert!(
+            err.contains("embedded credentials") || err.contains("evil.com"),
+            "error should mention credentials rejection or redacted host: {err}"
+        );
     }
 
     #[test]
