@@ -1471,6 +1471,12 @@ mod tests {
             rerank_score_p10: Some(0.45),
             rerank_score_median: Some(0.68),
             rerank_score_p90: Some(0.91),
+            sources_queried: 2,
+            sources_contributing: 1,
+            per_source_contributions: std::collections::BTreeMap::new(),
+            dep_boost_applied: 0,
+            current_repo_reserved_available: 3,
+            current_repo_reserved_filled: 2,
         };
 
         let mut rec = test_review_record("01TEST_CTX_TELEMETRY0001");
