@@ -15,7 +15,7 @@ Migrate `reviews.jsonl` and `telemetry.jsonl` from append-only JSONL files to a 
 - Normalized `review_finding_ids` child table for relational join support
 - Startup migration: import existing JSONL, rename to `.jsonl.migrated`
 - Schema versioning via `PRAGMA user_version`
-- Same public API on `ReviewLog` and `TelemetryStore` (different constructor)
+- Same public API on `ReviewLog` and `TelemetryStore`; new `with_storage(StorageHandle)` constructor, `new(PathBuf)` retained for migration/tests
 
 **Out of scope:**
 - Migrating `feedback.jsonl` (hot path, small corpus, stays JSONL)
@@ -87,15 +87,10 @@ CREATE TABLE reviews (
     flag_parallel_n   INTEGER NOT NULL DEFAULT 0,
     flag_ensemble     INTEGER NOT NULL DEFAULT 0,
     mode              TEXT,
-    -- ContextTelemetry flattened
-    ctx_auto_inject_enabled    INTEGER NOT NULL DEFAULT 0,
-    ctx_injector_available     INTEGER NOT NULL DEFAULT 0,
-    ctx_retriever_errored      INTEGER NOT NULL DEFAULT 0,
-    ctx_retrieved_chunk_count  INTEGER NOT NULL DEFAULT 0,
-    ctx_injected_chunk_count   INTEGER NOT NULL DEFAULT 0,
-    ctx_injected_tokens        INTEGER NOT NULL DEFAULT 0,
-    ctx_below_threshold_count  INTEGER NOT NULL DEFAULT 0,
-    ctx_adaptive_threshold     INTEGER NOT NULL DEFAULT 0
+    -- ContextTelemetry stored as single JSON TEXT column (37+ fields,
+    -- including nested LegCounts and optional percentiles — too many
+    -- for flattened columns, see implementation plan for rationale)
+    context           TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(context))
 );
 ```
 
@@ -180,7 +175,7 @@ When `storage::initialize()` opens the database, after schema migrations, it che
 - `src/review_log.rs` — `ReviewLog` internals switch from JSONL to SQLite. Same public API: `append()`, `iter()`, `load_all()`.
 - `src/telemetry.rs` — `TelemetryStore` internals switch from JSONL to SQLite. Same public API: `record()`, `load_all_with_stats()`.
 
-**Connection sharing:** `storage::initialize()` returns a `StorageHandle` (wrapper around `Arc<Mutex<rusqlite::Connection>>`). Both `ReviewLog::new()` and `TelemetryStore::new()` accept a `StorageHandle` instead of a `PathBuf`.
+**Connection sharing:** `storage::initialize()` returns a `StorageHandle` (wrapper around `Arc<Mutex<rusqlite::Connection>>`). Both `ReviewLog` and `TelemetryStore` gain a `with_storage(StorageHandle)` constructor for SQLite mode. The existing `new(PathBuf)` constructor is retained for backward compatibility, migration support, and tests.
 
 **Serialization:**
 - Scalar fields map directly to SQLite columns via rusqlite's `ToSql`/`FromSql` traits
@@ -196,7 +191,7 @@ When `storage::initialize()` opens the database, after schema migrations, it che
 
 **`src/main.rs` — startup path:**
 - Call `storage::initialize(quorum_home)` early in `main()` to get a `StorageHandle`
-- Pass `StorageHandle` to `ReviewLog::new()` and `TelemetryStore::new()`
+- Pass `StorageHandle` to `ReviewLog::with_storage()` and `TelemetryStore::with_storage()`
 - Migration happens transparently inside `initialize()`
 
 **`src/main.rs` — review path:**
@@ -263,6 +258,14 @@ When `storage::initialize()` opens the database, after schema migrations, it che
 - `json_valid` constraint: invalid JSON rejected on insert
 
 **No changes to existing analytics/stats tests** — they operate on `Vec<ReviewRecord>` in memory, agnostic to storage backend.
+
+## Deferred from Issue #326
+
+The following objectives from issue #326 are intentionally deferred to follow-up work:
+
+- **`quorum data migrate --force`:** CLI command for manual/forced re-migration. Not needed for v1 — startup migration handles all cases automatically. Will be added if users need to re-import after schema changes or manual edits.
+- **`quorum data doctor`:** Consistency checker (parse vs DB row counts, integrity verification, repair suggestions). Deferred until real-world usage surfaces the need.
+- **Dual-write rollback window:** Simultaneous JSONL + SQLite writes during a transition period. Unnecessary at our data volumes — the `.migrated` rename provides a sufficient rollback path (rename back to `.jsonl`, old binary ignores `quorum.db`).
 
 ## Future Considerations
 
