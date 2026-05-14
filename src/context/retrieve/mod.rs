@@ -39,9 +39,9 @@ pub use retriever::{RetrievalQuery, Retriever, ScoredChunk};
 #[cfg(test)]
 mod bm25_tests;
 #[cfg(test)]
-mod multi_source_tests;
-#[cfg(test)]
 mod identifiers_tests;
+#[cfg(test)]
+mod multi_source_tests;
 #[cfg(test)]
 mod precedence_tests;
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::multi_source::{merge_and_rerank, BoostContext, SourceBatch};
+use super::multi_source::{BoostContext, SourceBatch, merge_and_rerank};
 use super::rerank::ScoreBreakdown;
 use super::retriever::{RetrievalLeg, ScoredChunk};
 use crate::context::config::MultiSourceConfig;
@@ -132,17 +132,11 @@ fn boosts_compose_multiplicatively() {
     // Use multi-chunk batches so normalization spreads scores
     let b1 = SourceBatch {
         source_name: "my-dep".into(),
-        chunks: vec![
-            scored("md1", "my-dep", 0.5),
-            scored("md2", "my-dep", 0.1),
-        ],
+        chunks: vec![scored("md1", "my-dep", 0.5), scored("md2", "my-dep", 0.1)],
     };
     let b2 = SourceBatch {
         source_name: "other".into(),
-        chunks: vec![
-            scored("o1", "other", 0.8),
-            scored("o2", "other", 0.1),
-        ],
+        chunks: vec![scored("o1", "other", 0.8), scored("o2", "other", 0.1)],
     };
     let config = default_config();
     // my-dep is both current repo AND a dep AND lang match → 1.3*1.2*1.1 = 1.716
@@ -178,10 +172,7 @@ fn current_repo_reserved_slots_guaranteed() {
     // current-repo has lower-scoring chunks, but reserved slots guarantee inclusion
     let b_current = SourceBatch {
         source_name: "current".into(),
-        chunks: vec![
-            scored("c1", "current", 0.3),
-            scored("c2", "current", 0.25),
-        ],
+        chunks: vec![scored("c1", "current", 0.3), scored("c2", "current", 0.25)],
     };
     let mut other_chunks = Vec::new();
     for i in 0..6 {
@@ -196,8 +187,14 @@ fn current_repo_reserved_slots_guaranteed() {
     config.per_source_cap = 3;
     let ctx = boost_ctx(Some("current"), &[]);
     let result = merge_and_rerank(&[b_current, b_other], &config, &ctx, 4);
-    let current_count = result.iter().filter(|c| c.chunk.source == "current").count();
-    assert!(current_count >= 2, "expected at least 2 current-repo chunks, got {current_count}");
+    let current_count = result
+        .iter()
+        .filter(|c| c.chunk.source == "current")
+        .count();
+    assert!(
+        current_count >= 2,
+        "expected at least 2 current-repo chunks, got {current_count}"
+    );
 }
 
 #[test]
@@ -214,7 +211,10 @@ fn per_source_cap_does_not_apply_to_current_repo() {
     config.per_source_cap = 2;
     let ctx = boost_ctx(Some("current"), &[]);
     let result = merge_and_rerank(&[batch], &config, &ctx, 10);
-    assert!(result.len() > 2, "current repo should bypass per_source_cap");
+    assert!(
+        result.len() > 2,
+        "current repo should bypass per_source_cap"
+    );
 }
 
 #[test]
@@ -255,7 +255,11 @@ fn min_max_normalization_single_chunk_source_scores_one() {
     // No lang match since ctx has no current repo and "rust" matches "rust" from boost_ctx
     // Actually boost_ctx sets reviewed_language = Some("rust") and chunk language = "rust"
     // so lang_match = 1.1, normalized = 1.0 * 1.1 = 1.1
-    assert!(result[0].score > 0.9, "single candidate should normalize high, got {}", result[0].score);
+    assert!(
+        result[0].score > 0.9,
+        "single candidate should normalize high, got {}",
+        result[0].score
+    );
 }
 
 #[test]
@@ -272,7 +276,12 @@ fn output_sorted_descending_by_score() {
     let ctx = boost_ctx(None, &[]);
     let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
     for w in result.windows(2) {
-        assert!(w[0].score >= w[1].score, "not sorted: {} < {}", w[0].score, w[1].score);
+        assert!(
+            w[0].score >= w[1].score,
+            "not sorted: {} < {}",
+            w[0].score,
+            w[1].score
+        );
     }
 }
 

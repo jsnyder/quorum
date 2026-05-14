@@ -286,7 +286,10 @@ kind = "rust"
 provides = ["home-assistant-core", "ha-core"]
 "#;
     let config = SourcesConfig::from_str(toml).unwrap();
-    assert_eq!(config.sources[0].provides, vec!["home-assistant-core", "ha-core"]);
+    assert_eq!(
+        config.sources[0].provides,
+        vec!["home-assistant-core", "ha-core"]
+    );
 }
 
 #[test]
@@ -301,7 +304,10 @@ exclude_for = ["project-b", "project-c"]
 "#;
     let config = SourcesConfig::from_str(toml).unwrap();
     assert_eq!(config.sources[0].include_for, vec!["project-a"]);
-    assert_eq!(config.sources[0].exclude_for, vec!["project-b", "project-c"]);
+    assert_eq!(
+        config.sources[0].exclude_for,
+        vec!["project-b", "project-c"]
+    );
 }
 
 #[test]

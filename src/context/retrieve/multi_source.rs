@@ -45,8 +45,11 @@ pub fn merge_and_rerank(
 
         // Filter NaN scores before normalization — they'd corrupt min/max
         // and sort ordering.
-        let clean_chunks: Vec<&ScoredChunk> =
-            batch.chunks.iter().filter(|sc| sc.score.is_finite()).collect();
+        let clean_chunks: Vec<&ScoredChunk> = batch
+            .chunks
+            .iter()
+            .filter(|sc| sc.score.is_finite())
+            .collect();
         if clean_chunks.is_empty() {
             continue;
         }

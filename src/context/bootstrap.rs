@@ -259,10 +259,8 @@ fn build_single_source_retriever(
     Arc::new(
         move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
             ensure_vec_loaded();
-            let conn = Connection::open_with_flags(
-                &db_path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?;
+            let conn =
+                Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let clock = SystemClock;
             let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
             let mut q = q.clone();

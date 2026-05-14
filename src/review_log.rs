@@ -161,7 +161,6 @@ pub struct ContextTelemetry {
     pub rerank_score_p90: Option<f32>,
 
     // --- Multi-source telemetry (v0.23.0+) ---
-
     /// Number of source DBs queried in this review.
     #[serde(default)]
     pub sources_queried: u32,

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::config::{ContextConfig, MultiSourceConfig, SourceEntry, SourceKind, SourceLocation, SourcesConfig};
+use super::config::{
+    ContextConfig, MultiSourceConfig, SourceEntry, SourceKind, SourceLocation, SourcesConfig,
+};
 use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
