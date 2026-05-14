@@ -781,6 +781,311 @@ mod tests {
     }
 
     #[test]
+    fn end_to_end_migration_and_readback() {
+        use std::io::Write;
+
+        let dir = TempDir::new().unwrap();
+
+        // ── 1. Write synthetic JSONL files ──────────────────────────────
+        let reviews_path = dir.path().join("reviews.jsonl");
+        let telemetry_path = dir.path().join("telemetry.jsonl");
+        {
+            let mut rf = std::fs::File::create(&reviews_path).unwrap();
+            writeln!(rf, "{}", sample_review_json("01E2E_REVIEW_TEST_00001")).unwrap();
+            writeln!(rf, "{}", sample_review_json("01E2E_REVIEW_TEST_00002")).unwrap();
+        }
+        {
+            let mut tf = std::fs::File::create(&telemetry_path).unwrap();
+            writeln!(tf, "{}", sample_telemetry_json()).unwrap();
+        }
+
+        // ── 2. Call initialize() to trigger migration ───────────────────
+        let handle = initialize(dir.path()).expect("initialize should succeed");
+
+        // ── 3. Verify JSONL files renamed to .migrated ──────────────────
+        assert!(
+            !reviews_path.exists(),
+            "reviews.jsonl should be removed after migration"
+        );
+        assert!(
+            dir.path().join("reviews.jsonl.migrated").exists(),
+            "reviews.jsonl.migrated should exist"
+        );
+        assert!(
+            !telemetry_path.exists(),
+            "telemetry.jsonl should be removed after migration"
+        );
+        assert!(
+            dir.path().join("telemetry.jsonl.migrated").exists(),
+            "telemetry.jsonl.migrated should exist"
+        );
+
+        // ── 4. Read back from SQLite and verify data integrity ──────────
+        let conn = handle.lock().unwrap();
+
+        // 4a. Review count
+        let review_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(review_count, 2, "should have migrated 2 review rows");
+
+        // 4b. Verify first review record field-by-field
+        let (repo, model, invoked_from, files_reviewed, lines_added, lines_removed): (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT repo, model, invoked_from, files_reviewed, lines_added, lines_removed \
+                 FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00001"],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(repo, "test-repo");
+        assert_eq!(model, "gpt-5.4");
+        assert_eq!(invoked_from, "tty");
+        assert_eq!(files_reviewed, 2);
+        assert_eq!(lines_added, 50);
+        assert_eq!(lines_removed, 10);
+
+        // 4c. Severity counts
+        let (critical, high, medium, low, info): (i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT critical, high, medium, low, info FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00001"],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(critical, 0);
+        assert_eq!(high, 1);
+        assert_eq!(medium, 2);
+        assert_eq!(low, 0);
+        assert_eq!(info, 3);
+
+        // 4d. Token counts and duration
+        let (tokens_in, tokens_out, tokens_cache_read, duration_ms): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT tokens_in, tokens_out, tokens_cache_read, duration_ms \
+                 FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00001"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(tokens_in, 5000);
+        assert_eq!(tokens_out, 800);
+        assert_eq!(tokens_cache_read, 1000);
+        assert_eq!(duration_ms, 2500);
+
+        // 4e. Flags
+        let (flag_deep, flag_parallel_n, flag_ensemble): (i32, i64, i32) = conn
+            .query_row(
+                "SELECT flag_deep, flag_parallel_n, flag_ensemble FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00001"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(flag_deep, 0);
+        assert_eq!(flag_parallel_n, 4);
+        assert_eq!(flag_ensemble, 0);
+
+        // 4f. Finding IDs in child table
+        let finding_ids: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT finding_id FROM review_finding_ids \
+                     WHERE run_id = ?1 ORDER BY finding_id",
+                )
+                .unwrap();
+            stmt.query_map(params!["01E2E_REVIEW_TEST_00001"], |row| row.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(finding_ids, vec!["fid-A", "fid-B"]);
+
+        // 4g. Context and suppressed_by_rule default to empty JSON objects
+        let (context_json, suppressed_json): (String, String) = conn
+            .query_row(
+                "SELECT context, suppressed_by_rule FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00001"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(context_json, "{}");
+        assert_eq!(suppressed_json, "{}");
+
+        // 4h. Second review also present
+        let run_id_2: String = conn
+            .query_row(
+                "SELECT run_id FROM reviews WHERE run_id = ?1",
+                params!["01E2E_REVIEW_TEST_00002"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_id_2, "01E2E_REVIEW_TEST_00002");
+
+        // 4i. Telemetry record
+        let telemetry_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(telemetry_count, 1, "should have migrated 1 telemetry row");
+
+        let (t_model, t_tokens_in, t_tokens_out, t_duration_ms, t_suppressed): (
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT model, tokens_in, tokens_out, duration_ms, suppressed FROM telemetry",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(t_model, "gpt-5.4");
+        assert_eq!(t_tokens_in, 4200);
+        assert_eq!(t_tokens_out, 1800);
+        assert_eq!(t_duration_ms, 3400);
+        assert_eq!(t_suppressed, 2);
+
+        // 4j. Context7 and judge counters in telemetry
+        let (c7_resolved, c7_resolve_failed, c7_query_failed, c7_skipped, c7_budget): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT context7_resolved, context7_resolve_failed, context7_query_failed, \
+                 context7_skipped_popular, context7_budget_reduced FROM telemetry",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(c7_resolved, 1);
+        assert_eq!(c7_resolve_failed, 0);
+        assert_eq!(c7_query_failed, 0);
+        assert_eq!(c7_skipped, 0);
+        assert_eq!(c7_budget, 0);
+
+        let (judge_calls, judge_approved, judge_rejected, judge_cache_hits, judge_latency): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT judge_calls, judge_approved, judge_rejected, \
+                 judge_cache_hits, judge_latency_ms FROM telemetry",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(judge_calls, 5);
+        assert_eq!(judge_approved, 3);
+        assert_eq!(judge_rejected, 1);
+        assert_eq!(judge_cache_hits, 2);
+        assert_eq!(judge_latency, 120);
+
+        // 4k. fp_kind_utilization_rate (nullable float)
+        let fp_rate: Option<f64> = conn
+            .query_row(
+                "SELECT fp_kind_utilization_rate FROM telemetry",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            (fp_rate.unwrap() - 0.42).abs() < f64::EPSILON,
+            "fp_kind_utilization_rate should be 0.42"
+        );
+
+        // 4l. Telemetry files and findings JSON columns
+        let (files_json, findings_json): (String, String) = conn
+            .query_row(
+                "SELECT files, findings FROM telemetry",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let files_val: serde_json::Value = serde_json::from_str(&files_json).unwrap();
+        assert_eq!(files_val, serde_json::json!(["src/main.rs"]));
+        let findings_val: serde_json::Value = serde_json::from_str(&findings_json).unwrap();
+        assert_eq!(findings_val, serde_json::json!({"critical": 1}));
+
+        // ── 5. Verify second initialize() is idempotent ─────────────────
+        drop(conn);
+        drop(handle);
+
+        let handle2 = initialize(dir.path()).expect("second initialize should succeed");
+        let conn2 = handle2.lock().unwrap();
+
+        let review_count_2: i64 =
+            conn2.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(
+            review_count_2, 2,
+            "second initialize should not duplicate reviews"
+        );
+
+        let telemetry_count_2: i64 =
+            conn2.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(
+            telemetry_count_2, 1,
+            "second initialize should not duplicate telemetry"
+        );
+    }
+
+    #[test]
     fn migrate_is_idempotent() {
         use std::io::Write;
         let dir = TempDir::new().unwrap();
