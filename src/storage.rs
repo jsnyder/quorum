@@ -19,6 +19,7 @@ use rusqlite::params;
 pub type StorageHandle = Arc<Mutex<Connection>>;
 
 /// Current schema version. Bumped by each `migrate_vN_to_vN+1` function.
+#[cfg(test)]
 const SCHEMA_VERSION: u32 = 1;
 
 /// Open (or create) the quorum SQLite database and run any pending
