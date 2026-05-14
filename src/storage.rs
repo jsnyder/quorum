@@ -196,8 +196,7 @@ fn migrate_reviews_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Resul
     }
 
     // Guard against double-import: if the table already has data, skip.
-    let count: i64 =
-        conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))?;
     if count > 0 {
         eprintln!(
             "warning: reviews table already contains {} rows; skipping JSONL migration",
@@ -400,8 +399,7 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
     }
 
     // Guard against double-import.
-    let count: i64 =
-        conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))?;
     if count > 0 {
         eprintln!(
             "warning: telemetry table already contains {} rows; skipping JSONL migration",
@@ -683,9 +681,9 @@ mod tests {
         );
 
         let conn = handle.lock().unwrap();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
 
         let run_id: String = conn
@@ -723,9 +721,9 @@ mod tests {
         );
 
         let conn = handle.lock().unwrap();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
-                .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
 
         let model: String = conn
@@ -752,11 +750,14 @@ mod tests {
         let handle = initialize(dir.path()).expect("initialize");
 
         let conn = handle.lock().unwrap();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
         // Only 1 because the second valid line has the same PK and uses INSERT OR IGNORE
-        assert_eq!(count, 1, "should have 1 row (dupe ignored, malformed skipped)");
+        assert_eq!(
+            count, 1,
+            "should have 1 row (dupe ignored, malformed skipped)"
+        );
 
         assert!(!jsonl_path.exists(), "reviews.jsonl should be removed");
     }
@@ -825,9 +826,9 @@ mod tests {
         let conn = handle.lock().unwrap();
 
         // 4a. Review count
-        let review_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                .unwrap();
+        let review_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(review_count, 2, "should have migrated 2 review rows");
 
         // 4b. Verify first review record field-by-field
@@ -947,9 +948,9 @@ mod tests {
         assert_eq!(run_id_2, "01E2E_REVIEW_TEST_00002");
 
         // 4i. Telemetry record
-        let telemetry_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
-                .unwrap();
+        let telemetry_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(telemetry_count, 1, "should have migrated 1 telemetry row");
 
         let (t_model, t_tokens_in, t_tokens_out, t_duration_ms, t_suppressed): (
@@ -1051,11 +1052,9 @@ mod tests {
 
         // 4l. Telemetry files and findings JSON columns
         let (files_json, findings_json): (String, String) = conn
-            .query_row(
-                "SELECT files, findings FROM telemetry",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT files, findings FROM telemetry", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .unwrap();
         let files_val: serde_json::Value = serde_json::from_str(&files_json).unwrap();
         assert_eq!(files_val, serde_json::json!(["src/main.rs"]));
@@ -1069,17 +1068,17 @@ mod tests {
         let handle2 = initialize(dir.path()).expect("second initialize should succeed");
         let conn2 = handle2.lock().unwrap();
 
-        let review_count_2: i64 =
-            conn2.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                .unwrap();
+        let review_count_2: i64 = conn2
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(
             review_count_2, 2,
             "second initialize should not duplicate reviews"
         );
 
-        let telemetry_count_2: i64 =
-            conn2.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
-                .unwrap();
+        let telemetry_count_2: i64 = conn2
+            .query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(
             telemetry_count_2, 1,
             "second initialize should not duplicate telemetry"
@@ -1100,9 +1099,9 @@ mod tests {
         let handle1 = initialize(dir.path()).expect("first initialize");
         {
             let conn = handle1.lock().unwrap();
-            let count: i64 =
-                conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                    .unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+                .unwrap();
             assert_eq!(count, 1);
         }
         drop(handle1);
@@ -1110,9 +1109,9 @@ mod tests {
         // Second initialize: no JSONL exists, migration is a no-op.
         let handle2 = initialize(dir.path()).expect("second initialize");
         let conn = handle2.lock().unwrap();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
-                .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1, "count should still be 1 after second initialize");
     }
 }
