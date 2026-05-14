@@ -210,24 +210,25 @@ fn detect_current_repo(
     let canonical_root = std::fs::canonicalize(root).ok()?;
     let valid_names: HashSet<&str> = valid_sources.iter().map(|v| v.name.as_str()).collect();
 
+    let mut best: Option<(usize, String)> = None;
     for s in &cfg.sources {
         if !valid_names.contains(s.name.as_str()) {
             continue;
         }
-        if let crate::context::config::SourceLocation::Path(ref p) = s.location {
-            // Only match when the project root is inside (or equal to) the
-            // source path. The reverse direction (source inside project) would
-            // be wrong: a source at ~/code/lib is not "current repo" for a
-            // project at ~/code.
-            let matches = std::fs::canonicalize(p).is_ok_and(|canonical_src| {
-                canonical_root.starts_with(&canonical_src)
-            });
-            if matches {
-                return Some(s.name.clone());
+        let crate::context::config::SourceLocation::Path(ref p) = s.location else {
+            continue;
+        };
+        let Ok(canonical_src) = std::fs::canonicalize(p) else {
+            continue;
+        };
+        if canonical_root.starts_with(&canonical_src) {
+            let depth = canonical_src.components().count();
+            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
+                best = Some((depth, s.name.clone()));
             }
         }
     }
-    None
+    best.map(|(_, name)| name)
 }
 
 fn match_dep_manifest(project_root: &Path, cfg: &SourcesConfig) -> HashSet<String> {

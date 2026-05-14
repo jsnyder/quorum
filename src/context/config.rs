@@ -610,6 +610,11 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
     validate_boost("current_repo_boost", ctx.multi_source.current_repo_boost)?;
     validate_boost("dep_manifest_boost", ctx.multi_source.dep_manifest_boost)?;
     validate_boost("lang_match_boost", ctx.multi_source.lang_match_boost)?;
+    if ctx.multi_source.enabled && ctx.multi_source.max_sources_queried == 0 {
+        return Err(ConfigError::Invalid(
+            "multi_source.max_sources_queried must be greater than 0 when enabled".into(),
+        ));
+    }
 
     Ok(ctx)
 }

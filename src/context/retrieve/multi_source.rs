@@ -19,6 +19,7 @@ pub struct BoostContext {
 #[derive(Debug, Clone)]
 pub(crate) struct MultiSourceCandidate {
     pub chunk: ScoredChunk,
+    pub source_name: String,
     pub normalized_score: f32,
     pub boosted_score: f32,
     pub is_current_repo: bool,
@@ -77,6 +78,7 @@ pub fn merge_and_rerank(
 
             candidates.push(MultiSourceCandidate {
                 chunk: (*sc).clone(),
+                source_name: batch.source_name.clone(),
                 normalized_score: normalized,
                 boosted_score: normalized * boost,
                 is_current_repo: is_current,
@@ -158,7 +160,7 @@ fn apply_diversity_constraints(
             continue;
         }
 
-        let source = &c.chunk.chunk.source;
+        let source = &c.source_name;
         let is_current = c.is_current_repo;
 
         if !is_current {
