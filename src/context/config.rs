@@ -452,6 +452,15 @@ fn render_source_fragment(entry: &SourceEntry) -> String {
     if !entry.ignore.is_empty() {
         out.push_str(&format!("ignore = {}\n", tq_array(&entry.ignore)));
     }
+    if !entry.provides.is_empty() {
+        out.push_str(&format!("provides = {}\n", tq_array(&entry.provides)));
+    }
+    if !entry.include_for.is_empty() {
+        out.push_str(&format!("include_for = {}\n", tq_array(&entry.include_for)));
+    }
+    if !entry.exclude_for.is_empty() {
+        out.push_str(&format!("exclude_for = {}\n", tq_array(&entry.exclude_for)));
+    }
     out
 }
 
@@ -589,6 +598,18 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
             "max_source_size_mb must be greater than 0".into(),
         ));
     }
+
+    fn validate_boost(name: &str, v: f32) -> Result<(), ConfigError> {
+        if !v.is_finite() || v < 0.0 {
+            return Err(ConfigError::Invalid(format!(
+                "{name} must be a finite non-negative number, got {v}"
+            )));
+        }
+        Ok(())
+    }
+    validate_boost("current_repo_boost", ctx.multi_source.current_repo_boost)?;
+    validate_boost("dep_manifest_boost", ctx.multi_source.dep_manifest_boost)?;
+    validate_boost("lang_match_boost", ctx.multi_source.lang_match_boost)?;
 
     Ok(ctx)
 }

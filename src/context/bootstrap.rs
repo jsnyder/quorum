@@ -84,7 +84,16 @@ pub fn build_production_injector_with_project(
     let multi_enabled = cfg.context.multi_source.enabled;
     let max_sources = cfg.context.multi_source.max_sources_queried as usize;
 
-    let valid_sources = collect_valid_sources(home, &cfg, if multi_enabled { max_sources } else { 1 });
+    let project_name = project_root
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    let valid_sources = collect_valid_sources_for_project(
+        home,
+        &cfg,
+        if multi_enabled { max_sources } else { 1 },
+        project_name.as_deref(),
+    );
     if valid_sources.is_empty() {
         tracing::info!(
             "context bootstrap: no registered source has a usable index; run `quorum context index` to enable auto-injection"
@@ -109,10 +118,27 @@ pub fn build_production_injector_with_project(
 }
 
 fn collect_valid_sources(home: &Path, cfg: &SourcesConfig, limit: usize) -> Vec<ValidSource> {
+    collect_valid_sources_for_project(home, cfg, limit, None)
+}
+
+fn collect_valid_sources_for_project(
+    home: &Path,
+    cfg: &SourcesConfig,
+    limit: usize,
+    project_name: Option<&str>,
+) -> Vec<ValidSource> {
     let mut valid = Vec::new();
     for s in &cfg.sources {
         if valid.len() >= limit {
             break;
+        }
+        if let Some(proj) = project_name {
+            if !s.include_for.is_empty() && !s.include_for.iter().any(|p| p == proj) {
+                continue;
+            }
+            if s.exclude_for.iter().any(|p| p == proj) {
+                continue;
+            }
         }
         let layout = SourceLayout::for_source(home, &s.name);
         if !layout.db.exists() {
@@ -189,9 +215,12 @@ fn detect_current_repo(
             continue;
         }
         if let crate::context::config::SourceLocation::Path(ref p) = s.location {
+            // Only match when the project root is inside (or equal to) the
+            // source path. The reverse direction (source inside project) would
+            // be wrong: a source at ~/code/lib is not "current repo" for a
+            // project at ~/code.
             let matches = std::fs::canonicalize(p).is_ok_and(|canonical_src| {
                 canonical_root.starts_with(&canonical_src)
-                    || canonical_src.starts_with(&canonical_root)
             });
             if matches {
                 return Some(s.name.clone());
@@ -307,7 +336,8 @@ fn build_multi_source_retriever(
             let mut ctx = boost_ctx.clone();
             ctx.reviewed_language = q.reviewed_file_language.clone();
 
-            Ok(merge_and_rerank(&batches, &ms_config, &ctx, q.k as u32))
+            let k = u32::try_from(q.k).unwrap_or(u32::MAX);
+            Ok(merge_and_rerank(&batches, &ms_config, &ctx, k))
         },
     )
 }

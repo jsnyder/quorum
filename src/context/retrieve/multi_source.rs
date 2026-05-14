@@ -42,10 +42,18 @@ pub fn merge_and_rerank(
             .as_ref()
             .is_some_and(|cr| cr == &batch.source_name);
 
-        let (min_score, max_score) = min_max_scores(&batch.chunks);
+        // Filter NaN scores before normalization — they'd corrupt min/max
+        // and sort ordering.
+        let clean_chunks: Vec<&ScoredChunk> =
+            batch.chunks.iter().filter(|sc| sc.score.is_finite()).collect();
+        if clean_chunks.is_empty() {
+            continue;
+        }
+
+        let (min_score, max_score) = min_max_scores_refs(&clean_chunks);
         let range = max_score - min_score;
 
-        for sc in &batch.chunks {
+        for sc in &clean_chunks {
             let normalized = if range < f32::EPSILON {
                 1.0
             } else {
@@ -68,7 +76,7 @@ pub fn merge_and_rerank(
             }
 
             candidates.push(MultiSourceCandidate {
-                chunk: sc.clone(),
+                chunk: (*sc).clone(),
                 normalized_score: normalized,
                 boosted_score: normalized * boost,
                 is_current_repo: is_current,
@@ -86,7 +94,7 @@ pub fn merge_and_rerank(
     apply_diversity_constraints(candidates, config, ctx, top_k as usize)
 }
 
-fn min_max_scores(chunks: &[ScoredChunk]) -> (f32, f32) {
+fn min_max_scores_refs(chunks: &[&ScoredChunk]) -> (f32, f32) {
     let mut min = f32::INFINITY;
     let mut max = f32::NEG_INFINITY;
     for c in chunks {
