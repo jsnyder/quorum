@@ -20,6 +20,7 @@ pub struct Filters {
 
 pub mod bm25;
 pub mod identifiers;
+pub mod multi_source;
 pub mod precedence;
 pub mod rerank;
 pub mod retriever;
@@ -37,6 +38,8 @@ pub use retriever::{RetrievalQuery, Retriever, ScoredChunk};
 
 #[cfg(test)]
 mod bm25_tests;
+#[cfg(test)]
+mod multi_source_tests;
 #[cfg(test)]
 mod identifiers_tests;
 #[cfg(test)]

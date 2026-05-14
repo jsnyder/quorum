@@ -6,19 +6,14 @@
 //! `auto_inject = false`, no indexed source — so reviews degrade to the
 //! pre-context behavior instead of failing.
 //!
-//! The retriever closure opens the SQLite db read-only on every call and
-//! owns a fresh `HashEmbedder` / `SystemClock`. This keeps it `Send + Sync
-//! + 'static` without threading a shared connection through the pipeline;
-//!   review workloads query once per file so the per-call open is negligible
-//!   relative to the LLM round-trip.
-//!
-//! NOTE: the current wiring picks the first registered source that has an
-//! index on disk. Cross-source fanout (merging hits across multiple dbs) is
-//! out of scope for the initial integration — the injector already filters
-//! to that source via `RetrievalQuery.filters.sources`, so multi-source
-//! support is a closure-level change, not a pipeline change.
+//! When `context.multi_source.enabled = true` (the default), collects ALL
+//! sources with a valid index and fans out retrieval across them. Per-source
+//! results are min-max normalized and re-ranked with multiplicative boosts
+//! (current-repo, dep-manifest, language-match) before diversity constraints
+//! enforce per-source caps and current-repo reserved slots.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusqlite::Connection;
@@ -31,33 +26,41 @@ use crate::context::index::builder::ensure_vec_loaded;
 use crate::context::index::traits::HashEmbedder;
 use crate::context::index::traits::SystemClock;
 use crate::context::inject::{ContextInjectionSource, ContextInjector, RetrieverFn};
+use crate::context::retrieve::multi_source::{BoostContext, SourceBatch, merge_and_rerank};
 use crate::context::retrieve::{Filters, RetrievalQuery, Retriever, ScoredChunk};
 use crate::feedback::FeedbackEntry;
 
-/// Construct the production retrieval embedder. Delegates to the shared
-/// factory in `cli::new_prod_embedder` so reviews and `quorum context
-/// query` agree on the same fastembed-with-HashEmbedder-fallback policy
-/// — using two different factories would drift the two code paths and
-/// make a first-run `context query` succeed while reviews panic.
 fn build_retrieval_embedder() -> crate::context::cli::ProdEmbedder {
     crate::context::cli::new_prod_embedder()
+}
+
+/// A validated source with its db path, ready for retrieval.
+#[derive(Debug, Clone)]
+struct ValidSource {
+    name: String,
+    db_path: PathBuf,
 }
 
 /// Build a production `ContextInjectionSource` from `<home>/sources.toml` and
 /// the associated per-source indexes.
 ///
 /// Returns `None` when:
-/// - `<home>/sources.toml` is missing or unparseable (don't fail the whole
-///   review just because the user hasn't set up context yet).
-/// - `context.auto_inject = false` in the config.
-/// - No registered source has an `index.db` on disk.
-///
-/// The returned injector is wired with a [`Calibrator`] seeded from the
-/// caller-supplied feedback entries so `ContextMisleading` verdicts raise
-/// per-chunk thresholds in real reviews.
+/// - `<home>/sources.toml` is missing or unparseable
+/// - `context.auto_inject = false` in the config
+/// - No registered source has an `index.db` on disk
 pub fn build_production_injector(
     home: &Path,
     feedback: &[FeedbackEntry],
+) -> Option<Arc<dyn ContextInjectionSource>> {
+    build_production_injector_with_project(home, feedback, None)
+}
+
+/// Like [`build_production_injector`] but accepts an optional project root
+/// for current-repo detection and dep-manifest matching.
+pub fn build_production_injector_with_project(
+    home: &Path,
+    feedback: &[FeedbackEntry],
+    project_root: Option<&Path>,
 ) -> Option<Arc<dyn ContextInjectionSource>> {
     let sources_path = home.join("sources.toml");
     if !sources_path.exists() {
@@ -78,24 +81,46 @@ pub fn build_production_injector(
         return None;
     }
 
-    // Walk registered sources and pick the first one whose `index.db` is
-    // actually openable and queryable. Existence alone isn't enough — a
-    // stale tempfile or truncated db would hand a dead connection to the
-    // retriever and fail on the first real review. Skip those and fall
-    // through so the caller degrades to pre-context behavior.
-    let picked = cfg.sources.iter().find_map(|s| {
+    let multi_enabled = cfg.context.multi_source.enabled;
+    let max_sources = cfg.context.multi_source.max_sources_queried as usize;
+
+    let valid_sources = collect_valid_sources(home, &cfg, if multi_enabled { max_sources } else { 1 });
+    if valid_sources.is_empty() {
+        tracing::info!(
+            "context bootstrap: no registered source has a usable index; run `quorum context index` to enable auto-injection"
+        );
+        return None;
+    }
+
+    let embedder = Arc::new(build_retrieval_embedder());
+    let multi_source_config = cfg.context.multi_source.clone();
+
+    let boost_ctx = build_boost_context(project_root, &cfg, &valid_sources);
+
+    let retriever: Arc<RetrieverFn> = if valid_sources.len() == 1 && !multi_enabled {
+        build_single_source_retriever(valid_sources.into_iter().next().unwrap(), embedder)
+    } else {
+        build_multi_source_retriever(valid_sources, embedder, multi_source_config, boost_ctx)
+    };
+
+    let calibrator = Calibrator::from_feedback(cfg.context.inject_min_score, feedback);
+    let injector = ContextInjector::new(&cfg, retriever).with_calibrator(Arc::new(calibrator));
+    Some(Arc::new(injector))
+}
+
+fn collect_valid_sources(home: &Path, cfg: &SourcesConfig, limit: usize) -> Vec<ValidSource> {
+    let mut valid = Vec::new();
+    for s in &cfg.sources {
+        if valid.len() >= limit {
+            break;
+        }
         let layout = SourceLayout::for_source(home, &s.name);
         if !layout.db.exists() {
-            return None;
+            continue;
         }
         ensure_vec_loaded();
         match Connection::open_with_flags(&layout.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
             Ok(conn) => {
-                // Probe all three tables the retriever actually uses. A db
-                // with only `chunks` would pass a naive check but fail the
-                // BM25 leg of the first query; likewise a missing
-                // `chunks_vec` would fail the vector leg. Using one
-                // compound query keeps the cost minimal.
                 let probe = conn.query_row::<u32, _, _>(
                     "SELECT (SELECT COUNT(*) FROM chunks) \
                           + (SELECT COUNT(*) FROM chunks_fts) \
@@ -104,7 +129,10 @@ pub fn build_production_injector(
                     |r| r.get(0),
                 );
                 match probe {
-                    Ok(_) => Some((s.name.clone(), layout.db)),
+                    Ok(_) => valid.push(ValidSource {
+                        name: s.name.clone(),
+                        db_path: layout.db,
+                    }),
                     Err(e) => {
                         tracing::warn!(
                             source = %s.name,
@@ -112,7 +140,6 @@ pub fn build_production_injector(
                             error = %e,
                             "context bootstrap: index.db present but unusable (missing table?); skipping"
                         );
-                        None
                     }
                 }
             }
@@ -123,63 +150,166 @@ pub fn build_production_injector(
                     error = %e,
                     "context bootstrap: index.db present but cannot be opened; skipping"
                 );
-                None
             }
         }
-    });
-    let (src_name, db_path) = match picked {
-        Some(v) => v,
-        None => {
-            tracing::info!(
-                "context bootstrap: no registered source has a usable index; run `quorum context index` to enable auto-injection"
-            );
-            return None;
-        }
+    }
+    valid
+}
+
+fn build_boost_context(
+    project_root: Option<&Path>,
+    cfg: &SourcesConfig,
+    valid_sources: &[ValidSource],
+) -> BoostContext {
+    let current_repo_source = detect_current_repo(project_root, cfg, valid_sources);
+
+    let dep_manifest_sources = match project_root {
+        Some(root) => match_dep_manifest(root, cfg),
+        None => HashSet::new(),
     };
 
-    // Own the db path directly so non-UTF-8 bytes (rare on macOS/Linux but
-    // legal on ext4/APFS) survive the hand-off into the `'static` closure
-    // without going through `to_string_lossy`.
-    let db_path_owned = db_path;
-    let src_for_filter = src_name.clone();
+    BoostContext {
+        current_repo_source,
+        dep_manifest_sources,
+        reviewed_language: None, // set per-file at query time via RetrievalQuery
+    }
+}
 
-    // Initialize fastembed once; share the `Arc` across every retriever
-    // call. Model init is expensive (~1s) and per-review cost would
-    // dominate otherwise. Mutex inside `FastEmbedEmbedder` serializes
-    // actual inference, which is fine because reviews are sequential per
-    // file anyway.
-    let embedder = std::sync::Arc::new(build_retrieval_embedder());
+fn detect_current_repo(
+    project_root: Option<&Path>,
+    cfg: &SourcesConfig,
+    valid_sources: &[ValidSource],
+) -> Option<String> {
+    let root = project_root?;
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let valid_names: HashSet<&str> = valid_sources.iter().map(|v| v.name.as_str()).collect();
 
-    let retriever: Arc<RetrieverFn> = {
-        let embedder = std::sync::Arc::clone(&embedder);
-        Arc::new(
-            move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
-                // Every invocation is a fresh process-safe open; the vec0 hook
-                // must be registered before `Connection::open*` or the vector
-                // leg of retrieval errors with `no such module: vec0`.
+    for s in &cfg.sources {
+        if !valid_names.contains(s.name.as_str()) {
+            continue;
+        }
+        if let crate::context::config::SourceLocation::Path(ref p) = s.location {
+            let matches = std::fs::canonicalize(p).is_ok_and(|canonical_src| {
+                canonical_root.starts_with(&canonical_src)
+                    || canonical_src.starts_with(&canonical_root)
+            });
+            if matches {
+                return Some(s.name.clone());
+            }
+        }
+    }
+    None
+}
+
+fn match_dep_manifest(project_root: &Path, cfg: &SourcesConfig) -> HashSet<String> {
+    let deps = crate::dep_manifest::parse_dependencies(project_root);
+    let dep_names: HashSet<String> = deps.iter().map(|d| d.name.clone()).collect();
+    let mut matched = HashSet::new();
+    for s in &cfg.sources {
+        if dep_names.contains(&s.name) {
+            matched.insert(s.name.clone());
+            continue;
+        }
+        for alias in &s.provides {
+            if dep_names.contains(alias) {
+                matched.insert(s.name.clone());
+                break;
+            }
+        }
+    }
+    matched
+}
+
+fn build_single_source_retriever(
+    source: ValidSource,
+    embedder: Arc<crate::context::cli::ProdEmbedder>,
+) -> Arc<RetrieverFn> {
+    let src_name = source.name;
+    let db_path = source.db_path;
+    Arc::new(
+        move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
+            ensure_vec_loaded();
+            let conn = Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let clock = SystemClock;
+            let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
+            let mut q = q.clone();
+            q.filters = Filters {
+                sources: vec![src_name.clone()],
+                kinds: q.filters.kinds,
+                exclude_source_paths: q.filters.exclude_source_paths,
+            };
+            retriever.query(q)
+        },
+    )
+}
+
+fn build_multi_source_retriever(
+    sources: Vec<ValidSource>,
+    embedder: Arc<crate::context::cli::ProdEmbedder>,
+    ms_config: crate::context::config::MultiSourceConfig,
+    boost_ctx: BoostContext,
+) -> Arc<RetrieverFn> {
+    Arc::new(
+        move |q: &RetrievalQuery| -> anyhow::Result<Vec<ScoredChunk>> {
+            let per_source_k = q.k.saturating_mul(2).max(10);
+            let mut batches = Vec::with_capacity(sources.len());
+
+            for src in &sources {
                 ensure_vec_loaded();
-                let conn = Connection::open_with_flags(
-                    &db_path_owned,
+                let conn = match Connection::open_with_flags(
+                    &src.db_path,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )?;
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            source = %src.name,
+                            error = %e,
+                            "multi-source retriever: skipping source (db open failed)"
+                        );
+                        continue;
+                    }
+                };
                 let clock = SystemClock;
                 let retriever = Retriever::new(&conn, embedder.as_ref(), &clock);
-                // Constrain to the specific source we picked so multi-source
-                // layouts don't accidentally leak hits from other indexes.
-                let mut q = q.clone();
-                q.filters = Filters {
-                    sources: vec![src_for_filter.clone()],
-                    kinds: q.filters.kinds,
-                    exclude_source_paths: q.filters.exclude_source_paths,
+                let mut local_q = q.clone();
+                local_q.k = per_source_k;
+                local_q.filters = Filters {
+                    sources: vec![src.name.clone()],
+                    kinds: q.filters.kinds.clone(),
+                    exclude_source_paths: q.filters.exclude_source_paths.clone(),
                 };
-                retriever.query(q)
-            },
-        )
-    };
+                match retriever.query(local_q) {
+                    Ok(chunks) if !chunks.is_empty() => {
+                        batches.push(SourceBatch {
+                            source_name: src.name.clone(),
+                            chunks,
+                        });
+                    }
+                    Ok(_) => {} // empty — skip
+                    Err(e) => {
+                        tracing::warn!(
+                            source = %src.name,
+                            error = %e,
+                            "multi-source retriever: query failed for source; skipping"
+                        );
+                    }
+                }
+            }
 
-    let calibrator = Calibrator::from_feedback(cfg.context.inject_min_score, feedback);
-    let injector = ContextInjector::new(&cfg, retriever).with_calibrator(Arc::new(calibrator));
-    Some(Arc::new(injector))
+            if batches.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut ctx = boost_ctx.clone();
+            ctx.reviewed_language = q.reviewed_file_language.clone();
+
+            Ok(merge_and_rerank(&batches, &ms_config, &ctx, q.k as u32))
+        },
+    )
 }
 
 #[cfg(test)]
@@ -258,6 +388,9 @@ path = "/tmp/demo"
             paths: vec![],
             weight: Some(10),
             ignore: vec![],
+            provides: vec![],
+            include_for: vec![],
+            exclude_for: vec![],
         };
         let clock = FixedClock::epoch();
         let extracted = extract_source(&source, &ExtractConfig::default(), &clock).unwrap();

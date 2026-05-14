@@ -918,13 +918,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
-    // Build the production context injector from `<qhome>/sources.toml`
-    // (if present and `auto_inject = true`). Returns `None` when context
-    // isn't configured, so reviews without a sources file behave exactly
-    // as before. Honors QUORUM_HOME via the same `qhome` used for
-    // feedback/telemetry/reviews — without this, hermetic runs would
-    // calibrate against one dir and source `sources.toml` from another.
-    let context_injector = context::bootstrap::build_production_injector(&qhome, &feedback_entries);
+    let injector_project_root = opts.files.first().map(|f| pipeline::find_project_root(f));
+    let context_injector = context::bootstrap::build_production_injector_with_project(
+        &qhome,
+        &feedback_entries,
+        injector_project_root.as_deref(),
+    );
     if context_injector.is_some() {
         tracing::info!(
             "context injector wired from ~/.quorum/sources.toml — auto-inject is active"

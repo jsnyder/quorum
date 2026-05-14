@@ -21,6 +21,9 @@ fn mk_entry(name: &str, kind: SourceKind, path: PathBuf) -> SourceEntry {
         paths: vec![],
         weight: None,
         ignore: vec![],
+        provides: vec![],
+        include_for: vec![],
+        exclude_for: vec![],
     }
 }
 
@@ -263,6 +266,9 @@ fn git_source_returns_error_for_mvp() {
         paths: vec![],
         weight: None,
         ignore: vec![],
+        provides: vec![],
+        include_for: vec![],
+        exclude_for: vec![],
     };
     let clock = FixedClock::epoch();
     let err = extract_source(&entry, &ExtractConfig::default(), &clock).unwrap_err();
@@ -357,6 +363,9 @@ fn rejects_scan_path_escaping_source_root() {
         paths: vec![PathBuf::from("../../../")],
         weight: None,
         ignore: vec![],
+        provides: vec![],
+        include_for: vec![],
+        exclude_for: vec![],
     };
     let result = extract_source(&entry, &ExtractConfig::default(), &FixedClock::epoch()).unwrap();
     assert!(result.chunks.is_empty());
@@ -372,6 +381,9 @@ fn rejects_absolute_scan_path_outside_root() {
         paths: vec![PathBuf::from("/etc")],
         weight: None,
         ignore: vec![],
+        provides: vec![],
+        include_for: vec![],
+        exclude_for: vec![],
     };
     let result = extract_source(&entry, &ExtractConfig::default(), &FixedClock::epoch()).unwrap();
     assert!(result.chunks.is_empty());

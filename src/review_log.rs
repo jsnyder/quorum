@@ -159,6 +159,27 @@ pub struct ContextTelemetry {
     /// 90th percentile of retrieved rerank scores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank_score_p90: Option<f32>,
+
+    // --- Multi-source telemetry (v0.23.0+) ---
+
+    /// Number of source DBs queried in this review.
+    #[serde(default)]
+    pub sources_queried: u32,
+    /// Number of sources with at least one chunk in the final top-k.
+    #[serde(default)]
+    pub sources_contributing: u32,
+    /// Per-source chunk count in the final injected set.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub per_source_contributions: std::collections::BTreeMap<String, u32>,
+    /// Chunks that received the dep-manifest boost.
+    #[serde(default)]
+    pub dep_boost_applied: u32,
+    /// Reserved slots available for the current repo.
+    #[serde(default)]
+    pub current_repo_reserved_available: u32,
+    /// Reserved slots actually filled by current-repo chunks.
+    #[serde(default)]
+    pub current_repo_reserved_filled: u32,
 }
 
 /// Count of chunks attributed to each retrieval leg, plus a
@@ -735,6 +756,12 @@ mod tests {
             rerank_score_p10: Some(0.55),
             rerank_score_median: Some(0.72),
             rerank_score_p90: Some(0.88),
+            sources_queried: 1,
+            sources_contributing: 1,
+            per_source_contributions: std::collections::BTreeMap::new(),
+            dep_boost_applied: 0,
+            current_repo_reserved_available: 0,
+            current_repo_reserved_filled: 0,
         }
     }
 

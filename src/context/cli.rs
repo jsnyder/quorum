@@ -686,6 +686,9 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
         paths: Vec::new(),
         weight: args.weight,
         ignore: args.ignore.clone(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     };
 
     let sources_path = deps.home_dir().join("sources.toml");
