@@ -18,6 +18,29 @@ use crate::parser::Language;
 use crate::pipeline::{self, LlmReviewer, PipelineConfig};
 use crate::redact;
 
+const MAX_PAYLOAD_BYTES: usize = 1_048_576; // 1 MiB
+
+const ALLOWED_AGENTS: &[&str] = &[
+    "pal",
+    "third-opinion",
+    "gemini",
+    "reviewdog",
+    "claude",
+    "codex",
+    "quorum",
+];
+
+fn check_payload_size(field: &str, value: &str) -> Result<(), String> {
+    if value.len() > MAX_PAYLOAD_BYTES {
+        Err(format!(
+            "{field} exceeds maximum payload size ({} bytes > {MAX_PAYLOAD_BYTES})",
+            value.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub struct QuorumHandler {
     config: Config,
     feedback_store: FeedbackStore,
@@ -84,6 +107,7 @@ impl QuorumHandler {
     }
 
     async fn handle_review(&self, params: ReviewTool) -> Result<CallToolResult, String> {
+        check_payload_size("code", &params.code)?;
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
@@ -161,6 +185,22 @@ impl QuorumHandler {
         // record_external so Provenance::External is serialized and the
         // calibrator applies the 0.7 weight. Human path is unchanged below.
         if let Some(agent) = params.from_agent {
+            let normalized = agent.trim().to_lowercase();
+            let allowed = std::env::var("QUORUM_ALLOWED_AGENTS")
+                .ok()
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_lowercase())
+                        .any(|a| a == normalized)
+                })
+                .unwrap_or_else(|| ALLOWED_AGENTS.iter().any(|&a| a == normalized));
+            if !allowed {
+                return Err(format!(
+                    "agent {:?} is not in the allowed agents list. \
+                     Set QUORUM_ALLOWED_AGENTS to extend the allowlist.",
+                    agent
+                ));
+            }
             if fp_kind.is_some() {
                 tracing::warn!(
                     "MCP feedback: fpKind dropped on External path \
@@ -268,6 +308,10 @@ impl QuorumHandler {
     }
 
     async fn handle_chat(&self, params: ChatTool) -> Result<CallToolResult, String> {
+        check_payload_size("question", &params.question)?;
+        if let Some(code) = &params.code {
+            check_payload_size("code", code)?;
+        }
         let reviewer = Arc::clone(
             self.llm_reviewer
                 .as_ref()
@@ -310,6 +354,8 @@ impl QuorumHandler {
     }
 
     async fn handle_debug(&self, params: DebugTool) -> Result<CallToolResult, String> {
+        check_payload_size("code", &params.code)?;
+        check_payload_size("error", &params.error)?;
         let reviewer = Arc::clone(
             self.llm_reviewer
                 .as_ref()
@@ -338,6 +384,7 @@ impl QuorumHandler {
     }
 
     async fn handle_testgen(&self, params: TestgenTool) -> Result<CallToolResult, String> {
+        check_payload_size("code", &params.code)?;
         let reviewer = Arc::clone(
             self.llm_reviewer
                 .as_ref()
@@ -1513,5 +1560,202 @@ mod tests {
             all[0].fp_kind, None,
             "fp_kind must be dropped when verdict is not fp"
         );
+    }
+
+    // --- Issue #130: MCP unbounded payload rejection ---
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_rejects_oversized_code_payload() {
+        let handler = handler_no_llm();
+        let big = "x".repeat(MAX_PAYLOAD_BYTES + 1);
+        let params = ReviewTool {
+            code: big,
+            file_path: "test.rs".into(),
+            focus: None,
+        };
+        let err = handler
+            .handle_review(params)
+            .await
+            .expect_err("must reject oversized payload");
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention size limit: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_rejects_oversized_code_payload() {
+        let handler = handler_with_fake_llm();
+        let big = "x".repeat(MAX_PAYLOAD_BYTES + 1);
+        let params = ChatTool {
+            question: "what?".into(),
+            code: Some(big),
+            file_path: None,
+        };
+        let err = handler
+            .handle_chat(params)
+            .await
+            .expect_err("must reject oversized payload");
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention size limit: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn chat_rejects_oversized_question() {
+        let handler = handler_with_fake_llm();
+        let big = "x".repeat(MAX_PAYLOAD_BYTES + 1);
+        let params = ChatTool {
+            question: big,
+            code: None,
+            file_path: None,
+        };
+        let err = handler
+            .handle_chat(params)
+            .await
+            .expect_err("must reject oversized question");
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention size limit: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn debug_rejects_oversized_code_payload() {
+        let handler = handler_with_fake_llm();
+        let big = "x".repeat(MAX_PAYLOAD_BYTES + 1);
+        let params = DebugTool {
+            error: "e".into(),
+            code: big,
+            file_path: "test.rs".into(),
+        };
+        let err = handler
+            .handle_debug(params)
+            .await
+            .expect_err("must reject oversized payload");
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention size limit: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn testgen_rejects_oversized_code_payload() {
+        let handler = handler_with_fake_llm();
+        let big = "x".repeat(MAX_PAYLOAD_BYTES + 1);
+        let params = TestgenTool {
+            code: big,
+            file_path: "test.rs".into(),
+            framework: None,
+        };
+        let err = handler
+            .handle_testgen(params)
+            .await
+            .expect_err("must reject oversized payload");
+        assert!(
+            err.contains("exceeds maximum"),
+            "error must mention size limit: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_accepts_payload_at_limit() {
+        let handler = handler_no_llm();
+        let at_limit = "x".repeat(MAX_PAYLOAD_BYTES);
+        let params = ReviewTool {
+            code: at_limit,
+            file_path: "test.rs".into(),
+            focus: None,
+        };
+        let result = handler.handle_review(params).await;
+        if let Err(e) = &result {
+            assert!(
+                !e.contains("exceeds maximum"),
+                "payload at exact limit must not be rejected"
+            );
+        }
+    }
+
+    // --- Issue #128: MCP from_agent allowlist ---
+
+    #[test]
+    fn feedback_rejects_unknown_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/a.rs".into(),
+            finding: "SQL injection".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
+            reason: "confirmed".into(),
+            model: None,
+            blamed_chunks: None,
+            from_agent: Some("evil-unknown-agent".into()),
+            agent_model: None,
+            confidence: Some(0.9),
+            category: None,
+            fp_kind: None,
+            in_diff: None,
+        };
+        let err = handler
+            .handle_feedback(params)
+            .expect_err("unknown agent must be rejected");
+        assert!(
+            err.contains("not in the allowed"),
+            "error must reference allowlist: {err}"
+        );
+        let store = FeedbackStore::new(path);
+        assert_eq!(
+            store.load_all().unwrap().len(),
+            0,
+            "nothing must be persisted for rejected agent"
+        );
+    }
+
+    #[test]
+    fn feedback_accepts_known_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(path.clone()),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+
+        let params = FeedbackTool {
+            file_path: "src/a.rs".into(),
+            finding: "SQL injection".into(),
+            verdict: crate::mcp::tools::FeedbackVerdict::Tp,
+            reason: "confirmed".into(),
+            model: None,
+            blamed_chunks: None,
+            from_agent: Some("pal".into()),
+            agent_model: None,
+            confidence: Some(0.9),
+            category: None,
+            fp_kind: None,
+            in_diff: None,
+        };
+        handler
+            .handle_feedback(params)
+            .expect("known agent must be accepted");
+        let store = FeedbackStore::new(path);
+        assert_eq!(store.load_all().unwrap().len(), 1);
     }
 }
