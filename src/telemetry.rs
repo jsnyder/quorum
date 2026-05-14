@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 /// Review telemetry: append-only JSONL recording review metadata.
 /// No file contents, no finding text, no code snippets. Just counts and metadata.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::storage::StorageHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TelemetryEntry {
@@ -75,27 +77,163 @@ pub struct LoadStats {
     pub errors: Vec<ParseError>,
 }
 
+/// Internal backend discriminator: JSONL (legacy) or SQLite.
+enum Backend {
+    Jsonl(PathBuf),
+    Sqlite(StorageHandle),
+}
+
+/// Intermediate row extracted from SQLite. All columns are pulled inside the
+/// `query_map` closure (where the `Row` borrow lives), then converted to
+/// `TelemetryEntry` after the statement is dropped.
+struct RawTelemetryRow {
+    ts_str: String,
+    files_json: String,
+    findings_json: String,
+    model: String,
+    tokens_in: i64,
+    tokens_out: i64,
+    duration_ms: i64,
+    suppressed: i64,
+    context7_resolved: i64,
+    context7_resolve_failed: i64,
+    context7_query_failed: i64,
+    context7_skipped_popular: i64,
+    context7_budget_reduced: i64,
+    fp_kind_utilization_rate: Option<f64>,
+    judge_calls: i64,
+    judge_approved: i64,
+    judge_rejected: i64,
+    judge_uncertain: i64,
+    judge_skipped: i64,
+    judge_cache_hits: i64,
+    judge_latency_ms: i64,
+}
+
+impl RawTelemetryRow {
+    /// Convert a raw SQLite row into a `TelemetryEntry`.
+    fn into_entry(self) -> anyhow::Result<TelemetryEntry> {
+        use anyhow::Context;
+
+        let ts = DateTime::parse_from_rfc3339(&self.ts_str)
+            .with_context(|| format!("invalid timestamp in telemetry row: {}", self.ts_str))?
+            .with_timezone(&Utc);
+
+        let files: Vec<String> = serde_json::from_str(&self.files_json)
+            .with_context(|| {
+                format!(
+                    "invalid files JSON in telemetry row: {}",
+                    self.files_json
+                )
+            })?;
+
+        let findings: HashMap<String, usize> = serde_json::from_str(&self.findings_json)
+            .with_context(|| {
+                format!(
+                    "invalid findings JSON in telemetry row: {}",
+                    self.findings_json
+                )
+            })?;
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let entry = TelemetryEntry {
+            ts,
+            files,
+            findings,
+            model: self.model,
+            tokens_in: self.tokens_in as u64,
+            tokens_out: self.tokens_out as u64,
+            duration_ms: self.duration_ms as u64,
+            suppressed: self.suppressed as usize,
+            context7_resolved: self.context7_resolved as u32,
+            context7_resolve_failed: self.context7_resolve_failed as u32,
+            context7_query_failed: self.context7_query_failed as u32,
+            context7_skipped_popular: self.context7_skipped_popular as u32,
+            context7_budget_reduced: self.context7_budget_reduced as u32,
+            fp_kind_utilization_rate: self.fp_kind_utilization_rate.map(|v| v as f32),
+            judge_calls: self.judge_calls as u32,
+            judge_approved: self.judge_approved as u32,
+            judge_rejected: self.judge_rejected as u32,
+            judge_uncertain: self.judge_uncertain as u32,
+            judge_skipped: self.judge_skipped as u32,
+            judge_cache_hits: self.judge_cache_hits as u32,
+            judge_latency_ms: self.judge_latency_ms as u64,
+        };
+        Ok(entry)
+    }
+}
+
 pub struct TelemetryStore {
-    path: PathBuf,
+    backend: Backend,
 }
 
 impl TelemetryStore {
+    /// Create a JSONL-backed telemetry store (legacy path).
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            backend: Backend::Jsonl(path),
+        }
+    }
+
+    /// Create a SQLite-backed telemetry store.
+    pub fn with_storage(handle: StorageHandle) -> Self {
+        Self {
+            backend: Backend::Sqlite(handle),
+        }
+    }
+
+    /// Path to the underlying JSONL file. Returns an empty path for
+    /// the SQLite backend (only used for display purposes).
+    pub fn path(&self) -> &Path {
+        match &self.backend {
+            Backend::Jsonl(p) => p,
+            Backend::Sqlite(_) => Path::new(""),
+        }
     }
 
     pub fn record(&self, entry: &TelemetryEntry) -> anyhow::Result<()> {
+        match &self.backend {
+            Backend::Jsonl(path) => Self::record_jsonl(path, entry),
+            Backend::Sqlite(handle) => Self::record_sqlite(handle, entry),
+        }
+    }
+
+    pub fn load_all_with_stats(&self) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
+        match &self.backend {
+            Backend::Jsonl(path) => Self::load_all_with_stats_jsonl(path),
+            Backend::Sqlite(handle) => Self::load_all_with_stats_sqlite(handle),
+        }
+    }
+
+    pub fn load_all(&self) -> anyhow::Result<Vec<TelemetryEntry>> {
+        Ok(self.load_all_with_stats()?.0)
+    }
+
+    pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<TelemetryEntry>> {
+        Ok(self
+            .load_all_with_stats()?
+            .0
+            .into_iter()
+            .filter(|e| e.ts >= since)
+            .collect())
+    }
+
+    // ── JSONL backend ──────────────────────────────────────────────────
+
+    fn record_jsonl(path: &Path, entry: &TelemetryEntry) -> anyhow::Result<()> {
         use anyhow::Context;
         use std::io::Write;
 
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
             std::fs::create_dir_all(parent)?;
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
-            .with_context(|| format!("Failed to open telemetry file: {}", self.path.display()))?;
+            .open(path)
+            .with_context(|| format!("Failed to open telemetry file: {}", path.display()))?;
         let line = serde_json::to_string(entry)?;
         writeln!(file, "{}", line)?;
         Ok(())
@@ -120,7 +258,7 @@ impl TelemetryStore {
     /// snippet. The error vector itself is bounded at `MAX_PARSE_ERRORS`
     /// (1000) so a fully-corrupted file cannot OOM the caller — `skipped`
     /// continues to count beyond the cap.
-    pub fn load_all_with_stats(&self) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
+    fn load_all_with_stats_jsonl(path: &Path) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
         use std::io::{BufRead, BufReader, Read};
 
         // Bounded per-line allocation. JSONL telemetry rows are tiny
@@ -131,10 +269,10 @@ impl TelemetryStore {
         // counting beyond the cap so totals stay accurate.
         const MAX_PARSE_ERRORS: usize = 1000;
 
-        if !self.path.exists() {
+        if !path.exists() {
             return Ok((vec![], LoadStats::default()));
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut entries: Vec<TelemetryEntry> = Vec::new();
         let mut stats = LoadStats::default();
@@ -260,17 +398,135 @@ impl TelemetryStore {
         Ok((entries, stats))
     }
 
-    pub fn load_all(&self) -> anyhow::Result<Vec<TelemetryEntry>> {
-        Ok(self.load_all_with_stats()?.0)
+    // ── SQLite backend ─────────────────────────────────────────────────
+
+    fn record_sqlite(handle: &StorageHandle, entry: &TelemetryEntry) -> anyhow::Result<()> {
+        use rusqlite::params;
+
+        let files_json = serde_json::to_string(&entry.files)?;
+        let findings_json = serde_json::to_string(&entry.findings)?;
+        let ts = entry.ts.to_rfc3339();
+
+        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        // u64 -> i64 casts are intentional: SQLite INTEGER is signed 64-bit.
+        // Token counts and durations are well within i64 range in practice.
+        #[allow(clippy::cast_possible_wrap)]
+        conn.execute(
+            "INSERT INTO telemetry (
+                ts, files, findings, model,
+                tokens_in, tokens_out, duration_ms, suppressed,
+                context7_resolved, context7_resolve_failed, context7_query_failed,
+                context7_skipped_popular, context7_budget_reduced,
+                fp_kind_utilization_rate,
+                judge_calls, judge_approved, judge_rejected,
+                judge_uncertain, judge_skipped, judge_cache_hits,
+                judge_latency_ms
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11,
+                ?12, ?13,
+                ?14,
+                ?15, ?16, ?17,
+                ?18, ?19, ?20,
+                ?21
+            )",
+            params![
+                ts,
+                files_json,
+                findings_json,
+                entry.model,
+                entry.tokens_in as i64,
+                entry.tokens_out as i64,
+                entry.duration_ms as i64,
+                entry.suppressed as i64,
+                i64::from(entry.context7_resolved),
+                i64::from(entry.context7_resolve_failed),
+                i64::from(entry.context7_query_failed),
+                i64::from(entry.context7_skipped_popular),
+                i64::from(entry.context7_budget_reduced),
+                entry.fp_kind_utilization_rate.map(f64::from),
+                i64::from(entry.judge_calls),
+                i64::from(entry.judge_approved),
+                i64::from(entry.judge_rejected),
+                i64::from(entry.judge_uncertain),
+                i64::from(entry.judge_skipped),
+                i64::from(entry.judge_cache_hits),
+                entry.judge_latency_ms as i64,
+            ],
+        )?;
+
+        Ok(())
     }
 
-    pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<TelemetryEntry>> {
-        Ok(self
-            .load_all_with_stats()?
-            .0
-            .into_iter()
-            .filter(|e| e.ts >= since)
-            .collect())
+    fn load_all_with_stats_sqlite(
+        handle: &StorageHandle,
+    ) -> anyhow::Result<(Vec<TelemetryEntry>, LoadStats)> {
+        let conn = handle.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let raw_rows = Self::query_raw_rows(&conn)?;
+
+        let mut entries = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            entries.push(r.into_entry()?);
+        }
+
+        let stats = LoadStats {
+            kept: entries.len(),
+            skipped: 0,
+            errors: vec![],
+        };
+
+        Ok((entries, stats))
+    }
+
+    /// Execute the SELECT query and extract all columns into `RawTelemetryRow`
+    /// structs, keeping the rusqlite `Row` borrow confined to the closure.
+    fn query_raw_rows(conn: &rusqlite::Connection) -> anyhow::Result<Vec<RawTelemetryRow>> {
+        let mut stmt = conn.prepare(
+            "SELECT
+                ts, files, findings, model,
+                tokens_in, tokens_out, duration_ms, suppressed,
+                context7_resolved, context7_resolve_failed, context7_query_failed,
+                context7_skipped_popular, context7_budget_reduced,
+                fp_kind_utilization_rate,
+                judge_calls, judge_approved, judge_rejected,
+                judge_uncertain, judge_skipped, judge_cache_hits,
+                judge_latency_ms
+            FROM telemetry
+            ORDER BY ts ASC",
+        )?;
+
+        let raw_rows: Vec<RawTelemetryRow> = stmt
+            .query_map([], |row| {
+                Ok(RawTelemetryRow {
+                    ts_str: row.get(0)?,
+                    files_json: row.get(1)?,
+                    findings_json: row.get(2)?,
+                    model: row.get(3)?,
+                    tokens_in: row.get(4)?,
+                    tokens_out: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    suppressed: row.get(7)?,
+                    context7_resolved: row.get(8)?,
+                    context7_resolve_failed: row.get(9)?,
+                    context7_query_failed: row.get(10)?,
+                    context7_skipped_popular: row.get(11)?,
+                    context7_budget_reduced: row.get(12)?,
+                    fp_kind_utilization_rate: row.get(13)?,
+                    judge_calls: row.get(14)?,
+                    judge_approved: row.get(15)?,
+                    judge_rejected: row.get(16)?,
+                    judge_uncertain: row.get(17)?,
+                    judge_skipped: row.get(18)?,
+                    judge_cache_hits: row.get(19)?,
+                    judge_latency_ms: row.get(20)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(raw_rows)
     }
 }
 
@@ -670,5 +926,203 @@ mod tests {
             .with_timezone(&Utc);
         let entries = store.load_since(since).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    // ── SQLite backend tests ──────────────────────────────────────────
+
+    /// Fixture builder for test `TelemetryEntry`s. Reduces duplication
+    /// across SQLite tests -- callers override only what they need.
+    fn test_telemetry_entry() -> TelemetryEntry {
+        TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: vec![],
+            findings: HashMap::new(),
+            model: "test-model".to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            duration_ms: 0,
+            suppressed: 0,
+            context7_resolved: 0,
+            context7_resolve_failed: 0,
+            context7_query_failed: 0,
+            context7_skipped_popular: 0,
+            context7_budget_reduced: 0,
+            fp_kind_utilization_rate: None,
+            judge_calls: 0,
+            judge_approved: 0,
+            judge_rejected: 0,
+            judge_uncertain: 0,
+            judge_skipped: 0,
+            judge_cache_hits: 0,
+            judge_latency_ms: 0,
+        }
+    }
+
+    /// Helper: create a SQLite-backed TelemetryStore in a temp directory.
+    fn sqlite_telemetry_store(dir: &TempDir) -> TelemetryStore {
+        let handle = crate::storage::initialize(dir.path()).expect("storage init");
+        TelemetryStore::with_storage(handle)
+    }
+
+    #[test]
+    fn sqlite_record_round_trip() {
+        // Full entry with all fields populated; verify every field
+        // survives a write-then-read cycle through SQLite.
+        let dir = TempDir::new().unwrap();
+        let store = sqlite_telemetry_store(&dir);
+
+        let mut findings = HashMap::new();
+        findings.insert("critical".to_string(), 3_usize);
+        findings.insert("warning".to_string(), 7_usize);
+        findings.insert("info".to_string(), 1_usize);
+
+        let entry = TelemetryEntry {
+            ts: chrono::DateTime::parse_from_rfc3339("2026-05-10T14:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            files: vec![
+                "src/main.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "tests/integration.rs".to_string(),
+            ],
+            findings,
+            model: "gpt-5.4".to_string(),
+            tokens_in: 12_345,
+            tokens_out: 678,
+            duration_ms: 4_200,
+            suppressed: 5,
+            context7_resolved: 3,
+            context7_resolve_failed: 1,
+            context7_query_failed: 2,
+            context7_skipped_popular: 4,
+            context7_budget_reduced: 6,
+            fp_kind_utilization_rate: Some(0.42),
+            judge_calls: 10,
+            judge_approved: 7,
+            judge_rejected: 2,
+            judge_uncertain: 1,
+            judge_skipped: 3,
+            judge_cache_hits: 5,
+            judge_latency_ms: 850,
+        };
+
+        store.record(&entry).unwrap();
+        let (loaded, stats) = store.load_all_with_stats().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(stats.kept, 1);
+        assert_eq!(stats.skipped, 0);
+        assert!(stats.errors.is_empty());
+
+        let got = &loaded[0];
+        assert_eq!(got.ts, entry.ts);
+        assert_eq!(got.files, entry.files);
+        assert_eq!(got.findings, entry.findings);
+        assert_eq!(got.model, entry.model);
+        assert_eq!(got.tokens_in, entry.tokens_in);
+        assert_eq!(got.tokens_out, entry.tokens_out);
+        assert_eq!(got.duration_ms, entry.duration_ms);
+        assert_eq!(got.suppressed, entry.suppressed);
+        assert_eq!(got.context7_resolved, entry.context7_resolved);
+        assert_eq!(got.context7_resolve_failed, entry.context7_resolve_failed);
+        assert_eq!(got.context7_query_failed, entry.context7_query_failed);
+        assert_eq!(got.context7_skipped_popular, entry.context7_skipped_popular);
+        assert_eq!(got.context7_budget_reduced, entry.context7_budget_reduced);
+        assert_eq!(
+            got.fp_kind_utilization_rate,
+            entry.fp_kind_utilization_rate
+        );
+        assert_eq!(got.judge_calls, entry.judge_calls);
+        assert_eq!(got.judge_approved, entry.judge_approved);
+        assert_eq!(got.judge_rejected, entry.judge_rejected);
+        assert_eq!(got.judge_uncertain, entry.judge_uncertain);
+        assert_eq!(got.judge_skipped, entry.judge_skipped);
+        assert_eq!(got.judge_cache_hits, entry.judge_cache_hits);
+        assert_eq!(got.judge_latency_ms, entry.judge_latency_ms);
+    }
+
+    #[test]
+    fn sqlite_null_fp_kind_rate() {
+        // None fp_kind_utilization_rate round-trips as None through SQLite.
+        let dir = TempDir::new().unwrap();
+        let store = sqlite_telemetry_store(&dir);
+
+        let entry = test_telemetry_entry();
+        assert!(entry.fp_kind_utilization_rate.is_none());
+
+        store.record(&entry).unwrap();
+        let loaded = store.load_all().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert!(
+            loaded[0].fp_kind_utilization_rate.is_none(),
+            "None must round-trip as None, got {:?}",
+            loaded[0].fp_kind_utilization_rate
+        );
+    }
+
+    #[test]
+    fn sqlite_files_and_findings_json_round_trip() {
+        // Verify Vec<String> and HashMap<String, usize> survive the JSON
+        // column serialization/deserialization cycle.
+        let dir = TempDir::new().unwrap();
+        let store = sqlite_telemetry_store(&dir);
+
+        let mut findings = HashMap::new();
+        findings.insert("sql-injection".to_string(), 2_usize);
+        findings.insert("xss".to_string(), 5_usize);
+        findings.insert("secrets".to_string(), 0_usize);
+
+        let mut entry = test_telemetry_entry();
+        entry.files = vec![
+            "src/handler.rs".to_string(),
+            "src/routes/auth.rs".to_string(),
+        ];
+        entry.findings = findings.clone();
+
+        store.record(&entry).unwrap();
+        let loaded = store.load_all().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].files,
+            vec!["src/handler.rs", "src/routes/auth.rs"]
+        );
+        assert_eq!(loaded[0].findings, findings);
+    }
+
+    #[test]
+    fn sqlite_load_all_with_stats_returns_correct_counts() {
+        // stats.kept must match actual count; stats.skipped must be 0;
+        // stats.errors must be empty (SQLite has no parse errors).
+        let dir = TempDir::new().unwrap();
+        let store = sqlite_telemetry_store(&dir);
+
+        for i in 0..5 {
+            let mut entry = test_telemetry_entry();
+            entry.model = format!("model-{i}");
+            store.record(&entry).unwrap();
+        }
+
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(stats.kept, 5);
+        assert_eq!(stats.skipped, 0);
+        assert!(stats.errors.is_empty());
+    }
+
+    #[test]
+    fn sqlite_empty_db_returns_empty() {
+        // load_all on a fresh SQLite DB returns an empty vec.
+        let dir = TempDir::new().unwrap();
+        let store = sqlite_telemetry_store(&dir);
+        let loaded = store.load_all().unwrap();
+        assert!(loaded.is_empty());
+
+        let (entries, stats) = store.load_all_with_stats().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(stats.kept, 0);
+        assert_eq!(stats.skipped, 0);
+        assert!(stats.errors.is_empty());
     }
 }
