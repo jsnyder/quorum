@@ -160,21 +160,23 @@ pub fn build_judge_prompt(
     prompt.push_str(source_code);
     prompt.push_str("\n```\n\nFindings to judge:\n");
 
-    for (i, (rule_id, title, start, end, evidence)) in findings.iter().enumerate() {
-        prompt.push_str(&format!(
-            "{}. [index={}] rule_id=\"{}\", title=\"{}\", lines {}-{}, evidence=\"{}\"\n",
-            i + 1,
-            i,
-            rule_id,
-            title,
-            start,
-            end,
-            evidence
-        ));
-    }
+    let items: Vec<serde_json::Value> = findings
+        .iter()
+        .enumerate()
+        .map(|(i, (rule_id, title, start, end, evidence))| {
+            serde_json::json!({
+                "index": i,
+                "rule_id": rule_id,
+                "title": title,
+                "lines": format!("{}-{}", start, end),
+                "evidence": evidence,
+            })
+        })
+        .collect();
+    prompt.push_str(&serde_json::to_string_pretty(&items).unwrap_or_default());
 
     prompt.push_str(
-        "\nRespond with ONLY a JSON array. Each element must include the index field: \
+        "\n\nRespond with ONLY a JSON array. Each element must include the index field: \
          {\"index\": N, \"rule_id\": \"...\", \"verdict\": \"tp\"|\"fp\"|\"uncertain\", \
          \"confidence\": 0.0-1.0, \"reason\": \"...\"}\n",
     );
@@ -486,6 +488,70 @@ mod tests {
         assert_eq!(parse_verdict("fp"), JudgeVerdict::Rejected);
         assert_eq!(parse_verdict("uncertain"), JudgeVerdict::Uncertain);
         assert_eq!(parse_verdict("garbage"), JudgeVerdict::Uncertain);
+    }
+
+    #[test]
+    fn build_judge_prompt_escapes_special_characters() {
+        let findings = vec![(
+            "test-rule".to_string(),
+            "title with \"quotes\" and\nnewlines".to_string(),
+            1u32,
+            5u32,
+            "evidence with \\backslash and \"double quotes\"".to_string(),
+        )];
+        let prompt = build_judge_prompt("fn main() {}", &findings);
+        let json_start = prompt.find('[').expect("should contain JSON array");
+        let json_end = prompt.rfind(']').expect("should end with JSON array");
+        let json_str = &prompt[json_start..=json_end];
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(json_str).expect("findings must be valid JSON");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["title"], "title with \"quotes\" and\nnewlines");
+        assert_eq!(
+            parsed[0]["evidence"],
+            "evidence with \\backslash and \"double quotes\""
+        );
+    }
+
+    #[test]
+    fn build_judge_prompt_round_trips_values() {
+        let findings = vec![
+            (
+                "rule-a".to_string(),
+                "simple title".to_string(),
+                10u32,
+                20u32,
+                "some evidence".to_string(),
+            ),
+            (
+                "rule-b".to_string(),
+                "title with {braces} and [brackets]".to_string(),
+                30u32,
+                40u32,
+                "evidence\twith\ttabs".to_string(),
+            ),
+        ];
+        let prompt = build_judge_prompt("let x = 1;", &findings);
+        let json_start = prompt.find('[').unwrap();
+        let json_end = prompt.rfind(']').unwrap();
+        let json_str = &prompt[json_start..=json_end];
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["rule_id"], "rule-a");
+        assert_eq!(parsed[0]["index"], 0);
+        assert_eq!(parsed[1]["rule_id"], "rule-b");
+        assert_eq!(parsed[1]["index"], 1);
+        assert_eq!(parsed[1]["title"], "title with {braces} and [brackets]");
+    }
+
+    #[test]
+    fn build_judge_prompt_empty_findings_valid_json() {
+        let prompt = build_judge_prompt("fn main() {}", &[]);
+        let json_start = prompt.find('[').expect("should contain JSON array");
+        let json_end = prompt.rfind(']').expect("should end with JSON array");
+        let json_str = &prompt[json_start..=json_end];
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap();
+        assert!(parsed.is_empty());
     }
 
     #[test]

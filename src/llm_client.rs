@@ -402,18 +402,19 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         anyhow::anyhow!("base_url {safe:?} is not a valid URL: {e}")
     })?;
 
-    if !matches!(parsed.scheme(), "http" | "https") {
-        anyhow::bail!(
-            "base_url {base_url:?} must use http or https scheme, got {:?}",
-            parsed.scheme()
-        );
-    }
-
-    // Always-on: embedded credentials. No opt-out — no legitimate use case.
+    // Always-on: embedded credentials. Checked FIRST so no subsequent error
+    // path can echo the raw URL with credentials. No opt-out.
     if !parsed.username().is_empty() || parsed.password().is_some() {
         anyhow::bail!(
             "base_url must not contain embedded credentials (user:password@host). \
              Pass the API key via QUORUM_API_KEY instead."
+        );
+    }
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "base_url must use http or https scheme, got {:?}",
+            parsed.scheme()
         );
     }
 
@@ -422,9 +423,10 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
         return Ok(());
     }
 
-    let host = parsed
-        .host()
-        .ok_or_else(|| anyhow::anyhow!("base_url {base_url:?} has no host"))?;
+    let host = parsed.host().ok_or_else(|| {
+        let safe = redact_userinfo_for_error(base_url);
+        anyhow::anyhow!("base_url {safe:?} has no host")
+    })?;
 
     // Per-branch logic: private/loopback hosts gate on `allow_private_ips`
     // and bypass the allowlist when permitted (user shouldn't have to ALSO
@@ -504,8 +506,9 @@ pub fn validate_base_url(base_url: &str, policy: &BaseUrlPolicy) -> anyhow::Resu
     //   - `unsafe_bypass` (QUORUM_UNSAFE_BASE_URL=1): handled at the top
     //     of this function; never reaches here.
     if parsed.scheme() == "http" && !host_is_private {
+        let safe = redact_userinfo_for_error(base_url);
         anyhow::bail!(
-            "base_url {base_url:?} uses plaintext http:// scheme. \
+            "base_url {safe:?} uses plaintext http:// scheme. \
              API keys and request bodies would be sent unencrypted. \
              Use https:// instead. \
              For on-prem / Ollama deployments on a trusted LAN, set:\n  \
@@ -569,8 +572,9 @@ fn ipv6_to_ipv4_mapped(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
 }
 
 fn actionable_error_for_private_ip(url: &str, ip_or_name: &str) -> String {
+    let safe = redact_userinfo_for_error(url);
     format!(
-        "base_url {url:?} resolves to a private/loopback/link-local address ({ip_or_name}). \
+        "base_url {safe:?} resolves to a private/loopback/link-local address ({ip_or_name}). \
          To allow this for Ollama / on-prem LLMs, set:\n  \
          export QUORUM_ALLOW_PRIVATE_BASE_URL=1"
     )
@@ -587,8 +591,9 @@ fn actionable_error_for_unknown_host(url: &str, host: &str, policy: &BaseUrlPoli
     } else {
         all.join(", ")
     };
+    let safe = redact_userinfo_for_error(url);
     format!(
-        "base_url {url:?} host {host:?} is not on the allowlist.\n\n\
+        "base_url {safe:?} host {host:?} is not on the allowlist.\n\n\
          Allowed hosts: {allowed}\n\n\
          To allow this host, set:\n  \
          export QUORUM_ALLOWED_BASE_URL_HOSTS={host}\n\
@@ -1435,6 +1440,20 @@ mod tests {
     }
 
     #[test]
+    fn validate_base_url_scheme_error_does_not_leak_credentials() {
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("ftp://admin:s3cret@evil.com/v1", &policy)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("s3cret"), "error leaks password: {err}");
+        assert!(!err.contains("admin"), "error leaks username: {err}");
+        assert!(
+            err.contains("embedded credentials") || err.contains("evil.com"),
+            "error should mention credentials rejection or redacted host: {err}"
+        );
+    }
+
+    #[test]
     fn validate_base_url_accepts_default_allowed_hosts() {
         let policy = BaseUrlPolicy::default();
         for host in DEFAULT_ALLOWED_BASE_URL_HOSTS {
@@ -1780,6 +1799,70 @@ mod tests {
         assert!(
             !msg.contains("leaky-user"),
             "username must not appear in parse-error message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn actionable_error_helpers_redact_credentials() {
+        let url = "https://admin:s3cret@proxy.example.com/v1";
+        let msg = actionable_error_for_private_ip(url, "127.0.0.1");
+        assert!(
+            !msg.contains("s3cret"),
+            "private IP error leaks password: {msg}"
+        );
+        assert!(
+            msg.contains("proxy.example.com"),
+            "should preserve host: {msg}"
+        );
+
+        let policy = BaseUrlPolicy::default();
+        let msg2 = actionable_error_for_unknown_host(url, "proxy.example.com", &policy);
+        assert!(
+            !msg2.contains("s3cret"),
+            "unknown host error leaks password: {msg2}"
+        );
+        assert!(
+            msg2.contains("proxy.example.com"),
+            "should preserve host: {msg2}"
+        );
+    }
+
+    #[test]
+    fn validate_base_url_no_host_does_not_leak_credentials() {
+        let policy = BaseUrlPolicy::default();
+        let err = validate_base_url("http:///path", &policy)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !err.contains("password"),
+            "no-host error should not leak anything sensitive: {err}"
+        );
+    }
+
+    #[test]
+    fn redact_userinfo_handles_percent_encoded_password() {
+        let result = redact_userinfo_for_error("https://user:p%40ss%23word@host.com/v1");
+        assert!(
+            !result.contains("p%40ss"),
+            "percent-encoded password leaked: {result}"
+        );
+        assert!(
+            result.contains("[REDACTED]@"),
+            "should contain redaction marker: {result}"
+        );
+        assert!(
+            result.contains("host.com"),
+            "should preserve host: {result}"
+        );
+    }
+
+    #[test]
+    fn redact_userinfo_handles_username_only() {
+        let result = redact_userinfo_for_error("https://admin@host.com/v1");
+        assert!(!result.contains("admin@"), "username leaked: {result}");
+        assert!(
+            result.contains("[REDACTED]@"),
+            "should contain redaction marker: {result}"
         );
     }
 
