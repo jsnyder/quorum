@@ -27,16 +27,45 @@ const SCHEMA_VERSION: u32 = 1;
 /// The database file lives at `<quorum_home>/quorum.db`. The parent
 /// directory is created if it does not exist.
 ///
+/// If the database file exists but is corrupt (cannot be opened, fails
+/// integrity check, or migrations fail), the corrupt file is renamed to
+/// `quorum.db.corrupt` and a fresh database is created.
+///
 /// # Errors
 ///
-/// Returns an error if the directory cannot be created, the database
-/// cannot be opened, or a migration fails.
+/// Returns an error if the directory cannot be created, or if a fresh
+/// database cannot be created after corruption recovery.
 pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
     std::fs::create_dir_all(quorum_home)
         .with_context(|| format!("failed to create quorum home: {}", quorum_home.display()))?;
 
     let db_path = quorum_home.join("quorum.db");
-    let conn = Connection::open(&db_path)
+
+    let conn = match open_and_migrate(&db_path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!(
+                "warning: could not open quorum.db: {}. Creating fresh database. \
+                 Your previous review/telemetry data may need recovery.",
+                e
+            );
+            let backup = quorum_home.join("quorum.db.corrupt");
+            let _ = std::fs::rename(&db_path, &backup);
+            open_and_migrate(&db_path)
+                .context("failed to create fresh database after corruption recovery")?
+        }
+    };
+
+    migrate_reviews_jsonl(&conn, quorum_home)?;
+    migrate_telemetry_jsonl(&conn, quorum_home)?;
+
+    Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Open the database, configure pragmas, run an integrity check, and
+/// apply schema migrations. Returns the ready connection on success.
+fn open_and_migrate(db_path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open(db_path)
         .with_context(|| format!("failed to open database: {}", db_path.display()))?;
 
     // WAL mode for concurrent readers + single writer.
@@ -45,11 +74,14 @@ pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
     conn.pragma_update(None, "foreign_keys", "ON")
         .context("failed to enable foreign keys")?;
 
-    run_migrations(&conn)?;
-    migrate_reviews_jsonl(&conn, quorum_home)?;
-    migrate_telemetry_jsonl(&conn, quorum_home)?;
+    // Quick integrity check — catches corruption early.
+    let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    if ok != "ok" {
+        anyhow::bail!("database integrity check failed: {}", ok);
+    }
 
-    Ok(Arc::new(Mutex::new(conn)))
+    run_migrations(&conn)?;
+    Ok(conn)
 }
 
 /// Read the current schema version from `PRAGMA user_version`.
@@ -726,6 +758,26 @@ mod tests {
         assert_eq!(count, 1, "should have 1 row (dupe ignored, malformed skipped)");
 
         assert!(!jsonl_path.exists(), "reviews.jsonl should be removed");
+    }
+
+    #[test]
+    fn corrupt_db_creates_fresh() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("quorum.db");
+
+        // Write garbage to simulate corruption
+        std::fs::write(&db_path, b"this is not a sqlite database").unwrap();
+
+        // Should recover by creating fresh database
+        let handle = initialize(dir.path()).unwrap();
+        let conn = handle.lock().unwrap();
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // Corrupt file should be saved
+        assert!(dir.path().join("quorum.db.corrupt").exists());
     }
 
     #[test]
