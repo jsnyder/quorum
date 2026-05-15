@@ -454,7 +454,15 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
         }
     };
     let log = review_log::ReviewLog::with_storage(storage_handle);
-    let review_count = log.count().unwrap_or(0);
+    let review_count = match log.count() {
+        Ok(n) => n,
+        Err(e) => {
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
+            return out;
+        }
+    };
     let finding_ids = match log.load_all_finding_ids() {
         Ok(ids) => ids,
         Err(e) => {
