@@ -706,28 +706,28 @@ pub async fn review_file(
     let mut local_findings = Vec::new();
     let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
         std::collections::HashMap::new();
-    if let Some(ref ast_ctx) = ast {
-        if !pipeline_config.mode.is_prose() {
-            let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
-            let t0 = std::time::Instant::now();
-            local_findings.extend(analysis::analyze_complexity(
-                ast_ctx.tree,
-                source,
-                ast_ctx.language,
-                pipeline_config.complexity_threshold,
-            ));
-            local_findings.extend(analysis::analyze_insecure_patterns(
-                ast_ctx.tree,
-                source,
-                ast_ctx.language,
-            ));
-            tracing::info!(
-                phase = "local_ast",
-                duration_ms = t0.elapsed().as_millis() as u64,
-                findings = local_findings.len(),
-                "phase complete"
-            );
-        }
+    if let Some(ref ast_ctx) = ast
+        && !pipeline_config.mode.is_prose()
+    {
+        let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
+        let t0 = std::time::Instant::now();
+        local_findings.extend(analysis::analyze_complexity(
+            ast_ctx.tree,
+            source,
+            ast_ctx.language,
+            pipeline_config.complexity_threshold,
+        ));
+        local_findings.extend(analysis::analyze_insecure_patterns(
+            ast_ctx.tree,
+            source,
+            ast_ctx.language,
+        ));
+        tracing::info!(
+            phase = "local_ast",
+            duration_ms = t0.elapsed().as_millis() as u64,
+            findings = local_findings.len(),
+            "phase complete"
+        );
     }
     all_sources.push(local_findings);
 
@@ -831,7 +831,7 @@ pub async fn review_file(
             hydration_text = file_ctx
                 .hydration_context
                 .as_ref()
-                .map(|ctx| render_hydration_for_grounding(ctx))
+                .map(render_hydration_for_grounding)
                 .unwrap_or_default();
 
             let req = ReviewRequest {
@@ -1235,43 +1235,42 @@ pub(crate) async fn build_file_context(
     let mut context_block: Option<String> = None;
     let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
 
-    if let Some(ast_ctx) = ast {
-        if !pipeline_config.mode.is_prose() {
-            if let Some(inj) = pipeline_config.context_injector.as_ref() {
-                let redacted_ctx = hydration_context
-                    .as_ref()
-                    .expect("hydration_context must be Some when ast is Some and not prose mode");
-                let mut identifiers: Vec<String> = redacted_ctx
-                    .callee_signatures
-                    .iter()
-                    .filter_map(|sig| extract_ident_from_signature(sig))
-                    .collect();
-                identifiers.extend(redacted_ctx.import_targets.iter().cloned());
-                identifiers.sort();
-                identifiers.dedup();
-                let text_sample: String = redacted_code.chars().take(400).collect();
-                let structural_names: Vec<String> = {
-                    let mut v: Vec<String> = redacted_ctx
-                        .qualified_names
-                        .iter()
-                        .map(|s| redact::redact_secrets(s))
-                        .collect();
-                    v.sort();
-                    v.dedup();
-                    v
-                };
-                let req = crate::context::inject::InjectionRequest {
-                    file_path: file_str.clone(),
-                    language: Some(lang_name(ast_ctx.language).to_string()),
-                    identifiers,
-                    structural_names,
-                    text: text_sample,
-                };
-                let outcome = inj.inject(&req);
-                context_telemetry = Some(outcome.telemetry);
-                context_block = outcome.rendered;
-            }
-        }
+    if let Some(ast_ctx) = ast
+        && !pipeline_config.mode.is_prose()
+        && let Some(inj) = pipeline_config.context_injector.as_ref()
+    {
+        let redacted_ctx = hydration_context
+            .as_ref()
+            .expect("hydration_context must be Some when ast is Some and not prose mode");
+        let mut identifiers: Vec<String> = redacted_ctx
+            .callee_signatures
+            .iter()
+            .filter_map(|sig| extract_ident_from_signature(sig))
+            .collect();
+        identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+        identifiers.sort();
+        identifiers.dedup();
+        let text_sample: String = redacted_code.chars().take(400).collect();
+        let structural_names: Vec<String> = {
+            let mut v: Vec<String> = redacted_ctx
+                .qualified_names
+                .iter()
+                .map(|s| redact::redact_secrets(s))
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let req = crate::context::inject::InjectionRequest {
+            file_path: file_str.clone(),
+            language: Some(lang_name(ast_ctx.language).to_string()),
+            identifiers,
+            structural_names,
+            text: text_sample,
+        };
+        let outcome = inj.inject(&req);
+        context_telemetry = Some(outcome.telemetry);
+        context_block = outcome.rendered;
     }
 
     Ok(FileContext {
