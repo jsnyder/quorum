@@ -1222,6 +1222,273 @@ fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> S
         .join("\n")
 }
 
+/// Build shared file context (redaction, hydration, enrichment, feedback,
+/// context injection) for a single file. This is the unified extraction of
+/// the pre-prompt assembly logic previously duplicated across `review_file`
+/// and `review_file_llm_only`.
+///
+/// When `ast` is `Some`, hydration and context injection run against the
+/// parsed tree. When `None` (unsupported language), those phases are skipped
+/// and the import list passed to Context7 enrichment is empty.
+///
+/// This function is additive: nothing calls it yet. Tasks 3-5 will wire
+/// callers.
+pub(crate) async fn build_file_context(
+    file_path: &std::path::Path,
+    source: &str,
+    ast: Option<&AstContext<'_>>,
+    pipeline_config: &PipelineConfig,
+) -> anyhow::Result<FileContext> {
+    let file_str = file_path.to_string_lossy().to_string();
+
+    // ── 1. Secret redaction + truncation ────────────────────────────────
+    let redacted_code = redact::redact_secrets(source);
+    let (review_code, truncation_notice) =
+        truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
+
+    // ── 2. Hydration context (only when AST is provided) ────────────────
+    let hydration_context: Option<crate::hydration::HydrationContext> = if let Some(ast_ctx) = ast {
+        if pipeline_config.mode.is_prose() {
+            Some(crate::hydration::HydrationContext::default())
+        } else {
+            let (changed_lines, path_resolved) =
+                if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+                    let repo_root = find_project_root(file_path);
+                    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+                    let lines: Vec<(u32, u32)> = diff_ranges
+                        .iter()
+                        .filter(|(path, _)| resolver.matches(path))
+                        .flat_map(|(_, ranges)| ranges.clone())
+                        .collect();
+                    (lines, resolver.resolved())
+                } else {
+                    (Vec::new(), true)
+                };
+            let hydration_ranges = if changed_lines.is_empty() {
+                if pipeline_config.diff_ranges.is_some() && !path_resolved {
+                    tracing::warn!(
+                        file = %file_str,
+                        "diff-file provided but file path could not be \
+                         resolved relative to the repository root; \
+                         falling back to full-file hydration"
+                    );
+                }
+                let total_lines = source.lines().count() as u32;
+                vec![(1, total_lines.max(1))]
+            } else {
+                changed_lines
+            };
+            let hydrate_t0 = std::time::Instant::now();
+            let ctx = {
+                let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
+                let c =
+                    hydration::hydrate(ast_ctx.tree, source, ast_ctx.language, &hydration_ranges);
+                tracing::info!(
+                    phase = "hydrate",
+                    duration_ms = hydrate_t0.elapsed().as_millis() as u64,
+                    callees = c.callee_signatures.len(),
+                    types = c.type_definitions.len(),
+                    imports = c.import_targets.len(),
+                    "phase complete"
+                );
+                c
+            };
+
+            // Redact hydration context for parity with redacted code
+            Some(crate::hydration::HydrationContext {
+                callee_signatures: ctx
+                    .callee_signatures
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                type_definitions: ctx
+                    .type_definitions
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                callers: ctx.callers.clone(),
+                import_targets: ctx
+                    .import_targets
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                qualified_names: ctx.qualified_names.clone(),
+            })
+        }
+    } else {
+        None
+    };
+
+    // ── 3. Context7 enrichment ──────────────────────────────────────────
+    let import_targets: &[String] = hydration_context
+        .as_ref()
+        .map(|hc| hc.import_targets.as_slice())
+        .unwrap_or(&[]);
+
+    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
+    let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+        tracing::debug!(reason, "Context7: enrichment skipped");
+        None
+    } else {
+        let project_root = find_project_root(file_path);
+        let mut domain = crate::domain::detect_domain(&project_root);
+        for fw in &pipeline_config.framework_overrides {
+            if !domain.frameworks.contains(fw) {
+                domain.frameworks.push(fw.clone());
+            }
+        }
+        let ctx7_t0 = std::time::Instant::now();
+        let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
+        let policy = crate::enrichment_policy::EnrichmentPolicy {
+            registry: pipeline_config
+                .registry_client
+                .as_ref()
+                .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
+        };
+        let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+            crate::context_enrichment::enrich_for_review_in_project(
+                &project_root,
+                import_targets,
+                &domain.frameworks,
+                shared.as_ref(),
+                &policy,
+            )
+        } else {
+            let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+            let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+            crate::context_enrichment::enrich_for_review_in_project(
+                &project_root,
+                import_targets,
+                &domain.frameworks,
+                &cached,
+                &policy,
+            )
+        };
+        let docs = result.docs;
+        enrichment_metrics = result.metrics;
+        tracing::info!(
+            phase = "context7",
+            duration_ms = ctx7_t0.elapsed().as_millis() as u64,
+            frameworks = domain.frameworks.len(),
+            docs = docs.len(),
+            resolved = enrichment_metrics.context7_resolved,
+            resolve_failed = enrichment_metrics.context7_resolve_failed,
+            query_failed = enrichment_metrics.context7_query_failed,
+            skipped_popular = enrichment_metrics.context7_skipped_popular,
+            budget_reduced = enrichment_metrics.context7_budget_reduced,
+            "phase complete"
+        );
+        if !docs.is_empty() {
+            tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
+            Some(
+                docs.iter()
+                    .map(|d| {
+                        crate::context_enrichment::format_context_section(std::slice::from_ref(d))
+                    })
+                    .collect(),
+            )
+        } else if domain.frameworks.is_empty() {
+            None
+        } else {
+            anyhow::bail!(
+                "Context7: failed to fetch docs for frameworks {:?}. \
+                 This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                domain.frameworks
+            );
+        }
+    };
+
+    // ── 4. Feedback precedent selection ─────────────────────────────────
+    let language: String = if let Some(ast_ctx) = ast {
+        lang_name(ast_ctx.language).to_string()
+    } else {
+        lang_name_from_path(file_path)
+    };
+
+    let shared_index = pipeline_config.feedback_index.clone();
+    let mut local_index = if shared_index.is_none() {
+        if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            Some(if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
+            } else {
+                crate::feedback_index::FeedbackIndex::build(&store)?
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let precedents = if let Some(ref shared) = shared_index {
+        let mut idx = shared.lock().unwrap();
+        query_feedback_precedents(&mut idx, &file_str, &language, &review_code)
+    } else if let Some(ref mut idx) = local_index {
+        query_feedback_precedents(idx, &file_str, &language, &review_code)
+    } else {
+        Vec::new()
+    };
+
+    // ── 5. Context injection (only when AST is provided) ────────────────
+    let mut context_block: Option<String> = None;
+    let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
+
+    if let Some(ast_ctx) = ast {
+        if !pipeline_config.mode.is_prose() {
+            if let Some(inj) = pipeline_config.context_injector.as_ref() {
+                let redacted_ctx = hydration_context
+                    .as_ref()
+                    .expect("hydration_context must be Some when ast is Some and not prose mode");
+                let mut identifiers: Vec<String> = redacted_ctx
+                    .callee_signatures
+                    .iter()
+                    .filter_map(|sig| extract_ident_from_signature(sig))
+                    .collect();
+                identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+                identifiers.sort();
+                identifiers.dedup();
+                let text_sample: String = redacted_code.chars().take(400).collect();
+                let structural_names: Vec<String> = {
+                    let mut v: Vec<String> = redacted_ctx
+                        .qualified_names
+                        .iter()
+                        .map(|s| redact::redact_secrets(s))
+                        .collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                };
+                let req = crate::context::inject::InjectionRequest {
+                    file_path: file_str.clone(),
+                    language: Some(lang_name(ast_ctx.language).to_string()),
+                    identifiers,
+                    structural_names,
+                    text: text_sample,
+                };
+                let outcome = inj.inject(&req);
+                context_telemetry = Some(outcome.telemetry);
+                context_block = outcome.rendered;
+            }
+        }
+    }
+
+    Ok(FileContext {
+        redacted_code: review_code,
+        truncation_notice,
+        framework_docs,
+        feedback_precedents: if precedents.is_empty() {
+            None
+        } else {
+            Some(precedents)
+        },
+        hydration_context,
+        context_block,
+        enrichment_metrics,
+        context_telemetry,
+    })
+}
+
 /// Best-effort extraction of an identifier from a hydrated callee signature
 /// string like `fn verify_token(s: &str) -> bool` or
 /// `def verify_token(s: str) -> bool`. Returns `None` for shapes we don't
@@ -3149,7 +3416,9 @@ mod tests {
 
         let source = "fn main() {}";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(source, None).unwrap();
         let ctx = AstContext {
             tree: &tree,
@@ -3168,5 +3437,71 @@ mod tests {
         assert!(ctx.hydration_context.is_none());
         assert!(ctx.context_block.is_none());
         assert!(ctx.truncation_notice.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // build_file_context tests (#339 Task 2)
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_redacts_secrets() {
+        let config = PipelineConfig::default();
+        let ctx = build_file_context(
+            std::path::Path::new("test.rs"),
+            "let api_key = \"sk-secret123\";",
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !ctx.redacted_code.contains("sk-secret123"),
+            "FileContext must contain redacted code, got: {}",
+            ctx.redacted_code
+        );
+        assert!(
+            ctx.redacted_code.contains("REDACTED"),
+            "redacted code must replace secrets"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_without_ast_skips_hydration() {
+        let config = PipelineConfig::default();
+        let ctx = build_file_context(
+            std::path::Path::new("test.rs"),
+            "fn main() {}",
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(
+            ctx.hydration_context.is_none(),
+            "no AST means no hydration context"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_truncates_large_source() {
+        let mut config = PipelineConfig::default();
+        config.max_review_lines = 5;
+        let big_source = (0..20)
+            .map(|i| format!("let x{} = {};", i, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ctx = build_file_context(std::path::Path::new("test.rs"), &big_source, None, &config)
+            .await
+            .unwrap();
+        assert!(
+            ctx.truncation_notice.is_some(),
+            "should have truncation notice"
+        );
+        let lines_in_result = ctx.redacted_code.lines().count();
+        assert!(
+            lines_in_result <= 5,
+            "code must be truncated to max_review_lines, got {} lines",
+            lines_in_result
+        );
     }
 }
