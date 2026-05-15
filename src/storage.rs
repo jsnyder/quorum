@@ -20,7 +20,7 @@ pub type StorageHandle = Arc<Mutex<Connection>>;
 
 /// Current schema version. Bumped by each `migrate_vN_to_vN+1` function.
 #[cfg(test)]
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Open (or create) the quorum SQLite database and run any pending
 /// migrations. Returns a shared connection handle ready for use.
@@ -115,8 +115,12 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         migrate_v0_to_v1(conn).context("schema migration v0 -> v1 failed")?;
     }
 
+    if version < 2 {
+        migrate_v1_to_v2(conn).context("schema migration v1 -> v2 failed")?;
+    }
+
     // Future migrations slot in here:
-    // if version < 2 { migrate_v1_to_v2(conn)?; }
+    // if version < 3 { migrate_v2_to_v3(conn)?; }
 
     Ok(())
 }
@@ -190,6 +194,17 @@ fn migrate_v0_to_v1(conn: &Connection) -> anyhow::Result<()> {
     tx.pragma_update(None, "user_version", 1)?;
     tx.commit()?;
 
+    Ok(())
+}
+
+/// Schema v2: timestamp index on reviews for efficient range queries.
+fn migrate_v1_to_v2(conn: &Connection) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_reviews_timestamp ON reviews(timestamp);",
+    )?;
+    tx.pragma_update(None, "user_version", 2)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -637,7 +652,7 @@ mod tests {
             let version: u32 = conn
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 1);
+            assert_eq!(version, SCHEMA_VERSION);
         }
         // Drop the first handle so the connection is closed.
         drop(handle1);
@@ -648,7 +663,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Tables still exist and are intact.
         let table_count: u32 = conn
@@ -776,6 +791,30 @@ mod tests {
         );
 
         assert!(!jsonl_path.exists(), "reviews.jsonl should be removed");
+    }
+
+    #[test]
+    fn migrate_v1_to_v2_creates_timestamp_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate_v0_to_v1(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 1);
+
+        migrate_v1_to_v2(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 2);
+
+        let idx_exists: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_reviews_timestamp'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(idx_exists, "idx_reviews_timestamp must exist after v2 migration");
+    }
+
+    #[test]
+    fn run_migrations_advances_to_v2() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 2);
     }
 
     #[test]
