@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Schema v2 — Timestamp Index on `reviews`
+## Task 1: Schema v2 — Timestamp Index on `reviews`
 
 Add `CREATE INDEX idx_reviews_timestamp ON reviews(timestamp)` via a new migration function. This index accelerates the `WHERE timestamp >= ?` and `ORDER BY timestamp DESC LIMIT ?` queries added in Tasks 2-3.
 
@@ -113,7 +113,7 @@ git commit -m "feat(storage): schema v2 — add timestamp index on reviews table
 
 ---
 
-### Task 2: `ReviewLog::load_recent(n)` — SQL LIMIT for `--rolling`
+## Task 2: `ReviewLog::load_recent(n)` — SQL LIMIT for `--rolling`
 
 Add a method that loads only the most recent N×W records (where W is the window count) using `ORDER BY timestamp DESC LIMIT ?`. This replaces loading all records just to slice the last portion in `rolling_window()`.
 
@@ -392,7 +392,7 @@ git commit -m "feat(review_log): add load_recent(n) with SQL LIMIT for rolling w
 
 ---
 
-### Task 3: `ReviewLog::load_since(since)` — SQL WHERE for `compute_report`
+## Task 3: `ReviewLog::load_since(since)` — SQL WHERE for `compute_report`
 
 Add a method that loads only reviews with `timestamp >= since` using a SQL WHERE clause. This replaces `compute_report` loading ALL reviews when it only needs records for dimensional highlights and linkage.
 
@@ -574,7 +574,7 @@ Note: Wiring `load_since` into `compute_report` is deferred to Task 6 when we ad
 
 ---
 
-### Task 4: `ReviewLog::load_all_finding_ids()` — Lightweight Linkage Query
+## Task 4: `ReviewLog::load_all_finding_ids()` — Lightweight Linkage Query
 
 Add a method that returns `HashSet<String>` of all finding_ids without deserializing full `ReviewRecord` structs. This is used by `analytics::linkage_stats` and `format_join_health` which only need finding_ids for set membership checks.
 
@@ -770,7 +770,7 @@ git commit -m "feat(analytics): add load_all_finding_ids() and linkage_stats_fro
 
 ---
 
-### Task 5: `TelemetryStore::load_since` — SQL WHERE Instead of Rust Filter
+## Task 5: `TelemetryStore::load_since` — SQL WHERE Instead of Rust Filter
 
 Fix `load_since` to use a SQL `WHERE ts >= ?1` clause for the SQLite backend instead of loading all rows and filtering in Rust.
 
@@ -945,7 +945,7 @@ git commit -m "perf(telemetry): push load_since filtering to SQL WHERE for SQLit
 
 ---
 
-### Task 6: Wire Up All Callers — `compute_report` and `format_join_health`
+## Task 6: Wire Up All Callers — `compute_report` and `format_join_health`
 
 Now that Tasks 2-5 added the optimized query methods, wire them into `compute_report` and `format_join_health` so the stats pipeline uses targeted queries instead of `load_all()` wherever possible.
 

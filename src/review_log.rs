@@ -750,7 +750,7 @@ impl ReviewLog {
         // 1. Identify the run_ids we need (DESC, capped at n).
         let run_ids: Vec<String> = {
             let mut stmt = conn.prepare(
-                "SELECT run_id FROM reviews ORDER BY timestamp DESC LIMIT ?1",
+                "SELECT run_id FROM reviews ORDER BY timestamp DESC, run_id DESC LIMIT ?1",
             )?;
             stmt.query_map(params![n as i64], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
@@ -791,7 +791,7 @@ impl ReviewLog {
                     flag_deep, flag_parallel_n, flag_ensemble,
                     mode, context
                 FROM reviews
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, run_id DESC
                 LIMIT ?1",
             )?;
             stmt.query_map(params![n as i64], |row| {
