@@ -497,8 +497,7 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
     writeln!(
         out,
         "  Reviews: {} with {} findings",
-        review_count,
-        total_findings
+        review_count, total_findings
     )
     .unwrap();
     writeln!(

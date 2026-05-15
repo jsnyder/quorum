@@ -506,9 +506,7 @@ impl ReviewLog {
             .lock()
             .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT finding_id FROM review_finding_ids",
-        )?;
+        let mut stmt = conn.prepare("SELECT DISTINCT finding_id FROM review_finding_ids")?;
         let ids: std::collections::HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<_, _>>()?;
@@ -541,11 +539,8 @@ impl ReviewLog {
                 let conn = handle
                     .lock()
                     .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-                let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM reviews",
-                    [],
-                    |row| row.get(0),
-                )?;
+                let count: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))?;
                 Ok(count as usize)
             }
         }
@@ -737,10 +732,7 @@ impl ReviewLog {
     /// Load at most `n` recent reviews. Queries the DB with
     /// `ORDER BY timestamp DESC LIMIT ?`, pre-loads only the matching
     /// finding_ids, then reverses to chronological order.
-    fn load_recent_sqlite(
-        handle: &StorageHandle,
-        n: usize,
-    ) -> anyhow::Result<Vec<ReviewRecord>> {
+    fn load_recent_sqlite(handle: &StorageHandle, n: usize) -> anyhow::Result<Vec<ReviewRecord>> {
         use rusqlite::params;
 
         let conn = handle
@@ -769,10 +761,9 @@ impl ReviewLog {
                  WHERE run_id IN ({placeholders}) ORDER BY rowid"
             );
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(
-                rusqlite::params_from_iter(run_ids.iter()),
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(run_ids.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             for row in rows {
                 let (run_id, finding_id) = row?;
                 finding_map.entry(run_id).or_default().push(finding_id);

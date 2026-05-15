@@ -200,9 +200,7 @@ fn migrate_v0_to_v1(conn: &Connection) -> anyhow::Result<()> {
 /// Schema v2: timestamp index on reviews for efficient range queries.
 fn migrate_v1_to_v2(conn: &Connection) -> anyhow::Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_reviews_timestamp ON reviews(timestamp);",
-    )?;
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_reviews_timestamp ON reviews(timestamp);")?;
     tx.pragma_update(None, "user_version", 2)?;
     tx.commit()?;
     Ok(())
@@ -803,11 +801,16 @@ mod tests {
         assert_eq!(current_version(&conn).unwrap(), 2);
 
         let idx_exists: bool = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_reviews_timestamp'")
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_reviews_timestamp'",
+            )
             .unwrap()
             .exists([])
             .unwrap();
-        assert!(idx_exists, "idx_reviews_timestamp must exist after v2 migration");
+        assert!(
+            idx_exists,
+            "idx_reviews_timestamp must exist after v2 migration"
+        );
     }
 
     #[test]
