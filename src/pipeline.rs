@@ -1260,11 +1260,19 @@ pub(crate) async fn build_file_context(
             v.dedup();
             v
         };
+        let lang_str = lang_name(ast_ctx.language);
+        let mut structural_fingerprints =
+            crate::context::extract::dispatch::compute_source_fingerprints(
+                &redacted_code, lang_str,
+            );
+        structural_fingerprints
+            .truncate(crate::context::extract::fingerprint::MAX_QUERY_SYMBOLS);
         let req = crate::context::inject::InjectionRequest {
             file_path: file_str.clone(),
-            language: Some(lang_name(ast_ctx.language).to_string()),
+            language: Some(lang_str.to_string()),
             identifiers,
             structural_names,
+            structural_fingerprints,
             text: text_sample,
         };
         let outcome = inj.inject(&req);

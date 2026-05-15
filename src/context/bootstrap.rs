@@ -457,6 +457,7 @@ weight = 10
             language: Some("rust".into()),
             identifiers: vec!["verify_token".into()],
             structural_names: vec![],
+            structural_fingerprints: vec![],
             text: "jwt signing".into(),
         };
         let out = injector.inject(&req);

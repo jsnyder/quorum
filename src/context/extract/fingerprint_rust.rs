@@ -29,6 +29,35 @@ impl RustFingerprinter {
     ///
     /// Returns `None` if the function body has fewer than [`MIN_BODY_NODE_COUNT`]
     /// descendant nodes (trivial function filter).
+    /// Fingerprint all non-trivial functions in a source file.
+    /// Returns `(function_name, fingerprint)` pairs.
+    pub fn fingerprint_all_functions(&self, src: &str) -> Vec<(String, StructuralFingerprint)> {
+        let root = SupportLang::Rust.ast_grep(src);
+        let root_node = root.root();
+        let func_nodes: Vec<_> = root_node
+            .dfs()
+            .filter(|n| {
+                let k = n.kind();
+                k.as_ref() == "function_item" || k.as_ref() == "function_signature_item"
+            })
+            .collect();
+        let mut results = Vec::new();
+        for node in &func_nodes {
+            let name = node
+                .children()
+                .find(|c| c.kind().as_ref() == "identifier")
+                .map(|c| c.text().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(fp) = self.fingerprint_node(node, src) {
+                results.push((name, fp));
+            }
+        }
+        results
+    }
+
     pub fn fingerprint_node<'a, D: Doc>(
         &self,
         node: &'a ast_grep_core::Node<'a, D>,
@@ -91,16 +120,15 @@ fn extract_signature<'a, D: Doc>(
 
     // Constructor heuristic: inside impl, no self, returns Self.
     if shape.is_static {
-        if let Some(ref ret) = shape.return_category {
-            if *ret == TypeCategory::SelfRef {
-                shape.is_constructor = true;
-            }
+        if let Some(ref ret) = shape.return_category
+            && *ret == TypeCategory::SelfRef
+        {
+            shape.is_constructor = true;
         }
-        // Also detect fn name "new" as a constructor hint.
-        if let Some(name_node) = node.children().find(|c| c.kind().as_ref() == "identifier") {
-            if name_node.text().as_ref() == "new" {
-                shape.is_constructor = true;
-            }
+        if let Some(name_node) = node.children().find(|c| c.kind().as_ref() == "identifier")
+            && name_node.text().as_ref() == "new"
+        {
+            shape.is_constructor = true;
         }
     }
 

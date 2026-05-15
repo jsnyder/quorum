@@ -14,6 +14,7 @@ use super::Filters;
 use super::bm25::{Bm25Hit, bm25_search, build_match_expression};
 use super::rerank::{RerankConfig, RerankInput, ScoreBreakdown, rerank};
 use super::vector::{VecHit, vec_search};
+use crate::context::extract::fingerprint::FINGERPRINT_DIMS;
 use crate::context::index::traits::{Clock, Embedder};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -95,7 +96,31 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                 .collect()
         };
 
-        if bm25_hits.is_empty() && vec_hits.is_empty() && structural_hits.is_empty() {
+        // --- Structural fingerprint KNN leg: for each query-side fingerprint,
+        // run a KNN query against chunks_struct_vec. Track the best (max)
+        // similarity per chunk_id across all query fingerprints.
+        let mut struct_sim_map: HashMap<String, f32> = HashMap::new();
+        for (_name, fp_vec) in &q.structural_fingerprints {
+            let knn_k = (q.k * 2).max(10);
+            if let Ok(hits) = crate::context::index::builder::query_structural_knn(self.conn, fp_vec, knn_k) {
+                for (chunk_id, distance) in hits {
+                    let sim = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
+                    let entry = struct_sim_map.entry(chunk_id).or_insert(0.0);
+                    if sim > *entry {
+                        *entry = sim;
+                    }
+                }
+            }
+        }
+
+        // Fingerprint KNN hits also join the candidate pool.
+        let fp_knn_ids: Vec<String> = struct_sim_map.keys().cloned().collect();
+
+        if bm25_hits.is_empty()
+            && vec_hits.is_empty()
+            && structural_hits.is_empty()
+            && fp_knn_ids.is_empty()
+        {
             return Ok(Vec::new());
         }
 
@@ -125,6 +150,10 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
         for id in &structural_hits {
             candidates.entry(id.clone()).or_insert((0.0, 0.0));
         }
+        // Fingerprint KNN hits also enter the candidate pool.
+        for id in &fp_knn_ids {
+            candidates.entry(id.clone()).or_insert((0.0, 0.0));
+        }
 
         // --- Fetch full chunks by id ---
         let ids: Vec<String> = candidates.keys().cloned().collect();
@@ -150,13 +179,14 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                     (Some(a), Some(b)) => a == b,
                     _ => false,
                 };
+                let struct_sim = struct_sim_map.get(id).copied().unwrap_or(0.0);
                 Some(RerankInput {
                     chunk_id: id.clone(),
                     bm25_raw,
                     vec_raw,
                     id_exact_match,
                     language_match,
-                    struct_sim: 0.0,
+                    struct_sim,
                     indexed_at: chunk.metadata.indexed_at,
                 })
             })
@@ -218,6 +248,11 @@ pub struct RetrievalQuery {
     /// rerank path — a chunk whose qname matches gets the `id_exact_match`
     /// boost already encoded in `rerank.rs`.
     pub structural_names: Vec<String>,
+    /// Structural fingerprint vectors from the reviewed file's functions,
+    /// used for KNN similarity search against indexed chunks. Each entry
+    /// is `(function_name, 64-dim fingerprint vector)`. Capped at
+    /// MAX_QUERY_SYMBOLS by the caller (largest bodies first).
+    pub structural_fingerprints: Vec<(String, [f32; FINGERPRINT_DIMS])>,
     pub filters: Filters,
     /// Top-K to return after rerank.
     pub k: usize,

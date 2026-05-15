@@ -40,6 +40,33 @@ impl TypeScriptFingerprinter {
     ///
     /// Returns `None` if the function body has fewer than [`MIN_BODY_NODE_COUNT`]
     /// descendant nodes (trivial function filter).
+    pub fn fingerprint_all_functions(&self, src: &str) -> Vec<(String, StructuralFingerprint)> {
+        let root = SupportLang::TypeScript.ast_grep(src);
+        let root_node = root.root();
+        let func_nodes: Vec<_> = root_node
+            .dfs()
+            .filter(|n| FUNCTION_KINDS.contains(&n.kind().as_ref()))
+            .collect();
+        let mut results = Vec::new();
+        for node in &func_nodes {
+            let name = node
+                .children()
+                .find(|c| {
+                    let k = c.kind();
+                    k.as_ref() == "identifier" || k.as_ref() == "property_identifier"
+                })
+                .map(|c| c.text().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(fp) = self.fingerprint_node(node, src) {
+                results.push((name, fp));
+            }
+        }
+        results
+    }
+
     pub fn fingerprint_node<'a, D: Doc>(
         &self,
         node: &'a ast_grep_core::Node<'a, D>,

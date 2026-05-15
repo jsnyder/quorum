@@ -301,30 +301,30 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         Ok(())
     }
 
-    /// Query structural fingerprint vectors by KNN (cosine distance via
-    /// sqlite-vec's `MATCH` syntax). Returns `(chunk_id, distance)` pairs
-    /// sorted by ascending distance.
-    pub fn query_structural_knn(
-        conn: &Connection,
-        query_vec: &[f32; FINGERPRINT_DIMS],
-        k: usize,
-    ) -> anyhow::Result<Vec<(String, f32)>> {
-        if k == 0 {
-            return Ok(Vec::new());
+    /// Batch-insert structural fingerprints using the builder's own connection.
+    /// Skips chunk ids that don't exist in the chunks table. Uses a transaction
+    /// for atomicity.
+    pub fn insert_structural_fingerprints_batch(
+        &mut self,
+        fingerprints: &std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]>,
+    ) -> anyhow::Result<usize> {
+        if fingerprints.is_empty() {
+            return Ok(0);
         }
-        let q_bytes = f32_vec_to_le_bytes(query_vec);
-        let mut stmt = conn.prepare(
-            "SELECT chunk_id, distance
-             FROM chunks_struct_vec
-             WHERE structural_vec MATCH ?1 AND k = ?2
-             ORDER BY distance",
-        )?;
-        let rows = stmt
-            .query_map(params![q_bytes, k as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let tx = self.conn.transaction()?;
+        let mut count = 0usize;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec) VALUES (?1, ?2)",
+            )?;
+            for (chunk_id, vec) in fingerprints {
+                let bytes = f32_vec_to_le_bytes(vec);
+                stmt.execute(params![chunk_id, bytes])?;
+                count += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
     }
 
     fn run_migrations(conn: &Connection, embedder: &E) -> rusqlite::Result<()> {
@@ -441,4 +441,35 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         }
         Ok(())
     }
+}
+
+/// Run a KNN query against the `chunks_struct_vec` table, returning the
+/// `(chunk_id, distance)` pairs ordered by ascending distance.
+///
+/// Standalone function (not on `IndexBuilder`) so callers don't need to
+/// thread the builder's generic parameters through unrelated code paths.
+pub fn query_structural_knn(
+    conn: &Connection,
+    query_vec: &[f32; FINGERPRINT_DIMS],
+    k: usize,
+) -> anyhow::Result<Vec<(String, f32)>> {
+    if k == 0 {
+        return Ok(Vec::new());
+    }
+    let bytes = f32_vec_to_le_bytes(query_vec);
+    let mut stmt = conn.prepare(
+        "SELECT chunk_id, distance
+         FROM chunks_struct_vec
+         WHERE structural_vec MATCH ?1
+         ORDER BY distance
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![bytes, k as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f32>(1)?))
+    })?;
+    let mut results = Vec::with_capacity(k);
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }

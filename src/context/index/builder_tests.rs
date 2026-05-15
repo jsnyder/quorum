@@ -642,7 +642,7 @@ fn insert_and_query_structural_fingerprint_roundtrip() {
         .unwrap();
 
     let results =
-        IndexBuilder::<FixedClock, HashEmbedder>::query_structural_knn(builder.conn(), &vec_a, 1)
+        super::builder::query_structural_knn(builder.conn(), &vec_a, 1)
             .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "chunk-a");
@@ -689,7 +689,7 @@ fn structural_knn_returns_sorted_by_distance() {
         .unwrap();
 
     let results =
-        IndexBuilder::<FixedClock, HashEmbedder>::query_structural_knn(builder.conn(), &query, 3)
+        super::builder::query_structural_knn(builder.conn(), &query, 3)
             .unwrap();
     assert_eq!(results.len(), 3);
 
@@ -722,7 +722,7 @@ fn structural_knn_with_k_zero_returns_empty() {
         .unwrap();
 
     let results =
-        IndexBuilder::<FixedClock, HashEmbedder>::query_structural_knn(builder.conn(), &vec_a, 0)
+        super::builder::query_structural_knn(builder.conn(), &vec_a, 0)
             .unwrap();
     assert!(results.is_empty());
 }

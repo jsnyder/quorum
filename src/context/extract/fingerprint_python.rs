@@ -29,6 +29,30 @@ impl PythonFingerprinter {
     ///
     /// Returns `None` if the function body has fewer than [`MIN_BODY_NODE_COUNT`]
     /// descendant nodes (trivial function filter).
+    pub fn fingerprint_all_functions(&self, src: &str) -> Vec<(String, StructuralFingerprint)> {
+        let root = SupportLang::Python.ast_grep(src);
+        let root_node = root.root();
+        let func_nodes: Vec<_> = root_node
+            .dfs()
+            .filter(|n| n.kind().as_ref() == "function_definition")
+            .collect();
+        let mut results = Vec::new();
+        for node in &func_nodes {
+            let name = node
+                .children()
+                .find(|c| c.kind().as_ref() == "identifier")
+                .map(|c| c.text().into_owned())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(fp) = self.fingerprint_node(node, src) {
+                results.push((name, fp));
+            }
+        }
+        results
+    }
+
     pub fn fingerprint_node<'a, D: Doc>(
         &self,
         node: &'a ast_grep_core::Node<'a, D>,
@@ -93,12 +117,12 @@ fn extract_signature<'a, D: Doc>(
     shape.is_static = in_class && !shape.has_self;
 
     // Constructor heuristic: method named __init__.
-    if in_class && shape.has_self {
-        if let Some(name_node) = node.children().find(|c| c.kind().as_ref() == "identifier") {
-            if name_node.text().as_ref() == "__init__" {
-                shape.is_constructor = true;
-            }
-        }
+    if in_class
+        && shape.has_self
+        && let Some(name_node) = node.children().find(|c| c.kind().as_ref() == "identifier")
+        && name_node.text().as_ref() == "__init__"
+    {
+        shape.is_constructor = true;
     }
 
     shape
@@ -356,18 +380,17 @@ fn extract_return_type<'a, D: Doc>(
         } else {
             Some(ret.clone())
         };
-        if let Some(sub_node) = inner {
-            if sub_node.kind().as_ref() == "subscript" {
-                let base_text = sub_node
-                    .children()
-                    .next()
-                    .map(|c| c.text().into_owned())
-                    .unwrap_or_default();
-                let base_cat = TypeCategory::classify_python(&base_text);
-                shape.return_wraps_option = base_cat == TypeCategory::Opt;
-                // Python has no native Result type, but Optional is common
-                shape.return_nesting = count_subscript_nesting(&sub_node);
-            }
+        if let Some(sub_node) = inner
+            && sub_node.kind().as_ref() == "subscript"
+        {
+            let base_text = sub_node
+                .children()
+                .next()
+                .map(|c| c.text().into_owned())
+                .unwrap_or_default();
+            let base_cat = TypeCategory::classify_python(&base_text);
+            shape.return_wraps_option = base_cat == TypeCategory::Opt;
+            shape.return_nesting = count_subscript_nesting(&sub_node);
         }
     }
 }
