@@ -313,7 +313,6 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
     let ast_ctx = crate::pipeline::AstContext {
         tree: &tree,
         language: Language::Rust,
-        rule_metadata: std::collections::HashMap::new(),
     };
     let result = review_file(
         Path::new("src/auth.rs"),

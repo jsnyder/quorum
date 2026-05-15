@@ -141,7 +141,6 @@ pub struct JudgeMetrics {
 pub struct AstContext<'a> {
     pub tree: &'a tree_sitter::Tree,
     pub language: crate::parser::Language,
-    pub rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata>,
 }
 
 /// Owned, prepared file content and enrichment data ready for LLM prompt assembly.
@@ -1423,7 +1422,6 @@ pub async fn review_source(
     let ast_ctx = AstContext {
         tree: &tree,
         language: lang,
-        rule_metadata: std::collections::HashMap::new(),
     };
     review_file(file_path, source, Some(ast_ctx), llm, pipeline_config).await
 }
@@ -2085,7 +2083,6 @@ mod tests {
         let ast_ctx = AstContext {
             tree: &tree,
             language: lang,
-            rule_metadata: std::collections::HashMap::new(),
         };
         review_file(Path::new("test.rs"), source, Some(ast_ctx), llm, &config)
             .await
@@ -2627,7 +2624,6 @@ mod tests {
         let ast_ctx = AstContext {
             tree: &tree,
             language: Language::Rust,
-            rule_metadata: std::collections::HashMap::new(),
         };
         let result = review_file(
             std::path::Path::new("test.rs"),
@@ -2799,7 +2795,6 @@ mod tests {
         let ast_ctx = AstContext {
             tree: &tree,
             language: Language::Python,
-            rule_metadata: std::collections::HashMap::new(),
         };
         let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
             .await
@@ -2832,7 +2827,6 @@ mod tests {
         let ast_ctx = AstContext {
             tree: &tree,
             language: Language::Python,
-            rule_metadata: std::collections::HashMap::new(),
         };
         let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
             .await
@@ -2954,20 +2948,16 @@ mod tests {
 
     #[test]
     fn ast_context_can_be_constructed() {
-        use std::collections::HashMap;
-
         let source = "fn main() {}";
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .unwrap();
         let tree = parser.parse(source, None).unwrap();
-        let ctx = AstContext {
+        let _ctx = AstContext {
             tree: &tree,
             language: crate::parser::Language::Rust,
-            rule_metadata: HashMap::new(),
         };
-        assert!(ctx.rule_metadata.is_empty());
     }
 
     #[test]
