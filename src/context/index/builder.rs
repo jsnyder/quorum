@@ -385,7 +385,7 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
             let struct_vec_sql = format!(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_struct_vec USING vec0(
                     chunk_id TEXT PRIMARY KEY,
-                    structural_vec FLOAT[{FINGERPRINT_DIMS}]
+                    structural_vec FLOAT[{FINGERPRINT_DIMS}] distance_metric=cosine
                 )"
             );
             conn.execute_batch(&struct_vec_sql)?;

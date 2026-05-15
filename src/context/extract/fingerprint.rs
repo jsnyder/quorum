@@ -133,28 +133,30 @@ impl StructuralFingerprint {
             v[1 + cat.dim_index()] += 1.0 / total_params;
         }
 
-        // Dims 8-15: Return type (category one-hot + nesting + wrapping)
+        // Dims 8-15: Return type category one-hot (8 slots for TypeCategory)
         if let Some(ret) = &self.signature.return_category {
             v[8 + ret.dim_index()] = 1.0;
         }
-        v[14] = (self.signature.return_nesting as f32).min(3.0) / 3.0;
-        v[15] = if self.signature.return_wraps_result {
-            0.5
-        } else {
-            0.0
-        } + if self.signature.return_wraps_option {
-            0.5
-        } else {
-            0.0
-        };
 
-        // Dims 16-23: Self/receiver flags
+        // Dims 16-20: Self/receiver flags
         v[16] = if self.signature.has_self { 1.0 } else { 0.0 };
         v[17] = if self.signature.is_mut_self { 1.0 } else { 0.0 };
         v[18] = if self.signature.is_static { 1.0 } else { 0.0 };
         v[19] = if self.signature.is_method { 1.0 } else { 0.0 };
         v[20] = if self.signature.is_constructor {
             1.0
+        } else {
+            0.0
+        };
+
+        // Dims 21-23: Return type nesting + wrapping (separate from one-hot)
+        v[21] = (self.signature.return_nesting as f32).min(3.0) / 3.0;
+        v[22] = if self.signature.return_wraps_result {
+            0.5
+        } else {
+            0.0
+        } + if self.signature.return_wraps_option {
+            0.5
         } else {
             0.0
         };

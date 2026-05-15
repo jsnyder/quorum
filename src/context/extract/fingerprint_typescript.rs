@@ -240,23 +240,6 @@ fn extract_params<D: Doc>(
     }
 }
 
-/// Extract the name of a parameter node.
-///
-/// For `required_parameter` and `optional_parameter`, the first `identifier`
-/// child is the parameter name. TypeScript's explicit `this` parameter uses
-/// a `this` node kind rather than `identifier`.
-fn extract_param_name<D: Doc>(param: &ast_grep_core::Node<'_, D>) -> String {
-    param
-        .children()
-        .find(|c| {
-            let k = c.kind();
-            let ks = k.as_ref();
-            ks == "identifier" || ks == "this"
-        })
-        .map(|c| c.text().into_owned())
-        .unwrap_or_default()
-}
-
 /// Classify a parameter's type by finding the type annotation.
 fn classify_param_type<D: Doc>(
     param: &ast_grep_core::Node<'_, D>,

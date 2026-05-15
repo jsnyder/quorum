@@ -102,13 +102,18 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
         let mut struct_sim_map: HashMap<String, f32> = HashMap::new();
         for (_name, fp_vec) in &q.structural_fingerprints {
             let knn_k = (q.k * 2).max(10);
-            if let Ok(hits) = crate::context::index::builder::query_structural_knn(self.conn, fp_vec, knn_k) {
-                for (chunk_id, distance) in hits {
-                    let sim = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
-                    let entry = struct_sim_map.entry(chunk_id).or_insert(0.0);
-                    if sim > *entry {
-                        *entry = sim;
+            match crate::context::index::builder::query_structural_knn(self.conn, fp_vec, knn_k) {
+                Ok(hits) => {
+                    for (chunk_id, distance) in hits {
+                        let sim = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
+                        let entry = struct_sim_map.entry(chunk_id).or_insert(0.0);
+                        if sim > *entry {
+                            *entry = sim;
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "structural fingerprint KNN query failed");
                 }
             }
         }

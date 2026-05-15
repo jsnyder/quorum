@@ -210,8 +210,8 @@ fn fingerprint_to_vector_return_type_encoded() {
     let vec = fp.to_vector();
     // Col is dim_index 2, so dims[8+2] = 1.0
     assert_eq!(vec[10], 1.0, "return category Col at dim 10");
-    assert!(vec[14] > 0.0, "return nesting should be nonzero");
-    assert_eq!(vec[15], 1.0, "both option and result wrapping = 0.5 + 0.5");
+    assert!(vec[21] > 0.0, "return nesting should be nonzero");
+    assert_eq!(vec[22], 1.0, "both option and result wrapping = 0.5 + 0.5");
 }
 
 #[test]
