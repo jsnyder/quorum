@@ -3016,8 +3016,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn build_file_context_truncates_large_source() {
-        let mut config = PipelineConfig::default();
-        config.max_review_lines = 5;
+        let config = PipelineConfig {
+            max_review_lines: 5,
+            ..PipelineConfig::default()
+        };
         let big_source = (0..20)
             .map(|i| format!("let x{} = {};", i, i))
             .collect::<Vec<_>>()
