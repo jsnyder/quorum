@@ -1330,8 +1330,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     "Note: No AST support for {}, using LLM-only review",
                     file_path.display()
                 );
-                pipeline::review_file_llm_only(file_path, &source, llm_reviewer, &pipeline_cfg)
-                    .await
+                pipeline::review_file(file_path, &source, None, llm_reviewer, &pipeline_cfg).await
             };
             match review_result {
                 Ok(mut result) => {
@@ -1476,9 +1475,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         )
                         .await
                     } else {
-                        pipeline::review_file_llm_only(
+                        pipeline::review_file(
                             &file_path,
                             &source,
+                            None,
                             llm_reviewer,
                             &pipeline_cfg,
                         )

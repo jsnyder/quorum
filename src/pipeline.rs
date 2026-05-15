@@ -126,7 +126,7 @@ pub struct FileReviewResult {
 }
 
 /// Per-file judge result counters, propagated from pipeline to TelemetryEntry.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JudgeMetrics {
     pub approved: u32,
     pub rejected: u32,
@@ -1029,8 +1029,7 @@ fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> S
 
 /// Build shared file context (redaction, hydration, enrichment, feedback,
 /// context injection) for a single file. This is the unified extraction of
-/// the pre-prompt assembly logic previously duplicated across `review_file`
-/// and `review_file_llm_only`.
+/// the pre-prompt assembly logic previously duplicated in `review_file`.
 ///
 /// When `ast` is `Some`, hydration and context injection run against the
 /// parsed tree. When `None` (unsupported language), those phases are skipped
@@ -1449,273 +1448,6 @@ fn lang_name_from_path(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_lowercase()
-}
-
-/// LLM-only review for files without tree-sitter support.
-/// Skips local AST analysis but still does LLM review, calibration, and auto-calibration.
-pub async fn review_file_llm_only(
-    file_path: &Path,
-    source: &str,
-    llm: Option<&dyn LlmReviewer>,
-    pipeline_config: &PipelineConfig,
-) -> anyhow::Result<FileReviewResult> {
-    let file_str = file_path.to_string_lossy().to_string();
-    let mut all_sources: Vec<Vec<Finding>> = Vec::new();
-    let mut total_usage = crate::llm_client::TokenUsage::default();
-    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
-
-    // Use pre-built shared index if available (parallel mode), otherwise build locally
-    let shared_index = pipeline_config.feedback_index.clone();
-    let mut local_index = if shared_index.is_none() {
-        if let Some(store_path) = &pipeline_config.feedback_store {
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            // Surface I/O / corrupted-store errors instead of silently
-            // proceeding without precedent injection. The embedder-unavailable
-            // path is already a soft fall-back inside FeedbackIndex::build.
-            Some(if pipeline_config.fast {
-                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
-            } else {
-                crate::feedback_index::FeedbackIndex::build(&store)?
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // No local AST analysis — unsupported language
-
-    // LLM review (if configured)
-    if let Some(reviewer) = llm
-        && !pipeline_config.models.is_empty()
-    {
-        let redacted_code = redact::redact_secrets(source);
-        let (review_code, truncation_notice) =
-            truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
-        let language = lang_name_from_path(file_path);
-
-        // Context7 framework docs (metrics aggregate into the function-scoped var)
-        let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
-            tracing::debug!(reason, "Context7: enrichment skipped");
-            None
-        } else {
-            let project_root = find_project_root(file_path);
-            let mut domain = crate::domain::detect_domain(&project_root);
-            for fw in &pipeline_config.framework_overrides {
-                if !domain.frameworks.contains(fw) {
-                    domain.frameworks.push(fw.clone());
-                }
-            }
-            let policy = crate::enrichment_policy::EnrichmentPolicy {
-                registry: pipeline_config
-                    .registry_client
-                    .as_ref()
-                    .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
-            };
-            let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
-                crate::context_enrichment::enrich_for_review_in_project(
-                    &project_root,
-                    &[],
-                    &domain.frameworks,
-                    shared.as_ref(),
-                    &policy,
-                )
-            } else {
-                let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
-                let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
-                crate::context_enrichment::enrich_for_review_in_project(
-                    &project_root,
-                    &[],
-                    &domain.frameworks,
-                    &cached,
-                    &policy,
-                )
-            };
-            let docs = result.docs;
-            enrichment_metrics = result.metrics;
-            if !docs.is_empty() {
-                Some(
-                    docs.iter()
-                        .map(|d| {
-                            crate::context_enrichment::format_context_section(std::slice::from_ref(
-                                d,
-                            ))
-                        })
-                        .collect(),
-                )
-            } else if domain.frameworks.is_empty() {
-                None
-            } else {
-                // skip_context7 unreachable: outer if-let returned None already.
-                anyhow::bail!(
-                    "Context7: failed to fetch docs for frameworks {:?}. \
-                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                    domain.frameworks
-                );
-            }
-        };
-
-        // Query feedback index for few-shot precedents
-        let precedents = if let Some(ref shared) = shared_index {
-            let mut idx = shared.lock().unwrap();
-            query_feedback_precedents(&mut idx, &file_str, &language, &redacted_code)
-        } else if let Some(ref mut idx) = local_index {
-            query_feedback_precedents(idx, &file_str, &language, &redacted_code)
-        } else {
-            Vec::new()
-        };
-
-        let req = ReviewRequest {
-            file_path: file_str.clone(),
-            language,
-            code: review_code,
-            hydration_context: None,
-            framework_docs,
-            feedback_precedents: if precedents.is_empty() {
-                None
-            } else {
-                Some(precedents)
-            },
-            context_block: None,
-            truncation_notice: truncation_notice.clone(),
-            focus: pipeline_config.focus.clone(),
-            mode: pipeline_config.mode,
-        };
-
-        let prompt = review::build_review_prompt(&req);
-        let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
-        for model in &pipeline_config.models {
-            let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
-            match reviewer.review(&prompt, model, sys_prompt) {
-                Ok(resp) => {
-                    if let Some(u) = &resp.usage {
-                        total_usage.prompt_tokens += u.prompt_tokens;
-                        total_usage.completion_tokens += u.completion_tokens;
-                        total_usage.cached_tokens += u.cached_tokens;
-                    }
-                    match review::parse_llm_response(&resp.content, model) {
-                        Ok(mut findings) => {
-                            if let Some(ref notice) = truncation_notice {
-                                for f in &mut findings {
-                                    if matches!(f.source, crate::finding::Source::Llm(_)) {
-                                        f.based_on_excerpt = Some(notice.clone());
-                                    }
-                                }
-                            }
-                            all_sources.push(findings);
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to parse {} response: {}", model, e)
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
-            }
-        }
-    }
-
-    let merged = merge::merge_findings(
-        all_sources,
-        pipeline_config.similarity_threshold,
-        pipeline_config.models.len(),
-    );
-
-    // Grounding: verify LLM-cited symbols exist in source (skipped for prose reviews)
-    let merged = if pipeline_config.mode.is_prose() {
-        merged
-    } else {
-        let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled, "");
-        let gc = grounding::count_grounding_outcomes(&grounded);
-        tracing::info!(
-            phase = "grounding",
-            verified = gc.verified,
-            verified_elsewhere = gc.verified_elsewhere,
-            symbol_not_found = gc.symbol_not_found,
-            line_out_of_range = gc.line_out_of_range,
-            not_checked = gc.not_checked,
-            "grounding pass complete"
-        );
-        grounded
-    };
-
-    let mut merged = merged;
-    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-        let repo_root = find_project_root(file_path);
-        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-        let diff_lines: Vec<(u32, u32)> = diff_ranges
-            .iter()
-            .filter(|(path, _)| resolver.matches(path))
-            .flat_map(|(_, ranges)| ranges.clone())
-            .collect();
-        classify_in_diff(&mut merged, &diff_lines);
-    }
-
-    // Calibrate
-    let has_feedback =
-        !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
-    let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
-        let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
-        let cal_t0 = std::time::Instant::now();
-        let config = pipeline_config.calibrator_config.clone();
-        // Use shared FeedbackIndex (parallel mode) or local index for calibration
-        let cal_result = if let Some(ref shared) = shared_index {
-            let mut idx = shared.lock().unwrap();
-            if !idx.is_empty() {
-                calibrator::calibrate_with_index(merged, &mut idx, &config, &file_str)
-            } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-            }
-        } else if let Some(ref mut index) = local_index {
-            if !index.is_empty() {
-                calibrator::calibrate_with_index(merged, index, &config, &file_str)
-            } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-            }
-        } else {
-            calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-        };
-        if cal_result.suppressed > 0 || cal_result.boosted > 0 {
-            tracing::debug!(
-                suppressed = cal_result.suppressed,
-                boosted = cal_result.boosted,
-                feedback_entries = pipeline_config.feedback.len(),
-                "calibrator decision per-file",
-            );
-        }
-
-        write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
-        tracing::info!(
-            phase = "calibrate",
-            duration_ms = cal_t0.elapsed().as_millis() as u64,
-            suppressed = cal_result.suppressed,
-            boosted = cal_result.boosted,
-            final_findings = cal_result.findings.len(),
-            "phase complete"
-        );
-
-        (cal_result.findings, cal_result.suppressed)
-    } else {
-        (merged, 0)
-    };
-
-    let mut final_findings = final_findings;
-    for f in &mut final_findings {
-        f.compute_confidence();
-    }
-
-    Ok(FileReviewResult {
-        file_path: file_str,
-        findings: final_findings,
-        usage: total_usage,
-        suppressed: suppressed_count,
-        context_telemetry: None,
-        enrichment_metrics,
-        judge_metrics: JudgeMetrics::default(),
-    })
 }
 
 /// Stamp each finding with `in_diff` based on line-range overlap with changed hunks.
@@ -3223,7 +2955,6 @@ mod tests {
 
     #[test]
     fn ast_context_can_be_constructed() {
-        use crate::ast_grep::RuleMetadata;
         use std::collections::HashMap;
 
         let source = "fn main() {}";
@@ -3315,5 +3046,22 @@ mod tests {
             "code must be truncated to max_review_lines, got {} lines",
             lines_in_result
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_file_without_ast_runs_llm_only_path() {
+        let config = PipelineConfig::default();
+        let result = review_file(
+            std::path::Path::new("test.py"),
+            "def foo():\n    eval(input())\n",
+            None, // LLM-only
+            None, // no reviewer
+            &config,
+        )
+        .await
+        .unwrap();
+        // Without LLM reviewer, LLM-only path produces empty findings
+        assert!(result.findings.is_empty());
+        assert_eq!(result.judge_metrics, JudgeMetrics::default());
     }
 }
