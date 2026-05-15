@@ -156,6 +156,7 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                     vec_raw,
                     id_exact_match,
                     language_match,
+                    struct_sim: 0.0,
                     indexed_at: chunk.metadata.indexed_at,
                 })
             })
