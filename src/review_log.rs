@@ -530,6 +530,27 @@ impl ReviewLog {
         }
     }
 
+    /// Return the total number of review records without deserializing them.
+    ///
+    /// The SQLite backend uses `SELECT COUNT(*)` for an O(1) scan.
+    /// The JSONL backend falls back to `load_all().len()`.
+    pub fn count(&self) -> anyhow::Result<usize> {
+        match &self.backend {
+            Backend::Jsonl(_) => Ok(self.load_all()?.len()),
+            Backend::Sqlite(handle) => {
+                let conn = handle
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM reviews",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(count as usize)
+            }
+        }
+    }
+
     /// Append one record. Creates the file (and parent dir) if missing (JSONL),
     /// or inserts into the `reviews` + `review_finding_ids` tables (SQLite).
     pub fn record(&self, entry: &ReviewRecord) -> anyhow::Result<()> {
@@ -1992,5 +2013,19 @@ mod tests {
 
         let ids = log.load_all_finding_ids().unwrap();
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn count_returns_total_records() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        assert_eq!(log.count().unwrap(), 0);
+
+        log.record(&test_record()).unwrap();
+        assert_eq!(log.count().unwrap(), 1);
+
+        log.record(&test_record()).unwrap();
+        assert_eq!(log.count().unwrap(), 2);
     }
 }

@@ -454,8 +454,9 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
         }
     };
     let log = review_log::ReviewLog::with_storage(storage_handle);
-    let reviews = match log.load_all() {
-        Ok(r) => r,
+    let review_count = log.count().unwrap_or(0);
+    let finding_ids = match log.load_all_finding_ids() {
+        Ok(ids) => ids,
         Err(e) => {
             // Surface the failure rather than rendering a misleading
             // "0 reviews" line. The diagnostic exists to assess data
@@ -478,8 +479,8 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
         }
     };
 
-    let stats = analytics::linkage_stats(&reviews, &feedback);
-    let total_findings: usize = reviews.iter().map(|r| r.finding_ids.len()).sum();
+    let stats = analytics::linkage_stats_from_ids(&finding_ids, &feedback);
+    let total_findings = finding_ids.len();
     let rate = stats.rate();
     let rate_pct = (rate * 100.0).round() as u32;
 
@@ -488,7 +489,7 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
     writeln!(
         out,
         "  Reviews: {} with {} findings",
-        reviews.len(),
+        review_count,
         total_findings
     )
     .unwrap();
