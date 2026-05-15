@@ -6,6 +6,7 @@ pub mod dispatch;
 pub mod fingerprint;
 pub mod fingerprint_python;
 pub mod fingerprint_rust;
+pub mod fingerprint_typescript;
 pub mod markdown;
 
 #[cfg(test)]
@@ -24,5 +25,7 @@ mod fingerprint_python_tests;
 mod fingerprint_rust_tests;
 #[cfg(test)]
 mod fingerprint_tests;
+#[cfg(test)]
+mod fingerprint_typescript_tests;
 #[cfg(test)]
 mod markdown_tests;
