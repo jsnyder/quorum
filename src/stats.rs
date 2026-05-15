@@ -143,18 +143,24 @@ pub fn compute_report(
 
     let cost_7d = formatting::estimate_cost(&model, tokens_in_7d, tokens_out_7d);
 
-    // Dimensional highlights. Best-effort: missing reviews.jsonl yields
-    // empty vectors, which the renderer treats as "no data" and hides.
+    // Dimensional highlights: load all for repo/caller bucketing.
+    // Best-effort: missing reviews.jsonl yields empty vectors, which
+    // the renderer treats as "no data" and hides.
     let review_records = review_log.load_all().unwrap_or_default();
     let top_repos = take_top(dimensions::group_by_repo(&review_records), HIGHLIGHT_TOP_N);
     let top_callers = take_top(
         dimensions::group_by_caller(&review_records),
         HIGHLIGHT_TOP_N,
     );
-    let rolling_windows = dimensions::rolling_window(&review_records, ROLLING_N, ROLLING_WINDOWS);
 
-    // Linkage / capture / external overlap (Phase A).
-    let link = analytics::linkage_stats(&review_records, &feedback);
+    // Rolling windows: only need last N * ROLLING_WINDOWS records.
+    let rolling_needed = ROLLING_N.saturating_mul(ROLLING_WINDOWS);
+    let rolling_records = review_log.load_recent(rolling_needed).unwrap_or_default();
+    let rolling_windows = dimensions::rolling_window(&rolling_records, ROLLING_N, ROLLING_WINDOWS);
+
+    // Linkage: only needs finding_ids, not full records.
+    let finding_ids = review_log.load_all_finding_ids().unwrap_or_default();
+    let link = analytics::linkage_stats_from_ids(&finding_ids, &feedback);
     let linkage_rate = link.rate();
     let headline_trend_uses_finding_id = linkage_rate >= 0.85;
 
@@ -1788,5 +1794,54 @@ mod tests {
     fn file_hotspots_compact_empty() {
         let out = format_file_hotspots_compact(&[]);
         assert_eq!(out, "by-file: (no data)");
+    }
+
+    // ─── SQLite migration Task 6: targeted-query wiring ───
+
+    #[test]
+    fn compute_report_produces_valid_output_with_mixed_age_records() {
+        use crate::storage;
+
+        let handle = storage::in_memory_handle();
+        let log = crate::review_log::ReviewLog::with_storage(handle.clone());
+        let telem = crate::telemetry::TelemetryStore::with_storage(handle);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let fb_store = crate::feedback::FeedbackStore::new(dir.path().join("feedback.jsonl"));
+
+        // Old review (30 days ago).
+        let old = crate::review_log::ReviewRecord {
+            run_id: crate::review_log::ReviewRecord::new_ulid(),
+            timestamp: chrono::Utc::now() - chrono::Duration::days(30),
+            quorum_version: "test".into(),
+            repo: Some("old-repo".into()),
+            invoked_from: "test".into(),
+            model: "gpt-5.4".into(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: Default::default(),
+            suppressed_by_rule: Default::default(),
+            tokens_in: 100,
+            tokens_out: 50,
+            tokens_cache_read: 0,
+            duration_ms: 500,
+            flags: Default::default(),
+            mode: None,
+            context: Default::default(),
+            finding_ids: vec!["fid-old".into()],
+        };
+        log.record(&old).unwrap();
+
+        // Recent review (today).
+        let mut recent = old.clone();
+        recent.run_id = crate::review_log::ReviewRecord::new_ulid();
+        recent.timestamp = chrono::Utc::now();
+        recent.repo = Some("new-repo".into());
+        recent.finding_ids = vec!["fid-new".into()];
+        log.record(&recent).unwrap();
+
+        let report = compute_report(&fb_store, &telem, &log).unwrap();
+        assert!(report.top_repos.len() <= 3);
     }
 }
