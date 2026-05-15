@@ -99,7 +99,20 @@ review_file(path, source, ast, reviewer, config)
   └─ calibration
 ```
 
-### 4. Future: perspective-based multi-run
+### 4. Prompt ordering for prefix caching
+
+When building `ReviewRequest` from `FileContext`, order the prompt sections so stable content comes first:
+
+1. System prompt (identical across runs)
+2. File context block (from `FileContext` — stable for same file content)
+3. Framework docs (stable for same dependency set)
+4. Feedback precedents (stable within a session)
+5. Hydration context / AST findings (stable for same file content)
+6. Focus directives, mode-specific instructions (varies per perspective)
+
+This ordering maximizes LLM API prefix cache hits when multiple perspectives review the same file — the shared prefix is cached and only the tail (focus/mode) differs. The existing `build_review_prompt` already roughly follows this pattern; the constraint is: don't reorder sections in ways that break this property during the refactor. If natural logical structure conflicts with cache-friendly ordering, prefer structure — correctness over cache hits.
+
+### 5. Future: perspective-based multi-run
 
 The `FileContext` seam enables a future pattern where multiple review perspectives (security focus, logic focus, performance focus) each build their own `ReviewRequest` from the same pre-computed `FileContext` with different system prompts or focus directives. This is distinct from ensemble mode (same prompt, multiple models) and more aligned with how review depth will scale.
 
