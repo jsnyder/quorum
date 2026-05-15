@@ -486,6 +486,35 @@ impl ReviewLog {
         }
     }
 
+    /// Return all distinct finding_ids across every review without
+    /// deserializing full `ReviewRecord` structs (SQLite path).
+    /// The JSONL path falls back to `load_all()`.
+    pub fn load_all_finding_ids(&self) -> anyhow::Result<std::collections::HashSet<String>> {
+        match &self.backend {
+            Backend::Jsonl(_) => {
+                let all = self.load_all()?;
+                Ok(all.into_iter().flat_map(|r| r.finding_ids).collect())
+            }
+            Backend::Sqlite(handle) => Self::load_all_finding_ids_sqlite(handle),
+        }
+    }
+
+    fn load_all_finding_ids_sqlite(
+        handle: &StorageHandle,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT finding_id FROM review_finding_ids",
+        )?;
+        let ids: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
     /// Load all records with `timestamp >= since` in chronological order.
     ///
     /// The SQLite backend uses a `WHERE timestamp >= ?1` clause for an
@@ -1921,5 +1950,47 @@ mod tests {
 
         let since = log.load_since(chrono::Utc::now()).unwrap();
         assert!(since.is_empty());
+    }
+
+    // ── load_all_finding_ids tests ──────────────────────────────────────
+
+    #[test]
+    fn load_all_finding_ids_returns_unique_ids() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let mut r1 = test_record();
+        r1.finding_ids = vec!["fid-1".into(), "fid-2".into()];
+        let mut r2 = test_record();
+        r2.finding_ids = vec!["fid-2".into(), "fid-3".into()];
+
+        log.record(&r1).unwrap();
+        log.record(&r2).unwrap();
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("fid-1"));
+        assert!(ids.contains("fid-2"));
+        assert!(ids.contains("fid-3"));
+    }
+
+    #[test]
+    fn load_all_finding_ids_empty_when_no_records() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn load_all_finding_ids_empty_when_records_have_no_findings() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        log.record(&test_record()).unwrap();
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert!(ids.is_empty());
     }
 }
