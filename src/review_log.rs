@@ -486,6 +486,21 @@ impl ReviewLog {
         }
     }
 
+    /// Load all records with `timestamp >= since` in chronological order.
+    ///
+    /// The SQLite backend uses a `WHERE timestamp >= ?1` clause for an
+    /// efficient filtered scan. The JSONL backend falls back to
+    /// `load_all()` and filters in Rust.
+    pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<ReviewRecord>> {
+        match &self.backend {
+            Backend::Jsonl(_) => {
+                let all = self.load_all()?;
+                Ok(all.into_iter().filter(|r| r.timestamp >= since).collect())
+            }
+            Backend::Sqlite(handle) => Self::load_since_sqlite(handle, since),
+        }
+    }
+
     /// Append one record. Creates the file (and parent dir) if missing (JSONL),
     /// or inserts into the `reviews` + `review_finding_ids` tables (SQLite).
     pub fn record(&self, entry: &ReviewRecord) -> anyhow::Result<()> {
@@ -766,6 +781,94 @@ impl ReviewLog {
             records.push(r.into_record(&mut finding_map)?);
         }
         records.reverse();
+        Ok(records)
+    }
+
+    /// Load reviews with `timestamp >= since`. Uses a SQL WHERE clause
+    /// for efficient filtering and pre-loads only the matching finding_ids
+    /// via a JOIN.
+    fn load_since_sqlite(
+        handle: &StorageHandle,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<ReviewRecord>> {
+        use rusqlite::params;
+
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let since_str = since.to_rfc3339();
+
+        // 1. Pre-load finding_ids for matching reviews via JOIN.
+        let mut finding_map: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT f.run_id, f.finding_id
+                 FROM review_finding_ids f
+                 INNER JOIN reviews r ON r.run_id = f.run_id
+                 WHERE r.timestamp >= ?1
+                 ORDER BY f.rowid",
+            )?;
+            let rows = stmt.query_map(params![since_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (run_id, finding_id) = row?;
+                finding_map.entry(run_id).or_default().push(finding_id);
+            }
+        }
+
+        // 2. Fetch full rows matching the time filter.
+        let raw_rows: Vec<RawReviewRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT
+                    run_id, timestamp, quorum_version, repo, invoked_from, model,
+                    files_reviewed, lines_added, lines_removed,
+                    critical, high, medium, low, info,
+                    suppressed_by_rule,
+                    tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                    flag_deep, flag_parallel_n, flag_ensemble,
+                    mode, context
+                FROM reviews
+                WHERE timestamp >= ?1
+                ORDER BY timestamp ASC",
+            )?;
+            stmt.query_map(params![since_str], |row| {
+                Ok(RawReviewRow {
+                    run_id: row.get(0)?,
+                    ts_str: row.get(1)?,
+                    quorum_version: row.get(2)?,
+                    repo: row.get(3)?,
+                    invoked_from: row.get(4)?,
+                    model: row.get(5)?,
+                    files_reviewed: row.get(6)?,
+                    lines_added: row.get(7)?,
+                    lines_removed: row.get(8)?,
+                    critical: row.get(9)?,
+                    high: row.get(10)?,
+                    medium: row.get(11)?,
+                    low: row.get(12)?,
+                    info: row.get(13)?,
+                    suppressed_json: row.get(14)?,
+                    tokens_in: row.get(15)?,
+                    tokens_out: row.get(16)?,
+                    tokens_cache_read: row.get(17)?,
+                    duration_ms: row.get(18)?,
+                    flag_deep: row.get(19)?,
+                    flag_parallel_n: row.get(20)?,
+                    flag_ensemble: row.get(21)?,
+                    mode: row.get(22)?,
+                    context_json: row.get(23)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        // 3. Convert to ReviewRecords.
+        let mut records = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            records.push(r.into_record(&mut finding_map)?);
+        }
         Ok(records)
     }
 }
@@ -1773,5 +1876,50 @@ mod tests {
 
         let recent = log.load_recent(0).unwrap();
         assert!(recent.is_empty());
+    }
+
+    // ── load_since tests ────────────────────────────────────────────
+
+    #[test]
+    fn load_since_returns_only_records_after_cutoff() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let t1 = chrono::Utc::now() - chrono::Duration::days(10);
+        let t2 = chrono::Utc::now() - chrono::Duration::days(5);
+        let t3 = chrono::Utc::now();
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+
+        let mut r1 = test_record();
+        r1.timestamp = t1;
+        r1.files_reviewed = 1;
+        let mut r2 = test_record();
+        r2.timestamp = t2;
+        r2.files_reviewed = 2;
+        let mut r3 = test_record();
+        r3.timestamp = t3;
+        r3.files_reviewed = 3;
+
+        log.record(&r1).unwrap();
+        log.record(&r2).unwrap();
+        log.record(&r3).unwrap();
+
+        let since = log.load_since(cutoff).unwrap();
+        assert_eq!(since.len(), 2);
+        assert_eq!(since[0].files_reviewed, 2);
+        assert_eq!(since[1].files_reviewed, 3);
+    }
+
+    #[test]
+    fn load_since_returns_empty_when_all_older() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let mut rec = test_record();
+        rec.timestamp = chrono::Utc::now() - chrono::Duration::days(30);
+        log.record(&rec).unwrap();
+
+        let since = log.load_since(chrono::Utc::now()).unwrap();
+        assert!(since.is_empty());
     }
 }
