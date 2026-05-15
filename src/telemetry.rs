@@ -207,12 +207,15 @@ impl TelemetryStore {
     }
 
     pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<TelemetryEntry>> {
-        Ok(self
-            .load_all_with_stats()?
-            .0
-            .into_iter()
-            .filter(|e| e.ts >= since)
-            .collect())
+        match &self.backend {
+            Backend::Jsonl(_) => Ok(self
+                .load_all_with_stats()?
+                .0
+                .into_iter()
+                .filter(|e| e.ts >= since)
+                .collect()),
+            Backend::Sqlite(handle) => Self::load_since_sqlite(handle, since),
+        }
     }
 
     // ── JSONL backend ──────────────────────────────────────────────────
@@ -528,6 +531,69 @@ impl TelemetryStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(raw_rows)
+    }
+
+    /// SQL WHERE push-down for `load_since` on the SQLite backend.
+    /// Uses `WHERE ts >= ?1` so the existing `idx_telemetry_ts` index
+    /// can satisfy the predicate without scanning every row.
+    fn load_since_sqlite(
+        handle: &StorageHandle,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<TelemetryEntry>> {
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let since_str = since.to_rfc3339();
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                ts, files, findings, model,
+                tokens_in, tokens_out, duration_ms, suppressed,
+                context7_resolved, context7_resolve_failed, context7_query_failed,
+                context7_skipped_popular, context7_budget_reduced,
+                fp_kind_utilization_rate,
+                judge_calls, judge_approved, judge_rejected,
+                judge_uncertain, judge_skipped, judge_cache_hits,
+                judge_latency_ms
+            FROM telemetry
+            WHERE ts >= ?1
+            ORDER BY ts ASC",
+        )?;
+
+        let raw_rows: Vec<RawTelemetryRow> = stmt
+            .query_map([&since_str], |row| {
+                Ok(RawTelemetryRow {
+                    ts_str: row.get(0)?,
+                    files_json: row.get(1)?,
+                    findings_json: row.get(2)?,
+                    model: row.get(3)?,
+                    tokens_in: row.get(4)?,
+                    tokens_out: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    suppressed: row.get(7)?,
+                    context7_resolved: row.get(8)?,
+                    context7_resolve_failed: row.get(9)?,
+                    context7_query_failed: row.get(10)?,
+                    context7_skipped_popular: row.get(11)?,
+                    context7_budget_reduced: row.get(12)?,
+                    fp_kind_utilization_rate: row.get(13)?,
+                    judge_calls: row.get(14)?,
+                    judge_approved: row.get(15)?,
+                    judge_rejected: row.get(16)?,
+                    judge_uncertain: row.get(17)?,
+                    judge_skipped: row.get(18)?,
+                    judge_cache_hits: row.get(19)?,
+                    judge_latency_ms: row.get(20)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut entries = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            entries.push(r.into_entry()?);
+        }
+        Ok(entries)
     }
 }
 
@@ -1107,6 +1173,43 @@ mod tests {
         assert_eq!(stats.kept, 5);
         assert_eq!(stats.skipped, 0);
         assert!(stats.errors.is_empty());
+    }
+
+    #[test]
+    fn load_since_sqlite_filters_at_query_level() {
+        let handle = crate::storage::in_memory_handle();
+        let store = TelemetryStore::with_storage(handle);
+
+        let t_old = chrono::Utc::now() - chrono::Duration::days(10);
+        let t_new = chrono::Utc::now();
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(5);
+
+        let mut e1 = test_telemetry_entry();
+        e1.ts = t_old;
+        e1.model = "old".into();
+        let mut e2 = test_telemetry_entry();
+        e2.ts = t_new;
+        e2.model = "new".into();
+
+        store.record(&e1).unwrap();
+        store.record(&e2).unwrap();
+
+        let since = store.load_since(cutoff).unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].model, "new");
+    }
+
+    #[test]
+    fn load_since_sqlite_returns_empty_when_all_older() {
+        let handle = crate::storage::in_memory_handle();
+        let store = TelemetryStore::with_storage(handle);
+
+        let mut e = test_telemetry_entry();
+        e.ts = chrono::Utc::now() - chrono::Duration::days(30);
+        store.record(&e).unwrap();
+
+        let since = store.load_since(chrono::Utc::now()).unwrap();
+        assert!(since.is_empty());
     }
 
     #[test]
