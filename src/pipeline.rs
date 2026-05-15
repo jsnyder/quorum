@@ -126,7 +126,7 @@ pub struct FileReviewResult {
 }
 
 /// Per-file judge result counters, propagated from pipeline to TelemetryEntry.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct JudgeMetrics {
     pub approved: u32,
     pub rejected: u32,
@@ -135,6 +135,25 @@ pub struct JudgeMetrics {
     pub cache_hits: u32,
     pub calls: u32,
     pub latency_ms: u64,
+}
+
+/// Borrowed AST state threaded through the review pipeline for a single file.
+pub struct AstContext<'a> {
+    pub tree: &'a tree_sitter::Tree,
+    pub language: crate::parser::Language,
+}
+
+/// Owned, prepared file content and enrichment data ready for LLM prompt assembly.
+#[derive(Default)]
+pub struct FileContext {
+    pub redacted_code: String,
+    pub truncation_notice: Option<String>,
+    pub framework_docs: Option<Vec<String>>,
+    pub feedback_precedents: Option<Vec<String>>,
+    pub hydration_context: Option<crate::hydration::HydrationContext>,
+    pub context_block: Option<String>,
+    pub enrichment_metrics: crate::context_enrichment::EnrichmentMetrics,
+    pub context_telemetry: Option<crate::review_log::ContextTelemetry>,
 }
 
 pub struct PipelineConfig {
@@ -634,11 +653,15 @@ pub(crate) fn render_precedent_for_few_shot(entry: &crate::feedback::FeedbackEnt
 }
 
 /// Run the full review pipeline on a single file.
+///
+/// When `ast` is `Some`, the full pipeline runs: local AST analysis,
+/// ast-grep rules, judge phase, then LLM review with hydration and
+/// context injection. When `None` (unsupported language), AST-only
+/// phases are skipped and the LLM review proceeds without hydration.
 pub async fn review_file(
     file_path: &Path,
     source: &str,
-    lang: Language,
-    tree: &tree_sitter::Tree,
+    ast: Option<AstContext<'_>>,
     llm: Option<&dyn LlmReviewer>,
     pipeline_config: &PipelineConfig,
 ) -> anyhow::Result<FileReviewResult> {
@@ -672,18 +695,32 @@ pub async fn review_file(
 
     let mut hydration_text = String::new();
 
-    // Source 1: Local AST analysis (skipped for prose reviews)
+    // Derive language string: from AST when available, from file extension otherwise.
+    let lang_str = match &ast {
+        Some(ctx) => lang_name(ctx.language).to_string(),
+        None => lang_name_from_path(file_path),
+    };
+
+    // Source 1: Local AST analysis (skipped for prose reviews and non-AST files)
     let mut local_findings = Vec::new();
-    if !pipeline_config.mode.is_prose() {
+    let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
+        std::collections::HashMap::new();
+    if let Some(ref ast_ctx) = ast
+        && !pipeline_config.mode.is_prose()
+    {
         let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
         let t0 = std::time::Instant::now();
         local_findings.extend(analysis::analyze_complexity(
-            tree,
+            ast_ctx.tree,
             source,
-            lang,
+            ast_ctx.language,
             pipeline_config.complexity_threshold,
         ));
-        local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
+        local_findings.extend(analysis::analyze_insecure_patterns(
+            ast_ctx.tree,
+            source,
+            ast_ctx.language,
+        ));
         tracing::info!(
             phase = "local_ast",
             duration_ms = t0.elapsed().as_millis() as u64,
@@ -693,41 +730,41 @@ pub async fn review_file(
     }
     all_sources.push(local_findings);
 
-    // Source 2: ast-grep library rules (skipped for prose reviews)
-    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
-        std::collections::HashMap::new();
-    if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
-        let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
-        let t0 = std::time::Instant::now();
-        let project_root = find_project_root(file_path);
-        let home_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let (rules, loaded_metadata) = ast_grep::load_rules(&project_root, &home_dir);
-        rule_metadata = loaded_metadata;
-        let mut ag_count = 0;
-        if !rules.is_empty() {
-            let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
-            ag_count = ag_findings.len();
-            if !ag_findings.is_empty() {
-                all_sources.push(ag_findings);
+    // Source 2: ast-grep library rules (skipped for prose reviews and non-AST files)
+    if ast.is_some() {
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
+            let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
+            let t0 = std::time::Instant::now();
+            let project_root = find_project_root(file_path);
+            let home_dir = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let (rules, loaded_metadata) = ast_grep::load_rules(&project_root, &home_dir);
+            rule_metadata = loaded_metadata;
+            let mut ag_count = 0;
+            if !rules.is_empty() {
+                let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
+                ag_count = ag_findings.len();
+                if !ag_findings.is_empty() {
+                    all_sources.push(ag_findings);
+                }
             }
+            tracing::info!(
+                phase = "ast_grep",
+                duration_ms = t0.elapsed().as_millis() as u64,
+                rules = rules.len(),
+                findings = ag_count,
+                "phase complete"
+            );
         }
-        tracing::info!(
-            phase = "ast_grep",
-            duration_ms = t0.elapsed().as_millis() as u64,
-            rules = rules.len(),
-            findings = ag_count,
-            "phase complete"
-        );
     }
 
     // Source 2b: Judge speculative AST findings (if enabled).
     // Only runs on ast-grep findings (index 1+), not local AST (index 0).
     let mut judge_metrics = JudgeMetrics::default();
-    if pipeline_config.judge_enabled && !rule_metadata.is_empty() {
+    if ast.is_some() && pipeline_config.judge_enabled && !rule_metadata.is_empty() {
         {
             let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
             let home_dir = std::env::var("HOME")
@@ -782,242 +819,29 @@ pub async fn review_file(
         if pipeline_config.models.is_empty() {
             // No models configured — skip LLM review
         } else {
-            // Redact secrets before LLM
-            let redacted_code = redact::redact_secrets(source);
-            let (review_code, truncation_notice) =
-                truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
+            // Build shared file context: redaction, hydration, Context7,
+            // feedback precedents, context injection.
+            let file_ctx =
+                build_file_context(file_path, source, ast.as_ref(), pipeline_config).await?;
 
-            // Hydrate context: use diff ranges if available, else full file.
-            // Prose reviews skip hydration entirely — no AST-derived context.
-            //
-            // #137: match on full repo-relative path equality (NOT ends_with),
-            // resolved through the project root so `src/foo.rs` does not
-            // cross-match `nested/src/foo.rs`.
-            let redacted_ctx = if pipeline_config.mode.is_prose() {
-                crate::hydration::HydrationContext::default()
-            } else {
-                let (changed_lines, path_resolved) =
-                    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-                        let repo_root = find_project_root(file_path);
-                        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-                        let lines: Vec<(u32, u32)> = diff_ranges
-                            .iter()
-                            .filter(|(path, _)| resolver.matches(path))
-                            .flat_map(|(_, ranges)| ranges.clone())
-                            .collect();
-                        (lines, resolver.resolved())
-                    } else {
-                        (Vec::new(), true)
-                    };
-                let hydration_ranges = if changed_lines.is_empty() {
-                    if pipeline_config.diff_ranges.is_some() && !path_resolved {
-                        tracing::warn!(
-                            file = %file_str,
-                            "diff-file provided but file path could not be \
-                             resolved relative to the repository root; \
-                             falling back to full-file hydration"
-                        );
-                    }
-                    let total_lines = source.lines().count() as u32;
-                    vec![(1, total_lines.max(1))]
-                } else {
-                    changed_lines
-                };
-                let hydrate_t0 = std::time::Instant::now();
-                let ctx = {
-                    let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
-                    let c = hydration::hydrate(tree, source, lang, &hydration_ranges);
-                    tracing::info!(
-                        phase = "hydrate",
-                        duration_ms = hydrate_t0.elapsed().as_millis() as u64,
-                        callees = c.callee_signatures.len(),
-                        types = c.type_definitions.len(),
-                        imports = c.import_targets.len(),
-                        "phase complete"
-                    );
-                    c
-                };
+            enrichment_metrics = file_ctx.enrichment_metrics;
+            context_telemetry = file_ctx.context_telemetry;
 
-                // Redact hydration context for parity with redacted code
-                crate::hydration::HydrationContext {
-                    callee_signatures: ctx
-                        .callee_signatures
-                        .iter()
-                        .map(|s| redact::redact_secrets(s))
-                        .collect(),
-                    type_definitions: ctx
-                        .type_definitions
-                        .iter()
-                        .map(|s| redact::redact_secrets(s))
-                        .collect(),
-                    callers: ctx.callers.clone(),
-                    import_targets: ctx
-                        .import_targets
-                        .iter()
-                        .map(|s| redact::redact_secrets(s))
-                        .collect(),
-                    qualified_names: ctx.qualified_names.clone(),
-                }
-            };
+            hydration_text = file_ctx
+                .hydration_context
+                .as_ref()
+                .map(render_hydration_for_grounding)
+                .unwrap_or_default();
 
-            // Fetch Context7 framework docs (curated frameworks + dep-based enrichment).
-            let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
-                // --skip-context7 OR upstream init failed: no Context7 client
-                // constructed, no HTTP calls. Metrics stay at defaults.
-                tracing::debug!(reason, "Context7: enrichment skipped");
-                None
-            } else {
-                let project_root = find_project_root(file_path);
-                let mut domain = crate::domain::detect_domain(&project_root);
-                for fw in &pipeline_config.framework_overrides {
-                    if !domain.frameworks.contains(fw) {
-                        domain.frameworks.push(fw.clone());
-                    }
-                }
-                // Always run enrichment: dep-based path may produce docs even when no
-                // curated framework was detected (e.g. a Rust project with tokio).
-                // Prefer a shared review-level cache from PipelineConfig so cache
-                // state (positive AND negative resolves with 24h TTL) is shared
-                // across all files in this review. Fall back to a per-file ad-hoc
-                // cache when no shared one is wired (tests, single-file CLI).
-                let ctx7_t0 = std::time::Instant::now();
-                let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
-                let policy = crate::enrichment_policy::EnrichmentPolicy {
-                    registry: pipeline_config
-                        .registry_client
-                        .as_ref()
-                        .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
-                };
-                let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
-                    crate::context_enrichment::enrich_for_review_in_project(
-                        &project_root,
-                        &redacted_ctx.import_targets,
-                        &domain.frameworks,
-                        shared.as_ref(),
-                        &policy,
-                    )
-                } else {
-                    let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
-                    let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
-                    crate::context_enrichment::enrich_for_review_in_project(
-                        &project_root,
-                        &redacted_ctx.import_targets,
-                        &domain.frameworks,
-                        &cached,
-                        &policy,
-                    )
-                };
-                let docs = result.docs;
-                enrichment_metrics = result.metrics;
-                tracing::info!(
-                    phase = "context7",
-                    duration_ms = ctx7_t0.elapsed().as_millis() as u64,
-                    frameworks = domain.frameworks.len(),
-                    docs = docs.len(),
-                    resolved = enrichment_metrics.context7_resolved,
-                    resolve_failed = enrichment_metrics.context7_resolve_failed,
-                    query_failed = enrichment_metrics.context7_query_failed,
-                    skipped_popular = enrichment_metrics.context7_skipped_popular,
-                    budget_reduced = enrichment_metrics.context7_budget_reduced,
-                    "phase complete"
-                );
-                if !docs.is_empty() {
-                    tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
-                    Some(
-                        docs.iter()
-                            .map(|d| {
-                                crate::context_enrichment::format_context_section(
-                                    std::slice::from_ref(d),
-                                )
-                            })
-                            .collect(),
-                    )
-                } else if domain.frameworks.is_empty() {
-                    // No curated framework was requested — silently skip if dep path
-                    // also produced nothing. Long-tail dep failures are NOT fatal.
-                    None
-                } else {
-                    // skip_context7 is impossible here: the outer if-let returned None
-                    // already if it was set. Only the explicit-framework + Context7-down
-                    // case reaches this arm.
-                    anyhow::bail!(
-                        "Context7: failed to fetch docs for frameworks {:?}. \
-                     This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                        domain.frameworks
-                    );
-                }
-            };
-
-            // Query feedback index for few-shot precedents
-            let precedents = if let Some(ref shared) = shared_index {
-                let mut idx = shared.lock().unwrap();
-                query_feedback_precedents(&mut idx, &file_str, lang_name(lang), &redacted_code)
-            } else if let Some(ref mut idx) = local_index {
-                query_feedback_precedents(idx, &file_str, lang_name(lang), &redacted_code)
-            } else {
-                Vec::new()
-            };
-
-            // Optional `quorum context` injection (retrieve → plan → render).
-            // When no injector is wired, this is a no-op and `context_block`
-            // stays `None`, preserving byte-identical prompts.
-            // Prose reviews skip context injection — no AST-derived identifiers.
-            let context_block = if pipeline_config.mode.is_prose() {
-                None
-            } else {
-                match pipeline_config.context_injector.as_ref() {
-                    Some(inj) => {
-                        let mut identifiers: Vec<String> = redacted_ctx
-                            .callee_signatures
-                            .iter()
-                            .filter_map(|sig| extract_ident_from_signature(sig))
-                            .collect();
-                        identifiers.extend(redacted_ctx.import_targets.iter().cloned());
-                        identifiers.sort();
-                        identifiers.dedup();
-                        let text_sample: String = redacted_code.chars().take(400).collect();
-                        // Structural retrieval keys: bare qualified names of
-                        // callees + imports, drawn from AST hydration. Redact for
-                        // parity with the rest of the request surface.
-                        let structural_names: Vec<String> = {
-                            let mut v: Vec<String> = redacted_ctx
-                                .qualified_names
-                                .iter()
-                                .map(|s| redact::redact_secrets(s))
-                                .collect();
-                            v.sort();
-                            v.dedup();
-                            v
-                        };
-                        let req = crate::context::inject::InjectionRequest {
-                            file_path: file_str.clone(),
-                            language: Some(lang_name(lang).to_string()),
-                            identifiers,
-                            structural_names,
-                            text: text_sample,
-                        };
-                        let outcome = inj.inject(&req);
-                        context_telemetry = Some(outcome.telemetry);
-                        outcome.rendered
-                    }
-                    None => None,
-                }
-            };
-
-            hydration_text = render_hydration_for_grounding(&redacted_ctx);
             let req = ReviewRequest {
                 file_path: file_str.clone(),
-                language: lang_name(lang).to_string(),
-                code: review_code,
-                hydration_context: Some(redacted_ctx),
-                framework_docs,
-                feedback_precedents: if precedents.is_empty() {
-                    None
-                } else {
-                    Some(precedents)
-                },
-                context_block,
-                truncation_notice: truncation_notice.clone(),
+                language: lang_str.clone(),
+                code: file_ctx.redacted_code.clone(),
+                hydration_context: file_ctx.hydration_context.clone(),
+                framework_docs: file_ctx.framework_docs.clone(),
+                feedback_precedents: file_ctx.feedback_precedents.clone(),
+                context_block: file_ctx.context_block.clone(),
+                truncation_notice: file_ctx.truncation_notice.clone(),
                 focus: pipeline_config.focus.clone(),
                 mode: pipeline_config.mode,
             };
@@ -1049,7 +873,7 @@ pub async fn review_file(
                         match review::parse_llm_response(&resp.content, model) {
                             Ok(mut findings) => {
                                 let n_findings = findings.len();
-                                if let Some(ref notice) = truncation_notice {
+                                if let Some(notice) = &file_ctx.truncation_notice {
                                     for f in &mut findings {
                                         if matches!(f.source, crate::finding::Source::Llm(_)) {
                                             f.based_on_excerpt = Some(notice.clone());
@@ -1202,6 +1026,268 @@ fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> S
         .join("\n")
 }
 
+/// Build shared file context (redaction, hydration, enrichment, feedback,
+/// context injection) for a single file. This is the unified extraction of
+/// the pre-prompt assembly logic previously duplicated in `review_file`.
+///
+/// When `ast` is `Some`, hydration and context injection run against the
+/// parsed tree. When `None` (unsupported language), those phases are skipped
+/// and the import list passed to Context7 enrichment is empty.
+pub(crate) async fn build_file_context(
+    file_path: &std::path::Path,
+    source: &str,
+    ast: Option<&AstContext<'_>>,
+    pipeline_config: &PipelineConfig,
+) -> anyhow::Result<FileContext> {
+    let file_str = file_path.to_string_lossy().to_string();
+
+    // ── 1. Secret redaction + truncation ────────────────────────────────
+    let redacted_code = redact::redact_secrets(source);
+    let (review_code, truncation_notice) =
+        truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
+
+    // ── 2. Hydration context (only when AST is provided) ────────────────
+    let hydration_context: Option<crate::hydration::HydrationContext> = if let Some(ast_ctx) = ast {
+        if pipeline_config.mode.is_prose() {
+            Some(crate::hydration::HydrationContext::default())
+        } else {
+            let (changed_lines, path_resolved) =
+                if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
+                    let repo_root = find_project_root(file_path);
+                    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+                    let lines: Vec<(u32, u32)> = diff_ranges
+                        .iter()
+                        .filter(|(path, _)| resolver.matches(path))
+                        .flat_map(|(_, ranges)| ranges.clone())
+                        .collect();
+                    (lines, resolver.resolved())
+                } else {
+                    (Vec::new(), true)
+                };
+            let hydration_ranges = if changed_lines.is_empty() {
+                if pipeline_config.diff_ranges.is_some() && !path_resolved {
+                    tracing::warn!(
+                        file = %file_str,
+                        "diff-file provided but file path could not be \
+                         resolved relative to the repository root; \
+                         falling back to full-file hydration"
+                    );
+                }
+                let total_lines = source.lines().count() as u32;
+                vec![(1, total_lines.max(1))]
+            } else {
+                changed_lines
+            };
+            let hydrate_t0 = std::time::Instant::now();
+            let ctx = {
+                let _span = tracing::info_span!("phase.hydrate", file = %file_str).entered();
+                let c =
+                    hydration::hydrate(ast_ctx.tree, source, ast_ctx.language, &hydration_ranges);
+                tracing::info!(
+                    phase = "hydrate",
+                    duration_ms = hydrate_t0.elapsed().as_millis() as u64,
+                    callees = c.callee_signatures.len(),
+                    types = c.type_definitions.len(),
+                    imports = c.import_targets.len(),
+                    "phase complete"
+                );
+                c
+            };
+
+            // Redact hydration context for parity with redacted code
+            Some(crate::hydration::HydrationContext {
+                callee_signatures: ctx
+                    .callee_signatures
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                type_definitions: ctx
+                    .type_definitions
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                callers: ctx.callers.clone(),
+                import_targets: ctx
+                    .import_targets
+                    .iter()
+                    .map(|s| redact::redact_secrets(s))
+                    .collect(),
+                qualified_names: ctx.qualified_names.clone(),
+            })
+        }
+    } else {
+        None
+    };
+
+    // ── 3. Context7 enrichment ──────────────────────────────────────────
+    let import_targets: &[String] = hydration_context
+        .as_ref()
+        .map(|hc| hc.import_targets.as_slice())
+        .unwrap_or(&[]);
+
+    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
+    let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
+        tracing::debug!(reason, "Context7: enrichment skipped");
+        None
+    } else {
+        let project_root = find_project_root(file_path);
+        let mut domain = crate::domain::detect_domain(&project_root);
+        for fw in &pipeline_config.framework_overrides {
+            if !domain.frameworks.contains(fw) {
+                domain.frameworks.push(fw.clone());
+            }
+        }
+        let ctx7_t0 = std::time::Instant::now();
+        let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
+        let policy = crate::enrichment_policy::EnrichmentPolicy {
+            registry: pipeline_config
+                .registry_client
+                .as_ref()
+                .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
+        };
+        let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
+            crate::context_enrichment::enrich_for_review_in_project(
+                &project_root,
+                import_targets,
+                &domain.frameworks,
+                shared.as_ref(),
+                &policy,
+            )
+        } else {
+            let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
+            let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
+            crate::context_enrichment::enrich_for_review_in_project(
+                &project_root,
+                import_targets,
+                &domain.frameworks,
+                &cached,
+                &policy,
+            )
+        };
+        let docs = result.docs;
+        enrichment_metrics = result.metrics;
+        tracing::info!(
+            phase = "context7",
+            duration_ms = ctx7_t0.elapsed().as_millis() as u64,
+            frameworks = domain.frameworks.len(),
+            docs = docs.len(),
+            resolved = enrichment_metrics.context7_resolved,
+            resolve_failed = enrichment_metrics.context7_resolve_failed,
+            query_failed = enrichment_metrics.context7_query_failed,
+            skipped_popular = enrichment_metrics.context7_skipped_popular,
+            budget_reduced = enrichment_metrics.context7_budget_reduced,
+            "phase complete"
+        );
+        if !docs.is_empty() {
+            tracing::debug!(docs_injected = docs.len(), "Context7 docs injected");
+            Some(
+                docs.iter()
+                    .map(|d| {
+                        crate::context_enrichment::format_context_section(std::slice::from_ref(d))
+                    })
+                    .collect(),
+            )
+        } else if domain.frameworks.is_empty() {
+            None
+        } else {
+            anyhow::bail!(
+                "Context7: failed to fetch docs for frameworks {:?}. \
+                 This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
+                domain.frameworks
+            );
+        }
+    };
+
+    // ── 4. Feedback precedent selection ─────────────────────────────────
+    let language: String = if let Some(ast_ctx) = ast {
+        lang_name(ast_ctx.language).to_string()
+    } else {
+        lang_name_from_path(file_path)
+    };
+
+    let shared_index = pipeline_config.feedback_index.clone();
+    let mut local_index = if shared_index.is_none() {
+        if let Some(store_path) = &pipeline_config.feedback_store {
+            let store = crate::feedback::FeedbackStore::new(store_path.clone());
+            Some(if pipeline_config.fast {
+                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
+            } else {
+                crate::feedback_index::FeedbackIndex::build(&store)?
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let precedents = if let Some(ref shared) = shared_index {
+        let mut idx = shared.lock().unwrap();
+        query_feedback_precedents(&mut idx, &file_str, &language, &review_code)
+    } else if let Some(ref mut idx) = local_index {
+        query_feedback_precedents(idx, &file_str, &language, &review_code)
+    } else {
+        Vec::new()
+    };
+
+    // ── 5. Context injection (only when AST is provided) ────────────────
+    let mut context_block: Option<String> = None;
+    let mut context_telemetry: Option<crate::review_log::ContextTelemetry> = None;
+
+    if let Some(ast_ctx) = ast
+        && !pipeline_config.mode.is_prose()
+        && let Some(inj) = pipeline_config.context_injector.as_ref()
+    {
+        let redacted_ctx = hydration_context
+            .as_ref()
+            .expect("hydration_context must be Some when ast is Some and not prose mode");
+        let mut identifiers: Vec<String> = redacted_ctx
+            .callee_signatures
+            .iter()
+            .filter_map(|sig| extract_ident_from_signature(sig))
+            .collect();
+        identifiers.extend(redacted_ctx.import_targets.iter().cloned());
+        identifiers.sort();
+        identifiers.dedup();
+        let text_sample: String = redacted_code.chars().take(400).collect();
+        let structural_names: Vec<String> = {
+            let mut v: Vec<String> = redacted_ctx
+                .qualified_names
+                .iter()
+                .map(|s| redact::redact_secrets(s))
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let req = crate::context::inject::InjectionRequest {
+            file_path: file_str.clone(),
+            language: Some(lang_name(ast_ctx.language).to_string()),
+            identifiers,
+            structural_names,
+            text: text_sample,
+        };
+        let outcome = inj.inject(&req);
+        context_telemetry = Some(outcome.telemetry);
+        context_block = outcome.rendered;
+    }
+
+    Ok(FileContext {
+        redacted_code: review_code,
+        truncation_notice,
+        framework_docs,
+        feedback_precedents: if precedents.is_empty() {
+            None
+        } else {
+            Some(precedents)
+        },
+        hydration_context,
+        context_block,
+        enrichment_metrics,
+        context_telemetry,
+    })
+}
+
 /// Best-effort extraction of an identifier from a hydrated callee signature
 /// string like `fn verify_token(s: &str) -> bool` or
 /// `def verify_token(s: str) -> bool`. Returns `None` for shapes we don't
@@ -1333,7 +1419,11 @@ pub async fn review_source(
     } else {
         parser::parse(source, lang)?
     };
-    review_file(file_path, source, lang, &tree, llm, pipeline_config).await
+    let ast_ctx = AstContext {
+        tree: &tree,
+        language: lang,
+    };
+    review_file(file_path, source, Some(ast_ctx), llm, pipeline_config).await
 }
 
 fn lang_name(lang: Language) -> &'static str {
@@ -1355,273 +1445,6 @@ fn lang_name_from_path(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_lowercase()
-}
-
-/// LLM-only review for files without tree-sitter support.
-/// Skips local AST analysis but still does LLM review, calibration, and auto-calibration.
-pub async fn review_file_llm_only(
-    file_path: &Path,
-    source: &str,
-    llm: Option<&dyn LlmReviewer>,
-    pipeline_config: &PipelineConfig,
-) -> anyhow::Result<FileReviewResult> {
-    let file_str = file_path.to_string_lossy().to_string();
-    let mut all_sources: Vec<Vec<Finding>> = Vec::new();
-    let mut total_usage = crate::llm_client::TokenUsage::default();
-    let mut enrichment_metrics = crate::context_enrichment::EnrichmentMetrics::default();
-
-    // Use pre-built shared index if available (parallel mode), otherwise build locally
-    let shared_index = pipeline_config.feedback_index.clone();
-    let mut local_index = if shared_index.is_none() {
-        if let Some(store_path) = &pipeline_config.feedback_store {
-            let store = crate::feedback::FeedbackStore::new(store_path.clone());
-            // Surface I/O / corrupted-store errors instead of silently
-            // proceeding without precedent injection. The embedder-unavailable
-            // path is already a soft fall-back inside FeedbackIndex::build.
-            Some(if pipeline_config.fast {
-                crate::feedback_index::FeedbackIndex::build_bm25(&store)?
-            } else {
-                crate::feedback_index::FeedbackIndex::build(&store)?
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // No local AST analysis — unsupported language
-
-    // LLM review (if configured)
-    if let Some(reviewer) = llm
-        && !pipeline_config.models.is_empty()
-    {
-        let redacted_code = redact::redact_secrets(source);
-        let (review_code, truncation_notice) =
-            truncate_for_review(&redacted_code, pipeline_config.max_review_lines);
-        let language = lang_name_from_path(file_path);
-
-        // Context7 framework docs (metrics aggregate into the function-scoped var)
-        let framework_docs = if let Some(reason) = context7_skip_reason(pipeline_config) {
-            tracing::debug!(reason, "Context7: enrichment skipped");
-            None
-        } else {
-            let project_root = find_project_root(file_path);
-            let mut domain = crate::domain::detect_domain(&project_root);
-            for fw in &pipeline_config.framework_overrides {
-                if !domain.frameworks.contains(fw) {
-                    domain.frameworks.push(fw.clone());
-                }
-            }
-            let policy = crate::enrichment_policy::EnrichmentPolicy {
-                registry: pipeline_config
-                    .registry_client
-                    .as_ref()
-                    .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
-            };
-            let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
-                crate::context_enrichment::enrich_for_review_in_project(
-                    &project_root,
-                    &[],
-                    &domain.frameworks,
-                    shared.as_ref(),
-                    &policy,
-                )
-            } else {
-                let inner = crate::context_enrichment::Context7HttpFetcher::new()?;
-                let cached = crate::context_enrichment::CachedContextFetcher::new(&inner, 32);
-                crate::context_enrichment::enrich_for_review_in_project(
-                    &project_root,
-                    &[],
-                    &domain.frameworks,
-                    &cached,
-                    &policy,
-                )
-            };
-            let docs = result.docs;
-            enrichment_metrics = result.metrics;
-            if !docs.is_empty() {
-                Some(
-                    docs.iter()
-                        .map(|d| {
-                            crate::context_enrichment::format_context_section(std::slice::from_ref(
-                                d,
-                            ))
-                        })
-                        .collect(),
-                )
-            } else if domain.frameworks.is_empty() {
-                None
-            } else {
-                // skip_context7 unreachable: outer if-let returned None already.
-                anyhow::bail!(
-                    "Context7: failed to fetch docs for frameworks {:?}. \
-                         This degrades review quality. Fix the Context7 connection or use --skip-context7 to proceed without framework docs.",
-                    domain.frameworks
-                );
-            }
-        };
-
-        // Query feedback index for few-shot precedents
-        let precedents = if let Some(ref shared) = shared_index {
-            let mut idx = shared.lock().unwrap();
-            query_feedback_precedents(&mut idx, &file_str, &language, &redacted_code)
-        } else if let Some(ref mut idx) = local_index {
-            query_feedback_precedents(idx, &file_str, &language, &redacted_code)
-        } else {
-            Vec::new()
-        };
-
-        let req = ReviewRequest {
-            file_path: file_str.clone(),
-            language,
-            code: review_code,
-            hydration_context: None,
-            framework_docs,
-            feedback_precedents: if precedents.is_empty() {
-                None
-            } else {
-                Some(precedents)
-            },
-            context_block: None,
-            truncation_notice: truncation_notice.clone(),
-            focus: pipeline_config.focus.clone(),
-            mode: pipeline_config.mode,
-        };
-
-        let prompt = review::build_review_prompt(&req);
-        let sys_prompt = system_prompt_for_mode(pipeline_config.mode);
-        for model in &pipeline_config.models {
-            let _permit = acquire_llm_permit(&pipeline_config.semaphore).await;
-            match reviewer.review(&prompt, model, sys_prompt) {
-                Ok(resp) => {
-                    if let Some(u) = &resp.usage {
-                        total_usage.prompt_tokens += u.prompt_tokens;
-                        total_usage.completion_tokens += u.completion_tokens;
-                        total_usage.cached_tokens += u.cached_tokens;
-                    }
-                    match review::parse_llm_response(&resp.content, model) {
-                        Ok(mut findings) => {
-                            if let Some(ref notice) = truncation_notice {
-                                for f in &mut findings {
-                                    if matches!(f.source, crate::finding::Source::Llm(_)) {
-                                        f.based_on_excerpt = Some(notice.clone());
-                                    }
-                                }
-                            }
-                            all_sources.push(findings);
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to parse {} response: {}", model, e)
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Warning: {} review failed: {}", model, e),
-            }
-        }
-    }
-
-    let merged = merge::merge_findings(
-        all_sources,
-        pipeline_config.similarity_threshold,
-        pipeline_config.models.len(),
-    );
-
-    // Grounding: verify LLM-cited symbols exist in source (skipped for prose reviews)
-    let merged = if pipeline_config.mode.is_prose() {
-        merged
-    } else {
-        let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let grounded = grounding::apply_grounding(merged, source, grounding_disabled, "");
-        let gc = grounding::count_grounding_outcomes(&grounded);
-        tracing::info!(
-            phase = "grounding",
-            verified = gc.verified,
-            verified_elsewhere = gc.verified_elsewhere,
-            symbol_not_found = gc.symbol_not_found,
-            line_out_of_range = gc.line_out_of_range,
-            not_checked = gc.not_checked,
-            "grounding pass complete"
-        );
-        grounded
-    };
-
-    let mut merged = merged;
-    if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-        let repo_root = find_project_root(file_path);
-        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-        let diff_lines: Vec<(u32, u32)> = diff_ranges
-            .iter()
-            .filter(|(path, _)| resolver.matches(path))
-            .flat_map(|(_, ranges)| ranges.clone())
-            .collect();
-        classify_in_diff(&mut merged, &diff_lines);
-    }
-
-    // Calibrate
-    let has_feedback =
-        !pipeline_config.feedback.is_empty() || pipeline_config.feedback_store.is_some();
-    let (final_findings, suppressed_count) = if pipeline_config.calibrate && has_feedback {
-        let _span = tracing::info_span!("phase.calibrate", file = %file_str).entered();
-        let cal_t0 = std::time::Instant::now();
-        let config = pipeline_config.calibrator_config.clone();
-        // Use shared FeedbackIndex (parallel mode) or local index for calibration
-        let cal_result = if let Some(ref shared) = shared_index {
-            let mut idx = shared.lock().unwrap();
-            if !idx.is_empty() {
-                calibrator::calibrate_with_index(merged, &mut idx, &config, &file_str)
-            } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-            }
-        } else if let Some(ref mut index) = local_index {
-            if !index.is_empty() {
-                calibrator::calibrate_with_index(merged, index, &config, &file_str)
-            } else {
-                calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-            }
-        } else {
-            calibrator::calibrate(merged, &pipeline_config.feedback, &config, &file_str)
-        };
-        if cal_result.suppressed > 0 || cal_result.boosted > 0 {
-            tracing::debug!(
-                suppressed = cal_result.suppressed,
-                boosted = cal_result.boosted,
-                feedback_entries = pipeline_config.feedback.len(),
-                "calibrator decision per-file",
-            );
-        }
-
-        write_calibrator_traces(&cal_result.traces, pipeline_config.feedback_store.as_ref());
-        tracing::info!(
-            phase = "calibrate",
-            duration_ms = cal_t0.elapsed().as_millis() as u64,
-            suppressed = cal_result.suppressed,
-            boosted = cal_result.boosted,
-            final_findings = cal_result.findings.len(),
-            "phase complete"
-        );
-
-        (cal_result.findings, cal_result.suppressed)
-    } else {
-        (merged, 0)
-    };
-
-    let mut final_findings = final_findings;
-    for f in &mut final_findings {
-        f.compute_confidence();
-    }
-
-    Ok(FileReviewResult {
-        file_path: file_str,
-        findings: final_findings,
-        usage: total_usage,
-        suppressed: suppressed_count,
-        context_telemetry: None,
-        enrichment_metrics,
-        judge_metrics: JudgeMetrics::default(),
-    })
 }
 
 /// Stamp each finding with `in_diff` based on line-range overlap with changed hunks.
@@ -2257,7 +2080,11 @@ mod tests {
             models,
             ..Default::default()
         };
-        review_file(Path::new("test.rs"), source, lang, &tree, llm, &config)
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: lang,
+        };
+        review_file(Path::new("test.rs"), source, Some(ast_ctx), llm, &config)
             .await
             .unwrap()
     }
@@ -2794,11 +2621,14 @@ mod tests {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .unwrap();
         let tree = parser.parse(source, None).unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Rust,
+        };
         let result = review_file(
             std::path::Path::new("test.rs"),
             source,
-            Language::Rust,
-            &tree,
+            Some(ast_ctx),
             Some(&EmptyReviewer),
             &cfg,
         )
@@ -2962,16 +2792,13 @@ mod tests {
             mode: crate::review_mode::ReviewMode::Plan,
             ..Default::default()
         };
-        let result = review_file(
-            Path::new("test.py"),
-            source,
-            Language::Python,
-            &tree,
-            None,
-            &config,
-        )
-        .await
-        .unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Python,
+        };
+        let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
+            .await
+            .unwrap();
 
         // No findings from LocalAst or Linter("ast-grep") should appear
         for f in &result.findings {
@@ -2997,16 +2824,13 @@ mod tests {
             mode: crate::review_mode::ReviewMode::Code,
             ..Default::default()
         };
-        let result = review_file(
-            Path::new("test.py"),
-            source,
-            Language::Python,
-            &tree,
-            None,
-            &config,
-        )
-        .await
-        .unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Python,
+        };
+        let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
+            .await
+            .unwrap();
 
         assert!(
             result
@@ -3120,5 +2944,115 @@ mod tests {
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, Some(true));
+    }
+
+    #[test]
+    fn ast_context_can_be_constructed() {
+        let source = "fn main() {}";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let _ctx = AstContext {
+            tree: &tree,
+            language: crate::parser::Language::Rust,
+        };
+    }
+
+    #[test]
+    fn file_context_defaults_to_empty() {
+        let ctx = FileContext::default();
+        assert!(ctx.redacted_code.is_empty());
+        assert!(ctx.framework_docs.is_none());
+        assert!(ctx.feedback_precedents.is_none());
+        assert!(ctx.hydration_context.is_none());
+        assert!(ctx.context_block.is_none());
+        assert!(ctx.truncation_notice.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // build_file_context tests (#339 Task 2)
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_redacts_secrets() {
+        let config = PipelineConfig::default();
+        let ctx = build_file_context(
+            std::path::Path::new("test.rs"),
+            "let api_key = \"sk-secret123\";",
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !ctx.redacted_code.contains("sk-secret123"),
+            "FileContext must contain redacted code, got: {}",
+            ctx.redacted_code
+        );
+        assert!(
+            ctx.redacted_code.contains("REDACTED"),
+            "redacted code must replace secrets"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_without_ast_skips_hydration() {
+        let config = PipelineConfig::default();
+        let ctx = build_file_context(
+            std::path::Path::new("test.rs"),
+            "fn main() {}",
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(
+            ctx.hydration_context.is_none(),
+            "no AST means no hydration context"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn build_file_context_truncates_large_source() {
+        let config = PipelineConfig {
+            max_review_lines: 5,
+            ..PipelineConfig::default()
+        };
+        let big_source = (0..20)
+            .map(|i| format!("let x{} = {};", i, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ctx = build_file_context(std::path::Path::new("test.rs"), &big_source, None, &config)
+            .await
+            .unwrap();
+        assert!(
+            ctx.truncation_notice.is_some(),
+            "should have truncation notice"
+        );
+        let lines_in_result = ctx.redacted_code.lines().count();
+        assert!(
+            lines_in_result <= 5,
+            "code must be truncated to max_review_lines, got {} lines",
+            lines_in_result
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn review_file_without_ast_runs_llm_only_path() {
+        let config = PipelineConfig::default();
+        let result = review_file(
+            std::path::Path::new("test.py"),
+            "def foo():\n    eval(input())\n",
+            None, // LLM-only
+            None, // no reviewer
+            &config,
+        )
+        .await
+        .unwrap();
+        // Without LLM reviewer, LLM-only path produces empty findings
+        assert!(result.findings.is_empty());
+        assert_eq!(result.judge_metrics, JudgeMetrics::default());
     }
 }

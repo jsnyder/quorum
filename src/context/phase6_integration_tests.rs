@@ -316,11 +316,14 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
     let source = "fn verify_token(t: &str) -> bool { !t.is_empty() }\n\
                   pub fn check(t: &str) -> bool { verify_token(t) }\n";
     let tree = parser::parse(source, Language::Rust).unwrap();
+    let ast_ctx = crate::pipeline::AstContext {
+        tree: &tree,
+        language: Language::Rust,
+    };
     let result = review_file(
         Path::new("src/auth.rs"),
         source,
-        Language::Rust,
-        &tree,
+        Some(ast_ctx),
         Some(&llm),
         &config,
     )
