@@ -322,20 +322,39 @@ async fn main() -> anyhow::Result<()> {
 
             if want_classic_dim {
                 let log = review_log::ReviewLog::with_storage(storage_handle.clone());
-                let records = match log.load_all() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("error: cannot read reviews log: {e}");
-                        std::process::exit(3);
-                    }
-                };
-                let (mode, slices) = if opts.by_repo {
-                    ("by-repo", dimensions::group_by_repo(&records))
+                let (mode, records, slices) = if opts.by_repo {
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_repo(&records);
+                    ("by-repo", records, slices)
                 } else if opts.by_caller {
-                    ("by-caller", dimensions::group_by_caller(&records))
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_caller(&records);
+                    ("by-caller", records, slices)
                 } else {
                     let n = opts.rolling.unwrap();
-                    ("rolling", dimensions::rolling_window(&records, n, 3))
+                    let window_count = 3usize;
+                    let needed = n.saturating_mul(window_count);
+                    let records = match log.load_recent(needed) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::rolling_window(&records, n, window_count);
+                    ("rolling", records, slices)
                 };
 
                 let out_mode = output::resolve_output_mode(
