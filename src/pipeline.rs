@@ -654,11 +654,15 @@ pub(crate) fn render_precedent_for_few_shot(entry: &crate::feedback::FeedbackEnt
 }
 
 /// Run the full review pipeline on a single file.
+///
+/// When `ast` is `Some`, the full pipeline runs: local AST analysis,
+/// ast-grep rules, judge phase, then LLM review with hydration and
+/// context injection. When `None` (unsupported language), AST-only
+/// phases are skipped and the LLM review proceeds without hydration.
 pub async fn review_file(
     file_path: &Path,
     source: &str,
-    lang: Language,
-    tree: &tree_sitter::Tree,
+    ast: Option<AstContext<'_>>,
     llm: Option<&dyn LlmReviewer>,
     pipeline_config: &PipelineConfig,
 ) -> anyhow::Result<FileReviewResult> {
@@ -692,62 +696,76 @@ pub async fn review_file(
 
     let mut hydration_text = String::new();
 
-    // Source 1: Local AST analysis (skipped for prose reviews)
+    // Derive language string: from AST when available, from file extension otherwise.
+    let lang_str = match &ast {
+        Some(ctx) => lang_name(ctx.language).to_string(),
+        None => lang_name_from_path(file_path),
+    };
+
+    // Source 1: Local AST analysis (skipped for prose reviews and non-AST files)
     let mut local_findings = Vec::new();
-    if !pipeline_config.mode.is_prose() {
-        let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
-        let t0 = std::time::Instant::now();
-        local_findings.extend(analysis::analyze_complexity(
-            tree,
-            source,
-            lang,
-            pipeline_config.complexity_threshold,
-        ));
-        local_findings.extend(analysis::analyze_insecure_patterns(tree, source, lang));
-        tracing::info!(
-            phase = "local_ast",
-            duration_ms = t0.elapsed().as_millis() as u64,
-            findings = local_findings.len(),
-            "phase complete"
-        );
+    let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
+        std::collections::HashMap::new();
+    if let Some(ref ast_ctx) = ast {
+        if !pipeline_config.mode.is_prose() {
+            let _span = tracing::info_span!("phase.local_ast", file = %file_str).entered();
+            let t0 = std::time::Instant::now();
+            local_findings.extend(analysis::analyze_complexity(
+                ast_ctx.tree,
+                source,
+                ast_ctx.language,
+                pipeline_config.complexity_threshold,
+            ));
+            local_findings.extend(analysis::analyze_insecure_patterns(
+                ast_ctx.tree,
+                source,
+                ast_ctx.language,
+            ));
+            tracing::info!(
+                phase = "local_ast",
+                duration_ms = t0.elapsed().as_millis() as u64,
+                findings = local_findings.len(),
+                "phase complete"
+            );
+        }
     }
     all_sources.push(local_findings);
 
-    // Source 2: ast-grep library rules (skipped for prose reviews)
-    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let mut rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata> =
-        std::collections::HashMap::new();
-    if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
-        let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
-        let t0 = std::time::Instant::now();
-        let project_root = find_project_root(file_path);
-        let home_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let (rules, loaded_metadata) = ast_grep::load_rules(&project_root, &home_dir);
-        rule_metadata = loaded_metadata;
-        let mut ag_count = 0;
-        if !rules.is_empty() {
-            let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
-            ag_count = ag_findings.len();
-            if !ag_findings.is_empty() {
-                all_sources.push(ag_findings);
+    // Source 2: ast-grep library rules (skipped for prose reviews and non-AST files)
+    if ast.is_some() {
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !pipeline_config.mode.is_prose() && ast_grep::ext_to_language(ext).is_some() {
+            let _span = tracing::info_span!("phase.ast_grep", file = %file_str).entered();
+            let t0 = std::time::Instant::now();
+            let project_root = find_project_root(file_path);
+            let home_dir = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let (rules, loaded_metadata) = ast_grep::load_rules(&project_root, &home_dir);
+            rule_metadata = loaded_metadata;
+            let mut ag_count = 0;
+            if !rules.is_empty() {
+                let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
+                ag_count = ag_findings.len();
+                if !ag_findings.is_empty() {
+                    all_sources.push(ag_findings);
+                }
             }
+            tracing::info!(
+                phase = "ast_grep",
+                duration_ms = t0.elapsed().as_millis() as u64,
+                rules = rules.len(),
+                findings = ag_count,
+                "phase complete"
+            );
         }
-        tracing::info!(
-            phase = "ast_grep",
-            duration_ms = t0.elapsed().as_millis() as u64,
-            rules = rules.len(),
-            findings = ag_count,
-            "phase complete"
-        );
     }
 
     // Source 2b: Judge speculative AST findings (if enabled).
     // Only runs on ast-grep findings (index 1+), not local AST (index 0).
     let mut judge_metrics = JudgeMetrics::default();
-    if pipeline_config.judge_enabled && !rule_metadata.is_empty() {
+    if ast.is_some() && pipeline_config.judge_enabled && !rule_metadata.is_empty() {
         {
             let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
             let home_dir = std::env::var("HOME")
@@ -804,13 +822,8 @@ pub async fn review_file(
         } else {
             // Build shared file context: redaction, hydration, Context7,
             // feedback precedents, context injection.
-            let ast_ctx = AstContext {
-                tree,
-                language: lang,
-                rule_metadata: rule_metadata.clone(),
-            };
             let file_ctx =
-                build_file_context(file_path, source, Some(&ast_ctx), pipeline_config).await?;
+                build_file_context(file_path, source, ast.as_ref(), pipeline_config).await?;
 
             enrichment_metrics = file_ctx.enrichment_metrics;
             context_telemetry = file_ctx.context_telemetry;
@@ -823,7 +836,7 @@ pub async fn review_file(
 
             let req = ReviewRequest {
                 file_path: file_str.clone(),
-                language: lang_name(lang).to_string(),
+                language: lang_str.clone(),
                 code: file_ctx.redacted_code.clone(),
                 hydration_context: file_ctx.hydration_context.clone(),
                 framework_docs: file_ctx.framework_docs.clone(),
@@ -1022,9 +1035,6 @@ fn render_hydration_for_grounding(ctx: &crate::hydration::HydrationContext) -> S
 /// When `ast` is `Some`, hydration and context injection run against the
 /// parsed tree. When `None` (unsupported language), those phases are skipped
 /// and the import list passed to Context7 enrichment is empty.
-///
-/// This function is additive: nothing calls it yet. Tasks 3-5 will wire
-/// callers.
 pub(crate) async fn build_file_context(
     file_path: &std::path::Path,
     source: &str,
@@ -1412,7 +1422,12 @@ pub async fn review_source(
     } else {
         parser::parse(source, lang)?
     };
-    review_file(file_path, source, lang, &tree, llm, pipeline_config).await
+    let ast_ctx = AstContext {
+        tree: &tree,
+        language: lang,
+        rule_metadata: std::collections::HashMap::new(),
+    };
+    review_file(file_path, source, Some(ast_ctx), llm, pipeline_config).await
 }
 
 fn lang_name(lang: Language) -> &'static str {
@@ -2336,7 +2351,12 @@ mod tests {
             models,
             ..Default::default()
         };
-        review_file(Path::new("test.rs"), source, lang, &tree, llm, &config)
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: lang,
+            rule_metadata: std::collections::HashMap::new(),
+        };
+        review_file(Path::new("test.rs"), source, Some(ast_ctx), llm, &config)
             .await
             .unwrap()
     }
@@ -2873,11 +2893,15 @@ mod tests {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .unwrap();
         let tree = parser.parse(source, None).unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Rust,
+            rule_metadata: std::collections::HashMap::new(),
+        };
         let result = review_file(
             std::path::Path::new("test.rs"),
             source,
-            Language::Rust,
-            &tree,
+            Some(ast_ctx),
             Some(&EmptyReviewer),
             &cfg,
         )
@@ -3041,16 +3065,14 @@ mod tests {
             mode: crate::review_mode::ReviewMode::Plan,
             ..Default::default()
         };
-        let result = review_file(
-            Path::new("test.py"),
-            source,
-            Language::Python,
-            &tree,
-            None,
-            &config,
-        )
-        .await
-        .unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Python,
+            rule_metadata: std::collections::HashMap::new(),
+        };
+        let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
+            .await
+            .unwrap();
 
         // No findings from LocalAst or Linter("ast-grep") should appear
         for f in &result.findings {
@@ -3076,16 +3098,14 @@ mod tests {
             mode: crate::review_mode::ReviewMode::Code,
             ..Default::default()
         };
-        let result = review_file(
-            Path::new("test.py"),
-            source,
-            Language::Python,
-            &tree,
-            None,
-            &config,
-        )
-        .await
-        .unwrap();
+        let ast_ctx = AstContext {
+            tree: &tree,
+            language: Language::Python,
+            rule_metadata: std::collections::HashMap::new(),
+        };
+        let result = review_file(Path::new("test.py"), source, Some(ast_ctx), None, &config)
+            .await
+            .unwrap();
 
         assert!(
             result
