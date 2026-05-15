@@ -137,6 +137,26 @@ pub struct JudgeMetrics {
     pub latency_ms: u64,
 }
 
+/// Borrowed AST state threaded through the review pipeline for a single file.
+pub struct AstContext<'a> {
+    pub tree: &'a tree_sitter::Tree,
+    pub language: crate::parser::Language,
+    pub rule_metadata: std::collections::HashMap<String, crate::ast_grep::RuleMetadata>,
+}
+
+/// Owned, prepared file content and enrichment data ready for LLM prompt assembly.
+#[derive(Default)]
+pub struct FileContext {
+    pub redacted_code: String,
+    pub truncation_notice: Option<String>,
+    pub framework_docs: Option<Vec<String>>,
+    pub feedback_precedents: Option<Vec<String>>,
+    pub hydration_context: Option<crate::hydration::HydrationContext>,
+    pub context_block: Option<String>,
+    pub enrichment_metrics: crate::context_enrichment::EnrichmentMetrics,
+    pub context_telemetry: Option<crate::review_log::ContextTelemetry>,
+}
+
 pub struct PipelineConfig {
     pub complexity_threshold: u32,
     pub similarity_threshold: f64,
@@ -3120,5 +3140,33 @@ mod tests {
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, Some(true));
+    }
+
+    #[test]
+    fn ast_context_can_be_constructed() {
+        use crate::ast_grep::RuleMetadata;
+        use std::collections::HashMap;
+
+        let source = "fn main() {}";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = AstContext {
+            tree: &tree,
+            language: crate::parser::Language::Rust,
+            rule_metadata: HashMap::new(),
+        };
+        assert!(ctx.rule_metadata.is_empty());
+    }
+
+    #[test]
+    fn file_context_defaults_to_empty() {
+        let ctx = FileContext::default();
+        assert!(ctx.redacted_code.is_empty());
+        assert!(ctx.framework_docs.is_none());
+        assert!(ctx.feedback_precedents.is_none());
+        assert!(ctx.hydration_context.is_none());
+        assert!(ctx.context_block.is_none());
+        assert!(ctx.truncation_notice.is_none());
     }
 }
