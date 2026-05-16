@@ -2409,6 +2409,7 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                 } else {
                     result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64
                 };
+                let lift = result.pr_auc - result.baseline_auc;
                 eprintln!("\nWeight learning ({} samples):", features.len());
                 eprintln!(
                     "  score={:.2}  word_lor={:.2}  family_fp_inv={:.2}  language_fp_inv={:.2}",
@@ -2418,7 +2419,9 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                     result.weights.language_fp_inv,
                 );
                 eprintln!("  PR-AUC (full):     {:.4}", result.pr_auc);
+                eprintln!("  PR-AUC (baseline): {:.4}", result.baseline_auc);
                 eprintln!("  PR-AUC (5-fold):   {:.4}", mean_cv_auc);
+                eprintln!("  Lift over baseline: {:.4}", lift);
                 eprintln!(
                     "  Fold stability:    {}",
                     if result.stable {
@@ -2427,9 +2430,13 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                         "UNSTABLE (fold weights diverge >20%)"
                     }
                 );
-                if result.stable {
+                let min_lift = 0.005;
+                if lift < min_lift {
+                    eprintln!("  -> No improvement over baseline (lift < {min_lift})");
+                } else if result.stable {
                     model.weights = result.weights;
                     model.meta.learned_weights = Some(true);
+                    eprintln!("  -> Weights applied to model");
                 } else {
                     eprintln!("  -> Using hardcoded weights (unstable folds)");
                 }

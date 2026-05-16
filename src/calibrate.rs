@@ -1164,6 +1164,7 @@ const WEIGHT_STABILITY_TOLERANCE: f64 = 0.20;
 pub struct LearnedWeights {
     pub weights: ScoreWeights,
     pub pr_auc: f64,
+    pub baseline_auc: f64,
     pub stable: bool,
     pub fold_aucs: Vec<f64>,
 }
@@ -1181,6 +1182,10 @@ pub fn learn_weights(
         return None;
     }
 
+    // Baseline: PR-AUC of trivial classifier (constant score, all samples tied)
+    let baseline_scored: Vec<(f64, bool)> = features.iter().map(|(_, l)| (0.0, *l)).collect();
+    let baseline_auc = metrics::pr_auc(&baseline_scored);
+
     let score_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
     let word_lor_grid: &[f64] = &[0.0, 0.5, 1.0, 1.5, 2.0, 3.0];
     let family_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
@@ -1193,6 +1198,7 @@ pub fn learn_weights(
         return Some(LearnedWeights {
             weights: full_best.0,
             pr_auc: full_best.1,
+            baseline_auc,
             stable: true,
             fold_aucs: vec![full_best.1],
         });
@@ -1236,6 +1242,7 @@ pub fn learn_weights(
     Some(LearnedWeights {
         weights: full_best.0,
         pr_auc: full_best.1,
+        baseline_auc,
         stable,
         fold_aucs,
     })
@@ -1260,6 +1267,9 @@ fn grid_search_best(
         for &w in word_lor_grid {
             for &f in family_grid {
                 for &l in lang_grid {
+                    if s == 0.0 && w == 0.0 && f == 0.0 && l == 0.0 {
+                        continue;
+                    }
                     let weights = ScoreWeights {
                         score: s,
                         word_lor: w,
