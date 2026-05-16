@@ -191,15 +191,16 @@ Work through these in order. The first match wins.
 
 | Scenario | Verdict | Flags | Why |
 |----------|---------|-------|-----|
-| Real bug, you file an issue for it | `fp` | `--fp-kind out-of-scope --fp-tracked-in "issue #123" --in-diff false` | Suppresses this pattern in diff-scoped reviews (it's noise in that context). The issue tracks the real fix. |
+| Real bug, you file an issue for it | `tp` | `--in-diff false --reason "Filed as issue #123"` | Teaches the calibrator this pattern catches real bugs (0.7x weight for out-of-diff). The issue tracks the real fix. |
 | Real bug, not worth filing | Do not record | — | No feedback. Don't pollute the calibrator with findings you can't act on. |
 | Pre-existing, already tracked | Do not record | — | Skip silently. |
 
 **Key principles:**
-- `tp` means "I want to see MORE findings like this." Use for real bugs in your diff.
-- `fp` means "I want to see FEWER findings like this." Use for wrong findings AND for real-but-out-of-scope findings (they're noise in diff-scoped reviews).
-- `fp --fp-kind out-of-scope` is the correct way to handle a real bug outside your diff that you filed as an issue. It's not dishonest — it tells the calibrator "this finding is correct but not useful in this review context."
-- Never use `wontfix` — it's inert. Use `tp` (real, want more) or `fp --fp-kind out-of-scope` (real, want fewer in diff-scoped reviews).
+- `tp` means "I want to see MORE findings like this." Use for all real bugs — in-diff or out-of-diff.
+- `fp` means "I want to see FEWER findings like this." Use only for findings that are genuinely wrong.
+- For real bugs outside your diff, use `tp --in-diff false`. This teaches the calibrator the pattern is valid (at 0.7x weight). Do NOT use `fp --fp-kind out-of-scope` — out-of-scope FPs are excluded from the calibrator precedent pool and have zero learning effect.
+- `fp --fp-kind out-of-scope --fp-tracked-in "issue #N"` is metadata-only bookkeeping. It records that you filed a follow-up but teaches the calibrator nothing. Use it alongside `tp --in-diff false` if you want the tracking link, or skip it.
+- Never use `wontfix` — it's inert. Use `tp` (real, want more) or `fp` (wrong, want fewer).
 - `partial` is inert metadata — use it only when severity is the issue, not correctness.
 
 ### Useful feedback flags
@@ -220,7 +221,7 @@ When recording an `fp`, classify *why* it was wrong via `--fp-kind` (CLI, kebab-
 | `pattern-overgeneralization` | `pattern_overgeneralization` | 120d | ~83d | Pattern matched but context makes it benign. Pass `--fp-discriminator` (or MCP nested `discriminator_hint`) to teach the LLM the distinction |
 | `trust-model` | `trust_model_assumption` | 40d | ~28d | Wrong threat model — decays 3× faster because trust models evolve |
 | `compensating-control` | `compensating_control` | 120d | ~83d | Real pattern, mitigated upstream. **Requires** `--fp-reference <file:line\|PR\|URL>` (CLI) or nested `{reference: "..."}` (MCP) |
-| `out-of-scope` | `out_of_scope` | 120d | ~83d | Pre-existing in diff-scoped review. Optional `--fp-tracked-in` (CLI) / `tracked_in` (MCP) records follow-up link |
+| `out-of-scope` | `out_of_scope` | 120d | ~83d | Pre-existing in diff-scoped review. Metadata-only — excluded from calibrator precedent pool. Optional `--fp-tracked-in` (CLI) / `tracked_in` (MCP) records follow-up link |
 
 ```bash
 # CLI
@@ -258,7 +259,7 @@ The highest-value feedback is `tp` on real bugs you fixed (the calibrator learns
 
 - **Don't use `wontfix`** — it's inert. If the issue is real, use `tp`. If it's not real, use `fp`.
 - **Don't skip feedback for in-diff findings** — every untriaged finding is a missed learning opportunity for the calibrator.
-- **Don't record feedback for pre-existing findings you can't act on** — it's noise. If you file an issue, use `fp --fp-kind out-of-scope --fp-tracked-in <issue>` instead.
+- **Don't record feedback for pre-existing findings you can't act on** — it's noise. If you file an issue, record `tp --in-diff false --reason "Filed as issue #N"` so the calibrator learns the pattern is valid.
 - **Don't record `fp` for intentional patterns** (like disabled TLS for self-signed certs) unless you want them suppressed across ALL projects.
 
 ## Context Injection (v0.16.0+)
@@ -408,7 +409,7 @@ Use the **Decision tree by scenario** (above) to pick the right verdict for each
 - False positives: record `fp` with `--fp-kind` and `--reason`
 
 **Pre-existing** (unrelated to this branch):
-- Real bugs worth filing: file GitHub issue with `gh issue create` citing file:line + finding text, then record `fp --fp-kind out-of-scope --fp-tracked-in "issue #N" --in-diff false`
+- Real bugs worth filing: file GitHub issue with `gh issue create` citing file:line + finding text, then record `tp --in-diff false --reason "Filed as issue #N"` (teaches calibrator the pattern is valid at 0.7x weight)
 - Not worth filing: do not record feedback. Do NOT fix in this branch (scope discipline).
 
 ### 3. Re-run until clean
