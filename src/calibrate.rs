@@ -1989,6 +1989,280 @@ pub fn extract_joined_samples(
     samples
 }
 
+// ---------------------------------------------------------------------------
+// Logistic calibrator: cross-validated training pipeline
+// ---------------------------------------------------------------------------
+
+/// Minimum total samples required for logistic model training.
+const MIN_SAMPLES_FOR_LOGISTIC: usize = 200;
+
+/// Minimum count of each class (FP and TP) required.
+const MIN_CLASS_COUNT: usize = 30;
+
+/// L2 regularization strengths to search over.
+const LAMBDA_GRID: &[f64] = &[0.01, 0.1, 1.0, 10.0];
+
+/// Maximum iterations for logistic regression fitting.
+const MAX_LOGISTIC_ITER: usize = 500;
+
+/// Result of logistic calibrator training.
+#[derive(Debug, Clone)]
+pub struct LogisticResult {
+    pub selected_features: Vec<usize>,
+    pub selected_feature_names: Vec<String>,
+    pub coefficients: Vec<f64>,
+    pub intercept: f64,
+    pub feature_means: Vec<f64>,
+    pub feature_stddevs: Vec<f64>,
+    pub suppress_threshold: f64,
+    pub boost_threshold: f64,
+    pub ap_score: f64,
+    pub fp_recall_at_99_tp_recall: f64,
+    pub baseline_ap: f64,
+    pub n_samples: usize,
+    pub n_fp: usize,
+}
+
+/// Assigns each sample to a fold based on its family (group).
+/// Families are assigned to folds round-robin in order of first appearance.
+fn group_k_fold(families: &[&str], k: usize) -> Vec<usize> {
+    let mut family_to_fold: HashMap<&str, usize> = HashMap::new();
+    let mut next_fold = 0usize;
+    families
+        .iter()
+        .map(|f| {
+            *family_to_fold.entry(f).or_insert_with(|| {
+                let fold = next_fold % k;
+                next_fold += 1;
+                fold
+            })
+        })
+        .collect()
+}
+
+/// Train a logistic model via cross-validation with per-fold feature screening.
+///
+/// Returns `None` when:
+/// - Insufficient samples (< 200)
+/// - Class imbalance (min class < 30)
+/// - Fewer than 2 features pass consensus selection
+/// - Model fails to beat baseline AP by >= 0.02
+pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<LogisticResult> {
+    let n = samples.len();
+
+    // Safety gate: minimum sample count
+    if n < MIN_SAMPLES_FOR_LOGISTIC {
+        return None;
+    }
+
+    let n_fp = samples.iter().filter(|s| s.is_fp).count();
+    let n_tp = n - n_fp;
+
+    // Safety gate: minimum class count
+    if n_fp < MIN_CLASS_COUNT || n_tp < MIN_CLASS_COUNT {
+        return None;
+    }
+
+    // Baseline AP: FP prevalence (trivial classifier)
+    let baseline_ap = n_fp as f64 / n as f64;
+
+    // GroupKFold assignment by family
+    let families: Vec<&str> = samples.iter().map(|s| s.family.as_str()).collect();
+    let fold_assignments = group_k_fold(&families, k_folds);
+
+    // Per-fold tracking
+    let mut all_oof_predictions: Vec<(f64, bool)> = vec![(0.0, false); n];
+    let mut oof_filled = vec![false; n];
+    let mut fold_selected_features: Vec<Vec<usize>> = Vec::with_capacity(k_folds);
+
+    for fold_idx in 0..k_folds {
+        // Split into train/val by fold assignment
+        let train_indices: Vec<usize> = (0..n)
+            .filter(|&i| fold_assignments[i] != fold_idx)
+            .collect();
+        let val_indices: Vec<usize> = (0..n)
+            .filter(|&i| fold_assignments[i] == fold_idx)
+            .collect();
+
+        if val_indices.is_empty() || train_indices.is_empty() {
+            continue;
+        }
+
+        // Compute FoldLocalStats from training samples
+        let train_refs: Vec<&JoinedSample> = train_indices.iter().map(|&i| &samples[i]).collect();
+        let stats = compute_fold_local_stats(&train_refs);
+
+        // Extract expanded features for train and val
+        let train_expanded: Vec<(ExpandedFeatures, bool)> = train_indices
+            .iter()
+            .map(|&i| extract_single_expanded(&samples[i], &stats))
+            .collect();
+        let val_expanded: Vec<(ExpandedFeatures, bool)> = val_indices
+            .iter()
+            .map(|&i| extract_single_expanded(&samples[i], &stats))
+            .collect();
+
+        // Univariate screen on train features
+        let selected = univariate_screen(&train_expanded, baseline_ap);
+
+        // If < 2 features selected, this fold cannot proceed
+        if selected.len() < 2 {
+            return None;
+        }
+
+        fold_selected_features.push(selected.clone());
+
+        // Build feature matrices (only selected columns)
+        let train_x: Vec<Vec<f64>> = train_expanded
+            .iter()
+            .map(|(f, _)| {
+                let full = f.to_vec();
+                selected.iter().map(|&idx| full[idx]).collect()
+            })
+            .collect();
+        let train_y: Vec<bool> = train_expanded.iter().map(|(_, label)| *label).collect();
+
+        let val_x: Vec<Vec<f64>> = val_expanded
+            .iter()
+            .map(|(f, _)| {
+                let full = f.to_vec();
+                selected.iter().map(|&idx| full[idx]).collect()
+            })
+            .collect();
+
+        // Lambda grid search
+        let mut best_lambda = LAMBDA_GRID[0];
+        let mut best_ap = f64::NEG_INFINITY;
+
+        for &lambda in LAMBDA_GRID {
+            let model = crate::logistic::fit(&train_x, &train_y, lambda, MAX_LOGISTIC_ITER);
+            let val_preds = model.predict(&val_x);
+            let val_scored: Vec<(f64, bool)> = val_preds
+                .into_iter()
+                .zip(val_expanded.iter().map(|(_, label)| *label))
+                .collect();
+            let ap = crate::metrics::average_precision_stepwise(&val_scored);
+            if ap > best_ap {
+                best_ap = ap;
+                best_lambda = lambda;
+            }
+        }
+
+        // Refit with best lambda, produce OOF predictions for val indices
+        let best_model =
+            crate::logistic::fit(&train_x, &train_y, best_lambda, MAX_LOGISTIC_ITER);
+        let oof_preds = best_model.predict(&val_x);
+
+        for (local_idx, &global_idx) in val_indices.iter().enumerate() {
+            all_oof_predictions[global_idx] = (oof_preds[local_idx], val_expanded[local_idx].1);
+            oof_filled[global_idx] = true;
+        }
+    }
+
+    // Consensus feature selection: feature must be selected in >= ceil(k_folds/2 + 1) folds
+    let consensus_threshold = k_folds / 2 + 1;
+    let n_features = ExpandedFeatures::feature_names().len();
+    let mut feature_vote_count = vec![0usize; n_features];
+    for fold_features in &fold_selected_features {
+        for &feat_idx in fold_features {
+            feature_vote_count[feat_idx] += 1;
+        }
+    }
+    let consensus_features: Vec<usize> = (0..n_features)
+        .filter(|&i| feature_vote_count[i] >= consensus_threshold)
+        .collect();
+
+    if consensus_features.len() < 2 {
+        return None;
+    }
+
+    // Aggregated OOF metrics (only use filled slots)
+    let filled_predictions: Vec<(f64, bool)> = all_oof_predictions
+        .iter()
+        .zip(oof_filled.iter())
+        .filter(|(_, filled)| **filled)
+        .map(|(pred, _)| *pred)
+        .collect();
+
+    let ap_score = crate::metrics::average_precision_stepwise(&filled_predictions);
+    let fp_recall = crate::metrics::fp_recall_at_tp_recall(&filled_predictions, 0.99);
+
+    // If AP does not beat baseline by at least 0.02, return None
+    if ap_score <= baseline_ap + 0.02 {
+        return None;
+    }
+
+    // Production model: retrain on 100% of data with consensus features
+    let all_refs: Vec<&JoinedSample> = samples.iter().collect();
+    let all_stats = compute_fold_local_stats(&all_refs);
+    let all_expanded: Vec<(ExpandedFeatures, bool)> = samples
+        .iter()
+        .map(|s| extract_single_expanded(s, &all_stats))
+        .collect();
+
+    let prod_x: Vec<Vec<f64>> = all_expanded
+        .iter()
+        .map(|(f, _)| {
+            let full = f.to_vec();
+            consensus_features.iter().map(|&idx| full[idx]).collect()
+        })
+        .collect();
+    let prod_y: Vec<bool> = all_expanded.iter().map(|(_, label)| *label).collect();
+
+    let prod_model = crate::logistic::fit(&prod_x, &prod_y, 1.0, MAX_LOGISTIC_ITER);
+
+    // Threshold selection from production model predictions
+    let prod_predictions = prod_model.predict(&prod_x);
+
+    // Separate predictions by class
+    let mut tp_predictions: Vec<f64> = prod_predictions
+        .iter()
+        .zip(prod_y.iter())
+        .filter(|(_, is_fp)| !**is_fp)
+        .map(|(pred, _)| *pred)
+        .collect();
+    let mut fp_predictions: Vec<f64> = prod_predictions
+        .iter()
+        .zip(prod_y.iter())
+        .filter(|(_, is_fp)| **is_fp)
+        .map(|(pred, _)| *pred)
+        .collect();
+
+    // Suppress threshold: sort TP predictions descending, pick at ceil(n_tp * 0.01)
+    // This ensures 99% of TPs have prediction below the threshold (safe from suppression)
+    tp_predictions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let suppress_idx = ((n_tp as f64 * 0.01).ceil() as usize).min(tp_predictions.len() - 1);
+    let suppress_threshold = tp_predictions[suppress_idx];
+
+    // Boost threshold: sort FP predictions ascending, pick at ceil(n_fp * 0.05)
+    // This ensures 95% of FPs have prediction above the threshold
+    fp_predictions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let boost_idx = ((n_fp as f64 * 0.05).ceil() as usize).min(fp_predictions.len() - 1);
+    let boost_threshold = fp_predictions[boost_idx];
+
+    let feature_names = ExpandedFeatures::feature_names();
+    let selected_feature_names: Vec<String> = consensus_features
+        .iter()
+        .map(|&i| feature_names[i].to_string())
+        .collect();
+
+    Some(LogisticResult {
+        selected_features: consensus_features,
+        selected_feature_names,
+        coefficients: prod_model.coefficients,
+        intercept: prod_model.intercept,
+        feature_means: prod_model.feature_means,
+        feature_stddevs: prod_model.feature_stddevs,
+        suppress_threshold,
+        boost_threshold,
+        ap_score,
+        fp_recall_at_99_tp_recall: fp_recall,
+        baseline_ap,
+        n_samples: n,
+        n_fp,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4084,5 +4358,134 @@ mod tests {
         let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].family, "dangerous pattern");
+    }
+
+    // --- learn_logistic tests ---
+
+    #[test]
+    fn learn_logistic_returns_none_below_min_samples() {
+        let samples: Vec<JoinedSample> = (0..50)
+            .map(|i| JoinedSample {
+                title: format!("finding {}", i),
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 1.0,
+                fp_weight: 0.5,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.5,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 10,
+                family: format!("family_{}", i % 5),
+            })
+            .collect();
+        assert!(learn_logistic(&samples, 5).is_none());
+    }
+
+    #[test]
+    fn learn_logistic_returns_none_class_imbalance() {
+        // 200 samples but only 5 FP (below MIN_CLASS_COUNT=30)
+        let samples: Vec<JoinedSample> = (0..200)
+            .map(|i| JoinedSample {
+                title: format!("finding {}", i),
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 1.0,
+                fp_weight: 0.5,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.5,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 5, // only 5 FP
+                family: format!("family_{}", i % 20),
+            })
+            .collect();
+        assert!(learn_logistic(&samples, 5).is_none());
+    }
+
+    #[test]
+    fn learn_logistic_on_separable_synthetic_data() {
+        // 300 samples with clear signal in tp_weight/fp_weight
+        let samples: Vec<JoinedSample> = (0..300)
+            .map(|i| {
+                let is_fp = i < 60; // 20% FP
+                JoinedSample {
+                    title: if is_fp {
+                        "bad pattern unwrap".to_string()
+                    } else {
+                        "good error handling code".to_string()
+                    },
+                    category: if is_fp {
+                        "style".to_string()
+                    } else {
+                        "correctness".to_string()
+                    },
+                    severity: "medium".to_string(),
+                    model: "gpt-5.4".to_string(),
+                    tp_weight: if is_fp { 0.1 } else { 2.5 },
+                    fp_weight: if is_fp { 2.5 } else { 0.1 },
+                    soft_fp_weight: if is_fp { 1.5 } else { 0.0 },
+                    full_suppress_weight: if is_fp { 2.5 } else { 0.1 },
+                    wontfix_weight: 0.0,
+                    precedent_count: if is_fp { 0 } else { 4 },
+                    max_similarity: if is_fp { 0.3 } else { 0.85 },
+                    mean_similarity: if is_fp { 0.2 } else { 0.75 },
+                    is_fp,
+                    family: format!("family_{}", i % 30),
+                }
+            })
+            .collect();
+
+        let result = learn_logistic(&samples, 5);
+        assert!(result.is_some(), "Should succeed on well-separated data");
+        let r = result.unwrap();
+        assert!(
+            r.ap_score > r.baseline_ap + 0.02,
+            "AP {} should beat baseline {} + 0.02",
+            r.ap_score,
+            r.baseline_ap
+        );
+        assert!(
+            r.selected_feature_names.len() >= 2,
+            "Should select at least 2 features"
+        );
+        assert_eq!(r.n_samples, 300);
+        assert_eq!(r.n_fp, 60);
+        assert!(
+            r.suppress_threshold < r.boost_threshold,
+            "suppress {} should be < boost {} for well-separated data (suppress = 99th pctl TP P(FP), boost = 5th pctl FP P(FP))",
+            r.suppress_threshold,
+            r.boost_threshold
+        );
+        assert!(r.coefficients.len() == r.selected_features.len());
+        assert!(r.feature_means.len() == r.selected_features.len());
+    }
+
+    #[test]
+    fn group_k_fold_same_family_same_fold() {
+        let families = vec!["a", "a", "b", "b", "c", "c", "a", "b"];
+        let folds = group_k_fold(&families, 3);
+        // All "a" should be in the same fold
+        let a_folds: Vec<usize> = families
+            .iter()
+            .zip(folds.iter())
+            .filter(|(f, _)| **f == "a")
+            .map(|(_, fold)| *fold)
+            .collect();
+        assert!(a_folds.iter().all(|f| *f == a_folds[0]));
+        // All "b" should be in the same fold
+        let b_folds: Vec<usize> = families
+            .iter()
+            .zip(folds.iter())
+            .filter(|(f, _)| **f == "b")
+            .map(|(_, fold)| *fold)
+            .collect();
+        assert!(b_folds.iter().all(|f| *f == b_folds[0]));
     }
 }
