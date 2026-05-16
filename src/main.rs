@@ -2375,6 +2375,8 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     eprintln!("\nJoin strategy breakdown:");
     eprintln!("  exact (raw):        {}", join_stats.exact_raw);
     eprintln!("  exact (normalized): {}", join_stats.exact_normalized);
+    eprintln!("  path (normalized):  {}", join_stats.path_normalized);
+    eprintln!("  suffix matched:     {}", join_stats.suffix_matched);
     eprintln!("  fuzzy (same-file):  {}", join_stats.fuzzy_same_file);
     eprintln!("  title-only (raw):   {}", join_stats.raw_title_only);
     eprintln!("  title-only (norm):  {}", join_stats.normalized_title_only);

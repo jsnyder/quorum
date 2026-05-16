@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::calibrator_model::{CalibratorModel, ModelMeta, ScoreWeights};
+use crate::file_util::{normalize_file_path_deep, path_suffix_eq};
 use crate::metrics;
 use crate::threshold_config::{PathThreshold, ThresholdConfig};
 
@@ -161,6 +162,8 @@ const MIN_MINORITY_CLASS: usize = 10;
 pub struct JoinStats {
     pub exact_raw: usize,
     pub exact_normalized: usize,
+    pub path_normalized: usize,
+    pub suffix_matched: usize,
     pub fuzzy_same_file: usize,
     pub raw_title_only: usize,
     pub normalized_title_only: usize,
@@ -213,8 +216,15 @@ pub fn join_feedback_and_traces_with_options(
     let mut norm_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
     let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
 
+    // Tier 2.5: deep-normalized path (norm_title, deep_norm_path) — #307
+    let mut deep_path_map: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    let mut deep_path_ambiguous: HashSet<(String, String)> = HashSet::new();
+
     // Tier 3: fuzzy same-file: file_path -> Vec<(norm_title, weights)>
     let mut file_traces: HashMap<String, Vec<(String, (f64, f64))>> = HashMap::new();
+
+    // Tier 3.5: suffix index — filename -> Vec<(deep_norm_path, norm_title, weights)> — #307
+    let mut suffix_index: HashMap<String, Vec<(String, String, (f64, f64))>> = HashMap::new();
 
     // Tier 4: normalized title-only (for traces without file_path)
     let mut norm_title_only: HashMap<String, (f64, f64)> = HashMap::new();
@@ -237,6 +247,7 @@ pub fn join_feedback_and_traces_with_options(
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
 
         if fp.is_empty() {
             // Title-only trace (legacy, no file_path)
@@ -290,12 +301,36 @@ pub fn join_feedback_and_traces_with_options(
                     }
                 }
 
+                // Tier 2.5: deep-normalized path (#307)
+                if !norm.is_empty() && !deep_fp.is_empty() {
+                    let deep_key = (norm.clone(), deep_fp.clone());
+                    match deep_path_map.entry(deep_key.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            deep_path_ambiguous.insert(deep_key);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert((tp_w, fp_w));
+                        }
+                    }
+                }
+
                 // Tier 3: file -> normalized traces for fuzzy
                 if !norm.is_empty() {
                     file_traces
                         .entry(fp)
                         .or_default()
-                        .push((norm, (tp_w, fp_w)));
+                        .push((norm.clone(), (tp_w, fp_w)));
+                }
+
+                // Tier 3.5: suffix index (#307)
+                if !norm.is_empty() && !deep_fp.is_empty() {
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
+                    if !filename.is_empty() {
+                        suffix_index
+                            .entry(filename)
+                            .or_default()
+                            .push((deep_fp, norm, (tp_w, fp_w)));
+                    }
                 }
             }
         }
@@ -312,6 +347,9 @@ pub fn join_feedback_and_traces_with_options(
     }
     for key in &norm_ambiguous {
         norm_map.remove(key);
+    }
+    for key in &deep_path_ambiguous {
+        deep_path_map.remove(key);
     }
     for key in &raw_title_only_ambiguous {
         raw_title_only.remove(key);
@@ -344,6 +382,7 @@ pub fn join_feedback_and_traces_with_options(
         }
         let fp = f["file_path"].as_str().unwrap_or("").to_string();
         let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
 
         // Tier 1: raw exact (title, file_path)
         if let Some(weights) = raw_map.get(&(title.clone(), fp.clone()))
@@ -360,6 +399,17 @@ pub fn join_feedback_and_traces_with_options(
             && push_sample(&mut samples, weights, is_positive)
         {
             stats.exact_normalized += 1;
+            continue;
+        }
+
+        // Tier 2.5: deep-normalized path (norm_title, deep_norm_path) -- #307
+        if !disable_fuzzy
+            && !norm.is_empty()
+            && !deep_fp.is_empty()
+            && let Some(weights) = deep_path_map.get(&(norm.clone(), deep_fp.clone()))
+            && push_sample(&mut samples, weights, is_positive)
+        {
+            stats.path_normalized += 1;
             continue;
         }
 
@@ -403,6 +453,26 @@ pub fn join_feedback_and_traces_with_options(
             }
         }
 
+        // Tier 3.5: suffix match -- catches absolute vs relative paths (#307)
+        if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+            let filename = deep_fp.rsplit('/').next().unwrap_or("");
+            if let Some(candidates) = suffix_index.get(filename) {
+                let matches: Vec<&(f64, f64)> = candidates
+                    .iter()
+                    .filter(|(cand_path, cand_norm, _)| {
+                        *cand_norm == norm && path_suffix_eq(cand_path, &deep_fp)
+                    })
+                    .map(|(_, _, w)| w)
+                    .collect();
+                if matches.len() == 1
+                    && push_sample(&mut samples, matches[0], is_positive)
+                {
+                    stats.suffix_matched += 1;
+                    continue;
+                }
+            }
+        }
+
         // Title-only fallback (raw first, then normalized -- normalized skipped when fuzzy disabled)
         if let Some(weights) = raw_title_only.get(&title)
             && push_sample(&mut samples, weights, is_positive)
@@ -429,6 +499,8 @@ pub fn join_feedback_and_traces_with_options(
     tracing::info!(
         exact_raw = stats.exact_raw,
         exact_normalized = stats.exact_normalized,
+        path_normalized = stats.path_normalized,
+        suffix_matched = stats.suffix_matched,
         fuzzy_same_file = stats.fuzzy_same_file,
         raw_title_only = stats.raw_title_only,
         normalized_title_only = stats.normalized_title_only,
@@ -812,7 +884,10 @@ pub fn rescore_samples_with_model(
     let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
     let mut norm_map: HashMap<(String, String), TraceInfo> = HashMap::new();
     let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut deep_path_map: HashMap<(String, String), TraceInfo> = HashMap::new();
+    let mut deep_path_ambiguous: HashSet<(String, String)> = HashSet::new();
     let mut file_traces: HashMap<String, Vec<(String, TraceInfo)>> = HashMap::new();
+    let mut suffix_index: HashMap<String, Vec<(String, String, TraceInfo)>> = HashMap::new();
     let mut norm_title_only: HashMap<String, TraceInfo> = HashMap::new();
     let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
     let mut raw_title_only: HashMap<String, TraceInfo> = HashMap::new();
@@ -829,6 +904,7 @@ pub fn rescore_samples_with_model(
         let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
         let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
         let info = TraceInfo {
             tp_weight: tp_w,
             fp_weight: fp_w,
@@ -878,6 +954,24 @@ pub fn rescore_samples_with_model(
                         e.insert(info.clone());
                     }
                 }
+                if !deep_fp.is_empty() {
+                    let deep_key = (norm.clone(), deep_fp.clone());
+                    match deep_path_map.entry(deep_key.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            deep_path_ambiguous.insert(deep_key);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(info.clone());
+                        }
+                    }
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
+                    if !filename.is_empty() {
+                        suffix_index
+                            .entry(filename)
+                            .or_default()
+                            .push((deep_fp, norm.clone(), info.clone()));
+                    }
+                }
                 file_traces.entry(fp).or_default().push((norm, info));
             }
         }
@@ -888,6 +982,9 @@ pub fn rescore_samples_with_model(
     }
     for key in &norm_ambiguous {
         norm_map.remove(key);
+    }
+    for key in &deep_path_ambiguous {
+        deep_path_map.remove(key);
     }
     for key in &raw_title_only_ambiguous {
         raw_title_only.remove(key);
@@ -917,12 +1014,20 @@ pub fn rescore_samples_with_model(
         }
         let fp = f["file_path"].as_str().unwrap_or("").to_string();
         let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
 
         let matched = raw_map
             .get(&(title.clone(), fp.clone()))
             .or_else(|| {
                 if !disable_fuzzy && !norm.is_empty() {
                     norm_map.get(&(norm.clone(), fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    deep_path_map.get(&(norm.clone(), deep_fp.clone()))
                 } else {
                     None
                 }
@@ -950,6 +1055,24 @@ pub fn rescore_samples_with_model(
                         && (best_score - second_best) >= FUZZY_AMBIGUITY_MARGIN
                     {
                         return best_info;
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("");
+                    if let Some(candidates) = suffix_index.get(filename) {
+                        let matches: Vec<&TraceInfo> = candidates
+                            .iter()
+                            .filter(|(cand_path, cand_norm, _)| {
+                                *cand_norm == norm && path_suffix_eq(cand_path, &deep_fp)
+                            })
+                            .map(|(_, _, info)| info)
+                            .collect();
+                        if matches.len() == 1 {
+                            return Some(matches[0]);
+                        }
                     }
                 }
                 None
@@ -1464,6 +1587,90 @@ mod tests {
         assert_eq!(stats.fuzzy_same_file, 1);
     }
 
+    // --- tier 2.5: deep-normalized path (#307) ---
+
+    #[test]
+    fn deep_path_matches_dotdot_prefix() {
+        let feedback = vec![make_feedback(
+            "SQL injection risk",
+            "tp",
+            "../../../samples/rust/patterns.rs",
+        )];
+        let traces = vec![make_trace(
+            "SQL injection risk",
+            2.0,
+            0.5,
+            Some("./samples/rust/patterns.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "deep path norm should match ../../../ to ./");
+        assert_eq!(stats.path_normalized, 1);
+    }
+
+    #[test]
+    fn deep_path_matches_mixed_dotdot() {
+        let feedback = vec![make_feedback(
+            "Hardcoded secret",
+            "fp",
+            "../quorum-ast-rules/rules/python/tests/bare-except.py",
+        )];
+        let traces = vec![make_trace(
+            "Hardcoded secret",
+            0.0,
+            1.0,
+            Some("../../quorum-ast-rules/rules/python/tests/bare-except.py"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(stats.path_normalized, 1);
+    }
+
+    // --- tier 3.5: suffix matching (#307) ---
+
+    #[test]
+    fn suffix_matches_absolute_vs_relative() {
+        let feedback = vec![make_feedback(
+            "Missing error context",
+            "tp",
+            "/Users/jsnyder/Sources/github.com/jsnyder/quorum/src/main.rs",
+        )];
+        let traces = vec![make_trace(
+            "Missing error context",
+            2.0,
+            0.5,
+            Some("src/main.rs"),
+        )];
+        let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(samples.len(), 1, "suffix match should recover absolute path");
+        assert_eq!(stats.suffix_matched, 1);
+    }
+
+    #[test]
+    fn suffix_rejects_filename_only_match() {
+        let feedback = vec![make_feedback("Bug", "tp", "/some/path/main.rs")];
+        let traces = vec![make_trace("Bug", 1.0, 0.5, Some("main.rs"))];
+        let (_samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(stats.suffix_matched, 0, "filename-only should not suffix match");
+    }
+
+    #[test]
+    fn suffix_rejects_ambiguous_matches() {
+        let feedback = vec![make_feedback(
+            "Unused variable",
+            "tp",
+            "/Users/jsnyder/Sources/repo/src/main.rs",
+        )];
+        let traces = vec![
+            make_trace("Unused variable", 2.0, 0.0, Some("project-a/src/main.rs")),
+            make_trace("Unused variable", 0.0, 2.0, Some("project-b/src/main.rs")),
+        ];
+        let (_samples, stats) = join_feedback_and_traces(&feedback, &traces);
+        assert_eq!(
+            stats.suffix_matched, 0,
+            "ambiguous suffix matches (both share src/main.rs suffix) should be skipped"
+        );
+    }
+
     // --- tier 4: normalized title-only ---
 
     #[test]
@@ -1674,6 +1881,7 @@ mod tests {
         assert_eq!(normalize_title("a-b: rest"), "rest");
         assert_eq!(normalize_title("a: rest"), "a rest");
     }
+
 
     #[test]
     fn normalize_multiple_backticks_and_parens() {

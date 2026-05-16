@@ -455,7 +455,15 @@ impl FeedbackStore {
         // chance to surface unlock failures (rare but possible on NFS).
         FileExt::lock_exclusive(&file)
             .with_context(|| format!("Failed to lock feedback file: {}", self.path.display()))?;
-        let mut buf = serde_json::to_string(entry)?;
+        // #307: normalize file_path at write time to prevent join mismatches.
+        let normalized = if entry.file_path.contains("..") || entry.file_path.starts_with('/') {
+            let mut clean = entry.clone();
+            clean.file_path = crate::file_util::normalize_file_path_deep(&entry.file_path);
+            clean
+        } else {
+            entry.clone()
+        };
+        let mut buf = serde_json::to_string(&normalized)?;
         buf.push('\n');
         let write_result = file.write_all(buf.as_bytes());
         // Always attempt unlock, even if the write failed. Ignore unlock
