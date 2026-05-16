@@ -42,6 +42,12 @@ pub trait GitOps {
     /// when `git` itself is broken (missing binary, I/O error). Callers use
     /// this to decide whether a re-index is needed.
     fn head_sha(&self, repo_root: &Path) -> std::io::Result<Option<String>>;
+
+    /// List files changed between `from_sha` and current HEAD.
+    /// Returns `Ok(None)` when the directory is not a git repo or
+    /// `from_sha` is not a valid ancestor (e.g. after force push/rebase).
+    /// Returns `Ok(Some(vec))` with relative paths of changed files.
+    fn diff_files(&self, repo_root: &Path, from_sha: &str) -> std::io::Result<Option<Vec<String>>>;
 }
 
 /// Production GitOps implementation using `git status --porcelain`.
@@ -85,6 +91,31 @@ impl GitOps for SystemGit {
             Ok(Some(sha))
         }
     }
+
+    fn diff_files(&self, repo_root: &Path, from_sha: &str) -> std::io::Result<Option<Vec<String>>> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .arg("diff")
+            .arg("--name-only")
+            .arg(format!("{from_sha}..HEAD"))
+            .output()?;
+        if !output.status.success() {
+            tracing::debug!(
+                from_sha,
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "git diff --name-only failed; falling back to full rebuild"
+            );
+            return Ok(None);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let files: Vec<String> = stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        Ok(Some(files))
+    }
 }
 
 /// Fake GitOps for tests — returns canned values.
@@ -96,6 +127,9 @@ pub struct FakeGit {
     /// which is the common case for tests that only care that a sha exists.
     pub head_by_path: std::collections::HashMap<std::path::PathBuf, Option<String>>,
     pub default_head: Option<String>,
+    /// Canned diff file lists keyed by repo root path. When a path isn't
+    /// present in the map, `diff_files` returns `Ok(None)`.
+    pub diff_by_path: std::collections::HashMap<std::path::PathBuf, Vec<String>>,
 }
 
 impl Default for FakeGit {
@@ -104,6 +138,7 @@ impl Default for FakeGit {
             dirty: false,
             head_by_path: std::collections::HashMap::new(),
             default_head: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+            diff_by_path: std::collections::HashMap::new(),
         }
     }
 }
@@ -122,6 +157,11 @@ impl FakeGit {
     pub fn set_head(&mut self, path: &Path, sha: Option<String>) {
         self.head_by_path.insert(path.to_path_buf(), sha);
     }
+
+    /// Register canned diff file list for a specific repo root path.
+    pub fn set_diff_files(&mut self, path: &Path, files: Vec<String>) {
+        self.diff_by_path.insert(path.to_path_buf(), files);
+    }
 }
 
 impl GitOps for FakeGit {
@@ -134,6 +174,14 @@ impl GitOps for FakeGit {
             return Ok(override_sha.clone());
         }
         Ok(self.default_head.clone())
+    }
+
+    fn diff_files(
+        &self,
+        repo_root: &Path,
+        _from_sha: &str,
+    ) -> std::io::Result<Option<Vec<String>>> {
+        Ok(self.diff_by_path.get(repo_root).cloned())
     }
 }
 
@@ -223,5 +271,31 @@ fn format_age(age: chrono::Duration) -> String {
         } else {
             format!("{mins}m")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn fake_git_diff_files_returns_canned_list() {
+        let mut git = FakeGit::default();
+        let root = PathBuf::from("/repo");
+        git.set_diff_files(&root, vec!["src/main.rs".into(), "src/lib.rs".into()]);
+        let files = git.diff_files(&root, "abc123").unwrap();
+        assert_eq!(
+            files,
+            Some(vec!["src/main.rs".to_string(), "src/lib.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn fake_git_diff_files_returns_none_when_not_set() {
+        let git = FakeGit::default();
+        let root = PathBuf::from("/repo");
+        let files = git.diff_files(&root, "abc123").unwrap();
+        assert_eq!(files, None);
     }
 }

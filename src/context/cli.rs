@@ -20,8 +20,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use rusqlite::Connection;
 
+use std::collections::HashSet;
+
 use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesConfig};
-use crate::context::extract::dispatch::{ExtractConfig, extract_source};
+use crate::context::extract::dispatch::{ExtractConfig, extract_source, extract_source_filtered};
 use crate::context::index::builder::{IndexBuilder, ensure_vec_loaded};
 use crate::context::index::state::IndexState;
 #[cfg(feature = "embeddings")]
@@ -351,7 +353,6 @@ pub enum ContextCmd {
     Add(AddArgs),
     List(ListArgs),
     Index(IndexArgs),
-    Refresh(RefreshArgs),
     Query(QueryArgs),
     Prune(PruneArgs),
     Doctor(DoctorArgs),
@@ -364,7 +365,6 @@ impl ContextCmd {
             ContextCmd::Add(_) => "add",
             ContextCmd::List(_) => "list",
             ContextCmd::Index(_) => "index",
-            ContextCmd::Refresh(_) => "refresh",
             ContextCmd::Query(_) => "query",
             ContextCmd::Prune(_) => "prune",
             ContextCmd::Doctor(_) => "doctor",
@@ -423,11 +423,7 @@ pub enum SourceSelector {
 #[derive(Debug, Clone, Default)]
 pub struct IndexArgs {
     pub selector: SourceSelector,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RefreshArgs {
-    pub selector: SourceSelector,
+    pub force: bool,
 }
 
 /// Output format for `quorum context query`.
@@ -538,7 +534,6 @@ pub fn run_context_cmd<D: ContextDeps>(cmd: &ContextCmd, deps: &D) -> Result<Cmd
         ContextCmd::Add(args) => run_add(args, deps),
         ContextCmd::List(args) => run_list(args, deps),
         ContextCmd::Index(args) => run_index(args, deps),
-        ContextCmd::Refresh(args) => run_refresh(args, deps),
         ContextCmd::Query(args) => run_query(args, deps),
         ContextCmd::Prune(args) => run_prune(args, deps),
         ContextCmd::Doctor(args) => run_doctor(args, deps),
@@ -920,6 +915,39 @@ struct IndexOutcome {
 struct IndexSuccess {
     chunks_inserted: usize,
     head_sha: Option<String>,
+    skipped: Option<String>,
+    files_extracted: usize,
+    incremental: bool,
+}
+
+enum StalenessResult {
+    UpToDate(String),
+    NeedsRebuild,
+}
+
+fn check_staleness<D: ContextDeps>(entry: &SourceEntry, deps: &D) -> StalenessResult {
+    let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
+    let current_head = match source_repo_root(entry) {
+        Some(root) if root.exists() => deps.git().head_sha(root).ok().flatten(),
+        _ => None,
+    };
+    let current_model = deps.embedder().model_hash();
+    if layout.state.exists()
+        && let Ok(Some(on_disk)) = IndexState::load(&layout.state)
+    {
+        let model_matches = on_disk.embedder_model_hash == current_model;
+        let head_matches = match (&on_disk.head_sha, &current_head) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if model_matches && head_matches {
+            return StalenessResult::UpToDate(format!(
+                "HEAD {} unchanged",
+                current_head.as_deref().unwrap_or("?")
+            ));
+        }
+    }
+    StalenessResult::NeedsRebuild
 }
 
 fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
@@ -935,7 +963,23 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
     let mut outcomes: Vec<IndexOutcome> = Vec::with_capacity(entries.len());
     let mut created: Vec<PathBuf> = Vec::new();
     for entry in &entries {
-        match index_one_source(entry, deps, &mut created) {
+        // When not forced, check staleness before doing work.
+        if !args.force
+            && let StalenessResult::UpToDate(reason) = check_staleness(entry, deps)
+        {
+            outcomes.push(IndexOutcome {
+                name: entry.name.clone(),
+                result: Ok(IndexSuccess {
+                    chunks_inserted: 0,
+                    head_sha: None,
+                    skipped: Some(reason),
+                    files_extracted: 0,
+                    incremental: false,
+                }),
+            });
+            continue;
+        }
+        match index_one_source(entry, deps, &mut created, args.force) {
             Ok(success) => outcomes.push(IndexOutcome {
                 name: entry.name.clone(),
                 result: Ok(success),
@@ -955,10 +999,25 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
     let mut failures = 0usize;
     for o in &outcomes {
         match &o.result {
-            Ok(s) => lines.push(format!(
-                "indexed '{}': {} chunks",
-                o.name, s.chunks_inserted
-            )),
+            Ok(s) if s.skipped.is_some() => {
+                lines.push(format!(
+                    "skipped '{}': {}",
+                    o.name,
+                    s.skipped.as_ref().unwrap()
+                ));
+            }
+            Ok(s) if s.incremental => {
+                lines.push(format!(
+                    "indexed '{}': {} chunks from {} changed files",
+                    o.name, s.chunks_inserted, s.files_extracted
+                ));
+            }
+            Ok(s) => {
+                lines.push(format!(
+                    "indexed '{}': {} files, {} chunks",
+                    o.name, s.files_extracted, s.chunks_inserted
+                ));
+            }
             Err(msg) => {
                 failures += 1;
                 let line = format!("failed '{}': {msg}", o.name);
@@ -992,9 +1051,111 @@ fn index_one_source<D: ContextDeps>(
     entry: &SourceEntry,
     deps: &D,
     created: &mut Vec<PathBuf>,
+    force: bool,
 ) -> Result<IndexSuccess> {
     let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
     ensure_dir(&layout.dir)?;
+
+    // Check if we can do an incremental update.
+    // Incremental requires: not forced, model hash matches, prior+current HEAD, valid diff, DB exists.
+    let prior_state = layout
+        .state
+        .exists()
+        .then(|| IndexState::load(&layout.state).ok().flatten())
+        .flatten();
+    let model_matches = prior_state
+        .as_ref()
+        .map(|s| s.embedder_model_hash == deps.embedder().model_hash())
+        .unwrap_or(false);
+    let prior_head = prior_state.and_then(|s| s.head_sha);
+
+    let current_head = match source_repo_root(entry) {
+        Some(root) => deps
+            .git()
+            .head_sha(root)
+            .map_err(|e| anyhow!("git head_sha({}): {e}", root.display()))?,
+        None => None,
+    };
+
+    // Try incremental: need not-forced, model match, prior HEAD, current HEAD, git diff, and existing DB.
+    let incremental_files = if !force
+        && model_matches
+        && let (Some(prev), Some(_curr)) = (&prior_head, &current_head)
+    {
+        if let Some(root) = source_repo_root(entry) {
+            deps.git()
+                .diff_files(root, prev)
+                .ok()
+                .flatten()
+                .filter(|_| layout.db.exists())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(changed_files) = incremental_files {
+        if changed_files.is_empty() {
+            // HEAD moved but no files changed (merge commit, metadata-only).
+            let state = IndexState::new(deps.embedder().model_hash())
+                .with_head_sha(current_head.clone())
+                .with_indexed_at(deps.clock().now());
+            state
+                .save(&layout.state)
+                .map_err(|e| anyhow!("save state.json: {e}"))?;
+            return Ok(IndexSuccess {
+                chunks_inserted: 0,
+                head_sha: current_head,
+                skipped: None,
+                files_extracted: 0,
+                incremental: true,
+            });
+        }
+
+        let file_filter: HashSet<String> = changed_files.into_iter().collect();
+        let extracted = extract_source_filtered(
+            entry,
+            &ExtractConfig::default(),
+            deps.clock(),
+            Some(&file_filter),
+        )
+        .map_err(|e| anyhow!("extract failed for '{}': {e}", entry.name))?;
+
+        let mut builder = IndexBuilder::new(&layout.db, deps.clock(), deps.embedder())
+            .map_err(|e| anyhow!("open index db: {e}"))?;
+        let report = builder
+            .update_files(
+                &entry.name,
+                &extracted.chunks,
+                &file_filter,
+                &extracted.structural_fingerprints,
+            )
+            .map_err(|e| anyhow!("incremental update failed for '{}': {e}", entry.name))?;
+
+        // Remove stale chunks.jsonl so repair/doctor does a full re-extract
+        // rather than rebuilding from outdated chunk data.
+        if layout.jsonl.exists() {
+            let _ = std::fs::remove_file(&layout.jsonl);
+        }
+
+        let state = IndexState::new(deps.embedder().model_hash())
+            .with_head_sha(current_head.clone())
+            .with_indexed_at(deps.clock().now());
+        state
+            .save(&layout.state)
+            .map_err(|e| anyhow!("save state.json: {e}"))?;
+
+        return Ok(IndexSuccess {
+            chunks_inserted: report.chunks_inserted,
+            head_sha: current_head,
+            skipped: None,
+            files_extracted: extracted.diagnostics.extracted_files,
+            incremental: true,
+        });
+    }
+
+    // --- Full rebuild path (existing logic) ---
 
     // Extract chunks. This is where nonexistent Path roots error out, and
     // the error propagates up as a single-source failure (caught by
@@ -1036,7 +1197,7 @@ fn index_one_source<D: ContextDeps>(
 
     created.push(layout.db.clone());
 
-    // Record state so refresh knows whether to re-run.
+    // Record state so staleness checks know whether to re-run.
     let head_sha = match source_repo_root(entry) {
         Some(root) => deps
             .git()
@@ -1055,108 +1216,9 @@ fn index_one_source<D: ContextDeps>(
     Ok(IndexSuccess {
         chunks_inserted: report.chunks_inserted,
         head_sha,
-    })
-}
-
-// --- Refresh handler --------------------------------------------------------
-
-fn run_refresh<D: ContextDeps>(args: &RefreshArgs, deps: &D) -> Result<CmdOutput> {
-    let cfg = load_sources_or_err(deps)?;
-    let entries = selected_sources(&cfg, &args.selector)?;
-    if entries.is_empty() {
-        return Ok(CmdOutput {
-            stdout: "no sources to refresh".to_string(),
-            ..Default::default()
-        });
-    }
-
-    let mut created: Vec<PathBuf> = Vec::new();
-    let mut lines: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut failures = 0usize;
-    for entry in &entries {
-        match refresh_one_source(entry, deps, &mut created) {
-            Ok(RefreshOutcome::Skipped { reason }) => {
-                lines.push(format!("skipped '{}': {reason}", entry.name));
-            }
-            Ok(RefreshOutcome::Rebuilt { chunks_inserted }) => {
-                lines.push(format!(
-                    "refreshed '{}': {} chunks",
-                    entry.name, chunks_inserted
-                ));
-            }
-            Err(e) => {
-                failures += 1;
-                tracing::warn!(source = %entry.name, error = %e, "refresh failed");
-                let line = format!("failed '{}': {e}", entry.name);
-                warnings.push(line.clone());
-                lines.push(line);
-            }
-        }
-    }
-
-    if failures == entries.len() && matches!(args.selector, SourceSelector::Single(_)) {
-        return Err(anyhow!(
-            lines
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "refresh failed".into())
-        ));
-    }
-
-    Ok(CmdOutput {
-        stdout: lines.join("\n"),
-        created_paths: created,
-        removed_paths: Vec::new(),
-        warnings,
-        doctor_failed: None,
-    })
-}
-
-enum RefreshOutcome {
-    Skipped { reason: String },
-    Rebuilt { chunks_inserted: usize },
-}
-
-fn refresh_one_source<D: ContextDeps>(
-    entry: &SourceEntry,
-    deps: &D,
-    created: &mut Vec<PathBuf>,
-) -> Result<RefreshOutcome> {
-    let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
-
-    // Resolve current HEAD sha for the source (None for path-only or
-    // non-git directories; always triggers re-index).
-    let current_head = match source_repo_root(entry) {
-        Some(root) if root.exists() => deps
-            .git()
-            .head_sha(root)
-            .map_err(|e| anyhow!("git head_sha({}): {e}", root.display()))?,
-        _ => None,
-    };
-    let current_model = deps.embedder().model_hash();
-
-    if layout.state.exists()
-        && let Some(on_disk) =
-            IndexState::load(&layout.state).map_err(|e| anyhow!("load state.json: {e}"))?
-    {
-        let model_matches = on_disk.embedder_model_hash == current_model;
-        let head_matches = match (&on_disk.head_sha, &current_head) {
-            (Some(a), Some(b)) => a == b,
-            // If either side is None (path source or unavailable git),
-            // we can't certify "unchanged" — fall through to re-index.
-            _ => false,
-        };
-        if model_matches && head_matches {
-            return Ok(RefreshOutcome::Skipped {
-                reason: format!("HEAD {} unchanged", current_head.as_deref().unwrap_or("?")),
-            });
-        }
-    }
-
-    let success = index_one_source(entry, deps, created)?;
-    Ok(RefreshOutcome::Rebuilt {
-        chunks_inserted: success.chunks_inserted,
+        skipped: None,
+        files_extracted: extracted.diagnostics.extracted_files,
+        incremental: false,
     })
 }
 

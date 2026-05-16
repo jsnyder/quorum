@@ -56,15 +56,18 @@ fn context_help_lists_all_subcommands() {
         .stdout
         .clone();
     let stdout = String::from_utf8(out).unwrap();
-    for cmd in [
-        "init", "add", "list", "index", "refresh", "query", "prune", "doctor",
-    ] {
+    for cmd in ["init", "add", "list", "index", "query", "prune", "doctor"] {
         let needle = format!("  {cmd}  ");
         assert!(
             stdout.contains(&needle),
             "expected subcommand row `{needle}` in help output:\n{stdout}"
         );
     }
+    // `refresh` is a hidden deprecated alias — must NOT appear in help.
+    assert!(
+        !stdout.contains("  refresh  "),
+        "hidden alias `refresh` should not appear in help output:\n{stdout}"
+    );
 }
 
 #[test]

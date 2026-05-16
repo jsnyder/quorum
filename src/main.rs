@@ -547,8 +547,7 @@ fn run_join_health(quorum_home: &std::path::Path) -> i32 {
 fn run_context(opts: cli::ContextOpts) -> i32 {
     use context::cli::{
         AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat, IndexArgs, ListArgs,
-        ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat, RefreshArgs, SourceSelector,
-        run_context_cmd,
+        ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat, SourceSelector, run_context_cmd,
     };
 
     // Map `--source X` / `--all` / neither into a SourceSelector. The default
@@ -599,10 +598,15 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         }
         cli::ContextCommand::Index(i) => ContextCmd::Index(IndexArgs {
             selector: selector(i.source, i.all),
+            force: i.force,
         }),
-        cli::ContextCommand::Refresh(r) => ContextCmd::Refresh(RefreshArgs {
-            selector: selector(r.source, r.all),
-        }),
+        cli::ContextCommand::Refresh(r) => {
+            eprintln!("warning: `refresh` is deprecated, use `index` instead");
+            ContextCmd::Index(IndexArgs {
+                selector: selector(r.source, r.all),
+                force: r.force,
+            })
+        }
         cli::ContextCommand::Query(q) => {
             let format = if q.json {
                 QueryFormat::Json
@@ -635,12 +639,12 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         }
     };
 
-    // `index` and `refresh` write to `chunks_vec`; if fastembed fell back to
-    // HashEmbedder we'd rebuild the vector table with hashing-noise vectors
-    // and silently degrade every subsequent retrieval. Use the strict
-    // factory so a fastembed init failure surfaces as a clear error the
-    // user can retry, rather than a corrupted index they have to discover.
-    let needs_strict_embedder = matches!(cmd, ContextCmd::Index(_) | ContextCmd::Refresh(_));
+    // `index` writes to `chunks_vec`; if fastembed fell back to HashEmbedder
+    // we'd rebuild the vector table with hashing-noise vectors and silently
+    // degrade every subsequent retrieval. Use the strict factory so a
+    // fastembed init failure surfaces as a clear error the user can retry,
+    // rather than a corrupted index they have to discover.
+    let needs_strict_embedder = matches!(cmd, ContextCmd::Index(_));
     let deps_result = if needs_strict_embedder {
         ProdDeps::from_env_strict()
     } else {

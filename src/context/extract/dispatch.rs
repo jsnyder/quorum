@@ -5,7 +5,7 @@
 //! the produced [`Chunk`]s and a [`Diagnostics`] summary. One bad file does
 //! not abort the run; extractor errors are collected per-file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use glob::Pattern;
@@ -101,6 +101,28 @@ pub fn extract_source(
     source: &SourceEntry,
     config: &ExtractConfig,
     clock: &dyn Clock,
+) -> anyhow::Result<ExtractResult> {
+    extract_source_inner(source, config, clock, None)
+}
+
+/// Like [`extract_source`], but accepts an optional file filter. When
+/// `file_filter` is `Some`, only files whose relative (forward-slash) path
+/// appears in the set are extracted; all others are skipped before any
+/// further processing. When `None`, every file is considered (full extract).
+pub fn extract_source_filtered(
+    source: &SourceEntry,
+    config: &ExtractConfig,
+    clock: &dyn Clock,
+    file_filter: Option<&HashSet<String>>,
+) -> anyhow::Result<ExtractResult> {
+    extract_source_inner(source, config, clock, file_filter)
+}
+
+fn extract_source_inner(
+    source: &SourceEntry,
+    config: &ExtractConfig,
+    clock: &dyn Clock,
+    file_filter: Option<&HashSet<String>>,
 ) -> anyhow::Result<ExtractResult> {
     let root = match &source.location {
         SourceLocation::Path(p) => p.clone(),
@@ -198,6 +220,13 @@ pub fn extract_source(
             };
 
             diagnostics.total_files_scanned += 1;
+
+            // File filter: skip files not in the changed set.
+            if let Some(filter) = file_filter
+                && !filter.contains(&rel)
+            {
+                continue;
+            }
 
             // Tier 1: per-source ignore.
             if let Some(pat) = first_match(&per_source_patterns, &rel) {
@@ -533,4 +562,58 @@ fn relative_forward_slash(root: &Path, file: &Path) -> Option<String> {
         out.push_str(comp.as_os_str().to_str()?);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::config::{SourceEntry, SourceKind, SourceLocation};
+    use crate::context::index::traits::FixedClock;
+    use std::collections::HashSet;
+
+    fn mini_rust_source() -> SourceEntry {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/context/repos/mini-rust");
+        SourceEntry {
+            name: "test".into(),
+            kind: SourceKind::Rust,
+            location: SourceLocation::Path(fixture),
+            weight: None,
+            ignore: vec![],
+            paths: vec![],
+            provides: vec![],
+            include_for: vec![],
+            exclude_for: vec![],
+        }
+    }
+
+    #[test]
+    fn extract_with_file_filter_only_extracts_matching_files() {
+        let source = mini_rust_source();
+        let clock = FixedClock::epoch();
+        let config = ExtractConfig::default();
+        let filter: HashSet<String> = ["src/token.rs".to_string()].into_iter().collect();
+        let result = extract_source_filtered(&source, &config, &clock, Some(&filter)).unwrap();
+        for chunk in &result.chunks {
+            assert_eq!(
+                chunk.metadata.source_path, "src/token.rs",
+                "chunk from wrong file: {:?}",
+                chunk.metadata.source_path
+            );
+        }
+        assert!(
+            !result.chunks.is_empty(),
+            "filter should still extract matching file"
+        );
+    }
+
+    #[test]
+    fn extract_with_no_filter_extracts_all() {
+        let source = mini_rust_source();
+        let clock = FixedClock::epoch();
+        let config = ExtractConfig::default();
+        let unfiltered = extract_source_filtered(&source, &config, &clock, None).unwrap();
+        let all = extract_source(&source, &config, &clock).unwrap();
+        assert_eq!(unfiltered.chunks.len(), all.chunks.len());
+    }
 }

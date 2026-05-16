@@ -206,70 +206,176 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         };
         report.prior_source_chunks_removed = prior_removed;
 
-        {
-            let mut ins_chunk = tx.prepare(
-                "INSERT INTO chunks (
-                    id, source, kind, subtype, qualified_name, signature, content,
-                    source_path, line_start, line_end, commit_sha, indexed_at,
-                    source_version, language, is_exported, neighboring_symbols,
-                    extractor, confidence, source_uri
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17, ?18, ?19
-                )",
+        Self::insert_embedded_chunks(&tx, &embedded)?;
+
+        report.chunks_inserted = embedded.len();
+        tx.commit()?;
+        Ok(report)
+    }
+
+    /// Surgical update: delete chunks belonging to `changed_files`, then insert
+    /// `new_chunks` (which should come from re-extracting only those files).
+    /// Chunks for files NOT in `changed_files` are untouched.
+    pub fn update_files(
+        &mut self,
+        source_name: &str,
+        new_chunks: &[Chunk],
+        changed_files: &std::collections::HashSet<String>,
+        fingerprints: &std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]>,
+    ) -> anyhow::Result<RebuildReport> {
+        let mut report = RebuildReport {
+            source: source_name.to_string(),
+            chunks_loaded: new_chunks.len(),
+            ..RebuildReport::default()
+        };
+
+        // Defense-in-depth: only accept chunks that belong to this source AND
+        // whose source_path is in the declared changed_files set. This mirrors
+        // the partition check in `rebuild_from_jsonl` and prevents accidental
+        // insertion of unrelated chunks.
+        let valid_chunks: Vec<&Chunk> = new_chunks
+            .iter()
+            .filter(|c| c.source == source_name && changed_files.contains(&c.metadata.source_path))
+            .collect();
+
+        // Pre-embed outside the transaction.
+        let mut embedded: Vec<(Chunk, Vec<f32>)> = Vec::with_capacity(valid_chunks.len());
+        for chunk in &valid_chunks {
+            if chunk.content.is_empty() {
+                continue;
+            }
+            let vec = self.embedder.embed(&chunk.content);
+            embedded.push(((*chunk).clone(), vec));
+        }
+        report.chunks_embedded = embedded.len();
+
+        // Collect valid chunk ids so we can filter fingerprint inserts.
+        let valid_ids: std::collections::HashSet<&str> =
+            valid_chunks.iter().map(|c| c.id.as_str()).collect();
+
+        let tx = self.conn.transaction()?;
+
+        // Delete rows for changed files across all 4 tables.
+        if !changed_files.is_empty() {
+            let file_vec: Vec<&str> = changed_files.iter().map(|s| s.as_str()).collect();
+            let placeholders: String = (0..file_vec.len())
+                .map(|i| format!("?{}", i + 2))
+                .collect::<Vec<_>>()
+                .join(",");
+
+            for table_sql in [
+                format!(
+                    "DELETE FROM chunks_struct_vec WHERE chunk_id IN \
+                     (SELECT id FROM chunks WHERE source = ?1 AND source_path IN ({placeholders}))"
+                ),
+                format!(
+                    "DELETE FROM chunks_vec WHERE id IN \
+                     (SELECT id FROM chunks WHERE source = ?1 AND source_path IN ({placeholders}))"
+                ),
+                format!(
+                    "DELETE FROM chunks_fts WHERE id IN \
+                     (SELECT id FROM chunks WHERE source = ?1 AND source_path IN ({placeholders}))"
+                ),
+                format!("DELETE FROM chunks WHERE source = ?1 AND source_path IN ({placeholders})"),
+            ] {
+                let mut stmt = tx.prepare(&table_sql)?;
+                let mut all_params: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
+                all_params.push(&source_name as &dyn rusqlite::types::ToSql);
+                for f in &file_vec {
+                    all_params.push(f as &dyn rusqlite::types::ToSql);
+                }
+                stmt.execute(all_params.as_slice())?;
+            }
+        }
+
+        // Insert new chunks using the shared helper.
+        Self::insert_embedded_chunks(&tx, &embedded)?;
+
+        // Insert structural fingerprints only for chunks we actually inserted.
+        if !fingerprints.is_empty() {
+            let mut fp_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec)
+                 SELECT ?1, ?2
+                 WHERE EXISTS (SELECT 1 FROM chunks WHERE id = ?1)",
             )?;
-            let mut ins_fts = tx.prepare(
-                "INSERT INTO chunks_fts (id, content, qualified_name, signature)
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            let mut ins_vec =
-                tx.prepare("INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)")?;
-
-            for (chunk, vec) in &embedded {
-                let kind_str = serde_json::to_value(&chunk.kind)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default();
-                let neighbors_json = serde_json::to_string(&chunk.metadata.neighboring_symbols)?;
-                let indexed_at = chunk.metadata.indexed_at.to_rfc3339();
-
-                ins_chunk.execute(params![
-                    chunk.id,
-                    chunk.source,
-                    kind_str,
-                    chunk.subtype,
-                    chunk.qualified_name,
-                    chunk.signature,
-                    chunk.content,
-                    chunk.metadata.source_path,
-                    chunk.metadata.line_range.start(),
-                    chunk.metadata.line_range.end(),
-                    chunk.metadata.commit_sha,
-                    indexed_at,
-                    chunk.metadata.source_version,
-                    chunk.metadata.language,
-                    i32::from(chunk.metadata.is_exported),
-                    neighbors_json,
-                    chunk.provenance.extractor(),
-                    chunk.provenance.confidence(),
-                    chunk.provenance.source_uri(),
-                ])?;
-
-                ins_fts.execute(params![
-                    chunk.id,
-                    chunk.content,
-                    chunk.qualified_name.clone().unwrap_or_default(),
-                    chunk.signature.clone().unwrap_or_default(),
-                ])?;
-
+            for (chunk_id, vec) in fingerprints {
+                if !valid_ids.contains(chunk_id.as_str()) {
+                    continue;
+                }
                 let bytes = f32_vec_to_le_bytes(vec);
-                ins_vec.execute(params![chunk.id, bytes])?;
+                fp_stmt.execute(params![chunk_id, bytes])?;
             }
         }
 
         report.chunks_inserted = embedded.len();
         tx.commit()?;
         Ok(report)
+    }
+
+    /// Shared INSERT logic for `chunks`, `chunks_fts`, and `chunks_vec` tables.
+    fn insert_embedded_chunks(
+        tx: &rusqlite::Transaction,
+        embedded: &[(Chunk, Vec<f32>)],
+    ) -> anyhow::Result<()> {
+        let mut ins_chunk = tx.prepare(
+            "INSERT INTO chunks (
+                id, source, kind, subtype, qualified_name, signature, content,
+                source_path, line_start, line_end, commit_sha, indexed_at,
+                source_version, language, is_exported, neighboring_symbols,
+                extractor, confidence, source_uri
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19
+            )",
+        )?;
+        let mut ins_fts = tx.prepare(
+            "INSERT INTO chunks_fts (id, content, qualified_name, signature)
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut ins_vec = tx.prepare("INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)")?;
+
+        for (chunk, vec) in embedded {
+            let kind_str = serde_json::to_value(&chunk.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let neighbors_json = serde_json::to_string(&chunk.metadata.neighboring_symbols)?;
+            let indexed_at = chunk.metadata.indexed_at.to_rfc3339();
+
+            ins_chunk.execute(params![
+                chunk.id,
+                chunk.source,
+                kind_str,
+                chunk.subtype,
+                chunk.qualified_name,
+                chunk.signature,
+                chunk.content,
+                chunk.metadata.source_path,
+                chunk.metadata.line_range.start(),
+                chunk.metadata.line_range.end(),
+                chunk.metadata.commit_sha,
+                indexed_at,
+                chunk.metadata.source_version,
+                chunk.metadata.language,
+                i32::from(chunk.metadata.is_exported),
+                neighbors_json,
+                chunk.provenance.extractor(),
+                chunk.provenance.confidence(),
+                chunk.provenance.source_uri(),
+            ])?;
+
+            ins_fts.execute(params![
+                chunk.id,
+                chunk.content,
+                chunk.qualified_name.clone().unwrap_or_default(),
+                chunk.signature.clone().unwrap_or_default(),
+            ])?;
+
+            let bytes = f32_vec_to_le_bytes(vec);
+            ins_vec.execute(params![chunk.id, bytes])?;
+        }
+
+        Ok(())
     }
 
     fn open_with_vec(db_path: &Path) -> rusqlite::Result<Connection> {
@@ -473,4 +579,257 @@ pub fn query_structural_knn(
         results.push(row?);
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::extract::fingerprint::FINGERPRINT_DIMS;
+    use crate::context::index::traits::{FixedClock, HashEmbedder};
+    use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
+    use std::collections::{HashMap, HashSet};
+
+    /// Build a test chunk with the given id, source, source_path, and content.
+    fn make_chunk(id: &str, source: &str, source_path: &str, content: &str) -> Chunk {
+        Chunk {
+            id: id.to_string(),
+            source: source.to_string(),
+            kind: ChunkKind::Symbol,
+            subtype: None,
+            qualified_name: Some(format!("test::{id}")),
+            signature: None,
+            content: content.to_string(),
+            metadata: ChunkMeta {
+                source_path: source_path.to_string(),
+                line_range: LineRange::new(1, 10).unwrap(),
+                commit_sha: "abc123".to_string(),
+                indexed_at: chrono::Utc::now(),
+                source_version: None,
+                language: Some("rust".to_string()),
+                is_exported: true,
+                neighboring_symbols: vec![],
+            },
+            provenance: Provenance::new("test-extractor", 0.95, "file:///test").unwrap(),
+        }
+    }
+
+    /// Helper: count chunks in the `chunks` table matching given source and source_path.
+    fn count_chunks(conn: &Connection, source: &str, source_path: &str) -> usize {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE source = ?1 AND source_path = ?2",
+            params![source, source_path],
+            |r| r.get::<_, usize>(0),
+        )
+        .unwrap()
+    }
+
+    /// Helper: count all chunks in the `chunks` table for a given source.
+    fn count_all_chunks(conn: &Connection, source: &str) -> usize {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE source = ?1",
+            params![source],
+            |r| r.get::<_, usize>(0),
+        )
+        .unwrap()
+    }
+
+    /// Helper: get a specific chunk's content by id.
+    fn get_chunk_content(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT content FROM chunks WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    /// Helper: count rows in chunks_fts for a given chunk id.
+    fn fts_exists(conn: &Connection, id: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chunks_fts WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, usize>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    /// Helper: count rows in chunks_vec for a given chunk id.
+    fn vec_exists(conn: &Connection, id: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM chunks_vec WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, usize>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    fn setup_builder() -> IndexBuilder<'static, FixedClock, HashEmbedder> {
+        // Leak the clock and embedder so they live for 'static — acceptable in tests.
+        let clock: &'static FixedClock = Box::leak(Box::new(FixedClock::epoch()));
+        let embedder: &'static HashEmbedder = Box::leak(Box::new(HashEmbedder::new(8)));
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp.path().to_path_buf();
+        // Drop the tempfile so rusqlite can create the file fresh.
+        drop(tmp);
+        ensure_vec_loaded();
+        IndexBuilder::new(&db_path, clock, embedder).unwrap()
+    }
+
+    /// Insert chunks directly into the builder's DB for test setup.
+    fn insert_chunks_direct(
+        builder: &mut IndexBuilder<'static, FixedClock, HashEmbedder>,
+        chunks: &[Chunk],
+    ) {
+        let embedder = HashEmbedder::new(8);
+        let mut embedded: Vec<(Chunk, Vec<f32>)> = Vec::new();
+        for c in chunks {
+            let vec = embedder.embed(&c.content);
+            embedded.push((c.clone(), vec));
+        }
+        let tx = builder.conn_mut().transaction().unwrap();
+        IndexBuilder::<FixedClock, HashEmbedder>::insert_embedded_chunks(&tx, &embedded).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn test_update_files_only_deletes_changed_files() {
+        let mut builder = setup_builder();
+
+        // Insert chunks for two files: src/a.rs and src/b.rs
+        let chunk_a1 = make_chunk("a1", "my-source", "src/a.rs", "fn foo() {}");
+        let chunk_a2 = make_chunk("a2", "my-source", "src/a.rs", "fn bar() {}");
+        let chunk_b1 = make_chunk("b1", "my-source", "src/b.rs", "fn baz() {}");
+
+        insert_chunks_direct(&mut builder, &[chunk_a1, chunk_a2, chunk_b1]);
+
+        // Verify initial state
+        assert_eq!(count_chunks(builder.conn(), "my-source", "src/a.rs"), 2);
+        assert_eq!(count_chunks(builder.conn(), "my-source", "src/b.rs"), 1);
+
+        // Create a new replacement chunk for src/a.rs
+        let new_a = make_chunk("a3", "my-source", "src/a.rs", "fn foo_updated() {}");
+
+        let mut changed = HashSet::new();
+        changed.insert("src/a.rs".to_string());
+
+        let fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]> = HashMap::new();
+
+        let report = builder
+            .update_files("my-source", &[new_a], &changed, &fingerprints)
+            .unwrap();
+
+        // Old a.rs chunks should be gone
+        assert!(get_chunk_content(builder.conn(), "a1").is_none());
+        assert!(get_chunk_content(builder.conn(), "a2").is_none());
+        assert!(!fts_exists(builder.conn(), "a1"));
+        assert!(!fts_exists(builder.conn(), "a2"));
+        assert!(!vec_exists(builder.conn(), "a1"));
+        assert!(!vec_exists(builder.conn(), "a2"));
+
+        // New a.rs chunk should be present
+        assert_eq!(
+            get_chunk_content(builder.conn(), "a3"),
+            Some("fn foo_updated() {}".to_string())
+        );
+        assert!(fts_exists(builder.conn(), "a3"));
+        assert!(vec_exists(builder.conn(), "a3"));
+
+        // b.rs chunk should be untouched
+        assert_eq!(
+            get_chunk_content(builder.conn(), "b1"),
+            Some("fn baz() {}".to_string())
+        );
+        assert!(fts_exists(builder.conn(), "b1"));
+        assert!(vec_exists(builder.conn(), "b1"));
+
+        // Report
+        assert_eq!(report.source, "my-source");
+        assert_eq!(report.chunks_loaded, 1);
+        assert_eq!(report.chunks_embedded, 1);
+        assert_eq!(report.chunks_inserted, 1);
+    }
+
+    #[test]
+    fn test_update_files_with_fingerprints() {
+        let mut builder = setup_builder();
+
+        let chunk_a = make_chunk("a1", "my-source", "src/a.rs", "fn foo() {}");
+        insert_chunks_direct(&mut builder, &[chunk_a]);
+
+        let new_a = make_chunk("a2", "my-source", "src/a.rs", "fn foo_v2() {}");
+        let mut changed = HashSet::new();
+        changed.insert("src/a.rs".to_string());
+
+        let mut fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]> = HashMap::new();
+        fingerprints.insert("a2".to_string(), [0.5; FINGERPRINT_DIMS]);
+
+        let _report = builder
+            .update_files("my-source", &[new_a], &changed, &fingerprints)
+            .unwrap();
+
+        // Verify structural fingerprint was inserted
+        let fp_count: usize = builder
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM chunks_struct_vec WHERE chunk_id = ?1",
+                params!["a2"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fp_count, 1);
+    }
+
+    #[test]
+    fn test_update_files_empty_changed_set_inserts_nothing() {
+        let mut builder = setup_builder();
+
+        let chunk_a = make_chunk("a1", "my-source", "src/a.rs", "fn foo() {}");
+        insert_chunks_direct(&mut builder, &[chunk_a]);
+
+        // Call update_files with empty changed set — chunks whose source_path
+        // is not in the changed set are filtered out (defense-in-depth).
+        let new_b = make_chunk("b1", "my-source", "src/b.rs", "fn bar() {}");
+        let changed: HashSet<String> = HashSet::new();
+        let fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]> = HashMap::new();
+
+        let report = builder
+            .update_files("my-source", &[new_b], &changed, &fingerprints)
+            .unwrap();
+
+        // Only the original chunk should exist; new_b was filtered out.
+        assert_eq!(count_all_chunks(builder.conn(), "my-source"), 1);
+        assert!(get_chunk_content(builder.conn(), "a1").is_some());
+        assert!(get_chunk_content(builder.conn(), "b1").is_none());
+        assert_eq!(report.chunks_embedded, 0);
+        assert_eq!(report.chunks_inserted, 0);
+    }
+
+    #[test]
+    fn test_rebuild_from_jsonl_uses_shared_insert_logic() {
+        // This test verifies that rebuild_from_jsonl still works correctly
+        // after refactoring to use insert_embedded_chunks.
+        let mut builder = setup_builder();
+
+        // Write a JSONL file with test chunks
+        let tmp_jsonl = tempfile::NamedTempFile::new().unwrap();
+        let chunk = make_chunk("c1", "my-source", "src/c.rs", "fn test() {}");
+        let line = serde_json::to_string(&chunk).unwrap();
+        std::fs::write(tmp_jsonl.path(), format!("{line}\n")).unwrap();
+
+        let report = builder
+            .rebuild_from_jsonl("my-source", tmp_jsonl.path())
+            .unwrap();
+
+        assert_eq!(report.chunks_loaded, 1);
+        assert_eq!(report.chunks_inserted, 1);
+        assert_eq!(
+            get_chunk_content(builder.conn(), "c1"),
+            Some("fn test() {}".to_string())
+        );
+        assert!(fts_exists(builder.conn(), "c1"));
+        assert!(vec_exists(builder.conn(), "c1"));
+    }
 }
