@@ -87,6 +87,15 @@ quorum review --daemon src/lib.rs  # cache hit, instant parse
 - Design issues (incorrect API usage, missing error handling)
 - Context-aware findings using hydrated AST context (callee signatures, type definitions, blast radius)
 
+### LLM micro-judge (v0.22.0+)
+
+```bash
+quorum review src/*.rs --judge
+quorum review src/*.rs --judge --judge-model gpt-5-nano
+```
+
+Enables a secondary LLM pass that validates speculative AST rule matches. The judge confirms or suppresses findings that pattern-matched syntactically but may be benign in context. Default judge model: `gpt-5-nano` (fast, cheap). Also enabled by `QUORUM_JUDGE=1`.
+
 ## Stats Dashboard
 
 ```bash
@@ -101,6 +110,35 @@ Shows:
 - **Spend (7d)**: tokens in/out, estimated cost, tokens/finding
 
 Reads from `~/.quorum/feedback.jsonl` and `~/.quorum/telemetry.jsonl`.
+
+### Dimensional drill-downs
+
+```bash
+quorum stats --by-repo                # aggregate by repository
+quorum stats --by-caller              # aggregate by invocation caller (CLAUDE_CODE, tty, etc.)
+quorum stats --by-file                # file hotspot ranking from feedback
+quorum stats --by-file --top 10       # top N file hotspots
+quorum stats --by-rule                # per-rule TP/FP/precision breakdown
+quorum stats --by-rule --rule "ast-grep:python/*"  # filter rules by glob
+quorum stats --rolling 50             # rolling 50-review windows
+quorum stats --full                   # show all drill-downs (by-caller, rolling)
+quorum stats --minimal                # hide dimensional highlights
+```
+
+### Context injection diagnostics
+
+```bash
+quorum stats --by-source              # stats grouped by injected context source
+quorum stats --by-reviewed-repo       # context stats grouped by reviewed repo
+quorum stats --misleading             # detect retriever errors and phantom injections
+quorum stats --join-health            # reviews-to-feedback linkage diagnostic
+```
+
+### Calibrate (standalone)
+
+```bash
+quorum calibrate                      # recompute calibrator thresholds from feedback corpus
+```
 
 ## Telemetry
 
@@ -117,7 +155,7 @@ Feedback improves future reviews via the calibrator. Use the MCP `feedback` tool
 
 ### Which verdict to use
 
-Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert metadata — they don't suppress or boost anything.
+Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert metadata — they don't suppress or boost anything. `context_misleading` trains the context injector.
 
 | Verdict | Calibrator effect | When to use |
 |---------|-------------------|-------------|
@@ -125,14 +163,52 @@ Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert meta
 | **tp** | **Boosts** similar findings (needs 2+ matches) | Finding is real and actionable |
 | **partial** | None | Real issue but severity overstated (e.g. "critical" should be "medium") |
 | **wontfix** | None | Avoid — use `tp` instead if the issue is real |
+| **context_misleading** | Raises injection threshold for blamed chunks | Injected context led the LLM to a wrong finding |
 
-### Decision flowchart
+### Decision tree by scenario
 
-1. **Is the finding wrong?** → `fp` (trains suppression globally)
-2. **Is the finding real and actionable?** → `tp` (trains boosting globally)
-3. **Is it real but severity overstated?** → `partial`
-4. **Is it real but accepted debt / not worth fixing?** → `tp` (still a real pattern — helps calibrator recognize similar issues)
-5. **Is it pre-existing, not related to your changes?** → Skip it. Don't record feedback for findings outside your diff scope.
+Work through these in order. The first match wins.
+
+**Step 1: Is the finding wrong?**
+
+| Scenario | Verdict | Flags | Why |
+|----------|---------|-------|-----|
+| LLM hallucinated (wrong line, fabricated function) | `fp` | `--fp-kind hallucination` | Trains suppression; hallucination tag tracks LLM reliability |
+| Pattern matched syntactically but context makes it benign (e.g. `unwrap()` on guaranteed `Some`) | `fp` | `--fp-kind pattern-overgeneralization --fp-discriminator "why it's safe"` | Teaches the LLM when the pattern is NOT a bug |
+| Wrong threat model (e.g. flagging internal API as SSRF risk) | `fp` | `--fp-kind trust-model` | Decays 3x faster because trust models evolve |
+| Real pattern but mitigated upstream (e.g. input validated by caller) | `fp` | `--fp-kind compensating-control --fp-reference "src/auth.rs:42"` | Records where the mitigation lives |
+| Wrong because injected context was stale/misleading | `context_misleading` | `--blamed-chunks id1,id2` | Trains the injector, not the calibrator |
+
+**Step 2: Is the finding real and in your diff?**
+
+| Scenario | Verdict | Flags | Why |
+|----------|---------|-------|-----|
+| Real bug, you fixed it | `tp` | `--in-diff true --reason "Fixed by ..."` | Strongest learning signal for the calibrator |
+| Real bug, you won't fix it now | `tp` | `--in-diff true --reason "Accepted: ..."` | Still a real pattern — helps calibrator recognize similar issues |
+| Real but severity overstated (e.g. "critical" should be "medium") | `partial` | `--in-diff true --reason "Severity should be medium"` | Inert for calibrator but records your assessment |
+
+**Step 3: Is the finding real but outside your diff?**
+
+| Scenario | Verdict | Flags | Why |
+|----------|---------|-------|-----|
+| Real bug, you file an issue for it | `fp` | `--fp-kind out-of-scope --fp-tracked-in "issue #123" --in-diff false` | Suppresses this pattern in diff-scoped reviews (it's noise in that context). The issue tracks the real fix. |
+| Real bug, not worth filing | Do not record | — | No feedback. Don't pollute the calibrator with findings you can't act on. |
+| Pre-existing, already tracked | Do not record | — | Skip silently. |
+
+**Key principles:**
+- `tp` means "I want to see MORE findings like this." Use for real bugs in your diff.
+- `fp` means "I want to see FEWER findings like this." Use for wrong findings AND for real-but-out-of-scope findings (they're noise in diff-scoped reviews).
+- `fp --fp-kind out-of-scope` is the correct way to handle a real bug outside your diff that you filed as an issue. It's not dishonest — it tells the calibrator "this finding is correct but not useful in this review context."
+- Never use `wontfix` — it's inert. Use `tp` (real, want more) or `fp --fp-kind out-of-scope` (real, want fewer in diff-scoped reviews).
+- `partial` is inert metadata — use it only when severity is the issue, not correctness.
+
+### Useful feedback flags
+
+| Flag | Purpose |
+|------|---------|
+| `--in-diff true/false` | Explicitly mark whether the finding was inside the diff scope |
+| `--blamed-chunks id1,id2` | Chunk IDs that caused misleading context (with `context_misleading` verdict) |
+| `--category <cat>` | Finding category (e.g. "security", "correctness") |
 
 ### Classifying false positives with `fp_kind` (v0.18.0+)
 
@@ -168,11 +244,52 @@ Untagged FPs use the default τ=120d (~83d half-life). `quorum stats` reports `f
 
 **fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `ExternalVerdictInput` which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary. Don't expect fp_kind to persist for external-agent verdicts.
 
+### What drives precision and recall
+
+The calibrator learns from `tp` and `fp` verdicts only. Your feedback directly controls review quality:
+
+- **Every `tp` you record** boosts similar findings → improves recall (quorum surfaces more real bugs)
+- **Every `fp` you record** suppresses similar findings → improves precision (fewer false alarms)
+- **Unrecorded findings** teach nothing — the calibrator can't learn from silence
+
+The highest-value feedback is `tp` on real bugs you fixed (the calibrator learns "this pattern catches real issues") and `fp` with a specific `fp_kind` (the calibrator learns "this pattern fires incorrectly in this context"). Generic `fp` without `fp_kind` still helps but decays at the default rate.
+
 ### What NOT to do
 
 - **Don't use `wontfix`** — it's inert. If the issue is real, use `tp`. If it's not real, use `fp`.
-- **Don't record feedback for pre-existing findings** you didn't touch — it pollutes the global calibrator with noise from code you're not changing.
+- **Don't skip feedback for in-diff findings** — every untriaged finding is a missed learning opportunity for the calibrator.
+- **Don't record feedback for pre-existing findings you can't act on** — it's noise. If you file an issue, use `fp --fp-kind out-of-scope --fp-tracked-in <issue>` instead.
 - **Don't record `fp` for intentional patterns** (like disabled TLS for self-signed certs) unless you want them suppressed across ALL projects.
+
+## Context Injection (v0.16.0+)
+
+Quorum can inject project-specific context (codebase docs, architecture notes, API specs) into the LLM prompt to improve review quality.
+
+### Setup
+
+```bash
+quorum context init                   # create ~/.quorum/sources.toml
+quorum context add ~/projects/mylib   # register a local source
+quorum context add https://github.com/org/repo  # register a git source
+quorum context index                  # extract + embed all sources
+quorum context list                   # show registered sources
+quorum context query "auth flow"      # semantic search across indexed chunks
+quorum context refresh                # re-index drifted sources
+quorum context prune                  # remove artefacts for deregistered sources
+quorum context doctor                 # health checks on the context store
+```
+
+When `auto_inject = true` in `~/.quorum/sources.toml`, every `quorum review` retrieves top-k chunks, plans under a token budget (40% floor, symbols-first), and renders a fenced Markdown block into the LLM prompt.
+
+### Context7 Framework Enrichment
+
+Quorum auto-detects project dependencies from manifests (Cargo.toml, package.json, pyproject.toml) and queries Context7 for framework docs relevant to each file's imports. Controlled via:
+
+```bash
+quorum review src/*.rs --skip-context7    # skip framework doc enrichment
+quorum review src/*.rs --live-registry    # enable download-count popularity lookups
+# Also: QUORUM_CONTEXT7_LIVE_REGISTRY=1
+```
 
 ## MCP Server (for Claude Code / agents)
 
@@ -212,7 +329,7 @@ quorum review src/*.rs --diff-file /tmp/changes.patch
 
 Hydration context scoped to changed lines only. Same finding quality, smaller prompt.
 
-### Model configuration
+### Review flags
 
 | Flag | Purpose | Example |
 |------|---------|---------|
@@ -222,6 +339,14 @@ Hydration context scoped to changed lines only. Same finding quality, smaller pr
 | --reasoning-effort | Control reasoning depth (none/low/medium/high) | --reasoning-effort=low |
 | --calibration-model | Model for auto-calibration pass | --calibration-model=gpt-5.3-codex |
 | --no-auto-calibrate | Skip automatic triage | |
+| --judge | Enable LLM micro-judge for speculative AST rules | --judge |
+| --judge-model M | Model for judge calls (default: gpt-5-nano) | --judge-model gpt-5-nano |
+| --fast | Skip fastembed model (saves ~1.5 GB RAM, ~15s startup) | --fast |
+| --trace | Enable structured tracing to ~/.quorum/trace.jsonl | --trace |
+| --mode M | Review mode: code (default), plan, docs | --mode plan |
+| --show-suppressed | Show findings suppressed by project rules | --show-suppressed |
+| --skip-context7 | Skip Context7 framework doc enrichment | --skip-context7 |
+| --live-registry | Enable download-count popularity lookups | --live-registry |
 
 ### Recommended configurations
 
@@ -260,6 +385,69 @@ quorum feedback --file src/x.rs --finding "Bug" --verdict tp --reason "confirmed
 ```
 
 The tier breakdown shows up under `quorum stats` Feedback Health when any non-Human entry exists, with a per-agent sub-line for External.
+
+## Agentic Review + Feedback Workflow
+
+When using quorum as part of a development workflow (e.g. `/dev:start`), follow this loop after implementation is complete:
+
+### 1. Run diff-scoped review
+
+Use the diff-aware review mode (see "Diff-aware review" section above):
+
+```bash
+git diff main > /tmp/changes.patch
+quorum review <changed-files> --diff-file /tmp/changes.patch --compact
+```
+
+### 2. Triage every finding
+
+Use the **Decision tree by scenario** (above) to pick the right verdict for each finding. Summary:
+
+**In-branch** (introduced or touched by this work):
+- Real bugs: fix using TDD micro-cycle (RED test reproducing finding, GREEN fix, verify), then record `tp --in-diff true`
+- False positives: record `fp` with `--fp-kind` and `--reason`
+
+**Pre-existing** (unrelated to this branch):
+- Real bugs worth filing: file GitHub issue with `gh issue create` citing file:line + finding text, then record `fp --fp-kind out-of-scope --fp-tracked-in "issue #N" --in-diff false`
+- Not worth filing: do not record feedback. Do NOT fix in this branch (scope discipline).
+
+### 3. Re-run until clean
+
+Re-run quorum on changed files until only accepted/wontfix findings remain on the changed surface.
+
+### 4. Record feedback for every triaged finding
+
+```bash
+# True positive you fixed
+quorum feedback --file src/x.rs --finding "SQL injection" --verdict tp \
+    --in-diff true --reason "Fixed by parameterizing query"
+
+# True positive, accepted but not fixed
+quorum feedback --file src/x.rs --finding "Missing error handling" --verdict tp \
+    --in-diff true --reason "Real issue, will address in follow-up"
+
+# Misleading injected context caused a bad finding
+quorum feedback --file src/x.rs --finding "Wrong API usage" \
+    --verdict context_misleading --blamed-chunks chunk_id_1,chunk_id_2 \
+    --reason "Stale docs led LLM to flag correct usage as wrong"
+
+# False positive with classification
+quorum feedback --file src/x.rs --finding "unwrap on Option" --verdict fp \
+    --fp-kind pattern-overgeneralization \
+    --fp-discriminator "type-system-guaranteed Some" \
+    --reason "Match arm guarantees Some variant"
+```
+
+### 5. Merge CodeRabbit findings (if available)
+
+If CodeRabbit (or another external reviewer) posted findings on the PR, evaluate those too. For external-agent verdicts:
+
+```bash
+quorum feedback --file src/x.rs --finding "Memory leak" --verdict tp \
+    --from-agent coderabbit --reason "confirmed, fixed"
+```
+
+Note: `fp_kind` is dropped on the external path — it only persists on direct/human ingestion.
 
 ## Configuration
 
