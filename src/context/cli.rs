@@ -932,19 +932,19 @@ fn check_staleness<D: ContextDeps>(entry: &SourceEntry, deps: &D) -> StalenessRe
         _ => None,
     };
     let current_model = deps.embedder().model_hash();
-    if layout.state.exists() {
-        if let Ok(Some(on_disk)) = IndexState::load(&layout.state) {
-            let model_matches = on_disk.embedder_model_hash == current_model;
-            let head_matches = match (&on_disk.head_sha, &current_head) {
-                (Some(a), Some(b)) => a == b,
-                _ => false,
-            };
-            if model_matches && head_matches {
-                return StalenessResult::UpToDate(format!(
-                    "HEAD {} unchanged",
-                    current_head.as_deref().unwrap_or("?")
-                ));
-            }
+    if layout.state.exists()
+        && let Ok(Some(on_disk)) = IndexState::load(&layout.state)
+    {
+        let model_matches = on_disk.embedder_model_hash == current_model;
+        let head_matches = match (&on_disk.head_sha, &current_head) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if model_matches && head_matches {
+            return StalenessResult::UpToDate(format!(
+                "HEAD {} unchanged",
+                current_head.as_deref().unwrap_or("?")
+            ));
         }
     }
     StalenessResult::NeedsRebuild
@@ -964,20 +964,20 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
     let mut created: Vec<PathBuf> = Vec::new();
     for entry in &entries {
         // When not forced, check staleness before doing work.
-        if !args.force {
-            if let StalenessResult::UpToDate(reason) = check_staleness(entry, deps) {
-                outcomes.push(IndexOutcome {
-                    name: entry.name.clone(),
-                    result: Ok(IndexSuccess {
-                        chunks_inserted: 0,
-                        head_sha: None,
-                        skipped: Some(reason),
-                        files_extracted: 0,
-                        incremental: false,
-                    }),
-                });
-                continue;
-            }
+        if !args.force
+            && let StalenessResult::UpToDate(reason) = check_staleness(entry, deps)
+        {
+            outcomes.push(IndexOutcome {
+                name: entry.name.clone(),
+                result: Ok(IndexSuccess {
+                    chunks_inserted: 0,
+                    head_sha: None,
+                    skipped: Some(reason),
+                    files_extracted: 0,
+                    incremental: false,
+                }),
+            });
+            continue;
         }
         match index_one_source(entry, deps, &mut created) {
             Ok(success) => outcomes.push(IndexOutcome {

@@ -171,7 +171,11 @@ impl GitOps for FakeGit {
         Ok(self.default_head.clone())
     }
 
-    fn diff_files(&self, repo_root: &Path, _from_sha: &str) -> std::io::Result<Option<Vec<String>>> {
+    fn diff_files(
+        &self,
+        repo_root: &Path,
+        _from_sha: &str,
+    ) -> std::io::Result<Option<Vec<String>>> {
         Ok(self.diff_by_path.get(repo_root).cloned())
     }
 }

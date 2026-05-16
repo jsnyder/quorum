@@ -222,10 +222,10 @@ fn extract_source_inner(
             diagnostics.total_files_scanned += 1;
 
             // File filter: skip files not in the changed set.
-            if let Some(filter) = file_filter {
-                if !filter.contains(&rel) {
-                    continue;
-                }
+            if let Some(filter) = file_filter
+                && !filter.contains(&rel)
+            {
+                continue;
             }
 
             // Tier 1: per-source ignore.

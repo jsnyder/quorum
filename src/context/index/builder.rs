@@ -263,9 +263,7 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
                     "DELETE FROM chunks_fts WHERE id IN \
                      (SELECT id FROM chunks WHERE source = ?1 AND source_path IN ({placeholders}))"
                 ),
-                format!(
-                    "DELETE FROM chunks WHERE source = ?1 AND source_path IN ({placeholders})"
-                ),
+                format!("DELETE FROM chunks WHERE source = ?1 AND source_path IN ({placeholders})"),
             ] {
                 let mut stmt = tx.prepare(&table_sql)?;
                 let mut all_params: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
@@ -318,8 +316,7 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
             "INSERT INTO chunks_fts (id, content, qualified_name, signature)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
-        let mut ins_vec =
-            tx.prepare("INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)")?;
+        let mut ins_vec = tx.prepare("INSERT INTO chunks_vec(id, embedding) VALUES (?1, ?2)")?;
 
         for (chunk, vec) in embedded {
             let kind_str = serde_json::to_value(&chunk.kind)

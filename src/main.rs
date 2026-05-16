@@ -547,8 +547,7 @@ fn run_join_health(quorum_home: &std::path::Path) -> i32 {
 fn run_context(opts: cli::ContextOpts) -> i32 {
     use context::cli::{
         AddArgs, AddLocation, ContextCmd, DoctorArgs, DoctorFormat, IndexArgs, ListArgs,
-        ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat, SourceSelector,
-        run_context_cmd,
+        ListFormat, ProdDeps, PruneArgs, QueryArgs, QueryFormat, SourceSelector, run_context_cmd,
     };
 
     // Map `--source X` / `--all` / neither into a SourceSelector. The default
