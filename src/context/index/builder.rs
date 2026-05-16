@@ -229,16 +229,31 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
             ..RebuildReport::default()
         };
 
+        // Defense-in-depth: only accept chunks that belong to this source AND
+        // whose source_path is in the declared changed_files set. This mirrors
+        // the partition check in `rebuild_from_jsonl` and prevents accidental
+        // insertion of unrelated chunks.
+        let valid_chunks: Vec<&Chunk> = new_chunks
+            .iter()
+            .filter(|c| {
+                c.source == source_name && changed_files.contains(&c.metadata.source_path)
+            })
+            .collect();
+
         // Pre-embed outside the transaction.
-        let mut embedded: Vec<(Chunk, Vec<f32>)> = Vec::with_capacity(new_chunks.len());
-        for chunk in new_chunks {
+        let mut embedded: Vec<(Chunk, Vec<f32>)> = Vec::with_capacity(valid_chunks.len());
+        for chunk in &valid_chunks {
             if chunk.content.is_empty() {
                 continue;
             }
             let vec = self.embedder.embed(&chunk.content);
-            embedded.push((chunk.clone(), vec));
+            embedded.push(((*chunk).clone(), vec));
         }
         report.chunks_embedded = embedded.len();
+
+        // Collect valid chunk ids so we can filter fingerprint inserts.
+        let valid_ids: std::collections::HashSet<&str> =
+            valid_chunks.iter().map(|c| c.id.as_str()).collect();
 
         let tx = self.conn.transaction()?;
 
@@ -278,7 +293,7 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         // Insert new chunks using the shared helper.
         Self::insert_embedded_chunks(&tx, &embedded)?;
 
-        // Insert structural fingerprints for the new chunks.
+        // Insert structural fingerprints only for chunks we actually inserted.
         if !fingerprints.is_empty() {
             let mut fp_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec)
@@ -286,6 +301,9 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
                  WHERE EXISTS (SELECT 1 FROM chunks WHERE id = ?1)",
             )?;
             for (chunk_id, vec) in fingerprints {
+                if !valid_ids.contains(chunk_id.as_str()) {
+                    continue;
+                }
                 let bytes = f32_vec_to_le_bytes(vec);
                 fp_stmt.execute(params![chunk_id, bytes])?;
             }
@@ -767,25 +785,28 @@ mod tests {
     }
 
     #[test]
-    fn test_update_files_empty_changed_set_only_inserts() {
+    fn test_update_files_empty_changed_set_inserts_nothing() {
         let mut builder = setup_builder();
 
         let chunk_a = make_chunk("a1", "my-source", "src/a.rs", "fn foo() {}");
         insert_chunks_direct(&mut builder, &[chunk_a]);
 
-        // Call update_files with empty changed set — should only add, not delete.
+        // Call update_files with empty changed set — chunks whose source_path
+        // is not in the changed set are filtered out (defense-in-depth).
         let new_b = make_chunk("b1", "my-source", "src/b.rs", "fn bar() {}");
         let changed: HashSet<String> = HashSet::new();
         let fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]> = HashMap::new();
 
-        let _report = builder
+        let report = builder
             .update_files("my-source", &[new_b], &changed, &fingerprints)
             .unwrap();
 
-        // Both should exist
-        assert_eq!(count_all_chunks(builder.conn(), "my-source"), 2);
+        // Only the original chunk should exist; new_b was filtered out.
+        assert_eq!(count_all_chunks(builder.conn(), "my-source"), 1);
         assert!(get_chunk_content(builder.conn(), "a1").is_some());
-        assert!(get_chunk_content(builder.conn(), "b1").is_some());
+        assert!(get_chunk_content(builder.conn(), "b1").is_none());
+        assert_eq!(report.chunks_embedded, 0);
+        assert_eq!(report.chunks_inserted, 0);
     }
 
     #[test]

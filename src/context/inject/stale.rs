@@ -101,13 +101,18 @@ impl GitOps for SystemGit {
             .arg(format!("{from_sha}..HEAD"))
             .output()?;
         if !output.status.success() {
+            tracing::debug!(
+                from_sha,
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "git diff --name-only failed; falling back to full rebuild"
+            );
             return Ok(None);
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let files: Vec<String> = stdout
             .lines()
             .filter(|l| !l.is_empty())
-            .map(|l| l.replace('\\', "/"))
+            .map(|l| l.to_string())
             .collect();
         Ok(Some(files))
     }
