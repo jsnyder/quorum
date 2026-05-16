@@ -304,23 +304,22 @@ fn calibrate_core_decision(
     // This preserves the finding for human review while reducing noise.
     // Two triggers: (a) strong FP dominates TP; (b) modest FP, ~zero TP.
     // PR3: soft suppress stays on legacy magic numbers (out of scope).
-    if (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
-        || (soft_fp_weight >= 0.5 && tp_weight < 0.1)
-    {
+    let soft_suppressed = (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
+        || (soft_fp_weight >= 0.5 && tp_weight < 0.1);
+    if soft_suppressed {
         finding.severity = Severity::Info;
         finding.calibrator_action = Some(CalibratorAction::Disputed);
         reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
         // Don't mark as suppressed -- finding stays in output at reduced severity.
     }
 
-    // Boost: TP clearly dominates FP.
+    // Boost: TP clearly dominates FP. Skip when soft-suppress already fired (#292).
     let boost_thresh = force_threshold.or(boost_threshold);
-    let boost_triggered = if let Some(thresh) = boost_thresh {
-        // Data-driven path: boost when score is at or above the threshold
-        // and there is at least some TP evidence.
+    let boost_triggered = if soft_suppressed {
+        false
+    } else if let Some(thresh) = boost_thresh {
         config.boost_tp && score >= thresh && tp_weight > 0.0
     } else {
-        // Legacy fallback: magic numbers.
         config.boost_tp && tp_weight >= 1.5 && tp_weight > fp_weight * 2.0
     };
 
@@ -2661,6 +2660,46 @@ mod tests {
 
         assert_eq!(result.findings.len(), 1); // still in output
         assert_eq!(result.findings[0].severity, Severity::Info); // but downgraded
+    }
+
+    #[test]
+    fn soft_suppress_prevents_boost() {
+        // Issue #292: soft-suppress (downgrade to Info) must short-circuit
+        // so the boost path never fires. With a low data-driven boost
+        // threshold, both conditions can trigger on the same weights.
+        //
+        // Weights: tp=0.05, fp=0.6 → soft suppress trigger (b): fp≥0.5 && tp<0.1
+        // Score: 0.05/(0.05+0.6) ≈ 0.077 → above boost_threshold=0.05
+        // Before fix: severity Info→Low (boost), action Disputed→Confirmed
+        // After fix:  severity stays Info, action stays Disputed
+        let mut finding = FindingBuilder::new()
+            .title("Potential resource leak")
+            .category(Category::Security)
+            .severity(Severity::Medium)
+            .build();
+        let config = CalibratorConfig {
+            boost_threshold: Some(0.05),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.05, // tp_weight
+            0.6,  // fp_weight
+            0.0,  // wontfix_weight
+            0.6,  // soft_fp_weight
+            vec![],
+            Severity::Medium,
+            "",
+        );
+        assert!(!decision.suppressed, "should not be fully suppressed");
+        assert!(!decision.boosted, "soft-suppressed finding must not be boosted");
+        assert_eq!(finding.severity, Severity::Info, "soft-suppress should downgrade to Info");
+        assert_eq!(
+            finding.calibrator_action,
+            Some(CalibratorAction::Disputed),
+            "action should remain Disputed, not Confirmed"
+        );
     }
 
     #[test]
