@@ -916,6 +916,8 @@ struct IndexSuccess {
     chunks_inserted: usize,
     head_sha: Option<String>,
     skipped: Option<String>,
+    files_extracted: usize,
+    incremental: bool,
 }
 
 enum StalenessResult {
@@ -970,6 +972,8 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
                         chunks_inserted: 0,
                         head_sha: None,
                         skipped: Some(reason),
+                        files_extracted: 0,
+                        incremental: false,
                     }),
                 });
                 continue;
@@ -1002,10 +1006,18 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
                     s.skipped.as_ref().unwrap()
                 ));
             }
-            Ok(s) => lines.push(format!(
-                "indexed '{}': {} chunks",
-                o.name, s.chunks_inserted
-            )),
+            Ok(s) if s.incremental => {
+                lines.push(format!(
+                    "indexed '{}': {} chunks from {} changed files",
+                    o.name, s.chunks_inserted, s.files_extracted
+                ));
+            }
+            Ok(s) => {
+                lines.push(format!(
+                    "indexed '{}': {} files, {} chunks",
+                    o.name, s.files_extracted, s.chunks_inserted
+                ));
+            }
             Err(msg) => {
                 failures += 1;
                 let line = format!("failed '{}': {msg}", o.name);
@@ -1087,6 +1099,8 @@ fn index_one_source<D: ContextDeps>(
                 chunks_inserted: 0,
                 head_sha: current_head,
                 skipped: None,
+                files_extracted: 0,
+                incremental: true,
             });
         }
 
@@ -1121,6 +1135,8 @@ fn index_one_source<D: ContextDeps>(
             chunks_inserted: report.chunks_inserted,
             head_sha: current_head,
             skipped: None,
+            files_extracted: extracted.diagnostics.extracted_files,
+            incremental: true,
         });
     }
 
@@ -1186,6 +1202,8 @@ fn index_one_source<D: ContextDeps>(
         chunks_inserted: report.chunks_inserted,
         head_sha,
         skipped: None,
+        files_extracted: extracted.diagnostics.extracted_files,
+        incremental: false,
     })
 }
 

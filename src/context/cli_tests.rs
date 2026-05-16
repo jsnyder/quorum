@@ -1031,6 +1031,25 @@ fn index_incremental_skips_reembed_when_no_files_changed() {
 }
 
 #[test]
+fn index_output_includes_file_count() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    let out = run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+            force: true,
+        }),
+        &deps,
+    )
+    .expect("index");
+    assert!(
+        out.stdout.contains("files") && out.stdout.contains("chunks"),
+        "output should include files/chunks: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
 fn query_returns_ranked_hits_for_indexed_source() {
     let deps = TestDeps::new();
     seed_single_source(&deps, "mini", "mini-rust");
