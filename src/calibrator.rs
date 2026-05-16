@@ -5035,6 +5035,7 @@ mod tests {
                 computed_at: "2026-05-12T00:00:00Z".to_string(),
                 feedback_count: 100,
                 global_fp_rate: 0.27,
+                learned_weights: None,
             },
             weights: crate::calibrator_model::ScoreWeights {
                 score: 0.5,
