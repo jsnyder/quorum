@@ -105,7 +105,8 @@ coefficients = [0.42, -1.3, 0.88, ...]
 intercept = -1.2
 feature_means = [0.5, 0.27, 0.6, ...]
 feature_stddevs = [0.3, 0.15, 0.25, ...]
-threshold = 0.45
+suppress_threshold = 0.45
+boost_threshold = 0.08
 ap_score = 0.67
 fp_recall_at_99_tp_recall = 0.35
 baseline_ap = 0.18
@@ -115,9 +116,9 @@ baseline_ap = 0.18
 
 During the production training phase (on 100% of data):
 1. Compute P(FP) for all training samples
-2. Sort TP samples by their P(FP) descending
-3. Pick threshold at the 1st percentile of TP predictions (ensures 99% TP recall)
-4. Store this threshold in the model file
+2. **Suppress threshold**: Sort TP samples by their P(FP) descending. Pick threshold at the 1st percentile of TP predictions (ensures 99% TP recall — at most 1% of TPs will be falsely suppressed).
+3. **Boost threshold**: Sort FP samples by their P(FP) ascending. Pick threshold at the 5th percentile of FP predictions (ensures 95% of FPs will not be falsely boosted).
+4. Store both thresholds in the model file
 
 ### 10. Review-Time Scoring (src/calibrator.rs)
 
@@ -126,8 +127,9 @@ When `CalibratorModel` has a `logistic_model` section:
 2. Standardize using stored means/stddevs (+ 1e-8 for division safety)
 3. Compute logit = dot(coefficients, features) + intercept
 4. P(FP) = sigmoid(logit)
-5. If P(FP) > threshold → suppress (severity → Info, action → Suppressed)
-6. Also emit the old composite score in the trace for A/B comparison
+5. If P(FP) > suppress_threshold → suppress (severity → Info, action → Suppressed)
+6. If P(FP) < boost_threshold → boost (severity upgraded one level, e.g. medium → high)
+7. Also emit the old composite score in the trace for A/B comparison
 
 When no logistic model exists → fall back to existing composite scoring (unchanged behavior).
 
