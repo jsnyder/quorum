@@ -49,14 +49,14 @@ All computed during `extract_join_features`. Per-fold univariate screening (AP �
 - `min_word_lor`: minimum word log-odds ratio in title
 - `count_negative_lor_tokens`: count of tokens with LOR < -0.5
 
-### 3. Logistic Regression (~150 LOC, src/logistic.rs)
+### 3. Logistic Regression (~200 LOC, src/logistic.rs)
 
 Inline implementation, no external dependencies.
 
-- **Standardization**: z-score normalization (mean/stddev per feature, computed from training fold)
-- **Training**: Batch gradient descent with L2 regularization
-- **Lambda selection**: Small grid {0.01, 0.1, 1.0, 10.0}, best by validation AP
-- **Convergence**: max 1000 iterations, early stop when gradient norm < 1e-6
+- **Standardization**: z-score normalization (mean/stddev per feature, computed from training fold). Division-safe: use `stddev + 1e-8` to handle constant features.
+- **Training**: Batch gradient descent with L2 regularization and backtracking line search (Armijo condition) for step size selection.
+- **Lambda selection**: Small grid {0.01, 0.1, 1.0, 10.0}, best by validation AP (Average Precision, not operational metric — see §7).
+- **Convergence**: max 500 iterations, early stop when relative loss change < 1e-4 (`(prev_loss - loss) / prev_loss`).
 - **Output**: coefficient vector, intercept, feature means/stddevs, selected feature indices
 
 ### 4. Per-Fold Feature Selection
@@ -81,10 +81,12 @@ All target-encoded features recomputed per training fold to prevent leakage:
 - 5-fold GroupKFold by title family (avoids near-duplicate leakage)
 - Each fold: univariate screen → fit logistic → evaluate on held-out fold
 - Stability check: feature selection agreement across folds (≥3/5 folds must select a feature for it to be in the final model)
+- **Separation of concerns**: CV phase produces out-of-fold predictions for evaluation only. Production model is retrained on 100% of data with the consensus feature set.
 
 ### 7. Metrics
 
-- **Primary (operational):** FP recall at TP recall ≥ 99% ("how many FPs can we suppress while losing ≤1% of real issues?")
+- **Fold-level evaluation (for lambda selection):** Average Precision (stepwise, FP-positive). NOT the operational metric — per-fold TP counts (~257) have only ~2 TPs of margin at 99% recall, making fold-level operational metrics too volatile.
+- **Aggregated OOF metric (reported):** FP recall at TP recall ≥ 99%, computed on concatenated out-of-fold predictions across all 5 folds.
 - **Secondary:** Average Precision (stepwise, FP-positive)
 - **Safety:** TP false-suppression rate
 - **Baseline comparison:** all metrics vs trivial classifier (predict all negative in FP-positive framing)
@@ -109,11 +111,19 @@ fp_recall_at_99_tp_recall = 0.35
 baseline_ap = 0.18
 ```
 
-### 9. Review-Time Scoring (src/calibrator.rs)
+### 9. Threshold Selection
+
+During the production training phase (on 100% of data):
+1. Compute P(FP) for all training samples
+2. Sort TP samples by their P(FP) descending
+3. Pick threshold at the 1st percentile of TP predictions (ensures 99% TP recall)
+4. Store this threshold in the model file
+
+### 10. Review-Time Scoring (src/calibrator.rs)
 
 When `CalibratorModel` has a `logistic_model` section:
 1. Compute the selected features for the finding (same extraction logic)
-2. Standardize using stored means/stddevs
+2. Standardize using stored means/stddevs (+ 1e-8 for division safety)
 3. Compute logit = dot(coefficients, features) + intercept
 4. P(FP) = sigmoid(logit)
 5. If P(FP) > threshold → suppress (severity → Info, action → Suppressed)
@@ -152,7 +162,8 @@ Logistic model (279 FP, 1288 non-FP, 5-fold GroupKFold):
 
 ### 11. Fallback & Safety
 
-- If fewer than 50 joined samples: skip learning (existing gate)
+- If fewer than 200 joined samples: skip learning, print "insufficient data" diagnostic
+- If min(FP count, TP count) < 30: skip learning (need both classes represented)
 - If best AP ≤ baseline + 0.02: refuse to write model, print diagnostic
 - If feature selection retains < 2 features: refuse to write model
 - Missing model file at review time: silent fallback to composite scoring
@@ -174,5 +185,5 @@ Logistic model (279 FP, 1288 non-FP, 5-fold GroupKFold):
 
 - Online learning / incremental updates (future)
 - Non-linear models (decision trees, etc.)
-- Feature interactions as explicit terms (L2 logistic handles some implicitly)
+- Feature interactions as explicit terms
 - Automated lambda tuning beyond the 4-point grid
