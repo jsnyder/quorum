@@ -235,9 +235,7 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         // insertion of unrelated chunks.
         let valid_chunks: Vec<&Chunk> = new_chunks
             .iter()
-            .filter(|c| {
-                c.source == source_name && changed_files.contains(&c.metadata.source_path)
-            })
+            .filter(|c| c.source == source_name && changed_files.contains(&c.metadata.source_path))
             .collect();
 
         // Pre-embed outside the transaction.

@@ -56,9 +56,7 @@ fn context_help_lists_all_subcommands() {
         .stdout
         .clone();
     let stdout = String::from_utf8(out).unwrap();
-    for cmd in [
-        "init", "add", "list", "index", "query", "prune", "doctor",
-    ] {
+    for cmd in ["init", "add", "list", "index", "query", "prune", "doctor"] {
         let needle = format!("  {cmd}  ");
         assert!(
             stdout.contains(&needle),
