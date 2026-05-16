@@ -182,6 +182,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         }
     }
 

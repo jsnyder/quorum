@@ -126,6 +126,7 @@ fn make_no_match_trace(
         same_file_precedent_count: None,
         in_diff: finding.in_diff,
         composite_score: None,
+        logistic_p_fp: None,
     }
 }
 
@@ -168,7 +169,93 @@ fn make_trace_entry(
         same_file_precedent_count: None,
         in_diff: finding.in_diff,
         composite_score: None,
+        logistic_p_fp: None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Logistic model review-time scoring
+// ---------------------------------------------------------------------------
+
+/// Feature vector computed at review time for logistic model scoring.
+#[derive(Debug, Clone)]
+pub struct ReviewFeatures {
+    pub log1p_tp_weight: f64,
+    pub log1p_fp_weight: f64,
+    pub precedent_count: f64,
+    pub max_similarity: f64,
+    pub mean_similarity: f64,
+    pub has_no_precedents: f64,
+    pub log1p_soft_fp_weight: f64,
+    pub log1p_full_suppress_weight: f64,
+    pub log1p_wontfix_weight: f64,
+    pub category_fp_rate: f64,
+    pub severity_fp_rate: f64,
+    pub model_fp_rate: f64,
+    pub max_word_lor: f64,
+    pub min_word_lor: f64,
+    pub count_negative_lor_tokens: f64,
+}
+
+impl ReviewFeatures {
+    /// Create a feature vector with all fields set to zero.
+    pub fn zeros() -> Self {
+        Self {
+            log1p_tp_weight: 0.0,
+            log1p_fp_weight: 0.0,
+            precedent_count: 0.0,
+            max_similarity: 0.0,
+            mean_similarity: 0.0,
+            has_no_precedents: 0.0,
+            log1p_soft_fp_weight: 0.0,
+            log1p_full_suppress_weight: 0.0,
+            log1p_wontfix_weight: 0.0,
+            category_fp_rate: 0.0,
+            severity_fp_rate: 0.0,
+            model_fp_rate: 0.0,
+            max_word_lor: 0.0,
+            min_word_lor: 0.0,
+            count_negative_lor_tokens: 0.0,
+        }
+    }
+
+    /// Get feature value by name (matches `LogisticModel.selected_features` entries).
+    pub fn get_by_name(&self, name: &str) -> f64 {
+        match name {
+            "log1p_tp_weight" => self.log1p_tp_weight,
+            "log1p_fp_weight" => self.log1p_fp_weight,
+            "precedent_count" => self.precedent_count,
+            "max_similarity" => self.max_similarity,
+            "mean_similarity" => self.mean_similarity,
+            "has_no_precedents" => self.has_no_precedents,
+            "log1p_soft_fp_weight" => self.log1p_soft_fp_weight,
+            "log1p_full_suppress_weight" => self.log1p_full_suppress_weight,
+            "log1p_wontfix_weight" => self.log1p_wontfix_weight,
+            "category_fp_rate" => self.category_fp_rate,
+            "severity_fp_rate" => self.severity_fp_rate,
+            "model_fp_rate" => self.model_fp_rate,
+            "max_word_lor" => self.max_word_lor,
+            "min_word_lor" => self.min_word_lor,
+            "count_negative_lor_tokens" => self.count_negative_lor_tokens,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Compute P(FP) using the stored logistic model.
+///
+/// Standardizes features using stored means/stddevs, computes logit, applies sigmoid.
+pub fn logistic_score(
+    model: &crate::calibrator_model::LogisticModel,
+    features: &ReviewFeatures,
+) -> f64 {
+    let mut logit = model.intercept;
+    for (i, feat_name) in model.selected_features.iter().enumerate() {
+        let raw = features.get_by_name(feat_name);
+        let normed = (raw - model.feature_means[i]) / (model.feature_stddevs[i] + 1e-8);
+        logit += model.coefficients[i] * normed;
+    }
+    crate::logistic::sigmoid(logit)
 }
 
 /// Outcome of [`calibrate_core_decision`]: whether the finding was fully
@@ -224,6 +311,148 @@ fn calibrate_core_decision(
     let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
     let mut suppressed = false;
     let mut boosted = false;
+
+    // Logistic model path: when present, P(FP) directly drives suppress/boost decisions.
+    if let Some(logistic) = config.model.as_ref().and_then(|m| m.logistic_model.as_ref()) {
+        let review_features = ReviewFeatures {
+            log1p_tp_weight: tp_weight.ln_1p(),
+            log1p_fp_weight: fp_weight.ln_1p(),
+            precedent_count: (matched_precedents.len() as f64).min(10.0),
+            max_similarity: matched_precedents
+                .iter()
+                .map(|p| p.similarity)
+                .fold(0.0_f64, f64::max),
+            mean_similarity: if matched_precedents.is_empty() {
+                0.0
+            } else {
+                matched_precedents.iter().map(|p| p.similarity).sum::<f64>()
+                    / matched_precedents.len() as f64
+            },
+            has_no_precedents: if matched_precedents.is_empty() {
+                1.0
+            } else {
+                0.0
+            },
+            log1p_soft_fp_weight: soft_fp_weight.ln_1p(),
+            log1p_full_suppress_weight: fp_weight.ln_1p(),
+            log1p_wontfix_weight: wontfix_weight.ln_1p(),
+            // Features that require fold-local stats not available at review time
+            // default to 0.0. The logistic model's standardization handles this
+            // (0.0 -> below-mean -> shifts logit accordingly).
+            category_fp_rate: 0.0,
+            severity_fp_rate: 0.0,
+            model_fp_rate: 0.0,
+            max_word_lor: 0.0,
+            min_word_lor: 0.0,
+            count_negative_lor_tokens: 0.0,
+        };
+
+        let p_fp = logistic_score(logistic, &review_features);
+
+        // Suppress: P(FP) > suppress_threshold AND some FP evidence exists
+        if p_fp > logistic.suppress_threshold && fp_weight > 0.0 {
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            suppressed = true;
+            let mut trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                fp_weight, // full_suppress_weight = fp_weight
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                Some(crate::calibrator_trace::SeverityChangeReason::Disputed),
+                file_path,
+            );
+            trace.logistic_p_fp = Some(p_fp);
+            return CoreDecision {
+                suppressed,
+                boosted,
+                trace,
+            };
+        }
+
+        // Boost: P(FP) < boost_threshold AND some TP evidence exists
+        if p_fp < logistic.boost_threshold && tp_weight > 0.0 && config.boost_tp {
+            let proposed = boost_severity(&finding.severity);
+            let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
+                .map(|v| v != "off" && v != "0")
+                .unwrap_or(true);
+            if !gate_on || rubric_supports_severity_bump(&proposed, finding) {
+                finding.severity = proposed;
+                boosted = true;
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::Boosted);
+            } else {
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostBlockedByGate);
+            }
+            finding.calibrator_action = Some(CalibratorAction::Confirmed);
+            let mut trace = make_trace_entry(
+                finding,
+                tp_weight,
+                fp_weight,
+                wontfix_weight,
+                fp_weight,
+                soft_fp_weight,
+                matched_precedents,
+                finding.calibrator_action.clone(),
+                input_severity,
+                reason,
+                file_path,
+            );
+            trace.logistic_p_fp = Some(p_fp);
+            return CoreDecision {
+                suppressed,
+                boosted,
+                trace,
+            };
+        }
+
+        // Neither threshold triggered: pass through (no data-driven action).
+        // Fall through to legacy soft-suppress path only.
+        // Record logistic_p_fp on trace but don't use composite/data-driven thresholds.
+        let full_suppress_weight = fp_weight;
+
+        // Legacy soft suppress still applies even with logistic model present.
+        let soft_suppressed = (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
+            || (soft_fp_weight >= 0.5 && tp_weight < 0.1);
+        if soft_suppressed {
+            finding.severity = Severity::Info;
+            finding.calibrator_action = Some(CalibratorAction::Disputed);
+            reason = Some(crate::calibrator_trace::SeverityChangeReason::Disputed);
+        }
+
+        if reason.is_none() {
+            // TP confirms without boost when logistic didn't trigger boost.
+            if tp_weight > fp_weight * 1.5 {
+                finding.calibrator_action = Some(CalibratorAction::Confirmed);
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+            } else {
+                reason = Some(crate::calibrator_trace::SeverityChangeReason::BoostWeightTooLow);
+            }
+        }
+
+        let mut trace = make_trace_entry(
+            finding,
+            tp_weight,
+            fp_weight,
+            wontfix_weight,
+            full_suppress_weight,
+            soft_fp_weight,
+            matched_precedents,
+            finding.calibrator_action.clone(),
+            input_severity,
+            reason,
+            file_path,
+        );
+        trace.logistic_p_fp = Some(p_fp);
+        return CoreDecision {
+            suppressed,
+            boosted,
+            trace,
+        };
+    }
 
     let has_composite = config.model.is_some();
     let force_threshold = sanitize_threshold(config.force_threshold, has_composite);
@@ -5207,6 +5436,305 @@ mod tests {
         assert!(
             decision.trace.composite_score.unwrap() > 2.0,
             "SQL injection should have high composite score"
+        );
+    }
+
+    // --- Logistic scoring tests ---
+
+    #[test]
+    fn logistic_score_high_fp_weight() {
+        use crate::calibrator_model::LogisticModel;
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1567,
+            n_fp: 279,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![2.0],
+            intercept: 0.0,
+            feature_means: vec![0.5],
+            feature_stddevs: vec![0.3],
+            suppress_threshold: 0.6,
+            boost_threshold: 0.1,
+            ap_score: 0.67,
+            fp_recall_at_99_tp_recall: 0.35,
+            baseline_ap: 0.18,
+        };
+        let features = ReviewFeatures {
+            log1p_fp_weight: 2.0, // well above mean 0.5
+            ..ReviewFeatures::zeros()
+        };
+        let p_fp = logistic_score(&lm, &features);
+        // (2.0 - 0.5) / 0.3 = 5.0, logit = 2.0 * 5.0 = 10.0, sigmoid(10) ~ 1.0
+        assert!(
+            p_fp > 0.9,
+            "High FP weight should give high P(FP), got {}",
+            p_fp
+        );
+    }
+
+    #[test]
+    fn logistic_score_low_fp_weight() {
+        use crate::calibrator_model::LogisticModel;
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1567,
+            n_fp: 279,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![2.0],
+            intercept: 0.0,
+            feature_means: vec![0.5],
+            feature_stddevs: vec![0.3],
+            suppress_threshold: 0.6,
+            boost_threshold: 0.1,
+            ap_score: 0.67,
+            fp_recall_at_99_tp_recall: 0.35,
+            baseline_ap: 0.18,
+        };
+        let features = ReviewFeatures {
+            log1p_fp_weight: 0.0, // below mean
+            ..ReviewFeatures::zeros()
+        };
+        let p_fp = logistic_score(&lm, &features);
+        // (0.0 - 0.5) / 0.3 ~ -1.67, logit = 2.0 * -1.67 = -3.33, sigmoid(-3.33) ~ 0.034
+        assert!(
+            p_fp < 0.1,
+            "Low FP weight should give low P(FP), got {}",
+            p_fp
+        );
+    }
+
+    #[test]
+    fn review_features_get_by_name() {
+        let mut f = ReviewFeatures::zeros();
+        f.log1p_tp_weight = 1.5;
+        f.category_fp_rate = 0.25;
+        assert!((f.get_by_name("log1p_tp_weight") - 1.5).abs() < 1e-9);
+        assert!((f.get_by_name("category_fp_rate") - 0.25).abs() < 1e-9);
+        assert!((f.get_by_name("nonexistent") - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn logistic_model_suppresses_finding() {
+        use crate::calibrator_model::{
+            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
+        };
+        use std::collections::HashMap;
+        // Model with logistic: high P(FP) for findings with fp_weight
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1000,
+            n_fp: 200,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![3.0],
+            intercept: 0.0,
+            feature_means: vec![0.3],
+            feature_stddevs: vec![0.2],
+            suppress_threshold: 0.7,
+            boost_threshold: 0.1,
+            ap_score: 0.6,
+            fp_recall_at_99_tp_recall: 0.3,
+            baseline_ap: 0.15,
+        };
+        let model = CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16".into(),
+                feedback_count: 100,
+                global_fp_rate: 0.2,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.0,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: Some(lm),
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+        };
+        let mut finding = finding_at(
+            "hardcoded secret in API_KEY",
+            "security",
+            Severity::High,
+            "hardcoded secret",
+        );
+        let config = CalibratorConfig {
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.1,  // tp_weight (low)
+            2.0,  // fp_weight (high -> ln_1p(2.0) ~ 1.099, well above mean 0.3)
+            0.0,
+            2.0,
+            vec![],
+            Severity::High,
+            "test.rs",
+        );
+        assert!(
+            decision.suppressed,
+            "logistic model should suppress finding with high FP weight"
+        );
+        assert!(
+            decision.trace.logistic_p_fp.is_some(),
+            "logistic_p_fp should be set on trace"
+        );
+        assert!(
+            decision.trace.logistic_p_fp.unwrap() > 0.7,
+            "P(FP) should be above suppress threshold"
+        );
+    }
+
+    #[test]
+    fn logistic_model_boosts_finding() {
+        use crate::calibrator_model::{
+            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
+        };
+        use std::collections::HashMap;
+        // Model where low fp_weight -> low P(FP) -> boost
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1000,
+            n_fp: 200,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![3.0],
+            intercept: 0.0,
+            feature_means: vec![0.5],
+            feature_stddevs: vec![0.3],
+            suppress_threshold: 0.7,
+            boost_threshold: 0.2,
+            ap_score: 0.6,
+            fp_recall_at_99_tp_recall: 0.3,
+            baseline_ap: 0.15,
+        };
+        let model = CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16".into(),
+                feedback_count: 100,
+                global_fp_rate: 0.2,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.0,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: Some(lm),
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+        };
+        let mut finding = finding_at(
+            "SQL injection via user input",
+            "security",
+            Severity::Medium,
+            "SQL injection risk via unsanitized user input in query",
+        );
+        let config = CalibratorConfig {
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            2.0,  // tp_weight (high TP evidence)
+            0.0,  // fp_weight (zero -> ln_1p(0) = 0.0, below mean 0.5)
+            0.0,
+            0.0,
+            vec![],
+            Severity::Medium,
+            "app.py",
+        );
+        // P(FP) = sigmoid(3.0 * (0.0 - 0.5) / 0.3) = sigmoid(-5.0) ~ 0.0067
+        // 0.0067 < 0.2 boost threshold -> boost triggered
+        assert!(
+            decision.boosted,
+            "logistic model should boost finding with low P(FP) and high TP weight"
+        );
+        assert!(
+            decision.trace.logistic_p_fp.unwrap() < 0.2,
+            "P(FP) should be below boost threshold"
+        );
+    }
+
+    #[test]
+    fn logistic_model_passthrough_no_action() {
+        use crate::calibrator_model::{
+            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
+        };
+        use std::collections::HashMap;
+        // Model where P(FP) is between thresholds -> no suppress or boost
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1000,
+            n_fp: 200,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![1.0],
+            intercept: 0.0,
+            feature_means: vec![0.5],
+            feature_stddevs: vec![0.5],
+            suppress_threshold: 0.8,
+            boost_threshold: 0.1,
+            ap_score: 0.6,
+            fp_recall_at_99_tp_recall: 0.3,
+            baseline_ap: 0.15,
+        };
+        let model = CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16".into(),
+                feedback_count: 100,
+                global_fp_rate: 0.2,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.0,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: Some(lm),
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+        };
+        let mut finding = finding_at(
+            "unused variable x",
+            "quality",
+            Severity::Low,
+            "variable x is declared but not used",
+        );
+        let config = CalibratorConfig {
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.5,  // tp_weight (some TP)
+            0.3,  // fp_weight (some FP, ln_1p(0.3) ~ 0.26, near mean 0.5)
+            0.0,
+            0.3,
+            vec![],
+            Severity::Low,
+            "test.rs",
+        );
+        // P(FP) = sigmoid(1.0 * (0.26 - 0.5) / 0.5) = sigmoid(-0.48) ~ 0.38
+        // 0.38 < 0.8 (not suppress) and 0.38 > 0.1 (not boost) -> passthrough
+        assert!(
+            !decision.suppressed,
+            "should not suppress when P(FP) is between thresholds"
+        );
+        assert!(
+            !decision.boosted,
+            "should not boost when P(FP) is between thresholds"
+        );
+        assert!(
+            decision.trace.logistic_p_fp.is_some(),
+            "logistic_p_fp should still be recorded on trace"
         );
     }
 }
