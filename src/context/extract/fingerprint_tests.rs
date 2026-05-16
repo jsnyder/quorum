@@ -312,6 +312,27 @@ fn default_semantic_counts_is_zero() {
 }
 
 #[test]
+fn to_vector_saturates_on_large_counts() {
+    let fp = StructuralFingerprint {
+        signature: SignatureShape::default(),
+        control_flow: ControlFlowSketch {
+            branches: u32::MAX / 2,
+            loops: u32::MAX / 2,
+            early_returns: u32::MAX / 2,
+            ..ControlFlowSketch::default()
+        },
+        semantic_counts: SemanticCounts {
+            calls: u32::MAX / 2,
+            assignments: u32::MAX / 2,
+            ..SemanticCounts::default()
+        },
+    };
+    let vec = fp.to_vector();
+    assert!(vec.iter().all(|v| v.is_finite()), "overflow produced non-finite values");
+    assert!(vec[40] > 0.0, "global shape dim should be positive");
+}
+
+#[test]
 fn empty_fingerprint_produces_finite_vector() {
     let fp = StructuralFingerprint {
         signature: SignatureShape::default(),

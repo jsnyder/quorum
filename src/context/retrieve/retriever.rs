@@ -118,6 +118,15 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             }
         }
 
+        // Post-filter KNN hits against the same filters applied to
+        // BM25/vector legs. Without this, KNN returns chunks from
+        // excluded source paths (e.g., the file under review).
+        if !struct_sim_map.is_empty() && has_active_filters(&q.filters) {
+            let knn_ids: Vec<String> = struct_sim_map.keys().cloned().collect();
+            let passing = filter_chunk_ids(self.conn, &knn_ids, &q.filters)?;
+            struct_sim_map.retain(|id, _| passing.contains(id));
+        }
+
         // Fingerprint KNN hits also join the candidate pool.
         let fp_knn_ids: Vec<String> = struct_sim_map.keys().cloned().collect();
 
@@ -350,6 +359,83 @@ fn fetch_chunks_batch(
         out.insert(chunk.id.clone(), chunk);
     }
     Ok(())
+}
+
+/// Returns `true` when at least one filter dimension is non-empty.
+fn has_active_filters(f: &Filters) -> bool {
+    !f.sources.is_empty() || !f.kinds.is_empty() || !f.exclude_source_paths.is_empty()
+}
+
+/// Given a set of candidate chunk IDs, return the subset that passes the
+/// retrieval filters (source allowlist, kind allowlist, source-path
+/// excludelist). This mirrors the filter clauses applied in the BM25 and
+/// vector SQL queries, applied post-hoc for the KNN leg whose virtual
+/// table doesn't support JOINs with filter predicates.
+fn filter_chunk_ids(
+    conn: &Connection,
+    ids: &[String],
+    filters: &Filters,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let mut result = std::collections::HashSet::new();
+    for batch in ids.chunks(ID_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
+
+        if !filters.sources.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.sources.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND source IN ({ph})"));
+        }
+        if !filters.kinds.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.kinds.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND kind IN ({ph})"));
+        }
+        if !filters.exclude_source_paths.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.exclude_source_paths.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND source_path NOT IN ({ph})"));
+        }
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            Vec::with_capacity(batch.len() + filters.sources.len() + filters.kinds.len() + filters.exclude_source_paths.len());
+        for id in batch {
+            params.push(Box::new(id.clone()));
+        }
+        for s in &filters.sources {
+            params.push(Box::new(s.clone()));
+        }
+        for k in &filters.kinds {
+            let kind_str = serde_json::to_value(k)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            params.push(Box::new(kind_str));
+        }
+        for p in &filters.exclude_source_paths {
+            params.push(Box::new(p.clone()));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            |r| r.get::<_, String>(0),
+        )?;
+        for row in rows {
+            result.insert(row?);
+        }
+    }
+    Ok(result)
 }
 
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {

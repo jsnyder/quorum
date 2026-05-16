@@ -400,13 +400,60 @@ fn count_type_nesting<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
     max_depth
 }
 
+/// Walk descendants of `body` without entering nested function bodies,
+/// calling `visitor(kind_str)` for each visited node.
+///
+/// This visits `body` itself and all descendants, but when a child node's kind
+/// matches one of [`FUNCTION_KINDS`] the node is still visited (so the caller
+/// can count closures/lambdas) while its subtree is **not** traversed. This
+/// prevents a parent function's control-flow and semantic counts from being
+/// inflated by the bodies of nested closures or local function expressions.
+fn shallow_dfs_visit<D: Doc>(
+    body: &ast_grep_core::Node<'_, D>,
+    mut visitor: impl FnMut(&str),
+) {
+    // Manual DFS using the children() iterator, skipping subtrees of
+    // nested function-like nodes.
+    let body_id = body.node_id();
+
+    // We use a stack of (node, is_root) but since we can't store Node
+    // across the borrow we use a different approach: walk children
+    // recursively with a helper.
+    fn walk_children<D2: Doc>(
+        node: &ast_grep_core::Node<'_, D2>,
+        parent_id: usize,
+        visitor: &mut dyn FnMut(&str),
+    ) {
+        for child in node.children() {
+            let ck = child.kind();
+            let kind = ck.as_ref();
+
+            // If this child is a nested function boundary, visit it
+            // (so closures/lambdas are counted) but do NOT recurse into it.
+            if FUNCTION_KINDS.contains(&kind) && child.node_id() != parent_id {
+                visitor(kind);
+                continue;
+            }
+
+            visitor(kind);
+            walk_children(&child, parent_id, visitor);
+        }
+    }
+
+    // Visit the body node itself (the statement_block).
+    let bk = body.kind();
+    visitor(bk.as_ref());
+    walk_children(body, body_id, &mut visitor);
+}
+
 /// Extract control-flow features from a function body node.
+///
+/// Uses [`shallow_dfs_visit`] to avoid counting control flow inside nested
+/// arrow functions, function expressions, or local function declarations.
 fn extract_control_flow<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> ControlFlowSketch {
     let mut cf = ControlFlowSketch::default();
 
-    for descendant in body.dfs() {
-        let dk = descendant.kind();
-        let kind = dk.as_ref();
+    shallow_dfs_visit(body, |kind| {
         match kind {
             "if_statement" => cf.branches += 1,
             "else_clause" => cf.branches += 1,
@@ -421,18 +468,19 @@ fn extract_control_flow<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> ControlFlo
             "switch_case" => cf.match_arms += 1,
             _ => {}
         }
-    }
+    });
 
     cf
 }
 
 /// Extract semantic counts from a function body node.
+///
+/// Uses [`shallow_dfs_visit`] to avoid counting semantic operations inside
+/// nested arrow functions, function expressions, or local function declarations.
 fn extract_semantic_counts<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> SemanticCounts {
     let mut sc = SemanticCounts::default();
 
-    for descendant in body.dfs() {
-        let dk = descendant.kind();
-        let kind = dk.as_ref();
+    shallow_dfs_visit(body, |kind| {
         match kind {
             "call_expression" => sc.calls += 1,
             "assignment_expression" | "augmented_assignment_expression" => sc.assignments += 1,
@@ -446,7 +494,7 @@ fn extract_semantic_counts<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> Semanti
             "arrow_function" => sc.lambdas += 1,
             _ => {}
         }
-    }
+    });
 
     sc
 }

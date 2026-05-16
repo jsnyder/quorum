@@ -1,6 +1,114 @@
 use super::fingerprint::FINGERPRINT_DIMS;
 use super::fingerprint_typescript::TypeScriptFingerprinter;
 
+/// Regression test: a parent function containing a nested arrow function should
+/// NOT have its control-flow or semantic counts inflated by the inner function's
+/// body.  The DFS must stop at nested function boundaries.
+#[test]
+fn nested_arrow_does_not_inflate_parent_counts() {
+    let src = r#"
+function outer(items: string[]): () => void {
+    const threshold = 10;
+    const label = "test";
+    const tag = label + threshold;
+    const debug = tag.length;
+    const inner = () => {
+        if (items.length > 0) {
+            for (const item of items) {
+                console.log(item);
+            }
+            return items[0];
+        }
+        throw new Error("empty");
+    };
+    const extra = debug + 1;
+    return inner;
+}
+"#;
+
+    let fp = TypeScriptFingerprinter.fingerprint_source(src);
+    let fp = fp.expect("outer function should fingerprint");
+
+    // `outer` itself has NO if/for/while -- those live inside `inner`.
+    assert_eq!(
+        fp.control_flow.branches, 0,
+        "outer has no branches; the if is inside inner"
+    );
+    assert_eq!(
+        fp.control_flow.loops, 0,
+        "outer has no loops; the for-of is inside inner"
+    );
+
+    // `outer` has one early return: `return inner;`
+    assert_eq!(
+        fp.control_flow.early_returns, 1,
+        "outer has one return statement (return inner)"
+    );
+
+    // `outer` defines one closure (the arrow function `inner`).
+    assert_eq!(
+        fp.control_flow.closures, 1,
+        "outer defines exactly one nested arrow function"
+    );
+
+    // Semantic counts: the `throw` inside `inner` should NOT leak out.
+    // `outer` should count `inner` as exactly 1 lambda.
+    assert_eq!(
+        fp.semantic_counts.lambdas, 1,
+        "outer has exactly one lambda (inner)"
+    );
+
+    // The call_expression count should only reflect calls in outer's scope
+    // (not console.log inside inner).  Outer has zero explicit call_expression
+    // nodes in its own scope (the arrow is an assignment, not a call).
+    assert_eq!(
+        fp.semantic_counts.calls, 0,
+        "outer has no call expressions in its own scope"
+    );
+}
+
+/// The inner arrow function, when fingerprinted on its own, should carry
+/// its own control-flow counts.
+#[test]
+fn inner_arrow_carries_own_counts() {
+    let src = r#"
+function outer(items: string[]): () => void {
+    const threshold = 10;
+    const label = "test";
+    const tag = label + threshold;
+    const debug = tag.length;
+    const inner = () => {
+        if (items.length > 0) {
+            for (const item of items) {
+                console.log(item);
+            }
+            return items[0];
+        }
+        throw new Error("empty");
+    };
+    const extra = debug + 1;
+    return inner;
+}
+"#;
+
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    // Should have entries for "outer" and "inner" (if inner is large enough).
+    let inner_fp = results.iter().find(|(name, _)| name == "inner");
+    // inner might be too small for MIN_BODY_NODE_COUNT; if it fingerprints,
+    // check that its counts are self-contained.
+    if let Some((_, fp)) = inner_fp {
+        assert!(
+            fp.control_flow.branches >= 1,
+            "inner has an if branch"
+        );
+        assert!(
+            fp.control_flow.loops >= 1,
+            "inner has a for-of loop"
+        );
+    }
+}
+
 #[test]
 fn fingerprints_simple_function() {
     let src = r#"

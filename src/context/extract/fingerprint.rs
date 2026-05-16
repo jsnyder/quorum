@@ -161,7 +161,9 @@ impl StructuralFingerprint {
             0.0
         };
 
-        // Dims 24-39: First 4 params positionally (4 dims each)
+        // Dims 24-39: First 4 params positionally (4 dims each).
+        // Only 4 slots per position so dim_index is clamped: Prim/Str/Col/Opt
+        // each get a unique slot; Res/Ref/Fn/SelfRef/Unknown/Generic share slot 3.
         for (i, cat) in self.signature.param_categories.iter().take(4).enumerate() {
             let base = 24 + i * 4;
             let idx = cat.dim_index().min(3);
@@ -171,22 +173,26 @@ impl StructuralFingerprint {
         // Dims 40-47: Global shape
         let cf = &self.control_flow;
         let sc = &self.semantic_counts;
-        let total_nodes = cf.branches
-            + cf.loops
-            + cf.early_returns
-            + cf.error_propagations
-            + cf.unsafe_blocks
-            + cf.match_arms
-            + cf.closures
-            + cf.awaits
-            + sc.calls
-            + sc.assignments
-            + sc.member_access
-            + sc.index_ops
-            + sc.binary_ops
-            + sc.collection_literals
-            + sc.type_annotations
-            + sc.lambdas;
+        let total_nodes = [
+            cf.branches,
+            cf.loops,
+            cf.early_returns,
+            cf.error_propagations,
+            cf.unsafe_blocks,
+            cf.match_arms,
+            cf.closures,
+            cf.awaits,
+            sc.calls,
+            sc.assignments,
+            sc.member_access,
+            sc.index_ops,
+            sc.binary_ops,
+            sc.collection_literals,
+            sc.type_annotations,
+            sc.lambdas,
+        ]
+        .iter()
+        .fold(0u32, |acc, &x| acc.saturating_add(x));
         v[40] = (total_nodes as f32).ln_1p() / 10.0;
         // dims 41-47 reserved for max_depth, mean_depth, leaf_ratio etc.
         // (populated by the language-specific fingerprinter if available)
