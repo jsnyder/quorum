@@ -16,10 +16,19 @@ pub fn normalize_file_path(path: &str) -> &str {
 /// Unlike [`normalize_file_path`] (which only handles `./` prefix), this
 /// handles `../../../x`, `/absolute/paths/x`, and mixed cases.
 pub fn normalize_file_path_deep(raw: &str) -> String {
-    raw.split('/')
-        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
-        .collect::<Vec<_>>()
-        .join("/")
+    let mut components: Vec<&str> = Vec::new();
+    for seg in raw.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if !components.is_empty() {
+                    components.pop();
+                }
+            }
+            _ => components.push(seg),
+        }
+    }
+    components.join("/")
 }
 
 /// Check if the shorter (normalized) path is a complete suffix of the longer
@@ -108,6 +117,12 @@ mod tests {
     #[test]
     fn deep_collapses_double_slashes() {
         assert_eq!(normalize_file_path_deep("src//main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn deep_resolves_interior_dotdot() {
+        assert_eq!(normalize_file_path_deep("a/../b.rs"), "b.rs");
+        assert_eq!(normalize_file_path_deep("src/sub/../../main.rs"), "main.rs");
     }
 
     // --- path_suffix_eq tests ---
