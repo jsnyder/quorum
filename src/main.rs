@@ -2602,9 +2602,13 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         println!("Boost:    not computed (insufficient data or precision target unachievable)");
     }
 
+    let has_logistic = composite_model
+        .as_ref()
+        .map_or(false, |m| m.logistic_model.is_some());
+
     if opts.dry_run {
         eprintln!("\n(dry run -- no file written)");
-    } else if config.suppress.is_none() && config.boost.is_none() {
+    } else if config.suppress.is_none() && config.boost.is_none() && !has_logistic {
         eprintln!("\nNo thresholds computed (insufficient data). Existing config preserved.");
     } else {
         if let Err(e) = std::fs::create_dir_all(&qhome) {
