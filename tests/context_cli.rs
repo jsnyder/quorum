@@ -63,6 +63,11 @@ fn context_help_lists_all_subcommands() {
             "expected subcommand row `{needle}` in help output:\n{stdout}"
         );
     }
+    // `refresh` is a hidden deprecated alias — must NOT appear in help.
+    assert!(
+        !stdout.contains("  refresh  "),
+        "hidden alias `refresh` should not appear in help output:\n{stdout}"
+    );
 }
 
 #[test]

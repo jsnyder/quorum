@@ -979,7 +979,7 @@ fn run_index<D: ContextDeps>(args: &IndexArgs, deps: &D) -> Result<CmdOutput> {
             });
             continue;
         }
-        match index_one_source(entry, deps, &mut created) {
+        match index_one_source(entry, deps, &mut created, args.force) {
             Ok(success) => outcomes.push(IndexOutcome {
                 name: entry.name.clone(),
                 result: Ok(success),
@@ -1051,17 +1051,23 @@ fn index_one_source<D: ContextDeps>(
     entry: &SourceEntry,
     deps: &D,
     created: &mut Vec<PathBuf>,
+    force: bool,
 ) -> Result<IndexSuccess> {
     let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
     ensure_dir(&layout.dir)?;
 
     // Check if we can do an incremental update.
-    let prior_head = layout
+    // Incremental requires: not forced, model hash matches, prior+current HEAD, valid diff, DB exists.
+    let prior_state = layout
         .state
         .exists()
         .then(|| IndexState::load(&layout.state).ok().flatten())
-        .flatten()
-        .and_then(|s| s.head_sha);
+        .flatten();
+    let model_matches = prior_state
+        .as_ref()
+        .map(|s| s.embedder_model_hash == deps.embedder().model_hash())
+        .unwrap_or(false);
+    let prior_head = prior_state.and_then(|s| s.head_sha);
 
     let current_head = match source_repo_root(entry) {
         Some(root) => deps
@@ -1071,8 +1077,11 @@ fn index_one_source<D: ContextDeps>(
         None => None,
     };
 
-    // Try incremental: need prior HEAD, current HEAD, git diff, and existing DB.
-    let incremental_files = if let (Some(prev), Some(_curr)) = (&prior_head, &current_head) {
+    // Try incremental: need not-forced, model match, prior HEAD, current HEAD, git diff, and existing DB.
+    let incremental_files = if !force
+        && model_matches
+        && let (Some(prev), Some(_curr)) = (&prior_head, &current_head)
+    {
         if let Some(root) = source_repo_root(entry) {
             deps.git()
                 .diff_files(root, prev)
@@ -1123,6 +1132,12 @@ fn index_one_source<D: ContextDeps>(
                 &extracted.structural_fingerprints,
             )
             .map_err(|e| anyhow!("incremental update failed for '{}': {e}", entry.name))?;
+
+        // Remove stale chunks.jsonl so repair/doctor does a full re-extract
+        // rather than rebuilding from outdated chunk data.
+        if layout.jsonl.exists() {
+            let _ = std::fs::remove_file(&layout.jsonl);
+        }
 
         let state = IndexState::new(deps.embedder().model_hash())
             .with_head_sha(current_head.clone())

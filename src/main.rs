@@ -604,7 +604,7 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
             eprintln!("warning: `refresh` is deprecated, use `index` instead");
             ContextCmd::Index(IndexArgs {
                 selector: selector(r.source, r.all),
-                force: false,
+                force: r.force,
             })
         }
         cli::ContextCommand::Query(q) => {
