@@ -1,13 +1,12 @@
-//! Integration test: running `quorum review` writes a record to reviews.jsonl.
+//! Integration test: running `quorum review` writes a record to quorum.db.
 
 use assert_cmd::Command;
-use serde_json::Value;
+use rusqlite::Connection;
 use tempfile::TempDir;
 
 fn quorum(home: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("quorum").unwrap();
     cmd.env("HOME", home);
-    // Suppress env-var detection so `invoked_from` is deterministic.
     cmd.env_remove("CLAUDE_CODE")
         .env_remove("CODEX_CI")
         .env_remove("GEMINI_CLI")
@@ -16,7 +15,7 @@ fn quorum(home: &std::path::Path) -> Command {
 }
 
 #[test]
-fn review_writes_reviews_jsonl_record() {
+fn review_writes_review_to_sqlite() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();
 
@@ -26,22 +25,26 @@ fn review_writes_reviews_jsonl_record() {
         .assert()
         .code(0);
 
-    let reviews_path = home.join(".quorum/reviews.jsonl");
-    assert!(reviews_path.exists(), "reviews.jsonl not created");
-    let content = std::fs::read_to_string(&reviews_path).unwrap();
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 1, "expected exactly one review record");
+    let db_path = home.join(".quorum/quorum.db");
+    assert!(db_path.exists(), "quorum.db not created");
 
-    let rec: Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(rec["files_reviewed"], 1);
-    assert!(
-        rec["run_id"].as_str().unwrap().len() == 26,
-        "run_id must be 26-char ULID"
-    );
-    assert!(rec["timestamp"].is_string());
-    assert!(rec["quorum_version"].is_string());
-    assert!(rec["findings_by_severity"].is_object());
-    assert!(rec["flags"].is_object());
+    let conn = Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "expected exactly one review record");
+
+    let (run_id, files_reviewed, timestamp, quorum_version): (String, i64, String, String) = conn
+        .query_row(
+            "SELECT run_id, files_reviewed, timestamp, quorum_version FROM reviews",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(run_id.len(), 26, "run_id must be 26-char ULID");
+    assert_eq!(files_reviewed, 1);
+    assert!(!timestamp.is_empty());
+    assert!(!quorum_version.is_empty());
 }
 
 #[test]
@@ -57,9 +60,11 @@ fn caller_flag_overrides_invoked_from() {
         .assert()
         .code(0);
 
-    let content = std::fs::read_to_string(home.join(".quorum/reviews.jsonl")).unwrap();
-    let rec: Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
-    assert_eq!(rec["invoked_from"], "my-ci-job");
+    let conn = Connection::open(home.join(".quorum/quorum.db")).unwrap();
+    let invoked_from: String = conn
+        .query_row("SELECT invoked_from FROM reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(invoked_from, "my-ci-job");
 }
 
 #[test]
@@ -75,18 +80,17 @@ fn second_review_appends() {
             .code(0);
     }
 
-    let content = std::fs::read_to_string(home.join(".quorum/reviews.jsonl")).unwrap();
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "second run should append, not replace");
+    let conn = Connection::open(home.join(".quorum/quorum.db")).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "second run should append, not replace");
 
-    let ids: Vec<String> = lines
-        .iter()
-        .map(|l| {
-            serde_json::from_str::<Value>(l).unwrap()["run_id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+    let mut stmt = conn.prepare("SELECT run_id FROM reviews").unwrap();
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
         .collect();
     assert_ne!(ids[0], ids[1], "each run gets a unique ULID");
 }

@@ -885,6 +885,16 @@ mod tests {
             nan_scores_dropped: 0,
             retrieved_by_leg: crate::review_log::LegCounts::default(),
             injected_by_leg: crate::review_log::LegCounts::default(),
+            sources_queried: 0,
+            sources_contributing: 0,
+            per_source_contributions: std::collections::BTreeMap::new(),
+            dep_boost_applied: 0,
+            current_repo_reserved_available: 0,
+            current_repo_reserved_filled: 0,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
         };
         r
     }

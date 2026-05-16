@@ -25,6 +25,7 @@ pub use quorum::prompt_sanitize;
 pub use quorum::prose_prompts;
 pub use quorum::redact;
 pub use quorum::review_mode;
+pub use quorum::storage;
 
 mod agent;
 mod analytics;
@@ -142,6 +143,13 @@ async fn main() -> anyhow::Result<()> {
             // hermetic tests and alternate installs). Falls back to
             // `$HOME/.quorum`, then to `./.quorum` as a last resort.
             let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+            let storage_handle = quorum::storage::initialize(&quorum_home).unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: failed to initialize storage: {}. Using in-memory database.",
+                    e
+                );
+                quorum::storage::in_memory_handle()
+            });
 
             // --join-health diagnostic: short-circuit normal dashboard, just
             // report reviews↔feedback finding_id linkage rate. Used to assess
@@ -254,14 +262,11 @@ async fn main() -> anyhow::Result<()> {
                 !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
 
             if want_context_dim {
-                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+                let log = review_log::ReviewLog::with_storage(storage_handle.clone());
                 let all_records = match log.load_all() {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!(
-                            "error: cannot read reviews log at {}: {e}",
-                            log.path().display()
-                        );
+                        eprintln!("error: cannot read reviews log: {e}");
                         std::process::exit(3);
                     }
                 };
@@ -316,24 +321,40 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if want_classic_dim {
-                let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
-                let records = match log.load_all() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!(
-                            "error: cannot read reviews log at {}: {e}",
-                            log.path().display()
-                        );
-                        std::process::exit(3);
-                    }
-                };
-                let (mode, slices) = if opts.by_repo {
-                    ("by-repo", dimensions::group_by_repo(&records))
+                let log = review_log::ReviewLog::with_storage(storage_handle.clone());
+                let (mode, records, slices) = if opts.by_repo {
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_repo(&records);
+                    ("by-repo", records, slices)
                 } else if opts.by_caller {
-                    ("by-caller", dimensions::group_by_caller(&records))
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_caller(&records);
+                    ("by-caller", records, slices)
                 } else {
                     let n = opts.rolling.unwrap();
-                    ("rolling", dimensions::rolling_window(&records, n, 3))
+                    let window_count = 3usize;
+                    let needed = n.saturating_mul(window_count);
+                    let records = match log.load_recent(needed) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::rolling_window(&records, n, window_count);
+                    ("rolling", records, slices)
                 };
 
                 let out_mode = output::resolve_output_mode(
@@ -367,9 +388,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let feedback_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
-            let telemetry_store =
-                telemetry::TelemetryStore::new(quorum_home.join("telemetry.jsonl"));
-            let review_log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
+            let telemetry_store = telemetry::TelemetryStore::with_storage(storage_handle.clone());
+            let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
 
             match stats::compute_report(&feedback_store, &telemetry_store, &review_log) {
                 Ok(report) => {
@@ -424,16 +444,34 @@ async fn main() -> anyhow::Result<()> {
 fn format_join_health(quorum_home: &std::path::Path) -> String {
     use std::fmt::Write;
 
-    let log = review_log::ReviewLog::new(quorum_home.join("reviews.jsonl"));
-    let reviews = match log.load_all() {
-        Ok(r) => r,
+    let storage_handle = match quorum::storage::initialize(quorum_home) {
+        Ok(h) => h,
+        Err(e) => {
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
+            return out;
+        }
+    };
+    let log = review_log::ReviewLog::with_storage(storage_handle);
+    let review_count = match log.count() {
+        Ok(n) => n,
+        Err(e) => {
+            let mut out = String::new();
+            writeln!(out, "Linkage health").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
+            return out;
+        }
+    };
+    let finding_ids = match log.load_all_finding_ids() {
+        Ok(ids) => ids,
         Err(e) => {
             // Surface the failure rather than rendering a misleading
             // "0 reviews" line. The diagnostic exists to assess data
             // health — silent zeros would defeat the point.
             let mut out = String::new();
             writeln!(out, "Linkage health").unwrap();
-            writeln!(out, "  ERROR: failed to read reviews.jsonl: {e}").unwrap();
+            writeln!(out, "  ERROR: failed to read reviews: {e}").unwrap();
             return out;
         }
     };
@@ -449,8 +487,8 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
         }
     };
 
-    let stats = analytics::linkage_stats(&reviews, &feedback);
-    let total_findings: usize = reviews.iter().map(|r| r.finding_ids.len()).sum();
+    let stats = analytics::linkage_stats_from_ids(&finding_ids, &feedback);
+    let total_findings = finding_ids.len();
     let rate = stats.rate();
     let rate_pct = (rate * 100.0).round() as u32;
 
@@ -459,8 +497,7 @@ fn format_join_health(quorum_home: &std::path::Path) -> String {
     writeln!(
         out,
         "  Reviews: {} with {} findings",
-        reviews.len(),
-        total_findings
+        review_count, total_findings
     )
     .unwrap();
     writeln!(
@@ -843,6 +880,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // stats/feedback. Without this, `review` could ingest from one inbox
     // and calibrate against a different feedback log (#95 review feedback).
     let qhome = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let storage_handle = quorum::storage::initialize(&qhome).unwrap_or_else(|e| {
+        eprintln!(
+            "warning: failed to initialize storage: {}. Using in-memory database.",
+            e
+        );
+        quorum::storage::in_memory_handle()
+    });
     let feedback_path = qhome.join("feedback.jsonl");
     let feedback_store = feedback::FeedbackStore::new(feedback_path.clone());
     let feedback_entries = feedback_store.load_all().unwrap_or_default();
@@ -918,13 +962,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     };
 
-    // Build the production context injector from `<qhome>/sources.toml`
-    // (if present and `auto_inject = true`). Returns `None` when context
-    // isn't configured, so reviews without a sources file behave exactly
-    // as before. Honors QUORUM_HOME via the same `qhome` used for
-    // feedback/telemetry/reviews — without this, hermetic runs would
-    // calibrate against one dir and source `sources.toml` from another.
-    let context_injector = context::bootstrap::build_production_injector(&qhome, &feedback_entries);
+    let injector_project_root = opts.files.first().map(|f| pipeline::find_project_root(f));
+    let context_injector = context::bootstrap::build_production_injector_with_project(
+        &qhome,
+        &feedback_entries,
+        injector_project_root.as_deref(),
+    );
     if context_injector.is_some() {
         tracing::info!(
             "context injector wired from ~/.quorum/sources.toml — auto-inject is active"
@@ -1590,8 +1633,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // outer-scope `qhome` resolved via quorum_dir() so review/telemetry/
     // reviews_jsonl all live in the same dir.
     {
-        let telem_path = qhome.join("telemetry.jsonl");
-        let telem_store = telemetry::TelemetryStore::new(telem_path);
+        let telem_store = telemetry::TelemetryStore::with_storage(storage_handle.clone());
         let mut finding_counts = std::collections::HashMap::new();
         for f in &all_findings {
             let sev = format!("{:?}", f.severity).to_lowercase();
@@ -1657,8 +1699,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let _ = telem_store.record(&telem_entry);
 
         // Per-review record for dimensional stats (by-repo, by-caller, rolling).
-        let reviews_path = qhome.join("reviews.jsonl");
-        let review_log = review_log::ReviewLog::new(reviews_path);
+        let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
         let first_file = opts.files.first().map(|p| p.as_path());
         let repo = first_file.and_then(review_log::detect_repo);
         let invoked_from = review_log::detect_invoked_from(opts.caller.as_deref());
@@ -2865,12 +2906,13 @@ mod join_health_tests {
 
     #[test]
     fn join_health_surfaces_review_log_read_error_instead_of_silent_zeros() {
-        // Regression: load_all().unwrap_or_default() silently swallows IO
-        // errors and renders a healthy-looking "0 reviews" line. Make
-        // reviews.jsonl unreadable (here: a directory at that path) and
-        // assert the diagnostic surfaces the failure rather than lying.
+        // Regression: ensure format_join_health surfaces storage errors
+        // rather than silently reporting "0 reviews". Write corrupt data
+        // to quorum.db and block recovery by placing a directory at the
+        // backup path so rename fails and the corrupt file persists.
         let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join("reviews.jsonl")).unwrap();
+        std::fs::write(dir.path().join("quorum.db"), b"not a database").unwrap();
+        std::fs::create_dir(dir.path().join("quorum.db.corrupt")).unwrap();
 
         let out = format_join_health(dir.path());
         assert!(

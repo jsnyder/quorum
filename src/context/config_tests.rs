@@ -264,17 +264,103 @@ inject_min_socre = 0.5   # typo
 }
 
 #[test]
-fn rejects_unknown_source_field() {
+fn source_ignores_unknown_fields_for_forward_compat() {
     let toml = r#"
 [[source]]
 name = "x"
 path = "."
 kind = "rust"
-weigth = 5   # typo
+future_field = "something"
 "#;
-    let err = SourcesConfig::from_str(toml).unwrap_err();
-    let s = err.to_string().to_lowercase();
-    assert!(s.contains("unknown") || s.contains("weigth"), "got: {err}");
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(config.sources.len(), 1);
+}
+
+#[test]
+fn parses_provides_field_on_source() {
+    let toml = r#"
+[[source]]
+name = "homeassist"
+path = "/tmp/ha"
+kind = "rust"
+provides = ["home-assistant-core", "ha-core"]
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(
+        config.sources[0].provides,
+        vec!["home-assistant-core", "ha-core"]
+    );
+}
+
+#[test]
+fn parses_include_for_exclude_for_on_source() {
+    let toml = r#"
+[[source]]
+name = "shared-lib"
+path = "/tmp/lib"
+kind = "rust"
+include_for = ["project-a"]
+exclude_for = ["project-b", "project-c"]
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert_eq!(config.sources[0].include_for, vec!["project-a"]);
+    assert_eq!(
+        config.sources[0].exclude_for,
+        vec!["project-b", "project-c"]
+    );
+}
+
+#[test]
+fn source_fields_default_empty_when_omitted() {
+    let toml = r#"
+[[source]]
+name = "basic"
+path = "/tmp/basic"
+kind = "rust"
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert!(config.sources[0].provides.is_empty());
+    assert!(config.sources[0].include_for.is_empty());
+    assert!(config.sources[0].exclude_for.is_empty());
+}
+
+#[test]
+fn parses_multi_source_config_sub_table() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+
+[context]
+auto_inject = true
+
+[context.multi_source]
+enabled = true
+max_sources_queried = 8
+per_source_cap = 2
+current_repo_reserved = 3
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert!(config.context.multi_source.enabled);
+    assert_eq!(config.context.multi_source.max_sources_queried, 8);
+    assert_eq!(config.context.multi_source.per_source_cap, 2);
+    assert_eq!(config.context.multi_source.current_repo_reserved, 3);
+}
+
+#[test]
+fn multi_source_defaults_when_omitted() {
+    let toml = r#"
+[[source]]
+name = "x"
+path = "."
+kind = "rust"
+"#;
+    let config = SourcesConfig::from_str(toml).unwrap();
+    assert!(config.context.multi_source.enabled);
+    assert_eq!(config.context.multi_source.max_sources_queried, 10);
+    assert_eq!(config.context.multi_source.per_source_cap, 3);
+    assert_eq!(config.context.multi_source.current_repo_reserved, 2);
 }
 
 #[test]

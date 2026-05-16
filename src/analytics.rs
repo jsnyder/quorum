@@ -57,6 +57,26 @@ pub fn linkage_stats(reviews: &[ReviewRecord], feedback: &[FeedbackEntry]) -> Li
     stats
 }
 
+/// Compute linkage stats from pre-loaded finding_ids (avoids full record deserialization).
+pub fn linkage_stats_from_ids(
+    known_ids: &HashSet<String>,
+    feedback: &[FeedbackEntry],
+) -> LinkageStats {
+    use crate::feedback::Provenance;
+
+    let mut stats = LinkageStats::default();
+    for entry in feedback {
+        if !matches!(&entry.provenance, Provenance::Human | Provenance::PostFix) {
+            continue;
+        }
+        match &entry.finding_id {
+            Some(fid) if known_ids.contains(fid.as_str()) => stats.linked += 1,
+            _ => stats.unlinked += 1,
+        }
+    }
+    stats
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SourceStats {
     pub tp: usize,
@@ -1294,6 +1314,49 @@ mod tests {
         let feedback = vec![fb_with_finding_id("A"), fb_with_finding_id("A")];
         let stats = linkage_stats(&reviews, &feedback);
         assert_eq!(stats.linked, 2);
+    }
+
+    #[test]
+    fn linkage_stats_from_ids_matches_full_variant() {
+        use crate::feedback::{FeedbackEntry, Provenance, Verdict};
+        use std::collections::HashSet;
+
+        let known: HashSet<String> = ["fid-1".to_string(), "fid-2".to_string()].into();
+
+        let feedback = vec![
+            FeedbackEntry {
+                file_path: "a.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: Verdict::Tp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: Provenance::Human,
+                fp_kind: None,
+                finding_id: Some("fid-1".into()),
+                rule_id: None,
+                in_diff: None,
+            },
+            FeedbackEntry {
+                file_path: "b.rs".into(),
+                finding_title: "t".into(),
+                finding_category: "c".into(),
+                verdict: Verdict::Fp,
+                reason: "r".into(),
+                model: None,
+                timestamp: chrono::Utc::now(),
+                provenance: Provenance::Human,
+                fp_kind: None,
+                finding_id: Some("fid-missing".into()),
+                rule_id: None,
+                in_diff: None,
+            },
+        ];
+
+        let stats = linkage_stats_from_ids(&known, &feedback);
+        assert_eq!(stats.linked, 1);
+        assert_eq!(stats.unlinked, 1);
     }
 
     #[test]

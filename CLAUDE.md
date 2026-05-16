@@ -97,6 +97,8 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 
 ## Feedback
 
+**After every quorum review, record a verdict for every finding before moving on.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Triage each finding into the appropriate verdict with `--reason` explaining the call. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.
+
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
 Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), external (0.7x), auto_calibrate (0.5x), unknown (0.3x).

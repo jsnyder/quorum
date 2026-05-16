@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::{Filters, RetrievalQuery, Retriever};
+use crate::context::extract::fingerprint::FINGERPRINT_DIMS;
 use crate::context::index::builder::IndexBuilder;
 use crate::context::index::traits::{FixedClock, HashEmbedder};
 use crate::context::store::ChunkStore;
@@ -19,6 +20,29 @@ fn mk_chunk(
     language: &str,
     indexed_at: DateTime<Utc>,
 ) -> Chunk {
+    mk_chunk_with_path(
+        id,
+        source,
+        content,
+        qname,
+        kind,
+        language,
+        indexed_at,
+        &format!("src/{id}.rs"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mk_chunk_with_path(
+    id: &str,
+    source: &str,
+    content: &str,
+    qname: Option<&str>,
+    kind: ChunkKind,
+    language: &str,
+    indexed_at: DateTime<Utc>,
+    source_path: &str,
+) -> Chunk {
     Chunk {
         id: id.to_string(),
         source: source.to_string(),
@@ -28,7 +52,7 @@ fn mk_chunk(
         signature: None,
         content: content.to_string(),
         metadata: ChunkMeta {
-            source_path: format!("src/{id}.rs"),
+            source_path: source_path.to_string(),
             line_range: LineRange::new(1, 1).unwrap(),
             commit_sha: "deadbeef".to_string(),
             indexed_at,
@@ -76,6 +100,41 @@ fn build_retriever_fixture(dir: &Path, chunks: Vec<Chunk>) -> Connection {
 /// connection + embedder + clock so the caller can hold them for borrowing.
 fn mk_retriever_ctx(dir: &Path, chunks: Vec<Chunk>) -> (Connection, HashEmbedder, FixedClock) {
     let conn = build_retriever_fixture(dir, chunks);
+    (conn, HashEmbedder::new(384), FixedClock(now_ts()))
+}
+
+/// Like `mk_retriever_ctx` but also inserts structural fingerprints for the
+/// given chunk-id-to-vector mapping into `chunks_struct_vec`.
+fn mk_retriever_ctx_with_fingerprints(
+    dir: &Path,
+    chunks: Vec<Chunk>,
+    fingerprints: &std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]>,
+) -> (Connection, HashEmbedder, FixedClock) {
+    let db = dir.join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+
+    {
+        let mut builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+        let mut by_source: std::collections::BTreeMap<String, Vec<Chunk>> =
+            std::collections::BTreeMap::new();
+        for c in chunks {
+            by_source.entry(c.source.clone()).or_default().push(c);
+        }
+        for (source, src_chunks) in &by_source {
+            let jsonl = dir.join(format!("{source}.jsonl"));
+            let mut store = ChunkStore::new(&jsonl);
+            for c in src_chunks {
+                store.append(c).unwrap();
+            }
+            builder.rebuild_from_jsonl(source, &jsonl).unwrap();
+        }
+        builder
+            .insert_structural_fingerprints_batch(fingerprints)
+            .unwrap();
+    }
+
+    let conn = Connection::open(&db).unwrap();
     (conn, HashEmbedder::new(384), FixedClock(now_ts()))
 }
 
@@ -869,5 +928,170 @@ fn scored_chunk_carries_source_leg_provenance() {
             && both.source_legs.contains(&RetrievalLeg::Structural),
         "multi-leg hit must carry both Bm25 and Structural; got {:?}",
         both.source_legs
+    );
+}
+
+#[test]
+fn structural_fingerprint_knn_respects_exclude_source_paths() {
+    // Regression test: the structural fingerprint KNN leg must respect
+    // `filters.exclude_source_paths`. Before the fix, `query_structural_knn`
+    // queried ALL rows in `chunks_struct_vec` without filtering, so the
+    // file-under-review would appear in its own context block.
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+
+    // Three chunks with distinct source_paths. All get identical fingerprints
+    // so KNN returns all three for any query vector.
+    let chunk_a = mk_chunk_with_path(
+        "chunk_a",
+        "S",
+        "fn foo() { bar(); baz(); }",
+        Some("foo"),
+        ChunkKind::Symbol,
+        "rust",
+        n,
+        "src/foo.rs",
+    );
+    let chunk_b = mk_chunk_with_path(
+        "chunk_b",
+        "S",
+        "fn bar() { quux(); }",
+        Some("bar"),
+        ChunkKind::Symbol,
+        "rust",
+        n,
+        "src/bar.rs",
+    );
+    let chunk_c = mk_chunk_with_path(
+        "chunk_c",
+        "S",
+        "fn baz() { quux(); }",
+        Some("baz"),
+        ChunkKind::Symbol,
+        "rust",
+        n,
+        "src/baz.rs",
+    );
+
+    // All three get the same fingerprint so KNN will return all of them.
+    let mut fp = [0.0f32; FINGERPRINT_DIMS];
+    fp[0] = 1.0;
+    fp[1] = 0.5;
+    fp[2] = 0.25;
+    let fingerprints: std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]> = [
+        ("chunk_a".to_string(), fp),
+        ("chunk_b".to_string(), fp),
+        ("chunk_c".to_string(), fp),
+    ]
+    .into_iter()
+    .collect();
+
+    let (conn, emb, clock) = mk_retriever_ctx_with_fingerprints(
+        dir.path(),
+        vec![chunk_a, chunk_b, chunk_c],
+        &fingerprints,
+    );
+    let r = Retriever::new(&conn, &emb, &clock);
+
+    // Query with the same fingerprint vector so all three are KNN hits,
+    // but exclude "src/foo.rs" -- chunk_a must NOT appear in results.
+    let q = RetrievalQuery {
+        text: String::new(),
+        identifiers: vec![],
+        structural_names: vec![],
+        structural_fingerprints: vec![("query_fn".to_string(), fp)],
+        filters: Filters {
+            sources: vec![],
+            kinds: vec![],
+            exclude_source_paths: vec!["src/foo.rs".into()],
+        },
+        k: 10,
+        min_score: 0.0,
+        reviewed_file_language: Some("rust".into()),
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+
+    assert!(
+        !ids.contains(&"chunk_a"),
+        "KNN leg must respect exclude_source_paths; chunk_a (src/foo.rs) \
+         should be excluded but was returned: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&"chunk_b"),
+        "chunk_b should survive (not excluded): {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&"chunk_c"),
+        "chunk_c should survive (not excluded): {:?}",
+        ids
+    );
+}
+
+#[test]
+fn structural_fingerprint_knn_respects_source_filter() {
+    // The KNN leg must also respect `filters.sources` (allowlist).
+    let dir = tempdir().unwrap();
+    let n = now_ts();
+
+    let chunk_a = mk_chunk_with_path(
+        "chunk_a",
+        "allowed",
+        "fn foo() {}",
+        Some("foo"),
+        ChunkKind::Symbol,
+        "rust",
+        n,
+        "src/foo.rs",
+    );
+    let chunk_b = mk_chunk_with_path(
+        "chunk_b",
+        "denied",
+        "fn bar() {}",
+        Some("bar"),
+        ChunkKind::Symbol,
+        "rust",
+        n,
+        "src/bar.rs",
+    );
+
+    let mut fp = [0.0f32; FINGERPRINT_DIMS];
+    fp[0] = 1.0;
+    let fingerprints: std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]> =
+        [("chunk_a".to_string(), fp), ("chunk_b".to_string(), fp)]
+            .into_iter()
+            .collect();
+
+    let (conn, emb, clock) =
+        mk_retriever_ctx_with_fingerprints(dir.path(), vec![chunk_a, chunk_b], &fingerprints);
+    let r = Retriever::new(&conn, &emb, &clock);
+
+    let q = RetrievalQuery {
+        structural_fingerprints: vec![("query_fn".to_string(), fp)],
+        filters: Filters {
+            sources: vec!["allowed".into()],
+            kinds: vec![],
+            exclude_source_paths: vec![],
+        },
+        k: 10,
+        min_score: 0.0,
+        reviewed_file_language: Some("rust".into()),
+        ..RetrievalQuery::default()
+    };
+    let hits = r.query(q).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.chunk.id.as_str()).collect();
+
+    assert!(
+        !ids.contains(&"chunk_b"),
+        "KNN leg must respect source filter; chunk_b (source=denied) \
+         should not appear: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&"chunk_a"),
+        "chunk_a (source=allowed) should appear: {:?}",
+        ids
     );
 }

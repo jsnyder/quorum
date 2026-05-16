@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::finding::Severity;
+use crate::storage::StorageHandle;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SeverityCounts {
@@ -159,6 +160,40 @@ pub struct ContextTelemetry {
     /// 90th percentile of retrieved rerank scores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank_score_p90: Option<f32>,
+
+    // --- Multi-source telemetry (v0.23.0+) ---
+    /// Number of source DBs queried in this review.
+    #[serde(default)]
+    pub sources_queried: u32,
+    /// Number of sources with at least one chunk in the final top-k.
+    #[serde(default)]
+    pub sources_contributing: u32,
+    /// Per-source chunk count in the final injected set.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub per_source_contributions: std::collections::BTreeMap<String, u32>,
+    /// Chunks that received the dep-manifest boost.
+    #[serde(default)]
+    pub dep_boost_applied: u32,
+    /// Reserved slots available for the current repo.
+    #[serde(default)]
+    pub current_repo_reserved_available: u32,
+    /// Reserved slots actually filled by current-repo chunks.
+    #[serde(default)]
+    pub current_repo_reserved_filled: u32,
+
+    // --- Structural fingerprint telemetry ---
+    /// How many chunks received structural fingerprints at index time.
+    #[serde(default)]
+    pub structural_fingerprints_computed: u32,
+    /// Number of structural KNN queries performed during retrieval.
+    #[serde(default)]
+    pub structural_knn_queries: u32,
+    /// Total results returned from structural KNN queries.
+    #[serde(default)]
+    pub structural_knn_hits: u32,
+    /// How many reranked results received a nonzero structural boost.
+    #[serde(default)]
+    pub structural_boost_applied: u32,
 }
 
 /// Count of chunks attributed to each retrieval leg, plus a
@@ -276,44 +311,269 @@ impl ReviewRecord {
     }
 }
 
+/// Internal backend discriminator: JSONL (legacy) or SQLite.
+enum Backend {
+    Jsonl(PathBuf),
+    Sqlite(StorageHandle),
+}
+
+/// Intermediate row extracted from SQLite. All columns are pulled inside the
+/// `query_map` closure (where the `Row` borrow lives), then converted to
+/// `ReviewRecord` after the statement is dropped.
+struct RawReviewRow {
+    run_id: String,
+    ts_str: String,
+    quorum_version: String,
+    repo: Option<String>,
+    invoked_from: String,
+    model: String,
+    files_reviewed: i64,
+    lines_added: Option<i64>,
+    lines_removed: Option<i64>,
+    critical: i64,
+    high: i64,
+    medium: i64,
+    low: i64,
+    info: i64,
+    suppressed_json: String,
+    tokens_in: i64,
+    tokens_out: i64,
+    tokens_cache_read: i64,
+    duration_ms: i64,
+    flag_deep: i32,
+    flag_parallel_n: i32,
+    flag_ensemble: i32,
+    mode: Option<String>,
+    context_json: String,
+}
+
+impl RawReviewRow {
+    /// Convert a raw SQLite row into a `ReviewRecord`, looking up
+    /// finding_ids from the pre-loaded map.
+    fn into_record(
+        self,
+        finding_map: &mut HashMap<String, Vec<String>>,
+    ) -> anyhow::Result<ReviewRecord> {
+        let timestamp = DateTime::parse_from_rfc3339(&self.ts_str)
+            .with_context(|| {
+                format!(
+                    "invalid timestamp in review {}: {}",
+                    self.run_id, self.ts_str
+                )
+            })?
+            .with_timezone(&Utc);
+
+        let suppressed_by_rule: HashMap<String, u32> = serde_json::from_str(&self.suppressed_json)
+            .with_context(|| {
+                format!(
+                    "invalid suppressed_by_rule JSON in review {}: {}",
+                    self.run_id, self.suppressed_json
+                )
+            })?;
+
+        let context: ContextTelemetry =
+            serde_json::from_str(&self.context_json).with_context(|| {
+                format!(
+                    "invalid context JSON in review {}: {}",
+                    self.run_id, self.context_json
+                )
+            })?;
+
+        let finding_ids = finding_map.remove(&self.run_id).unwrap_or_default();
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let record = ReviewRecord {
+            run_id: self.run_id,
+            timestamp,
+            quorum_version: self.quorum_version,
+            repo: self.repo,
+            invoked_from: self.invoked_from,
+            model: self.model,
+            files_reviewed: self.files_reviewed as u32,
+            lines_added: self.lines_added.map(|v| v as u32),
+            lines_removed: self.lines_removed.map(|v| v as u32),
+            findings_by_severity: SeverityCounts {
+                critical: self.critical as u32,
+                high: self.high as u32,
+                medium: self.medium as u32,
+                low: self.low as u32,
+                info: self.info as u32,
+            },
+            suppressed_by_rule,
+            tokens_in: self.tokens_in as u64,
+            tokens_out: self.tokens_out as u64,
+            tokens_cache_read: self.tokens_cache_read as u64,
+            duration_ms: self.duration_ms as u64,
+            flags: Flags {
+                deep: self.flag_deep != 0,
+                parallel_n: self.flag_parallel_n as u32,
+                ensemble: self.flag_ensemble != 0,
+            },
+            mode: self.mode,
+            context,
+            finding_ids,
+        };
+        Ok(record)
+    }
+}
+
 pub struct ReviewLog {
-    path: PathBuf,
+    backend: Backend,
 }
 
 impl ReviewLog {
+    /// Create a ReviewLog backed by a JSONL file.
+    /// Retained for backward compatibility, migration support, and tests.
+    /// New callers should use `with_storage()`.
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Stream records line-by-line from the log, skipping malformed lines.
-    /// Returns an empty iterator if the file does not exist.
-    pub fn iter(&self) -> anyhow::Result<ReviewLogIter> {
-        use std::fs::File;
-        use std::io::{BufRead, BufReader};
-        if !self.path.exists() {
-            return Ok(ReviewLogIter { inner: None });
+        Self {
+            backend: Backend::Jsonl(path),
         }
-        let file = File::open(&self.path)
-            .with_context(|| format!("Failed to open review log: {}", self.path.display()))?;
-        let reader: Box<dyn BufRead> = Box::new(BufReader::new(file));
-        Ok(ReviewLogIter {
-            inner: Some(reader.lines()),
-        })
+    }
+
+    /// Create a SQLite-backed review log.
+    pub fn with_storage(handle: StorageHandle) -> Self {
+        Self {
+            backend: Backend::Sqlite(handle),
+        }
+    }
+
+    /// Path to the underlying JSONL file. Returns an empty path for
+    /// the SQLite backend (only used for display purposes).
+    pub fn path(&self) -> &Path {
+        match &self.backend {
+            Backend::Jsonl(p) => p,
+            Backend::Sqlite(_) => Path::new(""),
+        }
+    }
+
+    /// Stream records line-by-line from the JSONL log, skipping malformed lines.
+    /// Returns an empty iterator if the file does not exist.
+    ///
+    /// Only supported for the JSONL backend. The SQLite backend returns an
+    /// empty iterator (callers should use `load_all()` instead).
+    pub fn iter(&self) -> anyhow::Result<ReviewLogIter> {
+        match &self.backend {
+            Backend::Jsonl(path) => {
+                use std::fs::File;
+                use std::io::{BufRead, BufReader};
+                if !path.exists() {
+                    return Ok(ReviewLogIter { inner: None });
+                }
+                let file = File::open(path)
+                    .with_context(|| format!("Failed to open review log: {}", path.display()))?;
+                let reader: Box<dyn BufRead> = Box::new(BufReader::new(file));
+                Ok(ReviewLogIter {
+                    inner: Some(reader.lines()),
+                })
+            }
+            Backend::Sqlite(_) => Ok(ReviewLogIter { inner: None }),
+        }
     }
 
     /// Convenience: collect all records (suitable for small logs and tests).
     pub fn load_all(&self) -> anyhow::Result<Vec<ReviewRecord>> {
-        self.iter()?.collect()
+        match &self.backend {
+            Backend::Jsonl(_) => self.iter()?.collect(),
+            Backend::Sqlite(handle) => Self::load_all_sqlite(handle),
+        }
     }
 
-    /// Append one record as a JSON line. Creates the file (and parent dir) if missing.
+    /// Load the most recent `n` records in chronological order (oldest first).
+    ///
+    /// The SQLite backend uses `ORDER BY timestamp DESC LIMIT ?` for an
+    /// efficient partial scan, then reverses into chronological order.
+    /// The JSONL backend falls back to `load_all()` and takes the tail.
+    ///
+    /// Returns an empty `Vec` when `n == 0`.
+    pub fn load_recent(&self, n: usize) -> anyhow::Result<Vec<ReviewRecord>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        match &self.backend {
+            Backend::Jsonl(_) => {
+                let all = self.load_all()?;
+                let start = all.len().saturating_sub(n);
+                Ok(all[start..].to_vec())
+            }
+            Backend::Sqlite(handle) => Self::load_recent_sqlite(handle, n),
+        }
+    }
+
+    /// Return all distinct finding_ids across every review without
+    /// deserializing full `ReviewRecord` structs (SQLite path).
+    /// The JSONL path falls back to `load_all()`.
+    pub fn load_all_finding_ids(&self) -> anyhow::Result<std::collections::HashSet<String>> {
+        match &self.backend {
+            Backend::Jsonl(_) => {
+                let all = self.load_all()?;
+                Ok(all.into_iter().flat_map(|r| r.finding_ids).collect())
+            }
+            Backend::Sqlite(handle) => Self::load_all_finding_ids_sqlite(handle),
+        }
+    }
+
+    fn load_all_finding_ids_sqlite(
+        handle: &StorageHandle,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let mut stmt = conn.prepare("SELECT DISTINCT finding_id FROM review_finding_ids")?;
+        let ids: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
+    /// Load all records with `timestamp >= since` in chronological order.
+    ///
+    /// The SQLite backend uses a `WHERE timestamp >= ?1` clause for an
+    /// efficient filtered scan. The JSONL backend falls back to
+    /// `load_all()` and filters in Rust.
+    pub fn load_since(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<ReviewRecord>> {
+        match &self.backend {
+            Backend::Jsonl(_) => {
+                let all = self.load_all()?;
+                Ok(all.into_iter().filter(|r| r.timestamp >= since).collect())
+            }
+            Backend::Sqlite(handle) => Self::load_since_sqlite(handle, since),
+        }
+    }
+
+    /// Return the total number of review records without deserializing them.
+    ///
+    /// The SQLite backend uses `SELECT COUNT(*)` for an O(1) scan.
+    /// The JSONL backend falls back to `load_all().len()`.
+    pub fn count(&self) -> anyhow::Result<usize> {
+        match &self.backend {
+            Backend::Jsonl(_) => Ok(self.load_all()?.len()),
+            Backend::Sqlite(handle) => {
+                let conn = handle
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+                let count: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))?;
+                Ok(count as usize)
+            }
+        }
+    }
+
+    /// Append one record. Creates the file (and parent dir) if missing (JSONL),
+    /// or inserts into the `reviews` + `review_finding_ids` tables (SQLite).
     pub fn record(&self, entry: &ReviewRecord) -> anyhow::Result<()> {
+        match &self.backend {
+            Backend::Jsonl(path) => Self::record_jsonl(path, entry),
+            Backend::Sqlite(handle) => Self::record_sqlite(handle, entry),
+        }
+    }
+
+    // ── JSONL backend ──────────────────────────────────────────────────
+
+    fn record_jsonl(path: &Path, entry: &ReviewRecord) -> anyhow::Result<()> {
         use std::io::Write;
-        if let Some(parent) = self.path.parent()
+        if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -323,12 +583,348 @@ impl ReviewLog {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
-            .with_context(|| format!("Failed to open review log: {}", self.path.display()))?;
+            .open(path)
+            .with_context(|| format!("Failed to open review log: {}", path.display()))?;
         let mut buf = serde_json::to_string(entry)?;
         buf.push('\n');
         file.write_all(buf.as_bytes())?;
         Ok(())
+    }
+
+    // ── SQLite backend ─────────────────────────────────────────────────
+
+    fn record_sqlite(handle: &StorageHandle, entry: &ReviewRecord) -> anyhow::Result<()> {
+        use rusqlite::params;
+
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let tx = conn.unchecked_transaction()?;
+
+        let context_json = serde_json::to_string(&entry.context)?;
+        let suppressed_json = serde_json::to_string(&entry.suppressed_by_rule)?;
+        let ts = entry.timestamp.to_rfc3339();
+
+        // u64 -> i64 casts are intentional: SQLite INTEGER is signed 64-bit.
+        // Token counts and durations are well within i64 range in practice.
+        #[allow(clippy::cast_possible_wrap)]
+        tx.execute(
+            "INSERT INTO reviews (
+                run_id, timestamp, quorum_version, repo, invoked_from, model,
+                files_reviewed, lines_added, lines_removed,
+                critical, high, medium, low, info,
+                suppressed_by_rule,
+                tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                flag_deep, flag_parallel_n, flag_ensemble,
+                mode, context
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14,
+                ?15,
+                ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22,
+                ?23, ?24
+            )",
+            params![
+                entry.run_id,
+                ts,
+                entry.quorum_version,
+                entry.repo,
+                entry.invoked_from,
+                entry.model,
+                entry.files_reviewed,
+                entry.lines_added.map(i64::from),
+                entry.lines_removed.map(i64::from),
+                i64::from(entry.findings_by_severity.critical),
+                i64::from(entry.findings_by_severity.high),
+                i64::from(entry.findings_by_severity.medium),
+                i64::from(entry.findings_by_severity.low),
+                i64::from(entry.findings_by_severity.info),
+                suppressed_json,
+                entry.tokens_in as i64,
+                entry.tokens_out as i64,
+                entry.tokens_cache_read as i64,
+                entry.duration_ms as i64,
+                i32::from(entry.flags.deep),
+                i64::from(entry.flags.parallel_n),
+                i32::from(entry.flags.ensemble),
+                entry.mode,
+                context_json,
+            ],
+        )?;
+
+        for fid in &entry.finding_ids {
+            tx.execute(
+                "INSERT INTO review_finding_ids (run_id, finding_id) VALUES (?1, ?2)",
+                params![entry.run_id, fid],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn load_all_sqlite(handle: &StorageHandle) -> anyhow::Result<Vec<ReviewRecord>> {
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        // Pre-load all finding_ids grouped by run_id.
+        let mut finding_map: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut stmt =
+                conn.prepare("SELECT run_id, finding_id FROM review_finding_ids ORDER BY rowid")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (run_id, finding_id) = row?;
+                finding_map.entry(run_id).or_default().push(finding_id);
+            }
+        }
+
+        let raw_rows = Self::query_raw_rows(&conn)?;
+
+        let mut records = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            records.push(r.into_record(&mut finding_map)?);
+        }
+        Ok(records)
+    }
+
+    /// Execute the SELECT query and extract all columns into `RawReviewRow`
+    /// structs, keeping the rusqlite `Row` borrow confined to the closure.
+    fn query_raw_rows(conn: &rusqlite::Connection) -> anyhow::Result<Vec<RawReviewRow>> {
+        let mut stmt = conn.prepare(
+            "SELECT
+                run_id, timestamp, quorum_version, repo, invoked_from, model,
+                files_reviewed, lines_added, lines_removed,
+                critical, high, medium, low, info,
+                suppressed_by_rule,
+                tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                flag_deep, flag_parallel_n, flag_ensemble,
+                mode, context
+            FROM reviews
+            ORDER BY timestamp ASC",
+        )?;
+
+        let raw_rows: Vec<RawReviewRow> = stmt
+            .query_map([], |row| {
+                Ok(RawReviewRow {
+                    run_id: row.get(0)?,
+                    ts_str: row.get(1)?,
+                    quorum_version: row.get(2)?,
+                    repo: row.get(3)?,
+                    invoked_from: row.get(4)?,
+                    model: row.get(5)?,
+                    files_reviewed: row.get(6)?,
+                    lines_added: row.get(7)?,
+                    lines_removed: row.get(8)?,
+                    critical: row.get(9)?,
+                    high: row.get(10)?,
+                    medium: row.get(11)?,
+                    low: row.get(12)?,
+                    info: row.get(13)?,
+                    suppressed_json: row.get(14)?,
+                    tokens_in: row.get(15)?,
+                    tokens_out: row.get(16)?,
+                    tokens_cache_read: row.get(17)?,
+                    duration_ms: row.get(18)?,
+                    flag_deep: row.get(19)?,
+                    flag_parallel_n: row.get(20)?,
+                    flag_ensemble: row.get(21)?,
+                    mode: row.get(22)?,
+                    context_json: row.get(23)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(raw_rows)
+    }
+
+    /// Load at most `n` recent reviews. Queries the DB with
+    /// `ORDER BY timestamp DESC LIMIT ?`, pre-loads only the matching
+    /// finding_ids, then reverses to chronological order.
+    fn load_recent_sqlite(handle: &StorageHandle, n: usize) -> anyhow::Result<Vec<ReviewRecord>> {
+        use rusqlite::params;
+
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        // 1. Identify the run_ids we need (DESC, capped at n).
+        let run_ids: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT run_id FROM reviews ORDER BY timestamp DESC, run_id DESC LIMIT ?1",
+            )?;
+            stmt.query_map(params![n as i64], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        if run_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. Pre-load finding_ids only for these run_ids.
+        let mut finding_map: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let placeholders: String = run_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT run_id, finding_id FROM review_finding_ids \
+                 WHERE run_id IN ({placeholders}) ORDER BY rowid"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(run_ids.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (run_id, finding_id) = row?;
+                finding_map.entry(run_id).or_default().push(finding_id);
+            }
+        }
+
+        // 3. Fetch full rows (DESC, LIMIT n).
+        let raw_rows: Vec<RawReviewRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT
+                    run_id, timestamp, quorum_version, repo, invoked_from, model,
+                    files_reviewed, lines_added, lines_removed,
+                    critical, high, medium, low, info,
+                    suppressed_by_rule,
+                    tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                    flag_deep, flag_parallel_n, flag_ensemble,
+                    mode, context
+                FROM reviews
+                ORDER BY timestamp DESC, run_id DESC
+                LIMIT ?1",
+            )?;
+            stmt.query_map(params![n as i64], |row| {
+                Ok(RawReviewRow {
+                    run_id: row.get(0)?,
+                    ts_str: row.get(1)?,
+                    quorum_version: row.get(2)?,
+                    repo: row.get(3)?,
+                    invoked_from: row.get(4)?,
+                    model: row.get(5)?,
+                    files_reviewed: row.get(6)?,
+                    lines_added: row.get(7)?,
+                    lines_removed: row.get(8)?,
+                    critical: row.get(9)?,
+                    high: row.get(10)?,
+                    medium: row.get(11)?,
+                    low: row.get(12)?,
+                    info: row.get(13)?,
+                    suppressed_json: row.get(14)?,
+                    tokens_in: row.get(15)?,
+                    tokens_out: row.get(16)?,
+                    tokens_cache_read: row.get(17)?,
+                    duration_ms: row.get(18)?,
+                    flag_deep: row.get(19)?,
+                    flag_parallel_n: row.get(20)?,
+                    flag_ensemble: row.get(21)?,
+                    mode: row.get(22)?,
+                    context_json: row.get(23)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        // 4. Convert and reverse to chronological (ASC) order.
+        let mut records = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            records.push(r.into_record(&mut finding_map)?);
+        }
+        records.reverse();
+        Ok(records)
+    }
+
+    /// Load reviews with `timestamp >= since`. Uses a SQL WHERE clause
+    /// for efficient filtering and pre-loads only the matching finding_ids
+    /// via a JOIN.
+    fn load_since_sqlite(
+        handle: &StorageHandle,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<ReviewRecord>> {
+        use rusqlite::params;
+
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+
+        let since_str = since.to_rfc3339();
+
+        // 1. Pre-load finding_ids for matching reviews via JOIN.
+        let mut finding_map: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT f.run_id, f.finding_id
+                 FROM review_finding_ids f
+                 INNER JOIN reviews r ON r.run_id = f.run_id
+                 WHERE r.timestamp >= ?1
+                 ORDER BY f.rowid",
+            )?;
+            let rows = stmt.query_map(params![since_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (run_id, finding_id) = row?;
+                finding_map.entry(run_id).or_default().push(finding_id);
+            }
+        }
+
+        // 2. Fetch full rows matching the time filter.
+        let raw_rows: Vec<RawReviewRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT
+                    run_id, timestamp, quorum_version, repo, invoked_from, model,
+                    files_reviewed, lines_added, lines_removed,
+                    critical, high, medium, low, info,
+                    suppressed_by_rule,
+                    tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                    flag_deep, flag_parallel_n, flag_ensemble,
+                    mode, context
+                FROM reviews
+                WHERE timestamp >= ?1
+                ORDER BY timestamp ASC",
+            )?;
+            stmt.query_map(params![since_str], |row| {
+                Ok(RawReviewRow {
+                    run_id: row.get(0)?,
+                    ts_str: row.get(1)?,
+                    quorum_version: row.get(2)?,
+                    repo: row.get(3)?,
+                    invoked_from: row.get(4)?,
+                    model: row.get(5)?,
+                    files_reviewed: row.get(6)?,
+                    lines_added: row.get(7)?,
+                    lines_removed: row.get(8)?,
+                    critical: row.get(9)?,
+                    high: row.get(10)?,
+                    medium: row.get(11)?,
+                    low: row.get(12)?,
+                    info: row.get(13)?,
+                    suppressed_json: row.get(14)?,
+                    tokens_in: row.get(15)?,
+                    tokens_out: row.get(16)?,
+                    tokens_cache_read: row.get(17)?,
+                    duration_ms: row.get(18)?,
+                    flag_deep: row.get(19)?,
+                    flag_parallel_n: row.get(20)?,
+                    flag_ensemble: row.get(21)?,
+                    mode: row.get(22)?,
+                    context_json: row.get(23)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        // 3. Convert to ReviewRecords.
+        let mut records = Vec::with_capacity(raw_rows.len());
+        for r in raw_rows {
+            records.push(r.into_record(&mut finding_map)?);
+        }
+        Ok(records)
     }
 }
 
@@ -735,6 +1331,16 @@ mod tests {
             rerank_score_p10: Some(0.55),
             rerank_score_median: Some(0.72),
             rerank_score_p90: Some(0.88),
+            sources_queried: 1,
+            sources_contributing: 1,
+            per_source_contributions: std::collections::BTreeMap::new(),
+            dep_boost_applied: 0,
+            current_repo_reserved_available: 0,
+            current_repo_reserved_filled: 0,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
         }
     }
 
@@ -796,6 +1402,51 @@ mod tests {
         let back = log.load_all().unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].context, ContextTelemetry::default());
+    }
+
+    #[test]
+    fn structural_fingerprint_telemetry_defaults_and_round_trip() {
+        // 1. Default construction: all new fields are 0.
+        let default_ctx = ContextTelemetry::default();
+        assert_eq!(default_ctx.structural_fingerprints_computed, 0);
+        assert_eq!(default_ctx.structural_knn_queries, 0);
+        assert_eq!(default_ctx.structural_knn_hits, 0);
+        assert_eq!(default_ctx.structural_boost_applied, 0);
+
+        // 2. Populated round-trip: set nonzero values, serialize, deserialize.
+        let ctx = ContextTelemetry {
+            structural_fingerprints_computed: 42,
+            structural_knn_queries: 3,
+            structural_knn_hits: 17,
+            structural_boost_applied: 5,
+            ..ContextTelemetry::default()
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("\"structural_fingerprints_computed\":42"));
+        assert!(json.contains("\"structural_knn_queries\":3"));
+        assert!(json.contains("\"structural_knn_hits\":17"));
+        assert!(json.contains("\"structural_boost_applied\":5"));
+
+        let back: ContextTelemetry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ctx);
+
+        // 3. Backward compat: old JSON without the new fields -> 0.
+        let old_json = r#"{
+            "auto_inject_enabled": true,
+            "injector_available": true,
+            "retrieved_chunk_count": 10
+        }"#;
+        let old: ContextTelemetry = serde_json::from_str(old_json)
+            .expect("old JSON without structural fields must deserialize");
+        assert_eq!(old.structural_fingerprints_computed, 0);
+        assert_eq!(old.structural_knn_queries, 0);
+        assert_eq!(old.structural_knn_hits, 0);
+        assert_eq!(old.structural_boost_applied, 0);
+        // Existing fields still parse correctly.
+        assert!(old.auto_inject_enabled);
+        assert!(old.injector_available);
+        assert_eq!(old.retrieved_chunk_count, 10);
     }
 
     #[test]
@@ -968,5 +1619,471 @@ mod tests {
             rec.mode.is_none(),
             "mode should default to None for legacy records"
         );
+    }
+
+    // ── SQLite backend tests ──────────────────────────────────────────
+
+    /// Fixture builder for test `ReviewRecord`s. Reduces duplication
+    /// across SQLite tests — callers override only what they need.
+    fn test_review_record(run_id: &str) -> ReviewRecord {
+        ReviewRecord {
+            run_id: run_id.to_string(),
+            timestamp: Utc::now(),
+            quorum_version: "0.22.0".to_string(),
+            repo: None,
+            invoked_from: "test".to_string(),
+            model: "test-model".to_string(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: SeverityCounts::default(),
+            suppressed_by_rule: HashMap::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
+            duration_ms: 0,
+            flags: Flags::default(),
+            mode: None,
+            context: ContextTelemetry::default(),
+            finding_ids: vec![],
+        }
+    }
+
+    /// Helper: create a SQLite-backed ReviewLog in a temp directory.
+    fn sqlite_review_log(dir: &TempDir) -> ReviewLog {
+        let handle = crate::storage::initialize(dir.path()).expect("storage init");
+        ReviewLog::with_storage(handle)
+    }
+
+    #[test]
+    fn sqlite_record_round_trip() {
+        // Full record with all fields populated; verify every field
+        // survives a write-then-read cycle through SQLite.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+
+        let mut suppressed = HashMap::new();
+        suppressed.insert("tautological-length".into(), 2u32);
+        suppressed.insert("bare-except-pass".into(), 1u32);
+
+        let rec = ReviewRecord {
+            run_id: "01TEST_FULL_ROUNDTRIP00001".to_string(),
+            timestamp: chrono::DateTime::parse_from_rfc3339("2026-05-10T14:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            quorum_version: "0.22.0".to_string(),
+            repo: Some("quorum".to_string()),
+            invoked_from: "claude_code".to_string(),
+            model: "gpt-5.4".to_string(),
+            files_reviewed: 7,
+            lines_added: Some(120),
+            lines_removed: Some(40),
+            findings_by_severity: SeverityCounts {
+                critical: 1,
+                high: 2,
+                medium: 3,
+                low: 4,
+                info: 5,
+            },
+            suppressed_by_rule: suppressed.clone(),
+            tokens_in: 12_345,
+            tokens_out: 678,
+            tokens_cache_read: 8_000,
+            duration_ms: 4_200,
+            flags: Flags {
+                deep: true,
+                parallel_n: 4,
+                ensemble: true,
+            },
+            mode: Some("plan".to_string()),
+            context: populated_context_telemetry(),
+            finding_ids: vec!["fid-AAA".into(), "fid-BBB".into()],
+        };
+
+        log.record(&rec).unwrap();
+        let loaded = log.load_all().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        let got = &loaded[0];
+
+        assert_eq!(got.run_id, rec.run_id);
+        assert_eq!(got.timestamp, rec.timestamp);
+        assert_eq!(got.quorum_version, rec.quorum_version);
+        assert_eq!(got.repo, rec.repo);
+        assert_eq!(got.invoked_from, rec.invoked_from);
+        assert_eq!(got.model, rec.model);
+        assert_eq!(got.files_reviewed, rec.files_reviewed);
+        assert_eq!(got.lines_added, rec.lines_added);
+        assert_eq!(got.lines_removed, rec.lines_removed);
+        assert_eq!(got.findings_by_severity, rec.findings_by_severity);
+        assert_eq!(got.suppressed_by_rule, rec.suppressed_by_rule);
+        assert_eq!(got.tokens_in, rec.tokens_in);
+        assert_eq!(got.tokens_out, rec.tokens_out);
+        assert_eq!(got.tokens_cache_read, rec.tokens_cache_read);
+        assert_eq!(got.duration_ms, rec.duration_ms);
+        assert_eq!(got.flags, rec.flags);
+        assert_eq!(got.mode, rec.mode);
+        assert_eq!(got.context, rec.context);
+        assert_eq!(got.finding_ids, rec.finding_ids);
+    }
+
+    #[test]
+    fn sqlite_optional_fields_round_trip() {
+        // None/empty values round-trip correctly: repo=None,
+        // lines_added/removed=None, mode=None, empty suppressed_by_rule,
+        // empty finding_ids, default context.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+
+        let rec = test_review_record("01TEST_OPTIONAL_FIELDS001");
+
+        log.record(&rec).unwrap();
+        let loaded = log.load_all().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        let got = &loaded[0];
+
+        assert!(got.repo.is_none(), "repo should be None");
+        assert!(got.lines_added.is_none(), "lines_added should be None");
+        assert!(got.lines_removed.is_none(), "lines_removed should be None");
+        assert!(got.mode.is_none(), "mode should be None");
+        assert!(
+            got.suppressed_by_rule.is_empty(),
+            "suppressed_by_rule should be empty"
+        );
+        assert!(got.finding_ids.is_empty(), "finding_ids should be empty");
+        assert_eq!(got.context, ContextTelemetry::default());
+        assert_eq!(got.flags, Flags::default());
+    }
+
+    #[test]
+    fn sqlite_context_telemetry_round_trip() {
+        // Set 10+ ContextTelemetry fields including nested LegCounts;
+        // verify they survive the JSON column round-trip.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+
+        let ctx = ContextTelemetry {
+            auto_inject_enabled: true,
+            injector_available: true,
+            retriever_errored: false,
+            retrieved_chunk_count: 12,
+            injected_chunk_count: 5,
+            injected_tokens: 320,
+            below_threshold_count: 7,
+            adaptive_threshold_applied: true,
+            effective_prose_threshold: 0.72,
+            injected_chunk_ids: vec!["c1".into(), "c2".into(), "c3".into()],
+            injected_sources: vec!["src-alpha".into(), "src-beta".into()],
+            precedence_entries: 3,
+            render_duration_ms: 88,
+            rendered_prompt_hash: Some("abcdef0123456789".into()),
+            suppressed_by_calibrator: 2,
+            suppressed_by_floor: 1,
+            nan_scores_dropped: 0,
+            retrieved_by_leg: LegCounts {
+                bm25: 4,
+                vector: 5,
+                structural: 3,
+                structural_only: 1,
+                total_unique: 10,
+            },
+            injected_by_leg: LegCounts {
+                bm25: 2,
+                vector: 2,
+                structural: 1,
+                structural_only: 0,
+                total_unique: 5,
+            },
+            rerank_score_min: Some(0.32),
+            rerank_score_p10: Some(0.45),
+            rerank_score_median: Some(0.68),
+            rerank_score_p90: Some(0.91),
+            sources_queried: 2,
+            sources_contributing: 1,
+            per_source_contributions: std::collections::BTreeMap::new(),
+            dep_boost_applied: 0,
+            current_repo_reserved_available: 3,
+            current_repo_reserved_filled: 2,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
+        };
+
+        let mut rec = test_review_record("01TEST_CTX_TELEMETRY0001");
+        rec.context = ctx.clone();
+
+        log.record(&rec).unwrap();
+        let loaded = log.load_all().unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].context, ctx);
+
+        // Spot-check nested LegCounts fields survived.
+        assert_eq!(loaded[0].context.retrieved_by_leg.bm25, 4);
+        assert_eq!(loaded[0].context.retrieved_by_leg.structural_only, 1);
+        assert_eq!(loaded[0].context.injected_by_leg.total_unique, 5);
+        assert_eq!(loaded[0].context.rerank_score_median, Some(0.68));
+    }
+
+    #[test]
+    fn sqlite_finding_ids_normalized() {
+        // Verify finding_ids go to the child table and join back
+        // correctly. Also verify multiple records with different
+        // finding_ids stay isolated.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+
+        let mut rec1 = test_review_record("01TEST_FINDIDS_A00000001");
+        rec1.finding_ids = vec!["fid-1".into(), "fid-2".into(), "fid-3".into()];
+
+        let mut rec2 = test_review_record("01TEST_FINDIDS_B00000001");
+        rec2.finding_ids = vec!["fid-X".into()];
+
+        let rec3 = test_review_record("01TEST_FINDIDS_C00000001");
+        // rec3 has no finding_ids
+
+        log.record(&rec1).unwrap();
+        log.record(&rec2).unwrap();
+        log.record(&rec3).unwrap();
+
+        let loaded = log.load_all().unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        // Find each by run_id.
+        let got1 = loaded.iter().find(|r| r.run_id == rec1.run_id).unwrap();
+        let got2 = loaded.iter().find(|r| r.run_id == rec2.run_id).unwrap();
+        let got3 = loaded.iter().find(|r| r.run_id == rec3.run_id).unwrap();
+
+        assert_eq!(got1.finding_ids, vec!["fid-1", "fid-2", "fid-3"]);
+        assert_eq!(got2.finding_ids, vec!["fid-X"]);
+        assert!(got3.finding_ids.is_empty());
+    }
+
+    #[test]
+    fn sqlite_load_all_ordered_by_timestamp() {
+        // Multiple records with different timestamps; verify load_all
+        // returns them in ascending timestamp order regardless of
+        // insertion order.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+
+        let ts3 = chrono::DateTime::parse_from_rfc3339("2026-05-12T03:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts1 = chrono::DateTime::parse_from_rfc3339("2026-05-12T01:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts2 = chrono::DateTime::parse_from_rfc3339("2026-05-12T02:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Insert out of order: 3, 1, 2
+        let mut r3 = test_review_record("01TEST_ORDER_C000000001");
+        r3.timestamp = ts3;
+        let mut r1 = test_review_record("01TEST_ORDER_A000000001");
+        r1.timestamp = ts1;
+        let mut r2 = test_review_record("01TEST_ORDER_B000000001");
+        r2.timestamp = ts2;
+
+        log.record(&r3).unwrap();
+        log.record(&r1).unwrap();
+        log.record(&r2).unwrap();
+
+        let loaded = log.load_all().unwrap();
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded[0].run_id, r1.run_id, "earliest first");
+        assert_eq!(loaded[1].run_id, r2.run_id, "middle second");
+        assert_eq!(loaded[2].run_id, r3.run_id, "latest last");
+    }
+
+    #[test]
+    fn sqlite_path_returns_empty() {
+        // The SQLite backend's path() should return an empty Path.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        assert_eq!(log.path(), Path::new(""));
+    }
+
+    #[test]
+    fn sqlite_load_all_empty_db() {
+        // load_all on an empty SQLite database should return an empty Vec.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let loaded = log.load_all().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    // ── load_recent tests ────────────────────────────────────────────
+
+    /// Minimal fixture for `load_recent` tests. Callers override fields
+    /// as needed (e.g. `timestamp`, `files_reviewed`).
+    fn test_record() -> ReviewRecord {
+        ReviewRecord {
+            run_id: ReviewRecord::new_ulid(),
+            timestamp: Utc::now(),
+            quorum_version: "test".into(),
+            repo: Some("test-repo".into()),
+            invoked_from: "test".into(),
+            model: "test-model".into(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: SeverityCounts::default(),
+            suppressed_by_rule: HashMap::new(),
+            tokens_in: 100,
+            tokens_out: 50,
+            tokens_cache_read: 0,
+            duration_ms: 500,
+            flags: Flags::default(),
+            mode: None,
+            context: ContextTelemetry::default(),
+            finding_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn load_recent_returns_last_n_records_in_chronological_order() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        for i in 0..10u32 {
+            let mut rec = test_record();
+            rec.timestamp = chrono::Utc::now() + chrono::Duration::seconds(i64::from(i));
+            rec.files_reviewed = i;
+            log.record(&rec).unwrap();
+        }
+
+        let recent = log.load_recent(3).unwrap();
+        assert_eq!(recent.len(), 3);
+        // Chronological order: oldest-of-the-3 first.
+        assert_eq!(recent[0].files_reviewed, 7);
+        assert_eq!(recent[1].files_reviewed, 8);
+        assert_eq!(recent[2].files_reviewed, 9);
+    }
+
+    #[test]
+    fn load_recent_returns_all_when_n_exceeds_total() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        for _ in 0..3 {
+            log.record(&test_record()).unwrap();
+        }
+
+        let recent = log.load_recent(100).unwrap();
+        assert_eq!(recent.len(), 3);
+    }
+
+    #[test]
+    fn load_recent_zero_returns_empty() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+        log.record(&test_record()).unwrap();
+
+        let recent = log.load_recent(0).unwrap();
+        assert!(recent.is_empty());
+    }
+
+    // ── load_since tests ────────────────────────────────────────────
+
+    #[test]
+    fn load_since_returns_only_records_after_cutoff() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let t1 = chrono::Utc::now() - chrono::Duration::days(10);
+        let t2 = chrono::Utc::now() - chrono::Duration::days(5);
+        let t3 = chrono::Utc::now();
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+
+        let mut r1 = test_record();
+        r1.timestamp = t1;
+        r1.files_reviewed = 1;
+        let mut r2 = test_record();
+        r2.timestamp = t2;
+        r2.files_reviewed = 2;
+        let mut r3 = test_record();
+        r3.timestamp = t3;
+        r3.files_reviewed = 3;
+
+        log.record(&r1).unwrap();
+        log.record(&r2).unwrap();
+        log.record(&r3).unwrap();
+
+        let since = log.load_since(cutoff).unwrap();
+        assert_eq!(since.len(), 2);
+        assert_eq!(since[0].files_reviewed, 2);
+        assert_eq!(since[1].files_reviewed, 3);
+    }
+
+    #[test]
+    fn load_since_returns_empty_when_all_older() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let mut rec = test_record();
+        rec.timestamp = chrono::Utc::now() - chrono::Duration::days(30);
+        log.record(&rec).unwrap();
+
+        let since = log.load_since(chrono::Utc::now()).unwrap();
+        assert!(since.is_empty());
+    }
+
+    // ── load_all_finding_ids tests ──────────────────────────────────────
+
+    #[test]
+    fn load_all_finding_ids_returns_unique_ids() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let mut r1 = test_record();
+        r1.finding_ids = vec!["fid-1".into(), "fid-2".into()];
+        let mut r2 = test_record();
+        r2.finding_ids = vec!["fid-2".into(), "fid-3".into()];
+
+        log.record(&r1).unwrap();
+        log.record(&r2).unwrap();
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("fid-1"));
+        assert!(ids.contains("fid-2"));
+        assert!(ids.contains("fid-3"));
+    }
+
+    #[test]
+    fn load_all_finding_ids_empty_when_no_records() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn load_all_finding_ids_empty_when_records_have_no_findings() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        log.record(&test_record()).unwrap();
+
+        let ids = log.load_all_finding_ids().unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn count_returns_total_records() {
+        let handle = crate::storage::in_memory_handle();
+        let log = ReviewLog::with_storage(handle);
+
+        assert_eq!(log.count().unwrap(), 0);
+
+        log.record(&test_record()).unwrap();
+        assert_eq!(log.count().unwrap(), 1);
+
+        log.record(&test_record()).unwrap();
+        assert_eq!(log.count().unwrap(), 2);
     }
 }

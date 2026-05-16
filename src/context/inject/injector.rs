@@ -37,6 +37,12 @@ pub struct InjectionRequest {
     /// imports referenced in the reviewed code, stripped of signature
     /// text. These drive the "go to definition" retrieval leg.
     pub structural_names: Vec<String>,
+    /// Structural fingerprint vectors from the reviewed file's functions,
+    /// forwarded into `RetrievalQuery::structural_fingerprints` for KNN search.
+    pub structural_fingerprints: Vec<(
+        String,
+        [f32; crate::context::extract::fingerprint::FINGERPRINT_DIMS],
+    )>,
     /// Free-text query (e.g., trimmed code slice or import targets joined).
     pub text: String,
 }
@@ -157,6 +163,7 @@ impl ContextInjectionSource for ContextInjector {
             text: req.text.clone(),
             identifiers: req.identifiers.clone(),
             structural_names: req.structural_names.clone(),
+            structural_fingerprints: req.structural_fingerprints.clone(),
             filters: Filters {
                 sources: vec![],
                 kinds: vec![],
@@ -398,6 +405,7 @@ impl std::fmt::Debug for ContextInjector {
 mod tests {
     use super::*;
     use crate::calibrator::Calibrator;
+    use crate::context::config::MultiSourceConfig;
     use crate::context::retrieve::ScoreBreakdown;
     use crate::context::types::{Chunk, ChunkMeta, LineRange, Provenance};
 
@@ -433,6 +441,7 @@ mod tests {
                 vec_norm: 0.0,
                 id_boost: 0.0,
                 path_boost: 0.0,
+                struct_sim: 0.0,
                 recency_mul: 1.0,
                 score,
             },
@@ -450,6 +459,7 @@ mod tests {
             rerank_recency_floor: 0.25,
             max_source_size_mb: 100,
             ignore: vec![],
+            multi_source: MultiSourceConfig::default(),
         }
     }
 
@@ -470,6 +480,7 @@ mod tests {
             language: Some("rust".into()),
             identifiers: vec!["foo".into()],
             structural_names: vec![],
+            structural_fingerprints: vec![],
             text: "foo bar".into(),
         };
         (injector, req)
@@ -523,6 +534,7 @@ mod tests {
             language: Some("rust".into()),
             identifiers: vec!["foo".into()],
             structural_names: vec![],
+            structural_fingerprints: vec![],
             text: "foo bar".into(),
         };
         let out = injector.inject(&req);
@@ -604,6 +616,7 @@ mod tests {
             language: Some("rust".into()),
             identifiers: vec!["foo".into()],
             structural_names: vec![],
+            structural_fingerprints: vec![],
             text: "foo".into(),
         };
         let out = injector.inject(&req);
@@ -629,6 +642,7 @@ mod tests {
             language: Some("rust".into()),
             identifiers: vec![],
             structural_names: vec![],
+            structural_fingerprints: vec![],
             text: "x".into(),
         };
         let out = injector.inject(&req);

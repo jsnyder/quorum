@@ -7,7 +7,9 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::config::{ContextConfig, SourceEntry, SourceKind, SourceLocation, SourcesConfig};
+use super::config::{
+    ContextConfig, MultiSourceConfig, SourceEntry, SourceKind, SourceLocation, SourcesConfig,
+};
 use super::extract::dispatch::{ExtractConfig, extract_source};
 use super::index::builder::IndexBuilder;
 use super::index::traits::{FixedClock, HashEmbedder};
@@ -24,6 +26,9 @@ fn fixture_source(name: &str) -> SourceEntry {
         paths: Vec::new(),
         weight: Some(10),
         ignore: Vec::new(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     }
 }
 
@@ -71,6 +76,7 @@ fn context_config(budget: u32) -> ContextConfig {
         rerank_recency_floor: 0.25,
         max_source_size_mb: 100,
         ignore: Vec::new(),
+        multi_source: MultiSourceConfig::default(),
     }
 }
 
@@ -117,6 +123,7 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -153,6 +160,7 @@ fn injector_returns_none_when_auto_inject_disabled() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -177,6 +185,7 @@ fn injector_returns_none_when_query_yields_no_hits() {
         language: Some("rust".to_string()),
         identifiers: Vec::new(),
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: String::new(),
     };
 
@@ -201,6 +210,7 @@ fn injector_returns_none_when_retriever_closure_returns_empty_vec() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -226,6 +236,7 @@ fn injector_returns_none_when_retriever_errors() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -259,6 +270,7 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -393,6 +405,7 @@ fn verify_token_request() -> InjectionRequest {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     }
 }

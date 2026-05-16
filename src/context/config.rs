@@ -70,6 +70,9 @@ pub struct SourceEntry {
     pub paths: Vec<PathBuf>,
     pub weight: Option<i32>,
     pub ignore: Vec<String>,
+    pub provides: Vec<String>,
+    pub include_for: Vec<String>,
+    pub exclude_for: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +91,32 @@ pub struct ContextConfig {
     pub rerank_recency_floor: f32,
     pub max_source_size_mb: u32,
     pub ignore: Vec<String>,
+    pub multi_source: MultiSourceConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiSourceConfig {
+    pub enabled: bool,
+    pub max_sources_queried: u32,
+    pub per_source_cap: u32,
+    pub current_repo_reserved: u32,
+    pub current_repo_boost: f32,
+    pub dep_manifest_boost: f32,
+    pub lang_match_boost: f32,
+}
+
+impl Default for MultiSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_sources_queried: 10,
+            per_source_cap: 3,
+            current_repo_reserved: 2,
+            current_repo_boost: 1.3,
+            dep_manifest_boost: 1.2,
+            lang_match_boost: 1.1,
+        }
+    }
 }
 
 impl Default for ContextConfig {
@@ -101,6 +130,7 @@ impl Default for ContextConfig {
             rerank_recency_floor: 0.25,
             max_source_size_mb: 200,
             ignore: Vec::new(),
+            multi_source: MultiSourceConfig::default(),
         }
     }
 }
@@ -130,7 +160,6 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawSource {
     name: String,
     kind: RawKind,
@@ -146,6 +175,12 @@ struct RawSource {
     weight: Option<i32>,
     #[serde(default)]
     ignore: Vec<String>,
+    #[serde(default)]
+    provides: Vec<String>,
+    #[serde(default)]
+    include_for: Vec<String>,
+    #[serde(default)]
+    exclude_for: Vec<String>,
 }
 
 // Custom kind wrapper so we can emit a friendlier "unknown kind" message
@@ -197,6 +232,27 @@ struct RawContext {
     max_source_size_mb: Option<u32>,
     #[serde(default)]
     ignore: Vec<String>,
+    #[serde(default)]
+    multi_source: Option<RawMultiSource>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawMultiSource {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_sources_queried: Option<u32>,
+    #[serde(default)]
+    per_source_cap: Option<u32>,
+    #[serde(default)]
+    current_repo_reserved: Option<u32>,
+    #[serde(default)]
+    current_repo_boost: Option<f32>,
+    #[serde(default)]
+    dep_manifest_boost: Option<f32>,
+    #[serde(default)]
+    lang_match_boost: Option<f32>,
 }
 
 // --- Public API -------------------------------------------------------------
@@ -396,6 +452,15 @@ fn render_source_fragment(entry: &SourceEntry) -> String {
     if !entry.ignore.is_empty() {
         out.push_str(&format!("ignore = {}\n", tq_array(&entry.ignore)));
     }
+    if !entry.provides.is_empty() {
+        out.push_str(&format!("provides = {}\n", tq_array(&entry.provides)));
+    }
+    if !entry.include_for.is_empty() {
+        out.push_str(&format!("include_for = {}\n", tq_array(&entry.include_for)));
+    }
+    if !entry.exclude_for.is_empty() {
+        out.push_str(&format!("exclude_for = {}\n", tq_array(&entry.exclude_for)));
+    }
     out
 }
 
@@ -455,6 +520,9 @@ impl SourcesConfig {
                 paths: rs.paths.into_iter().map(PathBuf::from).collect(),
                 weight: rs.weight,
                 ignore: rs.ignore,
+                provides: rs.provides,
+                include_for: rs.include_for,
+                exclude_for: rs.exclude_for,
             });
         }
 
@@ -483,6 +551,7 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
             .max_source_size_mb
             .unwrap_or(defaults.max_source_size_mb),
         ignore: raw.ignore,
+        multi_source: build_multi_source(raw.multi_source.unwrap_or_default()),
     };
 
     if !ctx.inject_min_score.is_finite() {
@@ -530,5 +599,43 @@ fn build_context(raw: RawContext) -> Result<ContextConfig, ConfigError> {
         ));
     }
 
+    fn validate_boost(name: &str, v: f32) -> Result<(), ConfigError> {
+        if !v.is_finite() || v < 0.0 {
+            return Err(ConfigError::Invalid(format!(
+                "{name} must be a finite non-negative number, got {v}"
+            )));
+        }
+        Ok(())
+    }
+    validate_boost("current_repo_boost", ctx.multi_source.current_repo_boost)?;
+    validate_boost("dep_manifest_boost", ctx.multi_source.dep_manifest_boost)?;
+    validate_boost("lang_match_boost", ctx.multi_source.lang_match_boost)?;
+    if ctx.multi_source.enabled && ctx.multi_source.max_sources_queried == 0 {
+        return Err(ConfigError::Invalid(
+            "multi_source.max_sources_queried must be greater than 0 when enabled".into(),
+        ));
+    }
+
     Ok(ctx)
+}
+
+fn build_multi_source(raw: RawMultiSource) -> MultiSourceConfig {
+    let defaults = MultiSourceConfig::default();
+    MultiSourceConfig {
+        enabled: raw.enabled.unwrap_or(defaults.enabled),
+        max_sources_queried: raw
+            .max_sources_queried
+            .unwrap_or(defaults.max_sources_queried),
+        per_source_cap: raw.per_source_cap.unwrap_or(defaults.per_source_cap),
+        current_repo_reserved: raw
+            .current_repo_reserved
+            .unwrap_or(defaults.current_repo_reserved),
+        current_repo_boost: raw
+            .current_repo_boost
+            .unwrap_or(defaults.current_repo_boost),
+        dep_manifest_boost: raw
+            .dep_manifest_boost
+            .unwrap_or(defaults.dep_manifest_boost),
+        lang_match_boost: raw.lang_match_boost.unwrap_or(defaults.lang_match_boost),
+    }
 }

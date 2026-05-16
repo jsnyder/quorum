@@ -623,6 +623,9 @@ fn append_source_rejects_path_traversal_name() {
         paths: Vec::new(),
         weight: None,
         ignore: Vec::new(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     };
     let err = SourcesConfig::append_source(&path, &entry)
         .expect_err("traversal name at config layer must be rejected");

@@ -38,6 +38,7 @@ fn scored(
             vec_norm: 0.0,
             id_boost: 0.0,
             path_boost: 0.0,
+            struct_sim: 0.0,
             recency_mul: 1.0,
             score,
         },

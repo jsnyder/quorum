@@ -1,4 +1,5 @@
 use super::rerank::{RerankConfig, RerankInput, rerank};
+use crate::context::extract::fingerprint::STRUCT_BOOST_WEIGHT;
 use chrono::{DateTime, Duration, Utc};
 
 fn input(
@@ -15,6 +16,25 @@ fn input(
         vec_raw: vec,
         id_exact_match: id_match,
         language_match: lang_match,
+        struct_sim: 0.0,
+        indexed_at: indexed,
+    }
+}
+
+fn input_with_struct_sim(
+    id: &str,
+    bm25: f32,
+    vec: f32,
+    struct_sim: f32,
+    indexed: DateTime<Utc>,
+) -> RerankInput {
+    RerankInput {
+        chunk_id: id.into(),
+        bm25_raw: bm25,
+        vec_raw: vec,
+        id_exact_match: false,
+        language_match: false,
+        struct_sim,
         indexed_at: indexed,
     }
 }
@@ -177,8 +197,10 @@ fn breakdown_components_sum_consistent() {
     ];
     let out = rerank(&inputs, n, &config);
     for (_, br) in &out {
+        let struct_boost = STRUCT_BOOST_WEIGHT * br.struct_sim;
         let reconstructed =
-            (br.bm25_norm * 0.6 + br.vec_norm * 0.4 + br.id_boost + br.path_boost) * br.recency_mul;
+            (br.bm25_norm * 0.6 + br.vec_norm * 0.4 + br.id_boost + br.path_boost + struct_boost)
+                * br.recency_mul;
         assert!(
             (reconstructed - br.score).abs() < 1e-5,
             "score mismatch: {} vs {}",
@@ -267,4 +289,62 @@ fn negative_recency_floor_clamps_to_zero() {
     let out = rerank(&inputs, n, &config);
     assert!(out[0].1.recency_mul >= 0.0);
     assert!(out[0].1.recency_mul <= 1.0);
+}
+
+// --- Structural fingerprint similarity boost tests ---
+
+#[test]
+fn struct_sim_zero_does_not_change_score() {
+    // Ablation property: struct_sim = 0.0 produces the same score as baseline.
+    let config = RerankConfig::default();
+    let n = now();
+    let baseline = vec![input("a", 5.0, 0.5, false, false, n)];
+    let with_zero = vec![input_with_struct_sim("a", 5.0, 0.5, 0.0, n)];
+    let out_base = rerank(&baseline, n, &config);
+    let out_zero = rerank(&with_zero, n, &config);
+    assert!(
+        (out_base[0].1.score - out_zero[0].1.score).abs() < 1e-6,
+        "struct_sim=0.0 must not alter score: {} vs {}",
+        out_base[0].1.score,
+        out_zero[0].1.score,
+    );
+    assert_eq!(out_zero[0].1.struct_sim, 0.0);
+}
+
+#[test]
+fn struct_sim_one_adds_full_boost_weight() {
+    // struct_sim = 1.0 should add exactly STRUCT_BOOST_WEIGHT to the base
+    // score (before recency).
+    let config = RerankConfig::default();
+    let n = now();
+    let without = vec![input_with_struct_sim("a", 5.0, 0.5, 0.0, n)];
+    let with_full = vec![input_with_struct_sim("a", 5.0, 0.5, 1.0, n)];
+    let out_without = rerank(&without, n, &config);
+    let out_full = rerank(&with_full, n, &config);
+    // Both are single candidate with same raw scores -> same bm25_norm/vec_norm.
+    // recency_mul = 1.0 (indexed at now). Difference should be STRUCT_BOOST_WEIGHT.
+    let diff = out_full[0].1.score - out_without[0].1.score;
+    assert!(
+        (diff - STRUCT_BOOST_WEIGHT).abs() < 1e-5,
+        "expected boost of {STRUCT_BOOST_WEIGHT}, got {diff}",
+    );
+    assert_eq!(out_full[0].1.struct_sim, 1.0);
+}
+
+#[test]
+fn struct_sim_half_adds_proportional_boost() {
+    // struct_sim = 0.5 should add STRUCT_BOOST_WEIGHT * 0.5.
+    let config = RerankConfig::default();
+    let n = now();
+    let without = vec![input_with_struct_sim("a", 5.0, 0.5, 0.0, n)];
+    let with_half = vec![input_with_struct_sim("a", 5.0, 0.5, 0.5, n)];
+    let out_without = rerank(&without, n, &config);
+    let out_half = rerank(&with_half, n, &config);
+    let diff = out_half[0].1.score - out_without[0].1.score;
+    let expected = STRUCT_BOOST_WEIGHT * 0.5;
+    assert!(
+        (diff - expected).abs() < 1e-5,
+        "expected boost of {expected}, got {diff}",
+    );
+    assert_eq!(out_half[0].1.struct_sim, 0.5);
 }

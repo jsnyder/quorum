@@ -6,6 +6,8 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::context::extract::fingerprint::STRUCT_BOOST_WEIGHT;
+
 /// Per-candidate inputs to the rerank scoring function.
 #[derive(Debug, Clone)]
 pub struct RerankInput {
@@ -21,6 +23,9 @@ pub struct RerankInput {
     pub id_exact_match: bool,
     /// Whether the chunk's `language` equals the reviewed file's language.
     pub language_match: bool,
+    /// Structural fingerprint cosine similarity between the query function and
+    /// this chunk. Range `[0.0, 1.0]`; 0.0 when no fingerprint is available.
+    pub struct_sim: f32,
     /// When the chunk's source was last indexed.
     pub indexed_at: DateTime<Utc>,
 }
@@ -32,6 +37,9 @@ pub struct ScoreBreakdown {
     pub vec_norm: f32,
     pub id_boost: f32,
     pub path_boost: f32,
+    /// Structural fingerprint cosine similarity between the query function and
+    /// this chunk. Range `[0.0, 1.0]`; 0.0 when no fingerprint is available.
+    pub struct_sim: f32,
     pub recency_mul: f32,
     pub score: f32,
 }
@@ -135,9 +143,11 @@ pub(crate) fn rerank(
             } else {
                 0.0
             };
+            let struct_sim = input.struct_sim;
+            let struct_boost = STRUCT_BOOST_WEIGHT * struct_sim;
             let blended = BM25_WEIGHT * bn + VEC_WEIGHT * vn;
             let recency_mul = recency_multiplier(now, input.indexed_at, &config);
-            let score = (blended + id_boost + path_boost) * recency_mul;
+            let score = (blended + id_boost + path_boost + struct_boost) * recency_mul;
             (
                 input.chunk_id.clone(),
                 ScoreBreakdown {
@@ -145,6 +155,7 @@ pub(crate) fn rerank(
                     vec_norm: vn,
                     id_boost,
                     path_boost,
+                    struct_sim,
                     recency_mul,
                     score,
                 },

@@ -686,6 +686,9 @@ fn run_add<D: ContextDeps>(args: &AddArgs, deps: &D) -> Result<CmdOutput> {
         paths: Vec::new(),
         weight: args.weight,
         ignore: args.ignore.clone(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     };
 
     let sources_path = deps.home_dir().join("sources.toml");
@@ -1019,6 +1022,18 @@ fn index_one_source<D: ContextDeps>(
     let report = builder
         .rebuild_from_jsonl(&entry.name, &layout.jsonl)
         .map_err(|e| anyhow!("rebuild failed for '{}': {e}", entry.name))?;
+
+    if !extracted.structural_fingerprints.is_empty() {
+        let fp_count = builder
+            .insert_structural_fingerprints_batch(&extracted.structural_fingerprints)
+            .map_err(|e| anyhow!("structural fingerprint insert failed: {e}"))?;
+        tracing::debug!(
+            source = %entry.name,
+            fingerprints = fp_count,
+            "inserted structural fingerprints"
+        );
+    }
+
     created.push(layout.db.clone());
 
     // Record state so refresh knows whether to re-run.
@@ -1189,6 +1204,7 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
         text: args.text.clone(),
         identifiers: Vec::new(),
         structural_names: Vec::new(),
+        structural_fingerprints: vec![],
         filters,
         k,
         min_score: 0.0,

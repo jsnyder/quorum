@@ -24,6 +24,9 @@ fn fixture_source(name: &str) -> SourceEntry {
         paths: Vec::new(),
         weight: None,
         ignore: Vec::new(),
+        provides: Vec::new(),
+        include_for: Vec::new(),
+        exclude_for: Vec::new(),
     }
 }
 
@@ -65,6 +68,7 @@ fn retrieval_over_mini_rust_returns_verify_token_for_jwt_query() {
         text: "jwt validation signing key".to_string(),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 0.0,
@@ -90,6 +94,7 @@ fn retrieval_over_mini_ts_finds_verify_token_export() {
         text: "jwt signing key verifier".to_string(),
         identifiers: vec!["verifyToken".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 0.0,
@@ -115,6 +120,7 @@ fn kind_filter_restricts_to_docs() {
         text: "authentication design decision".to_string(),
         identifiers: Vec::new(),
         structural_names: vec![],
+        structural_fingerprints: vec![],
         filters: Filters {
             sources: Vec::new(),
             kinds: vec![ChunkKind::Doc],
@@ -139,6 +145,7 @@ fn unrelated_query_respects_min_score_threshold() {
         text: "zzzzzzzzzz totally unrelated string".to_string(),
         identifiers: Vec::new(),
         structural_names: vec![],
+        structural_fingerprints: vec![],
         filters: Filters::default(),
         k: 5,
         min_score: 2.0,
