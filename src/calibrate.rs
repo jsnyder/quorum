@@ -119,6 +119,52 @@ impl ExpandedFeatures {
     }
 }
 
+/// Univariate feature screening: returns indices of features with
+/// stepwise AP >= baseline_ap + 0.02 (the minimum lift threshold).
+///
+/// Each feature is evaluated independently as a predictor of the positive class.
+/// `baseline_ap` is typically the class prevalence (proportion of positives).
+pub fn univariate_screen(
+    samples: &[(ExpandedFeatures, bool)],
+    baseline_ap: f64,
+) -> Vec<usize> {
+    let threshold = baseline_ap + 0.02;
+    let n_features = ExpandedFeatures::feature_names().len(); // 15
+    let mut selected = Vec::new();
+
+    for feat_idx in 0..n_features {
+        let univariate: Vec<(f64, bool)> = samples
+            .iter()
+            .map(|(f, label)| (f.to_vec()[feat_idx], *label))
+            .collect();
+        let ap = crate::metrics::average_precision_stepwise(&univariate);
+        if ap >= threshold {
+            selected.push(feat_idx);
+        }
+    }
+
+    selected
+}
+
+/// Compute per-feature univariate AP scores for diagnostics.
+/// Returns (feature_index, ap_score) pairs sorted by AP descending.
+pub fn feature_importance_scores(
+    samples: &[(ExpandedFeatures, bool)],
+) -> Vec<(usize, f64)> {
+    let n_features = ExpandedFeatures::feature_names().len();
+    let mut scores: Vec<(usize, f64)> = (0..n_features)
+        .map(|feat_idx| {
+            let univariate: Vec<(f64, bool)> = samples
+                .iter()
+                .map(|(f, label)| (f.to_vec()[feat_idx], *label))
+                .collect();
+            (feat_idx, crate::metrics::average_precision_stepwise(&univariate))
+        })
+        .collect();
+    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scores
+}
+
 /// Filters applied to traces before joining with feedback.
 ///
 /// Default filter retains all traces (including legacy ones without provenance).
@@ -3472,5 +3518,61 @@ mod tests {
         assert!((features.category_fp_rate - 0.15).abs() < 1e-9);
         assert!((features.min_word_lor - (-1.2)).abs() < 1e-9);
         assert!((features.count_negative_lor_tokens - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn univariate_screen_selects_discriminative_features() {
+        // 100 samples, 20% FP (baseline AP = 0.20)
+        let samples: Vec<(ExpandedFeatures, bool)> = (0..100)
+            .map(|i| {
+                let is_fp = i < 20;
+                let mut f = ExpandedFeatures::zeros();
+                // Feature 0 (log1p_tp_weight): perfect separation
+                f.log1p_tp_weight = if is_fp { 0.9 } else { 0.1 };
+                // Feature 1 (log1p_fp_weight): anti-correlated with label order
+                // Assign linearly increasing scores so positives (first 20) get LOW
+                // scores and negatives (last 80) get HIGH scores. This means ranking
+                // by descending score puts negatives first -> AP should be near baseline.
+                f.log1p_fp_weight = i as f64 / 100.0;
+                // Feature 2 (precedent_count): moderate separation
+                f.precedent_count = if is_fp { 0.7 } else { 0.3 };
+                (f, is_fp)
+            })
+            .collect();
+
+        let selected = univariate_screen(&samples, 0.20);
+        // Feature 0 should be selected (perfect -> AP=1.0, lift=0.80)
+        assert!(selected.contains(&0), "Perfect feature should be selected");
+        // Feature 1 should NOT be selected (random -> AP~0.20, lift~0)
+        assert!(!selected.contains(&1), "Random feature should not be selected");
+        // Feature 2 should be selected (moderate separation)
+        assert!(selected.contains(&2), "Moderate feature should be selected");
+    }
+
+    #[test]
+    fn univariate_screen_empty_returns_empty() {
+        let samples: Vec<(ExpandedFeatures, bool)> = vec![];
+        let selected = univariate_screen(&samples, 0.20);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn feature_importance_scores_sorted_descending() {
+        let samples: Vec<(ExpandedFeatures, bool)> = (0..50)
+            .map(|i| {
+                let is_fp = i < 10;
+                let mut f = ExpandedFeatures::zeros();
+                f.log1p_tp_weight = if is_fp { 1.0 } else { 0.0 };
+                (f, is_fp)
+            })
+            .collect();
+        let scores = feature_importance_scores(&samples);
+        assert_eq!(scores.len(), 15);
+        // Should be sorted descending by AP
+        for w in scores.windows(2) {
+            assert!(w[0].1 >= w[1].1);
+        }
+        // Feature 0 should be first (highest AP)
+        assert_eq!(scores[0].0, 0);
     }
 }
