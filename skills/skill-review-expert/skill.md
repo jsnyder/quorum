@@ -26,9 +26,11 @@ Review a skill file against Claude's prompting guidelines and skill authoring be
 
 ## Tooling (run first)
 
-Automated scans provide evidence for checks A1, B5, D3, and D4. Run these before the manual review:
+Automated scans provide evidence for checks A1, B5, D3, and D4. Set the target path, then run all four:
 
 ```bash
+SKILL_FILE="path/to/skill.md"
+
 # A1: Negative framing scan — each hit is a candidate for positive reframing
 grep -n "Don't\|Do not\|Do NOT\|Never\|Avoid\|don't" "$SKILL_FILE"
 
@@ -39,7 +41,7 @@ grep -n '\\\\' "$SKILL_FILE"
 grep -n -i 'see \|above\|below\|described in' "$SKILL_FILE"
 
 # D4: Terminology frequency — spot synonyms for key concepts
-grep -o -i '\bfinding\b\|issue\b\|result\b\|problem\b\|check\b' "$SKILL_FILE" | sort | uniq -c | sort -rn
+grep -o -i '\b\(finding\|issue\|result\|problem\|check\)\b' "$SKILL_FILE" | sort | uniq -c | sort -rn
 ```
 
 ## Check Categories

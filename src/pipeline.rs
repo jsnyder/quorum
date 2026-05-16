@@ -48,7 +48,15 @@ fn write_calibrator_traces(
             Ok(mut file) => {
                 use std::io::Write;
                 for trace in traces {
-                    match serde_json::to_string(trace) {
+                    // #307: normalize file_path at write time
+                    let mut trace = trace.clone();
+                    if let Some(ref fp) = trace.file_path {
+                        let deep = crate::file_util::normalize_file_path_deep(fp);
+                        if deep != *fp {
+                            trace.file_path = Some(deep);
+                        }
+                    }
+                    match serde_json::to_string(&trace) {
                         Ok(json) => {
                             if let Err(e) = writeln!(file, "{}", json) {
                                 tracing::warn!(
