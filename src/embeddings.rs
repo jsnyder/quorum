@@ -4,6 +4,9 @@
 //! Model auto-downloaded on first use, cached in ~/.quorum/models/
 
 #[cfg(feature = "embeddings")]
+use std::path::PathBuf;
+
+#[cfg(feature = "embeddings")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 #[cfg(feature = "embeddings")]
@@ -12,11 +15,20 @@ pub struct LocalEmbedder {
 }
 
 #[cfg(feature = "embeddings")]
+fn quorum_cache_dir() -> PathBuf {
+    match std::env::var("HOME") {
+        Ok(home) => PathBuf::from(home).join(".quorum").join("models"),
+        Err(_) => PathBuf::from(".fastembed_cache"),
+    }
+}
+
+#[cfg(feature = "embeddings")]
 impl LocalEmbedder {
     pub fn new() -> anyhow::Result<Self> {
         let mut options = InitOptions::default();
         options.model_name = EmbeddingModel::BGESmallENV15;
-        options.show_download_progress = true;
+        options.show_download_progress = false;
+        options.cache_dir = quorum_cache_dir();
         let model = TextEmbedding::try_new(options)?;
         Ok(Self { model })
     }
