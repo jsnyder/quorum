@@ -2400,8 +2400,11 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         );
         match quorum::calibrate::learn_weights(&features, 5) {
             Some(result) => {
-                let mean_cv_auc =
-                    result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64;
+                let mean_cv_auc = if result.fold_aucs.is_empty() {
+                    0.0
+                } else {
+                    result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64
+                };
                 eprintln!("\nWeight learning ({} samples):", features.len());
                 eprintln!(
                     "  score={:.2}  word_lor={:.2}  family_fp_inv={:.2}  language_fp_inv={:.2}",
