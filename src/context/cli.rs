@@ -1317,8 +1317,11 @@ fn resolve_query_targets<D: ContextDeps>(
             .iter()
             .find(|s| s.name == name)
             .and_then(|s| s.weight)
-            .unwrap_or(1) as f32;
-        return Ok(vec![(name.to_string(), layout.db, weight)]);
+            .unwrap_or(1);
+        if weight == 0 {
+            return Err(anyhow!("source '{name}' is disabled (weight=0)"));
+        }
+        return Ok(vec![(name.to_string(), layout.db, weight as f32)]);
     }
     let max = cfg.context.multi_source.max_sources_queried as usize;
     let mut targets = Vec::new();
