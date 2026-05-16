@@ -315,12 +315,13 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         let mut count = 0usize;
         {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec) VALUES (?1, ?2)",
+                "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec)
+                 SELECT ?1, ?2
+                 WHERE EXISTS (SELECT 1 FROM chunks WHERE id = ?1)",
             )?;
             for (chunk_id, vec) in fingerprints {
                 let bytes = f32_vec_to_le_bytes(vec);
-                stmt.execute(params![chunk_id, bytes])?;
-                count += 1;
+                count += stmt.execute(params![chunk_id, bytes])?;
             }
         }
         tx.commit()?;

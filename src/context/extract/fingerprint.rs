@@ -126,11 +126,14 @@ impl StructuralFingerprint {
     pub fn to_vector(&self) -> [f32; FINGERPRINT_DIMS] {
         let mut v = [0.0f32; FINGERPRINT_DIMS];
 
-        // Dims 0-7: Signature shape (arity + param category histogram)
+        // Dims 0-7: Signature shape (arity + param category histogram).
+        // Param histogram occupies dims 1-7 (7 buckets); dim_index is
+        // clamped to 6 so Unknown/Generic/SelfRef share the Fn bucket,
+        // keeping dims 8-15 free for the return type one-hot.
         v[0] = (self.signature.arity as f32).min(20.0) / 20.0;
         let total_params = self.signature.param_categories.len().max(1) as f32;
         for cat in &self.signature.param_categories {
-            v[1 + cat.dim_index()] += 1.0 / total_params;
+            v[1 + cat.dim_index().min(6)] += 1.0 / total_params;
         }
 
         // Dims 8-15: Return type category one-hot (8 slots for TypeCategory)

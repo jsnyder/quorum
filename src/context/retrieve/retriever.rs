@@ -144,8 +144,11 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             bm25_hits.iter().map(|h| h.chunk_id.clone()).collect();
         let vec_ids: std::collections::HashSet<String> =
             vec_hits.iter().map(|h| h.chunk_id.clone()).collect();
-        let structural_ids: std::collections::HashSet<String> =
-            structural_hits.iter().cloned().collect();
+        let structural_ids: std::collections::HashSet<String> = structural_hits
+            .iter()
+            .cloned()
+            .chain(fp_knn_ids.iter().cloned())
+            .collect();
 
         // --- Merge candidate ids, preserving the best raw signal from each
         // source. sqlite-vec's default metric is cosine distance in [0, 2];

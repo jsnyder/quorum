@@ -333,6 +333,27 @@ fn to_vector_saturates_on_large_counts() {
 }
 
 #[test]
+fn param_histogram_does_not_overlap_return_one_hot() {
+    let fp = StructuralFingerprint {
+        signature: SignatureShape {
+            arity: 1,
+            param_categories: vec![TypeCategory::Generic],
+            return_category: Some(TypeCategory::Prim),
+            ..SignatureShape::default()
+        },
+        control_flow: ControlFlowSketch::default(),
+        semantic_counts: SemanticCounts::default(),
+    };
+    let vec = fp.to_vector();
+    // Param histogram dims 1-7 must not bleed into return one-hot at dim 8.
+    // Generic param (dim_index=7) is clamped to bucket 6, writing v[7].
+    // Prim return (dim_index=0) writes v[8].
+    assert!(vec[7] > 0.0, "Generic param should land in dim 7 (clamped)");
+    assert_eq!(vec[8], 1.0, "Prim return one-hot should be exactly 1.0 at dim 8");
+    assert_eq!(vec[1], 0.0, "Prim param slot should be zero (no Prim params)");
+}
+
+#[test]
 fn empty_fingerprint_produces_finite_vector() {
     let fp = StructuralFingerprint {
         signature: SignatureShape::default(),

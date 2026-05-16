@@ -19,47 +19,47 @@ A 64-dimension structural fingerprint vector per code symbol, stored in sqlite-v
 
 ### AC-2: Type-Category Vocabulary Mapping
 
-5. Each language maps its native types to the 10-category vocabulary correctly (prim, str, col, opt, res, ref, fn, self, unk, T).
-6. Generic type parameters map to T regardless of name (`T`, `U`, `E` in Rust; `TypeVar` in Python; `<T>` in TS).
-7. Unmapped/unknown types map to `unk`, not panic.
+1. Each language maps its native types to the 10-category vocabulary correctly (prim, str, col, opt, res, ref, fn, self, unk, T).
+2. Generic type parameters map to T regardless of name (`T`, `U`, `E` in Rust; `TypeVar` in Python; `<T>` in TS).
+3. Unmapped/unknown types map to `unk`, not panic.
 
 ### AC-3: Control-Flow Sketch
 
-8. The fingerprint distinguishes: a function with only sequential flow vs. one with branching (if/match) vs. one with loops vs. one with error handling (try/catch, `?`).
-9. Nested control flow (loop inside if) is reflected in the vector differently than flat sequential if + loop.
+1. The fingerprint distinguishes: a function with only sequential flow vs. one with branching (if/match) vs. one with loops vs. one with error handling (try/catch, `?`).
+2. Nested control flow (loop inside if) is reflected in the vector differently than flat sequential if + loop.
 
 ### AC-4: Semantic Counts
 
-10. Line count, parameter count, return-point count, and call-site count are captured and normalized into their vector dimensions.
-11. Normalization caps extreme values (1000-line function) without overflow or NaN.
+1. Line count, parameter count, return-point count, and call-site count are captured and normalized into their vector dimensions.
+2. Normalization caps extreme values (1000-line function) without overflow or NaN.
 
 ### AC-5: SQLite Storage
 
-12. The `chunks` table (or a new `chunk_fingerprints` table) stores the 64-dim vector via sqlite-vec.
-13. Chunks without fingerprints (doc chunks, markdown, unsupported languages) store NULL, not a zero vector.
-14. Re-indexing the same file replaces the fingerprint (no stale duplicates).
+1. The `chunks` table (or a new `chunk_fingerprints` table) stores the 64-dim vector via sqlite-vec.
+2. Chunks without fingerprints (doc chunks, markdown, unsupported languages) store NULL, not a zero vector.
+3. Re-indexing the same file replaces the fingerprint (no stale duplicates).
 
 ### AC-6: KNN Retrieval Leg
 
-15. Given a query fingerprint, KNN returns the K nearest neighbors ordered by cosine similarity.
-16. The fingerprint leg integrates into `Retriever::query` as a fourth candidate source alongside BM25, vector, and structural.
-17. `RetrievalLeg::Fingerprint` is emitted in `ScoredChunk::source_legs` for chunks surfaced by this leg.
-18. Filters (sources, kinds, exclude_source_paths) apply to fingerprint search identically to other legs.
+1. Given a query fingerprint, KNN returns the K nearest neighbors ordered by cosine similarity.
+2. The fingerprint leg integrates into `Retriever::query` as a fourth candidate source alongside BM25, vector, and structural.
+3. `RetrievalLeg::Fingerprint` is emitted in `ScoredChunk::source_legs` for chunks surfaced by this leg.
+4. Filters (sources, kinds, exclude_source_paths) apply to fingerprint search identically to other legs.
 
 ### AC-7: Rerank Integration
 
-19. Fingerprint similarity feeds into `RerankInput` as a new raw signal alongside `bm25_raw` and `vec_raw`.
-20. The rerank formula blends fingerprint score with configurable weight (default TBD, likely 0.1-0.2).
+1. Fingerprint similarity feeds into `RerankInput` as a new raw signal alongside `bm25_raw` and `vec_raw`.
+2. The rerank formula blends fingerprint score with configurable weight (default TBD, likely 0.1-0.2).
 
 ### AC-8: Graceful Degradation
 
-21. If sqlite-vec is unavailable or the fingerprint column does not exist, the retriever proceeds with three legs (no panic, warning logged).
-22. If a language extractor fails to produce a fingerprint for one symbol, the chunk is still indexed without a fingerprint.
-23. If the query symbol has no fingerprint (e.g., from an unsupported language), the fingerprint leg returns empty results and the other three legs proceed normally.
+1. If sqlite-vec is unavailable or the fingerprint column does not exist, the retriever proceeds with three legs (no panic, warning logged).
+2. If a language extractor fails to produce a fingerprint for one symbol, the chunk is still indexed without a fingerprint.
+3. If the query symbol has no fingerprint (e.g., from an unsupported language), the fingerprint leg returns empty results and the other three legs proceed normally.
 
 ### AC-9: Telemetry
 
-24. Per-review telemetry includes: `fingerprint_candidates_returned`, `fingerprint_unique_contributions` (chunks surfaced only by fingerprint leg).
+1. Per-review telemetry includes: `fingerprint_candidates_returned`, `fingerprint_unique_contributions` (chunks surfaced only by fingerprint leg).
 
 ---
 

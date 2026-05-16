@@ -396,18 +396,19 @@ class Config {
     assert!(fp_ctor.signature.is_method, "constructor is a method");
     assert!(fp_ctor.signature.has_self, "constructor has implicit this");
 
-    // For the static method, we need to find it manually since
-    // fingerprint_source returns the first function.
     let root = ast_grep_language::LanguageExt::ast_grep(&ast_grep_language::SupportLang::TypeScript, src);
     let root_node = root.root();
-    let methods: Vec<_> = root_node
+    let static_method = root_node
         .dfs()
-        .filter(|n| n.kind().as_ref() == "method_definition")
-        .collect();
-    assert!(methods.len() >= 2, "should find at least 2 methods");
+        .find(|n| {
+            n.kind().as_ref() == "method_definition"
+                && n.children()
+                    .any(|c| c.kind().as_ref() == "property_identifier" && c.text().as_ref() == "create")
+        })
+        .expect("should find static create method");
 
     let fp_static = TypeScriptFingerprinter
-        .fingerprint_node(&methods[1], src)
+        .fingerprint_node(&static_method, src)
         .expect("static method should fingerprint");
 
     assert!(fp_static.signature.is_static, "should detect static method");
