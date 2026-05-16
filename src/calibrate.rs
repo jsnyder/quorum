@@ -29,6 +29,96 @@ impl SampleFeatures {
     }
 }
 
+/// Expanded feature vector for logistic calibrator (15 dimensions).
+/// Field order matches `to_vec()` and `feature_names()`.
+#[derive(Debug, Clone)]
+pub struct ExpandedFeatures {
+    // Precedent decomposition (6)
+    pub log1p_tp_weight: f64,
+    pub log1p_fp_weight: f64,
+    pub precedent_count: f64,
+    pub max_similarity: f64,
+    pub mean_similarity: f64,
+    pub has_no_precedents: f64,
+    // Weight accumulators (3)
+    pub log1p_soft_fp_weight: f64,
+    pub log1p_full_suppress_weight: f64,
+    pub log1p_wontfix_weight: f64,
+    // Smoothed priors (3)
+    pub category_fp_rate: f64,
+    pub severity_fp_rate: f64,
+    pub model_fp_rate: f64,
+    // Text statistics (3)
+    pub max_word_lor: f64,
+    pub min_word_lor: f64,
+    pub count_negative_lor_tokens: f64,
+}
+
+impl ExpandedFeatures {
+    /// Convert to ordered `Vec<f64>` matching `feature_names()` order.
+    pub fn to_vec(&self) -> Vec<f64> {
+        vec![
+            self.log1p_tp_weight,
+            self.log1p_fp_weight,
+            self.precedent_count,
+            self.max_similarity,
+            self.mean_similarity,
+            self.has_no_precedents,
+            self.log1p_soft_fp_weight,
+            self.log1p_full_suppress_weight,
+            self.log1p_wontfix_weight,
+            self.category_fp_rate,
+            self.severity_fp_rate,
+            self.model_fp_rate,
+            self.max_word_lor,
+            self.min_word_lor,
+            self.count_negative_lor_tokens,
+        ]
+    }
+
+    /// Feature names matching `to_vec()` order.
+    pub fn feature_names() -> Vec<&'static str> {
+        vec![
+            "log1p_tp_weight",
+            "log1p_fp_weight",
+            "precedent_count",
+            "max_similarity",
+            "mean_similarity",
+            "has_no_precedents",
+            "log1p_soft_fp_weight",
+            "log1p_full_suppress_weight",
+            "log1p_wontfix_weight",
+            "category_fp_rate",
+            "severity_fp_rate",
+            "model_fp_rate",
+            "max_word_lor",
+            "min_word_lor",
+            "count_negative_lor_tokens",
+        ]
+    }
+
+    /// All zeros (useful for tests).
+    pub fn zeros() -> Self {
+        Self {
+            log1p_tp_weight: 0.0,
+            log1p_fp_weight: 0.0,
+            precedent_count: 0.0,
+            max_similarity: 0.0,
+            mean_similarity: 0.0,
+            has_no_precedents: 0.0,
+            log1p_soft_fp_weight: 0.0,
+            log1p_full_suppress_weight: 0.0,
+            log1p_wontfix_weight: 0.0,
+            category_fp_rate: 0.0,
+            severity_fp_rate: 0.0,
+            model_fp_rate: 0.0,
+            max_word_lor: 0.0,
+            min_word_lor: 0.0,
+            count_negative_lor_tokens: 0.0,
+        }
+    }
+}
+
 /// Filters applied to traces before joining with feedback.
 ///
 /// Default filter retains all traces (including legacy ones without provenance).
@@ -3026,5 +3116,49 @@ mod tests {
             language_fp_inv: 1.5,
         };
         assert!(!super::weights_stable(&[w1, w2], 0.20));
+    }
+
+    #[test]
+    fn expanded_features_to_vec_correct_order() {
+        let f = ExpandedFeatures {
+            log1p_tp_weight: 1.0,
+            log1p_fp_weight: 0.5,
+            precedent_count: 3.0,
+            max_similarity: 0.9,
+            mean_similarity: 0.7,
+            has_no_precedents: 0.0,
+            log1p_soft_fp_weight: 0.3,
+            log1p_full_suppress_weight: 0.1,
+            log1p_wontfix_weight: 0.0,
+            category_fp_rate: 0.25,
+            severity_fp_rate: 0.18,
+            model_fp_rate: 0.22,
+            max_word_lor: 2.1,
+            min_word_lor: -1.5,
+            count_negative_lor_tokens: 3.0,
+        };
+        let v = f.to_vec();
+        assert_eq!(v.len(), 15);
+        assert!((v[0] - 1.0).abs() < 1e-9); // log1p_tp_weight
+        assert!((v[1] - 0.5).abs() < 1e-9); // log1p_fp_weight
+        assert!((v[5] - 0.0).abs() < 1e-9); // has_no_precedents
+        assert!((v[14] - 3.0).abs() < 1e-9); // count_negative_lor_tokens
+    }
+
+    #[test]
+    fn expanded_features_names_match_vec_order() {
+        let names = ExpandedFeatures::feature_names();
+        assert_eq!(names.len(), 15);
+        assert_eq!(names[0], "log1p_tp_weight");
+        assert_eq!(names[5], "has_no_precedents");
+        assert_eq!(names[9], "category_fp_rate");
+        assert_eq!(names[14], "count_negative_lor_tokens");
+    }
+
+    #[test]
+    fn expanded_features_zeros() {
+        let f = ExpandedFeatures::zeros();
+        let v = f.to_vec();
+        assert!(v.iter().all(|&x| x == 0.0));
     }
 }
