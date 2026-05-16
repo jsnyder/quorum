@@ -1695,6 +1695,300 @@ pub fn extract_single_expanded(s: &JoinedSample, stats: &FoldLocalStats) -> (Exp
     (features, s.is_fp)
 }
 
+// ---------------------------------------------------------------------------
+// Expanded trace info for extract_joined_samples
+// ---------------------------------------------------------------------------
+
+/// Richer variant of `TraceInfo` carrying all metadata fields needed to
+/// populate a `JoinedSample`.
+#[derive(Clone)]
+struct TraceInfoExpanded {
+    tp_weight: f64,
+    fp_weight: f64,
+    soft_fp_weight: f64,
+    full_suppress_weight: f64,
+    wontfix_weight: f64,
+    precedent_count: usize,
+    max_similarity: f64,
+    mean_similarity: f64,
+    category: String,
+    severity: String,
+    model: String,
+}
+
+/// Extract `JoinedSample` records by walking the same multi-tier join as
+/// `extract_join_features`, but returning richer metadata instead of composite
+/// features. Used by the logistic calibrator's cross-validation pipeline.
+pub fn extract_joined_samples(
+    feedback: &[serde_json::Value],
+    traces: &[serde_json::Value],
+    _model: &CalibratorModel,
+    filter: &JoinFilter,
+    disable_fuzzy: bool,
+) -> Vec<JoinedSample> {
+    let filtered_traces: Vec<&serde_json::Value> =
+        traces.iter().filter(|t| filter.accepts(t)).collect();
+
+    // Build the same index structures as extract_join_features, using TraceInfoExpanded.
+    let mut raw_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut norm_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut deep_path_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut deep_path_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut file_traces: HashMap<String, Vec<(String, TraceInfoExpanded)>> = HashMap::new();
+    let mut suffix_index: HashMap<String, Vec<(String, String, TraceInfoExpanded)>> = HashMap::new();
+    let mut norm_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
+    let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut raw_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
+    let mut raw_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
+    let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
+
+    for t in &filtered_traces {
+        let title = t["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = t["file_path"].as_str().unwrap_or("").to_string();
+        let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let soft_fp_w = t["soft_fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let full_suppress_w = t["full_suppress_weight"].as_f64().unwrap_or(fp_w).max(0.0);
+        let wontfix_w = t["wontfix_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let precedent_count = t["precedent_count"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or_else(|| if tp_w > 0.0 || fp_w > 0.0 { 1 } else { 0 });
+        let max_sim = t["max_similarity"].as_f64().unwrap_or(0.0);
+        let mean_sim = t["mean_similarity"].as_f64().unwrap_or(0.0);
+        let category = t["finding_category"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let severity = t["input_severity"]
+            .as_str()
+            .unwrap_or("medium")
+            .to_string();
+        let model_name = t["model"].as_str().unwrap_or("unknown").to_string();
+
+        let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
+        let info = TraceInfoExpanded {
+            tp_weight: tp_w,
+            fp_weight: fp_w,
+            soft_fp_weight: soft_fp_w,
+            full_suppress_weight: full_suppress_w,
+            wontfix_weight: wontfix_w,
+            precedent_count,
+            max_similarity: max_sim,
+            mean_similarity: mean_sim,
+            category,
+            severity,
+            model: model_name,
+        };
+
+        if fp.is_empty() {
+            match raw_title_only.entry(title.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_title_only_ambiguous.insert(title.clone());
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_for_ambiguous = norm.clone();
+                match norm_title_only.entry(norm) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_title_only_ambiguous.insert(norm_for_ambiguous);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info);
+                    }
+                }
+            }
+        } else {
+            raw_titles_with_file_scoped.insert(title.clone());
+            if !norm.is_empty() {
+                norm_titles_with_file_scoped.insert(norm.clone());
+            }
+            let raw_key = (title, fp.clone());
+            match raw_map.entry(raw_key.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_ambiguous.insert(raw_key);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_key = (norm.clone(), fp.clone());
+                match norm_map.entry(norm_key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_ambiguous.insert(norm_key);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info.clone());
+                    }
+                }
+                if !deep_fp.is_empty() {
+                    let deep_key = (norm.clone(), deep_fp.clone());
+                    match deep_path_map.entry(deep_key.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            deep_path_ambiguous.insert(deep_key);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(info.clone());
+                        }
+                    }
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
+                    if !filename.is_empty() {
+                        suffix_index.entry(filename).or_default().push((
+                            deep_fp,
+                            norm.clone(),
+                            info.clone(),
+                        ));
+                    }
+                }
+                file_traces.entry(fp).or_default().push((norm, info));
+            }
+        }
+    }
+
+    for key in &raw_ambiguous {
+        raw_map.remove(key);
+    }
+    for key in &norm_ambiguous {
+        norm_map.remove(key);
+    }
+    for key in &deep_path_ambiguous {
+        deep_path_map.remove(key);
+    }
+    for key in &raw_title_only_ambiguous {
+        raw_title_only.remove(key);
+    }
+    for key in &norm_title_only_ambiguous {
+        norm_title_only.remove(key);
+    }
+    for title in &raw_titles_with_file_scoped {
+        raw_title_only.remove(title);
+    }
+    for norm in &norm_titles_with_file_scoped {
+        norm_title_only.remove(norm);
+    }
+
+    let mut samples = Vec::new();
+
+    for f in feedback {
+        let verdict = f["verdict"].as_str().unwrap_or("");
+        let is_fp = match verdict {
+            "tp" | "partial" => false,
+            "fp" => true,
+            _ => continue,
+        };
+        let title = f["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = f["file_path"].as_str().unwrap_or("").to_string();
+        let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
+
+        let matched = raw_map
+            .get(&(title.clone(), fp.clone()))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_map.get(&(norm.clone(), fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    deep_path_map.get(&(norm.clone(), deep_fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy
+                    && !norm.is_empty()
+                    && !fp.is_empty()
+                    && let Some(candidates) = file_traces.get(&fp)
+                {
+                    let mut best_score = 0.0_f64;
+                    let mut second_best = 0.0_f64;
+                    let mut best_info: Option<&TraceInfoExpanded> = None;
+                    for (cand_norm, info) in candidates {
+                        let j = token_jaccard(&norm, cand_norm);
+                        if j > best_score {
+                            second_best = best_score;
+                            best_score = j;
+                            best_info = Some(info);
+                        } else if j > second_best {
+                            second_best = j;
+                        }
+                    }
+                    if best_score >= FUZZY_THRESHOLD
+                        && (best_score - second_best) >= FUZZY_AMBIGUITY_MARGIN
+                    {
+                        return best_info;
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("");
+                    if let Some(candidates) = suffix_index.get(filename) {
+                        let matches: Vec<&TraceInfoExpanded> = candidates
+                            .iter()
+                            .filter(|(cand_path, cand_norm, _)| {
+                                *cand_norm == norm && path_suffix_eq(cand_path, &deep_fp)
+                            })
+                            .map(|(_, _, info)| info)
+                            .collect();
+                        if matches.len() == 1 {
+                            return Some(matches[0]);
+                        }
+                    }
+                }
+                None
+            })
+            .or_else(|| raw_title_only.get(&title))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_title_only.get(&norm)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(info) = matched {
+            let family = CalibratorModel::title_family(&title);
+            samples.push(JoinedSample {
+                title,
+                category: info.category.clone(),
+                severity: info.severity.clone(),
+                model: info.model.clone(),
+                tp_weight: info.tp_weight,
+                fp_weight: info.fp_weight,
+                soft_fp_weight: info.soft_fp_weight,
+                full_suppress_weight: info.full_suppress_weight,
+                wontfix_weight: info.wontfix_weight,
+                precedent_count: info.precedent_count,
+                max_similarity: info.max_similarity,
+                mean_similarity: info.mean_similarity,
+                is_fp,
+                family,
+            });
+        }
+    }
+
+    samples
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3574,5 +3868,221 @@ mod tests {
         }
         // Feature 0 should be first (highest AP)
         assert_eq!(scores[0].0, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_joined_samples tests
+    // -----------------------------------------------------------------------
+
+    fn make_test_model() -> CalibratorModel {
+        CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16T00:00:00Z".to_string(),
+                feedback_count: 10,
+                global_fp_rate: 0.3,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.5,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: None,
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn extract_joined_samples_basic() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.5,
+            "fp_weight": 0.5,
+            "soft_fp_weight": 0.3,
+            "wontfix_weight": 0.0,
+            "finding_category": "security",
+            "input_severity": "high",
+            "model": "gpt-5.4",
+            "precedent_count": 2,
+            "max_similarity": 0.85,
+            "mean_similarity": 0.72,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        let s = &samples[0];
+        assert_eq!(s.title, "SQL injection risk");
+        assert_eq!(s.category, "security");
+        assert_eq!(s.severity, "high");
+        assert_eq!(s.model, "gpt-5.4");
+        assert!(!s.is_fp);
+        assert!((s.tp_weight - 1.5).abs() < 1e-9);
+        assert!((s.fp_weight - 0.5).abs() < 1e-9);
+        assert!((s.soft_fp_weight - 0.3).abs() < 1e-9);
+        assert_eq!(s.precedent_count, 2);
+        assert!((s.max_similarity - 0.85).abs() < 1e-9);
+        assert!((s.mean_similarity - 0.72).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extract_joined_samples_fp_label() {
+        let trace = serde_json::json!({
+            "finding_title": "Unused import",
+            "file_path": "src/lib.rs",
+            "tp_weight": 0.1,
+            "fp_weight": 2.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Unused import",
+            "file_path": "src/lib.rs",
+            "verdict": "fp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert!(samples[0].is_fp);
+        // Verify defaults for missing fields
+        assert_eq!(samples[0].category, "unknown");
+        assert_eq!(samples[0].severity, "medium");
+        assert_eq!(samples[0].model, "unknown");
+    }
+
+    #[test]
+    fn extract_joined_samples_skips_wontfix() {
+        let trace = serde_json::json!({
+            "finding_title": "Style issue",
+            "file_path": "src/main.rs",
+            "tp_weight": 0.5,
+            "fp_weight": 0.5,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Style issue",
+            "file_path": "src/main.rs",
+            "verdict": "wontfix",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn extract_joined_samples_partial_counts_as_tp() {
+        let trace = serde_json::json!({
+            "finding_title": "Buffer overflow",
+            "file_path": "src/buf.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.2,
+            "finding_category": "memory-safety",
+            "input_severity": "critical",
+            "model": "gemini-2.5-pro",
+            "precedent_count": 5,
+            "max_similarity": 0.95,
+            "mean_similarity": 0.80,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Buffer overflow",
+            "file_path": "src/buf.rs",
+            "verdict": "partial",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert!(!samples[0].is_fp); // partial = not FP
+        assert_eq!(samples[0].category, "memory-safety");
+        assert_eq!(samples[0].severity, "critical");
+    }
+
+    #[test]
+    fn extract_joined_samples_precedent_count_inferred() {
+        // When precedent_count is absent but weights > 0, infer 1
+        let trace = serde_json::json!({
+            "finding_title": "Inferred precedent",
+            "file_path": "src/a.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Inferred precedent",
+            "file_path": "src/a.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].precedent_count, 1);
+    }
+
+    #[test]
+    fn extract_joined_samples_unmatched_feedback_skipped() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.5,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Completely different finding",
+            "file_path": "src/other.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn extract_joined_samples_family_populated() {
+        let trace = serde_json::json!({
+            "finding_title": "bare-except-pass: dangerous pattern",
+            "file_path": "src/main.py",
+            "tp_weight": 1.0,
+            "fp_weight": 0.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "bare-except-pass: dangerous pattern",
+            "file_path": "src/main.py",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].family, "dangerous pattern");
     }
 }
