@@ -1308,6 +1308,9 @@ pub fn find_project_root(file_path: &Path) -> std::path::PathBuf {
     for _ in 0..10 {
         for marker in &markers {
             if dir.join(marker).exists() {
+                if dir.as_os_str().is_empty() {
+                    return Path::new(".").to_path_buf();
+                }
                 return dir;
             }
         }
@@ -1648,6 +1651,8 @@ mod tests {
     use crate::finding::Source;
 
     use crate::test_support::fakes::FakeReviewer;
+
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ---------------------------------------------------------------------
     // #123 Layer 1 (Task 6) — PatternOvergeneralization discriminator hint
@@ -3118,5 +3123,254 @@ mod tests {
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, Some(true));
+    }
+
+    #[test]
+    fn classify_in_diff_multiple_hunks_mixed_classification() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().line_start(5).line_end(10).build(),
+            FindingBuilder::new().line_start(25).line_end(30).build(),
+            FindingBuilder::new().line_start(50).line_end(55).build(),
+            FindingBuilder::new().line_start(80).line_end(85).build(),
+        ];
+        let changed = vec![(8, 12), (48, 60)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(findings[1].in_diff, Some(false));
+        assert_eq!(findings[2].in_diff, Some(true));
+        assert_eq!(findings[3].in_diff, Some(false));
+    }
+
+    #[test]
+    fn classify_in_diff_adjacent_but_not_overlapping() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().line_start(10).line_end(19).build(),
+            FindingBuilder::new().line_start(21).line_end(25).build(),
+        ];
+        let changed = vec![(20, 20)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(false));
+        assert_eq!(findings[1].in_diff, Some(false));
+    }
+
+    #[test]
+    fn classify_in_diff_single_line_finding_exact_match() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![FindingBuilder::new().line_start(42).line_end(42).build()];
+        let changed = vec![(42, 42)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, Some(true));
+    }
+
+    #[test]
+    fn classify_in_diff_invalid_mixed_with_valid() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().line_start(0).line_end(0).build(),
+            FindingBuilder::new().line_start(5).line_end(10).build(),
+            FindingBuilder::new().line_start(0).line_end(0).build(),
+            FindingBuilder::new().line_start(50).line_end(55).build(),
+        ];
+        let changed = vec![(1, 100)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(findings[0].in_diff, None);
+        assert_eq!(findings[1].in_diff, Some(true));
+        assert_eq!(findings[2].in_diff, None);
+        assert_eq!(findings[3].in_diff, Some(true));
+    }
+
+    // ---------------------------------------------------------------------
+    // #310 — find_project_root edge cases
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn find_project_root_relative_path_returns_dot_not_empty() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("foo.rs"), "").unwrap();
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let root = find_project_root(Path::new("foo.rs"));
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        assert!(
+            !root.as_os_str().is_empty(),
+            "find_project_root must not return empty string"
+        );
+        assert_eq!(root, Path::new("."));
+    }
+
+    #[test]
+    fn find_project_root_nested_relative_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+
+        let root = find_project_root(&tmp.path().join("src/lib.rs"));
+        assert_eq!(root, tmp.path());
+    }
+
+    #[test]
+    fn find_project_root_absolute_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/components")).unwrap();
+        std::fs::write(tmp.path().join("src/components/App.tsx"), "").unwrap();
+
+        let root = find_project_root(&tmp.path().join("src/components/App.tsx"));
+        assert_eq!(root, tmp.path());
+    }
+
+    #[test]
+    fn find_project_root_no_marker_falls_back_to_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("orphan.rs"), "").unwrap();
+
+        let root = find_project_root(&tmp.path().join("orphan.rs"));
+        assert!(!root.as_os_str().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // #310 — ReviewPathResolver with relative paths (end-to-end chain)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn review_path_resolver_relative_path_with_dot_root() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let root = find_project_root(Path::new("src/main.rs"));
+        let resolver = ReviewPathResolver::new("src/main.rs", &root);
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        assert!(
+            resolver.resolved(),
+            "resolver must resolve for relative paths"
+        );
+        assert!(resolver.matches("src/main.rs"));
+        assert!(!resolver.matches("src/lib.rs"));
+    }
+
+    #[test]
+    fn review_path_resolver_relative_file_at_repo_root() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("build.rs"), "").unwrap();
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let root = find_project_root(Path::new("build.rs"));
+        let resolver = ReviewPathResolver::new("build.rs", &root);
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        assert!(resolver.resolved());
+        assert!(resolver.matches("build.rs"));
+        assert!(!resolver.matches("src/build.rs"));
+    }
+
+    #[test]
+    fn review_path_resolver_absolute_path_matches_diff() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+
+        let abs_path = tmp.path().join("src/lib.rs").to_string_lossy().to_string();
+        let resolver = ReviewPathResolver::new(&abs_path, tmp.path());
+        assert!(resolver.resolved());
+        assert!(resolver.matches("src/lib.rs"));
+    }
+
+    // ---------------------------------------------------------------------
+    // #310 — Full chain: resolver + classify with diff_ranges
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn full_diff_classification_chain_relative_path() {
+        use crate::finding::FindingBuilder;
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let file_path = Path::new("src/main.rs");
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new("src/main.rs", &repo_root);
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        let diff_ranges: Vec<(String, Vec<(u32, u32)>)> =
+            vec![("src/main.rs".to_string(), vec![(10, 20), (50, 60)])];
+
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+
+        let mut findings = vec![
+            FindingBuilder::new().line_start(15).line_end(18).build(),
+            FindingBuilder::new().line_start(30).line_end(35).build(),
+            FindingBuilder::new().line_start(55).line_end(58).build(),
+        ];
+        classify_in_diff(&mut findings, &diff_lines);
+
+        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(findings[1].in_diff, Some(false));
+        assert_eq!(findings[2].in_diff, Some(true));
+    }
+
+    #[test]
+    fn full_diff_classification_chain_no_matching_file() {
+        use crate::finding::FindingBuilder;
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "").unwrap();
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let file_path = Path::new("src/main.rs");
+        let repo_root = find_project_root(file_path);
+        let resolver = ReviewPathResolver::new("src/main.rs", &repo_root);
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        let diff_ranges: Vec<(String, Vec<(u32, u32)>)> =
+            vec![("src/other.rs".to_string(), vec![(1, 100)])];
+
+        let diff_lines: Vec<(u32, u32)> = diff_ranges
+            .iter()
+            .filter(|(path, _)| resolver.matches(path))
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect();
+
+        let mut findings = vec![FindingBuilder::new().line_start(10).line_end(20).build()];
+        classify_in_diff(&mut findings, &diff_lines);
+
+        assert_eq!(
+            findings[0].in_diff,
+            Some(false),
+            "findings for a file not in the diff must be pre-existing"
+        );
     }
 }
