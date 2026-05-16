@@ -326,10 +326,11 @@ pub fn join_feedback_and_traces_with_options(
                 if !norm.is_empty() && !deep_fp.is_empty() {
                     let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
                     if !filename.is_empty() {
-                        suffix_index
-                            .entry(filename)
-                            .or_default()
-                            .push((deep_fp, norm, (tp_w, fp_w)));
+                        suffix_index.entry(filename).or_default().push((
+                            deep_fp,
+                            norm,
+                            (tp_w, fp_w),
+                        ));
                     }
                 }
             }
@@ -464,9 +465,7 @@ pub fn join_feedback_and_traces_with_options(
                     })
                     .map(|(_, _, w)| w)
                     .collect();
-                if matches.len() == 1
-                    && push_sample(&mut samples, matches[0], is_positive)
-                {
+                if matches.len() == 1 && push_sample(&mut samples, matches[0], is_positive) {
                     stats.suffix_matched += 1;
                     continue;
                 }
@@ -966,10 +965,11 @@ pub fn rescore_samples_with_model(
                     }
                     let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
                     if !filename.is_empty() {
-                        suffix_index
-                            .entry(filename)
-                            .or_default()
-                            .push((deep_fp, norm.clone(), info.clone()));
+                        suffix_index.entry(filename).or_default().push((
+                            deep_fp,
+                            norm.clone(),
+                            info.clone(),
+                        ));
                     }
                 }
                 file_traces.entry(fp).or_default().push((norm, info));
@@ -1603,7 +1603,11 @@ mod tests {
             Some("./samples/rust/patterns.rs"),
         )];
         let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
-        assert_eq!(samples.len(), 1, "deep path norm should match ../../../ to ./");
+        assert_eq!(
+            samples.len(),
+            1,
+            "deep path norm should match ../../../ to ./"
+        );
         assert_eq!(stats.path_normalized, 1);
     }
 
@@ -1641,7 +1645,11 @@ mod tests {
             Some("src/main.rs"),
         )];
         let (samples, stats) = join_feedback_and_traces(&feedback, &traces);
-        assert_eq!(samples.len(), 1, "suffix match should recover absolute path");
+        assert_eq!(
+            samples.len(),
+            1,
+            "suffix match should recover absolute path"
+        );
         assert_eq!(stats.suffix_matched, 1);
     }
 
@@ -1650,7 +1658,10 @@ mod tests {
         let feedback = vec![make_feedback("Bug", "tp", "/some/path/main.rs")];
         let traces = vec![make_trace("Bug", 1.0, 0.5, Some("main.rs"))];
         let (_samples, stats) = join_feedback_and_traces(&feedback, &traces);
-        assert_eq!(stats.suffix_matched, 0, "filename-only should not suffix match");
+        assert_eq!(
+            stats.suffix_matched, 0,
+            "filename-only should not suffix match"
+        );
     }
 
     #[test]
@@ -1881,7 +1892,6 @@ mod tests {
         assert_eq!(normalize_title("a-b: rest"), "rest");
         assert_eq!(normalize_title("a: rest"), "a rest");
     }
-
 
     #[test]
     fn normalize_multiple_backticks_and_parens() {

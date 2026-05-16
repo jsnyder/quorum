@@ -104,7 +104,10 @@ mod tests {
 
     #[test]
     fn deep_clean_relative_unchanged() {
-        assert_eq!(normalize_file_path_deep("src/calibrate.rs"), "src/calibrate.rs");
+        assert_eq!(
+            normalize_file_path_deep("src/calibrate.rs"),
+            "src/calibrate.rs"
+        );
     }
 
     #[test]

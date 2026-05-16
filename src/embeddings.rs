@@ -155,7 +155,11 @@ mod tests {
             return;
         }
         let dir = super::quorum_cache_dir();
-        assert!(dir.is_absolute(), "cache_dir must be absolute, got: {}", dir.display());
+        assert!(
+            dir.is_absolute(),
+            "cache_dir must be absolute, got: {}",
+            dir.display()
+        );
         let dir2 = super::quorum_cache_dir();
         assert_eq!(dir, dir2, "cache_dir must be deterministic across calls");
     }
