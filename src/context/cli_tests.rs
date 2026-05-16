@@ -2,8 +2,8 @@
 
 use super::cli::{
     AddArgs, AddLocation, CheckStatus, ContextCmd, ContextDeps, DoctorArgs, DoctorFormat,
-    IndexArgs, ListArgs, ListFormat, PruneArgs, QueryArgs, QueryFormat, RefreshArgs,
-    SourceSelector, TestDeps, run_context_cmd,
+    IndexArgs, ListArgs, ListFormat, PruneArgs, QueryArgs, QueryFormat, SourceSelector, TestDeps,
+    run_context_cmd,
 };
 use super::config::{SourceLocation, SourcesConfig};
 use std::path::PathBuf;
@@ -716,6 +716,7 @@ fn index_single_source_creates_jsonl_and_db_under_home() {
 
     let args = IndexArgs {
         selector: SourceSelector::Single("mini".to_string()),
+        force: true,
     };
     let out = run_context_cmd(&ContextCmd::Index(args), &deps).expect("index");
 
@@ -777,6 +778,7 @@ fn index_all_continues_past_single_source_failure() {
 
     let args = IndexArgs {
         selector: SourceSelector::All,
+        force: true,
     };
     let out = run_context_cmd(&ContextCmd::Index(args), &deps)
         .expect("--all must not hard-error when only some sources fail");
@@ -813,6 +815,7 @@ fn index_is_idempotent() {
     seed_single_source(&deps, "mini", "mini-rust");
     let args = || IndexArgs {
         selector: SourceSelector::Single("mini".to_string()),
+        force: true,
     };
 
     run_context_cmd(&ContextCmd::Index(args()), &deps).expect("first index");
@@ -842,31 +845,33 @@ fn index_is_idempotent() {
 }
 
 #[test]
-fn refresh_skips_when_head_sha_unchanged() {
+fn index_skips_when_head_sha_unchanged_and_not_forced() {
     let deps = TestDeps::new();
     seed_single_source(&deps, "mini", "mini-rust");
 
-    // First call acts as an index (no state on disk yet), second call must
-    // short-circuit because fake git returns the same HEAD sha.
+    // First call: force index (no state on disk yet).
     run_context_cmd(
-        &ContextCmd::Refresh(RefreshArgs {
+        &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: true,
         }),
         &deps,
     )
-    .expect("first refresh");
+    .expect("first index");
 
+    // Second call: non-forced; must skip because fake git returns same HEAD sha.
     let out = run_context_cmd(
-        &ContextCmd::Refresh(RefreshArgs {
+        &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: false,
         }),
         &deps,
     )
-    .expect("second refresh");
+    .expect("second index");
 
     assert!(
         out.stdout.contains("skipped 'mini'"),
-        "second refresh must report a skip: {:?}",
+        "second non-forced index must report a skip: {:?}",
         out.stdout
     );
     // No fresh paths created on a skip.
@@ -878,18 +883,19 @@ fn refresh_skips_when_head_sha_unchanged() {
 }
 
 #[test]
-fn refresh_rebuilds_on_embedder_model_hash_mismatch() {
+fn index_rebuilds_on_embedder_model_hash_mismatch() {
     let deps = TestDeps::new();
     seed_single_source(&deps, "mini", "mini-rust");
 
     // First index to lay down state.json.
     run_context_cmd(
-        &ContextCmd::Refresh(RefreshArgs {
+        &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: true,
         }),
         &deps,
     )
-    .expect("first refresh");
+    .expect("first index");
 
     // Corrupt state.json so the recorded model hash differs from the
     // current embedder's model hash.
@@ -903,18 +909,19 @@ fn refresh_rebuilds_on_embedder_model_hash_mismatch() {
     parsed["embedder_model_hash"] = serde_json::json!("stale-model-v0");
     std::fs::write(&state_path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
 
-    // Refresh should now *rebuild* rather than skip, even though HEAD is
-    // unchanged.
+    // Non-forced index should now *rebuild* rather than skip because model
+    // hash doesn't match.
     let out = run_context_cmd(
-        &ContextCmd::Refresh(RefreshArgs {
+        &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: false,
         }),
         &deps,
     )
-    .expect("third refresh");
+    .expect("third index");
 
     assert!(
-        out.stdout.contains("refreshed 'mini'"),
+        out.stdout.contains("indexed 'mini'"),
         "model-hash mismatch must trigger rebuild: {:?}",
         out.stdout
     );
@@ -929,12 +936,55 @@ fn refresh_rebuilds_on_embedder_model_hash_mismatch() {
 }
 
 #[test]
+fn index_skips_unchanged_source_when_not_forced() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    let args = IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+        force: true,
+    };
+    run_context_cmd(&ContextCmd::Index(args), &deps).expect("first index");
+    let args2 = IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+        force: false,
+    };
+    let out = run_context_cmd(&ContextCmd::Index(args2), &deps).expect("second index");
+    assert!(
+        out.stdout.contains("skipped 'mini'"),
+        "must skip unchanged: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn index_force_rebuilds_even_when_unchanged() {
+    let deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+    let args = IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+        force: true,
+    };
+    run_context_cmd(&ContextCmd::Index(args), &deps).expect("first index");
+    let forced = IndexArgs {
+        selector: SourceSelector::Single("mini".to_string()),
+        force: true,
+    };
+    let out = run_context_cmd(&ContextCmd::Index(forced), &deps).expect("forced index");
+    assert!(
+        out.stdout.contains("indexed 'mini'"),
+        "forced must rebuild: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
 fn query_returns_ranked_hits_for_indexed_source() {
     let deps = TestDeps::new();
     seed_single_source(&deps, "mini", "mini-rust");
     run_context_cmd(
         &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: true,
         }),
         &deps,
     )
@@ -962,6 +1012,7 @@ fn query_json_output_has_stable_schema() {
     run_context_cmd(
         &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: true,
         }),
         &deps,
     )
@@ -1005,6 +1056,7 @@ fn query_explain_includes_score_breakdown() {
     run_context_cmd(
         &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("mini".to_string()),
+            force: true,
         }),
         &deps,
     )
@@ -1215,6 +1267,7 @@ fn seed_and_index(deps: &TestDeps, name: &str, fixture: &str) {
     run_context_cmd(
         &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single(name.to_string()),
+            force: true,
         }),
         deps,
     )
@@ -1479,6 +1532,7 @@ fn doctor_repair_is_best_effort_continues_past_one_source_failure() {
     run_context_cmd(
         &ContextCmd::Index(IndexArgs {
             selector: SourceSelector::Single("good".to_string()),
+            force: true,
         }),
         &deps,
     )

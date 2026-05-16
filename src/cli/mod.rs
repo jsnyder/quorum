@@ -68,10 +68,9 @@ pub enum ContextCommand {
     /// Example: quorum context index --source myapp
     Index(ContextIndexOpts),
 
-    /// Re-index sources that have drifted since last extract.
-    ///
-    /// Example: quorum context refresh --all
-    Refresh(ContextRefreshOpts),
+    /// Alias for `index` (deprecated).
+    #[command(hide = true)]
+    Refresh(ContextIndexOpts),
 
     /// Semantic search across indexed chunks.
     ///
@@ -189,17 +188,10 @@ pub struct ContextIndexOpts {
     /// Index every registered source.
     #[arg(long, conflicts_with = "source")]
     pub all: bool,
-}
 
-#[derive(Parser)]
-pub struct ContextRefreshOpts {
-    /// Refresh a single named source. Mutually exclusive with --all.
-    #[arg(long, conflicts_with = "all")]
-    pub source: Option<String>,
-
-    /// Refresh every registered source.
-    #[arg(long, conflicts_with = "source")]
-    pub all: bool,
+    /// Force full rebuild even if sources are unchanged.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser)]
