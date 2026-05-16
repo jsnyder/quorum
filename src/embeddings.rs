@@ -98,4 +98,17 @@ mod tests {
             ab
         );
     }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn cache_dir_is_absolute_and_stable() {
+        if std::env::var("HOME").is_err() {
+            eprintln!("skipping: HOME not set, cache_dir will use relative fallback");
+            return;
+        }
+        let dir = super::quorum_cache_dir();
+        assert!(dir.is_absolute(), "cache_dir must be absolute, got: {}", dir.display());
+        let dir2 = super::quorum_cache_dir();
+        assert_eq!(dir, dir2, "cache_dir must be deterministic across calls");
+    }
 }
