@@ -60,6 +60,26 @@ pub fn threshold_at_precision(curve: &[(f64, f64, f64)], min_precision: f64) -> 
         .map(|(_, _, t)| *t)
 }
 
+/// Compute the area under the precision-recall curve (trapezoidal).
+///
+/// Prepends the conventional (P=1.0, R=0.0) baseline so the area from
+/// zero recall to the first observed recall is captured.
+pub fn pr_auc(samples: &[(f64, bool)]) -> f64 {
+    let curve = precision_recall_curve(samples);
+    if curve.is_empty() {
+        return 0.0;
+    }
+    let mut auc = 0.0;
+    let mut prev_r = 0.0;
+    let mut prev_p = 1.0;
+    for &(p, r, _) in &curve {
+        auc += (r - prev_r) * (prev_p + p) / 2.0;
+        prev_r = r;
+        prev_p = p;
+    }
+    auc
+}
+
 /// Find the threshold that maximizes F1 score.
 /// Returns `None` if the curve is empty.
 pub fn f1_optimal_threshold(curve: &[(f64, f64, f64)]) -> Option<f64> {
@@ -164,6 +184,25 @@ mod tests {
             (t.unwrap() - 0.7).abs() < 1e-9,
             "should pick lowest threshold achieving P>=0.95"
         );
+    }
+
+    #[test]
+    fn pr_auc_basic() {
+        let samples = vec![(0.9, true), (0.7, false), (0.5, true), (0.3, false)];
+        let auc = pr_auc(&samples);
+        assert!(auc > 0.0 && auc <= 1.0, "PR-AUC should be in (0,1], got {auc}");
+    }
+
+    #[test]
+    fn pr_auc_perfect_separation() {
+        let samples = vec![(0.9, true), (0.8, true), (0.2, false), (0.1, false)];
+        let auc = pr_auc(&samples);
+        assert!(auc > 0.9, "perfect separation should yield high PR-AUC, got {auc}");
+    }
+
+    #[test]
+    fn pr_auc_empty_returns_zero() {
+        assert!((pr_auc(&[]) - 0.0).abs() < 1e-9);
     }
 
     #[test]

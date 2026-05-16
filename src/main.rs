@@ -2389,7 +2389,60 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     eprintln!("  unmatched:          {}", join_stats.unmatched);
 
     // Compute composite model from feedback
-    let composite_model = quorum::calibrate::compute_calibrator_model(&feedback);
+    let mut composite_model = quorum::calibrate::compute_calibrator_model(&feedback);
+
+    // Learn weights from data when requested
+    if opts.learn_weights
+        && let Some(ref mut model) = composite_model
+    {
+        let features = quorum::calibrate::extract_join_features(
+            &feedback,
+            &traces,
+            model,
+            &filter,
+            disable_fuzzy,
+        );
+        match quorum::calibrate::learn_weights(&features, 5) {
+            Some(result) => {
+                let mean_cv_auc = if result.fold_aucs.is_empty() {
+                    0.0
+                } else {
+                    result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64
+                };
+                eprintln!("\nWeight learning ({} samples):", features.len());
+                eprintln!(
+                    "  score={:.2}  word_lor={:.2}  family_fp_inv={:.2}  language_fp_inv={:.2}",
+                    result.weights.score,
+                    result.weights.word_lor,
+                    result.weights.family_fp_inv,
+                    result.weights.language_fp_inv,
+                );
+                eprintln!("  PR-AUC (full):     {:.4}", result.pr_auc);
+                eprintln!("  PR-AUC (5-fold):   {:.4}", mean_cv_auc);
+                eprintln!(
+                    "  Fold stability:    {}",
+                    if result.stable {
+                        "stable (all folds within 20%)"
+                    } else {
+                        "UNSTABLE (fold weights diverge >20%)"
+                    }
+                );
+                if result.stable {
+                    model.weights = result.weights;
+                    model.meta.learned_weights = Some(true);
+                } else {
+                    eprintln!("  -> Using hardcoded weights (unstable folds)");
+                }
+            }
+            None => {
+                eprintln!(
+                    "\nWeight learning: skipped (need >=50 samples, have {})",
+                    features.len()
+                );
+            }
+        }
+    }
+
     let scoring_samples = if let Some(ref model) = composite_model {
         eprintln!(
             "\nComposite model: {} word_lor entries, {} family rates, {} language rates",
@@ -2397,7 +2450,6 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
             model.family_fp_rate.len(),
             model.language_fp_rate.len(),
         );
-        // Re-score samples using composite scores for threshold computation
         quorum::calibrate::rescore_samples_with_model(
             &feedback,
             &traces,

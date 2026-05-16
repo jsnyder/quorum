@@ -11,6 +11,24 @@ use crate::file_util::{normalize_file_path_deep, path_suffix_eq};
 use crate::metrics;
 use crate::threshold_config::{PathThreshold, ThresholdConfig};
 
+/// Raw feature vector for a single joined sample, used for weight learning.
+#[derive(Debug, Clone)]
+pub struct SampleFeatures {
+    pub precedent_score: f64,
+    pub word_lor: f64,
+    pub family_fp_inv: f64,
+    pub language_fp_inv: f64,
+}
+
+impl SampleFeatures {
+    pub fn score(&self, weights: &ScoreWeights) -> f64 {
+        weights.score * self.precedent_score
+            + weights.word_lor * self.word_lor
+            + weights.family_fp_inv * self.family_fp_inv
+            + weights.language_fp_inv * self.language_fp_inv
+    }
+}
+
 /// Filters applied to traces before joining with feedback.
 ///
 /// Default filter retains all traces (including legacy ones without provenance).
@@ -847,6 +865,7 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
             computed_at: chrono::Utc::now().to_rfc3339(),
             feedback_count: total,
             global_fp_rate,
+            learned_weights: None,
         },
         weights: ScoreWeights {
             score: 0.5,
@@ -862,9 +881,8 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
 
 /// Re-score join samples using composite scores from a model.
 ///
-/// Takes the raw `(score, label)` pairs from the join and replaces each score
-/// with the composite score, using the corresponding feedback entry's title and
-/// file path for family/language lookup.
+/// Thin wrapper over [`extract_join_features`] that applies the model's
+/// weights to produce final composite scores.
 pub fn rescore_samples_with_model(
     feedback: &[serde_json::Value],
     traces: &[serde_json::Value],
@@ -872,9 +890,27 @@ pub fn rescore_samples_with_model(
     filter: &JoinFilter,
     disable_fuzzy: bool,
 ) -> Vec<(f64, bool)> {
-    // We need to re-join to get the title+file_path for each sample.
-    // The join logic is complex, so we reconstruct by walking the same join
-    // path but extracting composite scores instead of raw scores.
+    extract_join_features(feedback, traces, model, filter, disable_fuzzy)
+        .into_iter()
+        .filter_map(|(feat, label)| {
+            let s = feat.score(&model.weights);
+            s.is_finite().then_some((s, label))
+        })
+        .collect()
+}
+
+/// Extract raw feature vectors for each joined sample.
+///
+/// Walks the same multi-tier join as the threshold computation, but returns
+/// per-sample feature vectors instead of composite scores. Used by
+/// [`learn_weights`] for grid search and by [`rescore_samples_with_model`].
+pub fn extract_join_features(
+    feedback: &[serde_json::Value],
+    traces: &[serde_json::Value],
+    model: &CalibratorModel,
+    filter: &JoinFilter,
+    disable_fuzzy: bool,
+) -> Vec<(SampleFeatures, bool)> {
     let filtered_traces: Vec<&serde_json::Value> =
         traces.iter().filter(|t| filter.accepts(t)).collect();
 
@@ -1092,16 +1128,198 @@ pub fn rescore_samples_with_model(
                 let precedent_score = info.tp_weight / total;
                 if precedent_score.is_finite() {
                     let lang = CalibratorModel::file_ext_language(&fp);
-                    let composite = model.composite_score(precedent_score, &title, lang);
-                    if composite.is_finite() {
-                        samples.push((composite, is_positive));
-                    }
+                    let family = CalibratorModel::title_family(&title);
+                    let family_fp = model
+                        .family_fp_rate
+                        .get(&family)
+                        .copied()
+                        .unwrap_or(model.meta.global_fp_rate);
+                    let lang_fp = model
+                        .language_fp_rate
+                        .get(lang)
+                        .copied()
+                        .unwrap_or(model.meta.global_fp_rate);
+                    samples.push((
+                        SampleFeatures {
+                            precedent_score,
+                            word_lor: model.word_lor_score(&title),
+                            family_fp_inv: 1.0 - family_fp,
+                            language_fp_inv: 1.0 - lang_fp,
+                        },
+                        is_positive,
+                    ));
                 }
             }
         }
     }
 
     samples
+}
+
+const MIN_SAMPLES_FOR_LEARNING: usize = 50;
+const WEIGHT_STABILITY_TOLERANCE: f64 = 0.20;
+
+/// Result of weight learning via grid search.
+#[derive(Debug, Clone)]
+pub struct LearnedWeights {
+    pub weights: ScoreWeights,
+    pub pr_auc: f64,
+    pub stable: bool,
+    pub fold_aucs: Vec<f64>,
+}
+
+/// Learn composite scoring weights from the joined feature corpus via grid
+/// search with k-fold cross-validation.
+///
+/// Returns `None` when fewer than [`MIN_SAMPLES_FOR_LEARNING`] samples are
+/// available (falls back to hardcoded weights).
+pub fn learn_weights(
+    features: &[(SampleFeatures, bool)],
+    k_folds: usize,
+) -> Option<LearnedWeights> {
+    if features.len() < MIN_SAMPLES_FOR_LEARNING {
+        return None;
+    }
+
+    let score_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
+    let word_lor_grid: &[f64] = &[0.0, 0.5, 1.0, 1.5, 2.0, 3.0];
+    let family_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
+    let lang_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5];
+
+    let full_best = grid_search_best(features, score_grid, word_lor_grid, family_grid, lang_grid);
+
+    let k = k_folds.min(features.len());
+    if k < 2 {
+        return Some(LearnedWeights {
+            weights: full_best.0,
+            pr_auc: full_best.1,
+            stable: true,
+            fold_aucs: vec![full_best.1],
+        });
+    }
+
+    let indices = deterministic_permutation(features.len());
+    let fold_size = features.len() / k;
+    let mut fold_weights: Vec<ScoreWeights> = Vec::with_capacity(k);
+    let mut fold_aucs: Vec<f64> = Vec::with_capacity(k);
+
+    for i in 0..k {
+        let start = i * fold_size;
+        let end = if i == k - 1 { features.len() } else { start + fold_size };
+
+        let train: Vec<(SampleFeatures, bool)> = indices
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx < start || *idx >= end)
+            .map(|(_, &orig)| features[orig].clone())
+            .collect();
+        let val: Vec<(SampleFeatures, bool)> = indices[start..end]
+            .iter()
+            .map(|&orig| features[orig].clone())
+            .collect();
+
+        let (best_w, _) =
+            grid_search_best(&train, score_grid, word_lor_grid, family_grid, lang_grid);
+
+        let val_scored: Vec<(f64, bool)> = val
+            .iter()
+            .map(|(f, l)| (f.score(&best_w), *l))
+            .collect();
+        let val_auc = metrics::pr_auc(&val_scored);
+
+        fold_weights.push(best_w);
+        fold_aucs.push(val_auc);
+    }
+
+    let stable = weights_stable(&fold_weights, WEIGHT_STABILITY_TOLERANCE);
+
+    Some(LearnedWeights {
+        weights: full_best.0,
+        pr_auc: full_best.1,
+        stable,
+        fold_aucs,
+    })
+}
+
+fn grid_search_best(
+    features: &[(SampleFeatures, bool)],
+    score_grid: &[f64],
+    word_lor_grid: &[f64],
+    family_grid: &[f64],
+    lang_grid: &[f64],
+) -> (ScoreWeights, f64) {
+    let mut best_auc = f64::NEG_INFINITY;
+    let mut best_weights = ScoreWeights {
+        score: 0.5,
+        word_lor: 1.5,
+        family_fp_inv: 1.0,
+        language_fp_inv: 0.5,
+    };
+
+    for &s in score_grid {
+        for &w in word_lor_grid {
+            for &f in family_grid {
+                for &l in lang_grid {
+                    let weights = ScoreWeights {
+                        score: s,
+                        word_lor: w,
+                        family_fp_inv: f,
+                        language_fp_inv: l,
+                    };
+                    let scored: Vec<(f64, bool)> = features
+                        .iter()
+                        .map(|(feat, label)| (feat.score(&weights), *label))
+                        .collect();
+                    let auc = metrics::pr_auc(&scored);
+                    if auc > best_auc {
+                        best_auc = auc;
+                        best_weights = weights;
+                    }
+                }
+            }
+        }
+    }
+
+    (best_weights, best_auc)
+}
+
+fn deterministic_permutation(n: usize) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        let hash = (i as u64)
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let j = (hash % (i as u64 + 1)) as usize;
+        indices.swap(i, j);
+    }
+    indices
+}
+
+fn weights_stable(folds: &[ScoreWeights], tolerance: f64) -> bool {
+    if folds.len() < 2 {
+        return true;
+    }
+    for extract in [
+        |w: &ScoreWeights| w.score,
+        |w: &ScoreWeights| w.word_lor,
+        |w: &ScoreWeights| w.family_fp_inv,
+        |w: &ScoreWeights| w.language_fp_inv,
+    ] {
+        let vals: Vec<f64> = folds.iter().map(extract).collect();
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        if mean.abs() < 1e-9 {
+            if vals.iter().any(|v| v.abs() > tolerance) {
+                return false;
+            }
+        } else {
+            for v in &vals {
+                if ((v - mean) / mean).abs() > tolerance {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[derive(Clone)]
@@ -2677,5 +2895,126 @@ mod tests {
             "python fp rate should be 0.2, got {}",
             model.language_fp_rate["python"]
         );
+    }
+
+    // --- learn_weights tests ---
+
+    #[test]
+    fn sample_features_score_matches_manual() {
+        let f = SampleFeatures {
+            precedent_score: 0.8,
+            word_lor: -0.5,
+            family_fp_inv: 0.7,
+            language_fp_inv: 0.6,
+        };
+        let w = ScoreWeights {
+            score: 0.5,
+            word_lor: 1.5,
+            family_fp_inv: 1.0,
+            language_fp_inv: 0.5,
+        };
+        let expected = 0.5 * 0.8 + 1.5 * (-0.5) + 1.0 * 0.7 + 0.5 * 0.6;
+        assert!((f.score(&w) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn learn_weights_returns_none_below_threshold() {
+        let features: Vec<(SampleFeatures, bool)> = (0..49)
+            .map(|i| {
+                (
+                    SampleFeatures {
+                        precedent_score: i as f64 / 49.0,
+                        word_lor: 0.0,
+                        family_fp_inv: 0.5,
+                        language_fp_inv: 0.5,
+                    },
+                    i % 2 == 0,
+                )
+            })
+            .collect();
+        assert!(learn_weights(&features, 5).is_none());
+    }
+
+    #[test]
+    fn learn_weights_finds_separable_weights() {
+        // TP samples have high precedent_score, FP samples have low.
+        // The grid search should assign positive weight to `score`.
+        let mut features = Vec::new();
+        for i in 0..100 {
+            let is_tp = i >= 50;
+            features.push((
+                SampleFeatures {
+                    precedent_score: if is_tp { 0.9 } else { 0.1 },
+                    word_lor: 0.0,
+                    family_fp_inv: 0.5,
+                    language_fp_inv: 0.5,
+                },
+                is_tp,
+            ));
+        }
+        let result = learn_weights(&features, 5).unwrap();
+        assert!(
+            result.weights.score > 0.0,
+            "score weight should be positive for separable data"
+        );
+        assert!(result.pr_auc > 0.8, "PR-AUC should be high for separable data");
+    }
+
+    #[test]
+    fn learn_weights_stable_on_uniform_data() {
+        // All features perfectly separate classes → all folds should agree.
+        let mut features = Vec::new();
+        for i in 0..200 {
+            let is_tp = i >= 100;
+            features.push((
+                SampleFeatures {
+                    precedent_score: if is_tp { 0.9 } else { 0.1 },
+                    word_lor: if is_tp { 0.5 } else { -0.5 },
+                    family_fp_inv: 0.5,
+                    language_fp_inv: 0.5,
+                },
+                is_tp,
+            ));
+        }
+        let result = learn_weights(&features, 5).unwrap();
+        assert!(result.stable, "weights should be stable on uniform data");
+    }
+
+    #[test]
+    fn deterministic_permutation_is_valid() {
+        let perm = super::deterministic_permutation(100);
+        assert_eq!(perm.len(), 100);
+        let mut sorted = perm.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..100).collect::<Vec<_>>());
+        assert_ne!(perm, (0..100).collect::<Vec<_>>(), "should be shuffled");
+    }
+
+    #[test]
+    fn weights_stable_identical_folds() {
+        let w = ScoreWeights {
+            score: 0.5,
+            word_lor: 1.5,
+            family_fp_inv: 1.0,
+            language_fp_inv: 0.5,
+        };
+        assert!(super::weights_stable(&[w.clone(), w.clone(), w], 0.20));
+    }
+
+    #[test]
+    fn weights_unstable_divergent_folds() {
+        let w1 = ScoreWeights {
+            score: 0.5,
+            word_lor: 1.5,
+            family_fp_inv: 1.0,
+            language_fp_inv: 0.5,
+        };
+        let w2 = ScoreWeights {
+            score: 2.0,
+            word_lor: 0.0,
+            family_fp_inv: 0.0,
+            language_fp_inv: 1.5,
+        };
+        assert!(!super::weights_stable(&[w1, w2], 0.20));
     }
 }

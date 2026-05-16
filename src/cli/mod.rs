@@ -283,6 +283,10 @@ pub struct CalibrateOpts {
     /// Backfill file_path on legacy traces using feedback cross-reference
     #[arg(long)]
     pub backfill_paths: bool,
+
+    /// Learn composite scoring weights from feedback corpus via grid search
+    #[arg(long)]
+    pub learn_weights: bool,
 }
 
 #[derive(Parser)]

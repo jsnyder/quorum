@@ -24,6 +24,8 @@ pub struct ModelMeta {
     pub computed_at: String,
     pub feedback_count: usize,
     pub global_fp_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned_weights: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +146,7 @@ mod tests {
                 computed_at: "2026-05-12T00:00:00Z".to_string(),
                 feedback_count: 100,
                 global_fp_rate: 0.27,
+                learned_weights: None,
             },
             weights: ScoreWeights {
                 score: 0.5,
