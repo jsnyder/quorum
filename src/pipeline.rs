@@ -1629,16 +1629,14 @@ pub async fn review_file_llm_only(
 /// Only called when `--diff-file` was explicitly provided. Invalid findings
 /// (malformed line ranges) are skipped.
 fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
-    if changed_lines.is_empty() {
-        return;
-    }
     for finding in findings {
         if !finding.is_valid() {
             continue;
         }
-        let overlaps = changed_lines
-            .iter()
-            .any(|(start, end)| finding.line_start <= *end && finding.line_end >= *start);
+        let overlaps = !changed_lines.is_empty()
+            && changed_lines
+                .iter()
+                .any(|(start, end)| finding.line_start <= *end && finding.line_end >= *start);
         finding.in_diff = Some(overlaps);
     }
 }
@@ -3097,11 +3095,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_in_diff_empty_changed_lines_is_noop() {
+    fn classify_in_diff_empty_changed_lines_marks_all_pre_existing() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().build()];
         classify_in_diff(&mut findings, &[]);
-        assert_eq!(findings[0].in_diff, None);
+        assert_eq!(findings[0].in_diff, Some(false));
     }
 
     #[test]
