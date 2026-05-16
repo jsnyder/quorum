@@ -234,7 +234,7 @@ fn ab_structural_fingerprint_ranking_impact() {
         fingerprints.len(),
         chunks.len()
     );
-    for (id, _) in &fingerprints {
+    for id in fingerprints.keys() {
         println!("  [fp] {id}");
     }
 

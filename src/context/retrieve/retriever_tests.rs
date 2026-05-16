@@ -32,6 +32,7 @@ fn mk_chunk(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mk_chunk_with_path(
     id: &str,
     source: &str,

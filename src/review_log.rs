@@ -1414,11 +1414,13 @@ mod tests {
         assert_eq!(default_ctx.structural_boost_applied, 0);
 
         // 2. Populated round-trip: set nonzero values, serialize, deserialize.
-        let mut ctx = ContextTelemetry::default();
-        ctx.structural_fingerprints_computed = 42;
-        ctx.structural_knn_queries = 3;
-        ctx.structural_knn_hits = 17;
-        ctx.structural_boost_applied = 5;
+        let ctx = ContextTelemetry {
+            structural_fingerprints_computed: 42,
+            structural_knn_queries: 3,
+            structural_knn_hits: 17,
+            structural_boost_applied: 5,
+            ..ContextTelemetry::default()
+        };
 
         let json = serde_json::to_string(&ctx).unwrap();
         assert!(json.contains("\"structural_fingerprints_computed\":42"));
