@@ -127,6 +127,9 @@ impl GitOps for FailingGit {
     fn head_sha(&self, _: &Path) -> std::io::Result<Option<String>> {
         Err(std::io::Error::other("fake error"))
     }
+    fn diff_files(&self, _: &Path, _: &str) -> std::io::Result<Option<Vec<String>>> {
+        Err(std::io::Error::other("fake error"))
+    }
 }
 
 #[test]
@@ -166,6 +169,9 @@ impl GitOps for CountingGit {
         Ok(self.dirty)
     }
     fn head_sha(&self, _: &Path) -> std::io::Result<Option<String>> {
+        Ok(None)
+    }
+    fn diff_files(&self, _: &Path, _: &str) -> std::io::Result<Option<Vec<String>>> {
         Ok(None)
     }
 }
