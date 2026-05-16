@@ -61,6 +61,7 @@ fn boost_ctx(current_repo: Option<&str>, dep_sources: &[&str]) -> BoostContext {
 fn single_source_passes_through() {
     let batch = SourceBatch {
         source_name: "alpha".into(),
+        weight: 1.0,
         chunks: vec![scored("a1", "alpha", 0.9), scored("a2", "alpha", 0.7)],
     };
     let config = default_config();
@@ -72,23 +73,22 @@ fn single_source_passes_through() {
 
 #[test]
 fn multi_source_interleaves_by_score() {
-    // Use 2+ chunks per source so min-max normalization differentiates them
     let b1 = SourceBatch {
         source_name: "alpha".into(),
+        weight: 1.0,
         chunks: vec![scored("a1", "alpha", 0.9), scored("a2", "alpha", 0.1)],
     };
     let b2 = SourceBatch {
         source_name: "beta".into(),
+        weight: 1.0,
         chunks: vec![scored("b1", "beta", 0.95), scored("b2", "beta", 0.1)],
     };
     let config = default_config();
     let ctx = boost_ctx(None, &[]);
     let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
     assert_eq!(result.len(), 4);
-    // Both top chunks normalize to 1.0 (they're the max in their batch),
-    // so their boosted scores are equal (both get lang_match 1.1).
-    // With identical scores, tiebreak is by chunk id ascending: a1 < b1.
-    // The key assertion is that mixing sources works — both appear.
+    // RRF: rank-1 chunks from both sources get same score (1/61 * 1.1).
+    // Tiebreak by chunk id ascending: a1 < b1. Both sources appear.
     let sources: Vec<_> = result.iter().map(|c| c.chunk.source.as_str()).collect();
     assert!(sources.contains(&"alpha"));
     assert!(sources.contains(&"beta"));
@@ -98,16 +98,18 @@ fn multi_source_interleaves_by_score() {
 fn current_repo_boost_promotes_chunks() {
     let b1 = SourceBatch {
         source_name: "current".into(),
+        weight: 1.0,
         chunks: vec![scored("c1", "current", 0.7)],
     };
     let b2 = SourceBatch {
         source_name: "other".into(),
+        weight: 1.0,
         chunks: vec![scored("o1", "other", 0.8)],
     };
     let config = default_config();
     let ctx = boost_ctx(Some("current"), &[]);
     let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
-    // 0.7 * 1.3 = 0.91 vs 0.8 → current should be first
+    // Both rank-1: RRF = 1/61. current gets 1.3*1.1 boost, other gets 1.1 only.
     assert_eq!(result[0].chunk.source, "current");
 }
 
@@ -115,16 +117,18 @@ fn current_repo_boost_promotes_chunks() {
 fn dep_manifest_boost_promotes_chunks() {
     let b1 = SourceBatch {
         source_name: "dep-lib".into(),
+        weight: 1.0,
         chunks: vec![scored("d1", "dep-lib", 0.7)],
     };
     let b2 = SourceBatch {
         source_name: "unrelated".into(),
+        weight: 1.0,
         chunks: vec![scored("u1", "unrelated", 0.75)],
     };
     let config = default_config();
     let ctx = boost_ctx(None, &["dep-lib"]);
     let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
-    // 0.7 * 1.2 = 0.84 vs 0.75 → dep should be first
+    // Both rank-1: RRF = 1/61. dep-lib gets 1.2*1.1 boost, unrelated gets 1.1 only.
     assert_eq!(result[0].chunk.source, "dep-lib");
 }
 
@@ -133,21 +137,20 @@ fn boosts_compose_multiplicatively() {
     // Use multi-chunk batches so normalization spreads scores
     let b1 = SourceBatch {
         source_name: "my-dep".into(),
+        weight: 1.0,
         chunks: vec![scored("md1", "my-dep", 0.5), scored("md2", "my-dep", 0.1)],
     };
     let b2 = SourceBatch {
         source_name: "other".into(),
+        weight: 1.0,
         chunks: vec![scored("o1", "other", 0.8), scored("o2", "other", 0.1)],
     };
     let config = default_config();
     // my-dep is both current repo AND a dep AND lang match → 1.3*1.2*1.1 = 1.716
     let ctx = boost_ctx(Some("my-dep"), &["my-dep"]);
     let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
-    // md1: normalized = (0.5-0.1)/(0.5-0.1) = 1.0, boosted = 1.0*1.716 = 1.716
-    // o1:  normalized = (0.8-0.1)/(0.8-0.1) = 1.0, boosted = 1.0*1.1 = 1.1
-    // my-dep top chunk should be first due to triple boost
+    // Both rank-1: RRF = 1/61. my-dep gets 1.716x boost, other gets 1.1x.
     assert_eq!(result[0].chunk.source, "my-dep");
-    // Verify the boost was > 1.1 (lang match only)
     assert!(result[0].score > result[1].score);
 }
 
@@ -159,6 +162,7 @@ fn per_source_cap_limits_non_current_repo() {
     }
     let batch = SourceBatch {
         source_name: "external".into(),
+        weight: 1.0,
         chunks,
     };
     let mut config = default_config();
@@ -173,6 +177,7 @@ fn current_repo_reserved_slots_guaranteed() {
     // current-repo has lower-scoring chunks, but reserved slots guarantee inclusion
     let b_current = SourceBatch {
         source_name: "current".into(),
+        weight: 1.0,
         chunks: vec![scored("c1", "current", 0.3), scored("c2", "current", 0.25)],
     };
     let mut other_chunks = Vec::new();
@@ -181,6 +186,7 @@ fn current_repo_reserved_slots_guaranteed() {
     }
     let b_other = SourceBatch {
         source_name: "other".into(),
+        weight: 1.0,
         chunks: other_chunks,
     };
     let mut config = default_config();
@@ -206,6 +212,7 @@ fn per_source_cap_does_not_apply_to_current_repo() {
     }
     let batch = SourceBatch {
         source_name: "current".into(),
+        weight: 1.0,
         chunks,
     };
     let mut config = default_config();
@@ -234,6 +241,7 @@ fn respects_top_k_limit() {
     }
     let batch = SourceBatch {
         source_name: "src".into(),
+        weight: 1.0,
         chunks,
     };
     let config = default_config();
@@ -243,22 +251,21 @@ fn respects_top_k_limit() {
 }
 
 #[test]
-fn min_max_normalization_single_chunk_source_scores_one() {
+fn rrf_single_chunk_source_uses_rank_one() {
     let batch = SourceBatch {
         source_name: "solo".into(),
+        weight: 1.0,
         chunks: vec![scored("s1", "solo", 0.5)],
     };
     let config = default_config();
     let ctx = boost_ctx(None, &[]);
     let result = merge_and_rerank(&[batch], &config, &ctx, 10);
     assert_eq!(result.len(), 1);
-    // Single-candidate source → normalized to 1.0 → lang_match boost if applicable
-    // No lang match since ctx has no current repo and "rust" matches "rust" from boost_ctx
-    // Actually boost_ctx sets reviewed_language = Some("rust") and chunk language = "rust"
-    // so lang_match = 1.1, normalized = 1.0 * 1.1 = 1.1
+    // RRF: weight=1.0 / (60 + 1) = 0.01639, lang_match boost 1.1 → ~0.01803
+    let expected = 1.0 / 61.0 * 1.1;
     assert!(
-        result[0].score > 0.9,
-        "single candidate should normalize high, got {}",
+        (result[0].score - expected).abs() < 0.001,
+        "expected ~{expected:.5}, got {}",
         result[0].score
     );
 }
@@ -267,10 +274,12 @@ fn min_max_normalization_single_chunk_source_scores_one() {
 fn output_sorted_descending_by_score() {
     let b1 = SourceBatch {
         source_name: "a".into(),
+        weight: 1.0,
         chunks: vec![scored("a1", "a", 0.3), scored("a2", "a", 0.9)],
     };
     let b2 = SourceBatch {
         source_name: "b".into(),
+        weight: 1.0,
         chunks: vec![scored("b1", "b", 0.6)],
     };
     let config = default_config();
@@ -292,10 +301,51 @@ fn candidates_preserve_source_legs() {
     chunk.source_legs = vec![RetrievalLeg::Structural];
     let batch = SourceBatch {
         source_name: "alpha".into(),
+        weight: 1.0,
         chunks: vec![chunk],
     };
     let config = default_config();
     let ctx = boost_ctx(None, &[]);
     let result = merge_and_rerank(&[batch], &config, &ctx, 10);
     assert_eq!(result[0].source_legs, vec![RetrievalLeg::Structural]);
+}
+
+#[test]
+fn higher_weight_source_ranks_above_lower_weight() {
+    let b1 = SourceBatch {
+        source_name: "heavy".into(),
+        weight: 3.0,
+        chunks: vec![scored("h1", "heavy", 0.5)],
+    };
+    let b2 = SourceBatch {
+        source_name: "light".into(),
+        weight: 1.0,
+        chunks: vec![scored("l1", "light", 0.9)],
+    };
+    let config = default_config();
+    let ctx = boost_ctx(None, &[]);
+    let result = merge_and_rerank(&[b1, b2], &config, &ctx, 10);
+    // Both rank-1: heavy gets 3/61, light gets 1/61. Heavy wins regardless of raw score.
+    assert_eq!(result[0].chunk.source, "heavy");
+    assert_eq!(result[1].chunk.source, "light");
+}
+
+#[test]
+fn rrf_rank_ordering_within_source() {
+    let batch = SourceBatch {
+        source_name: "s".into(),
+        weight: 1.0,
+        chunks: vec![
+            scored("r1", "s", 0.9),
+            scored("r2", "s", 0.8),
+            scored("r3", "s", 0.7),
+        ],
+    };
+    let config = default_config();
+    let ctx = boost_ctx(None, &[]);
+    let result = merge_and_rerank(&[batch], &config, &ctx, 10);
+    // RRF scores decrease with rank: 1/61 > 1/62 > 1/63
+    assert!(result[0].score > result[1].score);
+    assert!(result[1].score > result[2].score);
+    assert_eq!(result[0].chunk.id, "r1");
 }

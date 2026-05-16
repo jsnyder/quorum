@@ -3,10 +3,16 @@ use std::collections::HashSet;
 use super::retriever::ScoredChunk;
 use crate::context::config::MultiSourceConfig;
 
+/// Reciprocal Rank Fusion constant. Higher values compress rank differences.
+/// k=60 is the standard value from the original RRF paper (Cormack et al. 2009).
+const RRF_K: f32 = 60.0;
+
 #[derive(Debug, Clone)]
 pub struct SourceBatch {
     pub source_name: String,
     pub chunks: Vec<ScoredChunk>,
+    /// Source weight multiplier (from sources.toml). Default 1.0.
+    pub weight: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -20,11 +26,18 @@ pub struct BoostContext {
 pub(crate) struct MultiSourceCandidate {
     pub chunk: ScoredChunk,
     pub source_name: String,
-    pub normalized_score: f32,
+    pub rrf_score: f32,
     pub boosted_score: f32,
     pub is_current_repo: bool,
 }
 
+/// Merge candidates from multiple sources using Reciprocal Rank Fusion.
+///
+/// Each chunk's base score is `weight / (RRF_K + rank)` where rank is its
+/// 1-indexed position within the source batch (pre-sorted by retriever score).
+/// Multiplicative boosts (current-repo, dep-manifest, language-match) are
+/// applied on top. Diversity constraints enforce per-source caps and
+/// current-repo reserved slots.
 pub fn merge_and_rerank(
     batches: &[SourceBatch],
     config: &MultiSourceConfig,
@@ -43,8 +56,6 @@ pub fn merge_and_rerank(
             .as_ref()
             .is_some_and(|cr| cr == &batch.source_name);
 
-        // Filter NaN scores before normalization — they'd corrupt min/max
-        // and sort ordering.
         let clean_chunks: Vec<&ScoredChunk> = batch
             .chunks
             .iter()
@@ -54,15 +65,8 @@ pub fn merge_and_rerank(
             continue;
         }
 
-        let (min_score, max_score) = min_max_scores_refs(&clean_chunks);
-        let range = max_score - min_score;
-
-        for sc in &clean_chunks {
-            let normalized = if range < f32::EPSILON {
-                1.0
-            } else {
-                (sc.score - min_score) / range
-            };
+        for (rank_0, sc) in clean_chunks.iter().enumerate() {
+            let rrf_score = batch.weight / (RRF_K + (rank_0 as f32) + 1.0);
 
             let mut boost = 1.0f32;
             if is_current {
@@ -82,8 +86,8 @@ pub fn merge_and_rerank(
             candidates.push(MultiSourceCandidate {
                 chunk: (*sc).clone(),
                 source_name: batch.source_name.clone(),
-                normalized_score: normalized,
-                boosted_score: normalized * boost,
+                rrf_score,
+                boosted_score: rrf_score * boost,
                 is_current_repo: is_current,
             });
         }
@@ -97,26 +101,6 @@ pub fn merge_and_rerank(
     });
 
     apply_diversity_constraints(candidates, config, ctx, top_k as usize)
-}
-
-fn min_max_scores_refs(chunks: &[&ScoredChunk]) -> (f32, f32) {
-    let mut min = f32::INFINITY;
-    let mut max = f32::NEG_INFINITY;
-    for c in chunks {
-        if c.score < min {
-            min = c.score;
-        }
-        if c.score > max {
-            max = c.score;
-        }
-    }
-    if !min.is_finite() {
-        min = 0.0;
-    }
-    if !max.is_finite() {
-        max = 0.0;
-    }
-    (min, max)
 }
 
 fn apply_diversity_constraints(

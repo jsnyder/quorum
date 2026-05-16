@@ -39,6 +39,7 @@ fn build_retrieval_embedder() -> crate::context::cli::ProdEmbedder {
 struct ValidSource {
     name: String,
     db_path: PathBuf,
+    weight: f32,
 }
 
 /// Build a production `ContextInjectionSource` from `<home>/sources.toml` and
@@ -158,6 +159,7 @@ fn collect_valid_sources_for_project(
                     Ok(_) => valid.push(ValidSource {
                         name: s.name.clone(),
                         db_path: layout.db,
+                        weight: s.weight.unwrap_or(1) as f32,
                     }),
                     Err(e) => {
                         tracing::warn!(
@@ -314,6 +316,7 @@ fn build_multi_source_retriever(
                     Ok(chunks) if !chunks.is_empty() => {
                         batches.push(SourceBatch {
                             source_name: src.name.clone(),
+                            weight: src.weight,
                             chunks,
                         });
                     }
