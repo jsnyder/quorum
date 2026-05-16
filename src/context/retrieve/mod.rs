@@ -49,6 +49,8 @@ mod rerank_tests;
 #[cfg(test)]
 mod retriever_tests;
 #[cfg(test)]
+mod structural_ab_test;
+#[cfg(test)]
 mod structural_tests;
 #[cfg(test)]
 mod vector_tests;

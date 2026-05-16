@@ -14,6 +14,7 @@ use super::Filters;
 use super::bm25::{Bm25Hit, bm25_search, build_match_expression};
 use super::rerank::{RerankConfig, RerankInput, ScoreBreakdown, rerank};
 use super::vector::{VecHit, vec_search};
+use crate::context::extract::fingerprint::FINGERPRINT_DIMS;
 use crate::context::index::traits::{Clock, Embedder};
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -95,7 +96,45 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                 .collect()
         };
 
-        if bm25_hits.is_empty() && vec_hits.is_empty() && structural_hits.is_empty() {
+        // --- Structural fingerprint KNN leg: for each query-side fingerprint,
+        // run a KNN query against chunks_struct_vec. Track the best (max)
+        // similarity per chunk_id across all query fingerprints.
+        let mut struct_sim_map: HashMap<String, f32> = HashMap::new();
+        for (_name, fp_vec) in &q.structural_fingerprints {
+            let knn_k = (q.k * 2).max(10);
+            match crate::context::index::builder::query_structural_knn(self.conn, fp_vec, knn_k) {
+                Ok(hits) => {
+                    for (chunk_id, distance) in hits {
+                        let sim = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
+                        let entry = struct_sim_map.entry(chunk_id).or_insert(0.0);
+                        if sim > *entry {
+                            *entry = sim;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "structural fingerprint KNN query failed");
+                }
+            }
+        }
+
+        // Post-filter KNN hits against the same filters applied to
+        // BM25/vector legs. Without this, KNN returns chunks from
+        // excluded source paths (e.g., the file under review).
+        if !struct_sim_map.is_empty() && has_active_filters(&q.filters) {
+            let knn_ids: Vec<String> = struct_sim_map.keys().cloned().collect();
+            let passing = filter_chunk_ids(self.conn, &knn_ids, &q.filters)?;
+            struct_sim_map.retain(|id, _| passing.contains(id));
+        }
+
+        // Fingerprint KNN hits also join the candidate pool.
+        let fp_knn_ids: Vec<String> = struct_sim_map.keys().cloned().collect();
+
+        if bm25_hits.is_empty()
+            && vec_hits.is_empty()
+            && structural_hits.is_empty()
+            && fp_knn_ids.is_empty()
+        {
             return Ok(Vec::new());
         }
 
@@ -105,8 +144,11 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
             bm25_hits.iter().map(|h| h.chunk_id.clone()).collect();
         let vec_ids: std::collections::HashSet<String> =
             vec_hits.iter().map(|h| h.chunk_id.clone()).collect();
-        let structural_ids: std::collections::HashSet<String> =
-            structural_hits.iter().cloned().collect();
+        let structural_ids: std::collections::HashSet<String> = structural_hits
+            .iter()
+            .cloned()
+            .chain(fp_knn_ids.iter().cloned())
+            .collect();
 
         // --- Merge candidate ids, preserving the best raw signal from each
         // source. sqlite-vec's default metric is cosine distance in [0, 2];
@@ -123,6 +165,10 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
         // Structural hits enter the candidate pool with zero BM25/vector
         // raw scores; the `id_exact_match` boost in rerank promotes them.
         for id in &structural_hits {
+            candidates.entry(id.clone()).or_insert((0.0, 0.0));
+        }
+        // Fingerprint KNN hits also enter the candidate pool.
+        for id in &fp_knn_ids {
             candidates.entry(id.clone()).or_insert((0.0, 0.0));
         }
 
@@ -150,12 +196,14 @@ impl<'a, E: Embedder, C: Clock> Retriever<'a, E, C> {
                     (Some(a), Some(b)) => a == b,
                     _ => false,
                 };
+                let struct_sim = struct_sim_map.get(id).copied().unwrap_or(0.0);
                 Some(RerankInput {
                     chunk_id: id.clone(),
                     bm25_raw,
                     vec_raw,
                     id_exact_match,
                     language_match,
+                    struct_sim,
                     indexed_at: chunk.metadata.indexed_at,
                 })
             })
@@ -217,6 +265,11 @@ pub struct RetrievalQuery {
     /// rerank path — a chunk whose qname matches gets the `id_exact_match`
     /// boost already encoded in `rerank.rs`.
     pub structural_names: Vec<String>,
+    /// Structural fingerprint vectors from the reviewed file's functions,
+    /// used for KNN similarity search against indexed chunks. Each entry
+    /// is `(function_name, 64-dim fingerprint vector)`. Capped at
+    /// MAX_QUERY_SYMBOLS by the caller (largest bodies first).
+    pub structural_fingerprints: Vec<(String, [f32; FINGERPRINT_DIMS])>,
     pub filters: Filters,
     /// Top-K to return after rerank.
     pub k: usize,
@@ -309,6 +362,87 @@ fn fetch_chunks_batch(
         out.insert(chunk.id.clone(), chunk);
     }
     Ok(())
+}
+
+/// Returns `true` when at least one filter dimension is non-empty.
+fn has_active_filters(f: &Filters) -> bool {
+    !f.sources.is_empty() || !f.kinds.is_empty() || !f.exclude_source_paths.is_empty()
+}
+
+/// Given a set of candidate chunk IDs, return the subset that passes the
+/// retrieval filters (source allowlist, kind allowlist, source-path
+/// excludelist). This mirrors the filter clauses applied in the BM25 and
+/// vector SQL queries, applied post-hoc for the KNN leg whose virtual
+/// table doesn't support JOINs with filter predicates.
+fn filter_chunk_ids(
+    conn: &Connection,
+    ids: &[String],
+    filters: &Filters,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let mut result = std::collections::HashSet::new();
+    for batch in ids.chunks(ID_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut sql = format!("SELECT id FROM chunks WHERE id IN ({placeholders})");
+
+        if !filters.sources.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.sources.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND source IN ({ph})"));
+        }
+        if !filters.kinds.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.kinds.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND kind IN ({ph})"));
+        }
+        if !filters.exclude_source_paths.is_empty() {
+            let ph = std::iter::repeat_n("?", filters.exclude_source_paths.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND source_path NOT IN ({ph})"));
+        }
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(
+            batch.len()
+                + filters.sources.len()
+                + filters.kinds.len()
+                + filters.exclude_source_paths.len(),
+        );
+        for id in batch {
+            params.push(Box::new(id.clone()));
+        }
+        for s in &filters.sources {
+            params.push(Box::new(s.clone()));
+        }
+        for k in &filters.kinds {
+            let kind_str = serde_json::to_value(k)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            params.push(Box::new(kind_str));
+        }
+        for p in &filters.exclude_source_paths {
+            params.push(Box::new(p.clone()));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            |r| r.get::<_, String>(0),
+        )?;
+        for row in rows {
+            result.insert(row?);
+        }
+    }
+    Ok(result)
 }
 
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {

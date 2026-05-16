@@ -1,8 +1,9 @@
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use super::builder::{IndexBuilder, SCHEMA_VERSION};
+use super::builder::{IndexBuilder, SCHEMA_VERSION, ensure_vec_loaded};
 use super::traits::{Embedder, FixedClock, HashEmbedder};
+use crate::context::extract::fingerprint::{FINGERPRINT_DIMS, FINGERPRINT_VERSION};
 use crate::context::store::ChunkStore;
 use crate::context::types::{Chunk, ChunkKind, ChunkMeta, LineRange, Provenance};
 
@@ -28,7 +29,13 @@ fn new_creates_db_with_expected_tables() {
     drop(builder);
 
     let tables = table_names(&db);
-    for required in ["chunks", "chunks_fts", "chunks_vec", "state"] {
+    for required in [
+        "chunks",
+        "chunks_fts",
+        "chunks_vec",
+        "chunks_struct_vec",
+        "state",
+    ] {
         assert!(
             tables.iter().any(|t| t == required),
             "missing table {required}: have {tables:?}"
@@ -557,4 +564,200 @@ fn rebuild_is_atomic_on_error() {
     assert_eq!(count(conn, "SELECT count(*) FROM chunks"), 0);
     assert_eq!(count(conn, "SELECT count(*) FROM chunks_fts"), 0);
     assert_eq!(count(conn, "SELECT count(*) FROM chunks_vec"), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Schema v2: structural fingerprint tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_v2_creates_chunks_struct_vec_table() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+    let _b = IndexBuilder::new(&db, &clock, &emb).unwrap();
+
+    ensure_vec_loaded();
+    let conn = Connection::open(&db).unwrap();
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'chunks_struct_vec'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let expected = format!("FLOAT[{FINGERPRINT_DIMS}]");
+    assert!(
+        sql.contains(&expected),
+        "expected {expected} in chunks_struct_vec schema, got: {sql}"
+    );
+}
+
+#[test]
+fn fingerprint_version_stored_in_state() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let emb = HashEmbedder::new(384);
+    let clock = FixedClock::epoch();
+    let builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+
+    let version: String = builder
+        .conn()
+        .query_row(
+            "SELECT value FROM state WHERE key = 'fingerprint_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, FINGERPRINT_VERSION);
+}
+
+#[test]
+fn schema_version_is_v2() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+    let builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+    assert_eq!(builder.schema_version(), 2);
+}
+
+#[test]
+fn insert_and_query_structural_fingerprint_roundtrip() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+    let builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+
+    // Create a fingerprint vector with a recognizable pattern.
+    let mut vec_a = [0.0f32; FINGERPRINT_DIMS];
+    vec_a[0] = 1.0;
+    vec_a[1] = 0.5;
+    vec_a[2] = 0.25;
+
+    builder
+        .insert_structural_fingerprint(builder.conn(), "chunk-a", &vec_a)
+        .unwrap();
+
+    let results = super::builder::query_structural_knn(builder.conn(), &vec_a, 1).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "chunk-a");
+    // Distance to self should be zero (or very near zero).
+    assert!(
+        results[0].1 < 0.01,
+        "expected near-zero distance for self-query, got {}",
+        results[0].1
+    );
+}
+
+#[test]
+fn structural_knn_returns_sorted_by_distance() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+    let builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+
+    // Insert three vectors at varying distances from the query vector.
+    let mut query = [0.0f32; FINGERPRINT_DIMS];
+    query[0] = 1.0;
+
+    // "close" is identical to query.
+    let close = query;
+
+    // "mid" shares some signal.
+    let mut mid = [0.0f32; FINGERPRINT_DIMS];
+    mid[0] = 0.7;
+    mid[1] = 0.7;
+
+    // "far" is orthogonal.
+    let mut far = [0.0f32; FINGERPRINT_DIMS];
+    far[10] = 1.0;
+
+    builder
+        .insert_structural_fingerprint(builder.conn(), "close", &close)
+        .unwrap();
+    builder
+        .insert_structural_fingerprint(builder.conn(), "mid", &mid)
+        .unwrap();
+    builder
+        .insert_structural_fingerprint(builder.conn(), "far", &far)
+        .unwrap();
+
+    let results = super::builder::query_structural_knn(builder.conn(), &query, 3).unwrap();
+    assert_eq!(results.len(), 3);
+
+    // Verify ascending distance order.
+    for window in results.windows(2) {
+        assert!(
+            window[0].1 <= window[1].1,
+            "expected ascending distance: {:?} <= {:?}",
+            window[0],
+            window[1]
+        );
+    }
+
+    // "close" should be first (distance ~0), "far" should be last.
+    assert_eq!(results[0].0, "close");
+    assert_eq!(results[2].0, "far");
+}
+
+#[test]
+fn structural_knn_with_k_zero_returns_empty() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+    let builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+
+    let vec_a = [0.1f32; FINGERPRINT_DIMS];
+    builder
+        .insert_structural_fingerprint(builder.conn(), "a", &vec_a)
+        .unwrap();
+
+    let results = super::builder::query_structural_knn(builder.conn(), &vec_a, 0).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn rebuild_clears_struct_vec_for_source() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("index.db");
+    let jsonl = dir.path().join("chunks.jsonl");
+    let clock = FixedClock::epoch();
+    let emb = HashEmbedder::new(384);
+
+    let chunks = vec![
+        sample_chunk("mini-rust", "a", "fn a() {}"),
+        sample_chunk("mini-rust", "b", "fn b() {}"),
+    ];
+    write_jsonl(&jsonl, &chunks);
+
+    let mut builder = IndexBuilder::new(&db, &clock, &emb).unwrap();
+    builder.rebuild_from_jsonl("mini-rust", &jsonl).unwrap();
+
+    // Manually insert structural fingerprints for those chunks.
+    let v = [0.5f32; FINGERPRINT_DIMS];
+    builder
+        .insert_structural_fingerprint(builder.conn(), "a", &v)
+        .unwrap();
+    builder
+        .insert_structural_fingerprint(builder.conn(), "b", &v)
+        .unwrap();
+    assert_eq!(
+        count(builder.conn(), "SELECT count(*) FROM chunks_struct_vec"),
+        2
+    );
+
+    // Rebuild should clear struct_vec rows for that source.
+    let jsonl2 = dir.path().join("v2.jsonl");
+    write_jsonl(&jsonl2, &[sample_chunk("mini-rust", "x", "fn x() {}")]);
+    builder.rebuild_from_jsonl("mini-rust", &jsonl2).unwrap();
+
+    assert_eq!(
+        count(builder.conn(), "SELECT count(*) FROM chunks_struct_vec"),
+        0
+    );
 }

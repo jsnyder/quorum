@@ -37,6 +37,7 @@ fn scored(id: &str, source: &str, score: f32) -> ScoredChunk {
             vec_norm: score * 0.4,
             id_boost: 0.0,
             path_boost: 0.0,
+            struct_sim: 0.0,
             recency_mul: 1.0,
             score,
         },

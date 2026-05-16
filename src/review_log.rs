@@ -180,6 +180,20 @@ pub struct ContextTelemetry {
     /// Reserved slots actually filled by current-repo chunks.
     #[serde(default)]
     pub current_repo_reserved_filled: u32,
+
+    // --- Structural fingerprint telemetry ---
+    /// How many chunks received structural fingerprints at index time.
+    #[serde(default)]
+    pub structural_fingerprints_computed: u32,
+    /// Number of structural KNN queries performed during retrieval.
+    #[serde(default)]
+    pub structural_knn_queries: u32,
+    /// Total results returned from structural KNN queries.
+    #[serde(default)]
+    pub structural_knn_hits: u32,
+    /// How many reranked results received a nonzero structural boost.
+    #[serde(default)]
+    pub structural_boost_applied: u32,
 }
 
 /// Count of chunks attributed to each retrieval leg, plus a
@@ -1323,6 +1337,10 @@ mod tests {
             dep_boost_applied: 0,
             current_repo_reserved_available: 0,
             current_repo_reserved_filled: 0,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
         }
     }
 
@@ -1384,6 +1402,51 @@ mod tests {
         let back = log.load_all().unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].context, ContextTelemetry::default());
+    }
+
+    #[test]
+    fn structural_fingerprint_telemetry_defaults_and_round_trip() {
+        // 1. Default construction: all new fields are 0.
+        let default_ctx = ContextTelemetry::default();
+        assert_eq!(default_ctx.structural_fingerprints_computed, 0);
+        assert_eq!(default_ctx.structural_knn_queries, 0);
+        assert_eq!(default_ctx.structural_knn_hits, 0);
+        assert_eq!(default_ctx.structural_boost_applied, 0);
+
+        // 2. Populated round-trip: set nonzero values, serialize, deserialize.
+        let ctx = ContextTelemetry {
+            structural_fingerprints_computed: 42,
+            structural_knn_queries: 3,
+            structural_knn_hits: 17,
+            structural_boost_applied: 5,
+            ..ContextTelemetry::default()
+        };
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("\"structural_fingerprints_computed\":42"));
+        assert!(json.contains("\"structural_knn_queries\":3"));
+        assert!(json.contains("\"structural_knn_hits\":17"));
+        assert!(json.contains("\"structural_boost_applied\":5"));
+
+        let back: ContextTelemetry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ctx);
+
+        // 3. Backward compat: old JSON without the new fields -> 0.
+        let old_json = r#"{
+            "auto_inject_enabled": true,
+            "injector_available": true,
+            "retrieved_chunk_count": 10
+        }"#;
+        let old: ContextTelemetry = serde_json::from_str(old_json)
+            .expect("old JSON without structural fields must deserialize");
+        assert_eq!(old.structural_fingerprints_computed, 0);
+        assert_eq!(old.structural_knn_queries, 0);
+        assert_eq!(old.structural_knn_hits, 0);
+        assert_eq!(old.structural_boost_applied, 0);
+        // Existing fields still parse correctly.
+        assert!(old.auto_inject_enabled);
+        assert!(old.injector_available);
+        assert_eq!(old.retrieved_chunk_count, 10);
     }
 
     #[test]
@@ -1742,6 +1805,10 @@ mod tests {
             dep_boost_applied: 0,
             current_repo_reserved_available: 3,
             current_repo_reserved_filled: 2,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
         };
 
         let mut rec = test_review_record("01TEST_CTX_TELEMETRY0001");

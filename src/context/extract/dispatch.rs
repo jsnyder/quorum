@@ -15,9 +15,13 @@ use super::astgrep_hcl::extract_hcl;
 use super::astgrep_py::extract_python;
 use super::astgrep_rust::extract_rust;
 use super::astgrep_ts::extract_typescript;
+use super::fingerprint::FINGERPRINT_DIMS;
+use super::fingerprint_python::PythonFingerprinter;
+use super::fingerprint_rust::RustFingerprinter;
+use super::fingerprint_typescript::TypeScriptFingerprinter;
 use super::markdown::{DocSubtype, split_markdown};
 use crate::context::config::{SourceEntry, SourceLocation};
-use crate::context::types::Chunk;
+use crate::context::types::{Chunk, ChunkKind};
 
 /// Placeholder commit SHA for `SourceLocation::Path` sources. Phase 3 will
 /// wire a GitOps trait to resolve an actual SHA at extract time.
@@ -86,6 +90,9 @@ pub use crate::context::index::traits::{Clock, FixedClock};
 pub struct ExtractResult {
     pub chunks: Vec<Chunk>,
     pub diagnostics: Diagnostics,
+    /// Structural fingerprint vectors keyed by chunk id. Only populated for
+    /// Symbol chunks whose function body exceeds the trivial-size threshold.
+    pub structural_fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]>,
 }
 
 /// Walk a source's filesystem tree, apply ignore tiers, dispatch per-extension,
@@ -117,6 +124,7 @@ pub fn extract_source(
     let indexed_at = clock.now();
     let mut diagnostics = Diagnostics::default();
     let mut chunks: Vec<Chunk> = Vec::new();
+    let mut structural_fingerprints: HashMap<String, [f32; FINGERPRINT_DIMS]> = HashMap::new();
     let mut per_source_hit_counts: HashMap<String, usize> = HashMap::new();
 
     // Canonicalize the source root so we can enforce that every requested
@@ -284,6 +292,12 @@ pub fn extract_source(
             match result {
                 Ok(mut produced) => {
                     diagnostics.extracted_files += 1;
+                    compute_fingerprints_for_file(
+                        dispatched,
+                        &src_text,
+                        &produced,
+                        &mut structural_fingerprints,
+                    );
                     chunks.append(&mut produced);
                 }
                 Err(e) => {
@@ -305,7 +319,60 @@ pub fn extract_source(
     Ok(ExtractResult {
         chunks,
         diagnostics,
+        structural_fingerprints,
     })
+}
+
+/// Compute structural fingerprints for a single source file by language.
+/// Returns `(qualified_name, fingerprint_vector)` pairs for all non-trivial
+/// functions found in the file. Intended for query-side use (fingerprinting
+/// the file being reviewed so its function shapes can drive KNN queries).
+pub fn compute_source_fingerprints(
+    src: &str,
+    language: &str,
+) -> Vec<(String, [f32; FINGERPRINT_DIMS])> {
+    let fps = match language {
+        "rust" => RustFingerprinter.fingerprint_all_functions(src),
+        "python" => PythonFingerprinter.fingerprint_all_functions(src),
+        "typescript" | "javascript" => TypeScriptFingerprinter.fingerprint_all_functions(src),
+        _ => return Vec::new(),
+    };
+    fps.into_iter().map(|(n, fp)| (n, fp.to_vector())).collect()
+}
+
+/// Compute and collect structural fingerprints for Symbol chunks extracted
+/// from a single file. Matches fingerprints to chunks by qualified_name.
+fn compute_fingerprints_for_file(
+    kind: FileKind,
+    src: &str,
+    chunks: &[Chunk],
+    out: &mut HashMap<String, [f32; FINGERPRINT_DIMS]>,
+) {
+    let lang = match kind {
+        FileKind::Rust => "rust",
+        FileKind::Python => "python",
+        FileKind::Typescript => "typescript",
+        _ => return,
+    };
+
+    let fps = compute_source_fingerprints(src, lang);
+    if fps.is_empty() {
+        return;
+    }
+
+    let fp_by_name: HashMap<&str, &[f32; FINGERPRINT_DIMS]> =
+        fps.iter().map(|(n, v)| (n.as_str(), v)).collect();
+
+    for chunk in chunks {
+        if chunk.kind != ChunkKind::Symbol {
+            continue;
+        }
+        if let Some(qname) = &chunk.qualified_name
+            && let Some(vec) = fp_by_name.get(qname.as_str())
+        {
+            out.insert(chunk.id.clone(), **vec);
+        }
+    }
 }
 
 // --- internals --------------------------------------------------------------
