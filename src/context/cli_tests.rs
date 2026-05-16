@@ -978,6 +978,59 @@ fn index_force_rebuilds_even_when_unchanged() {
 }
 
 #[test]
+fn index_incremental_skips_reembed_when_no_files_changed() {
+    let mut deps = TestDeps::new();
+    seed_single_source(&deps, "mini", "mini-rust");
+
+    // Full index first.
+    run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+            force: true,
+        }),
+        &deps,
+    )
+    .expect("first index");
+
+    let db_path = deps.home_dir().join("sources/mini/index.db");
+    let count_before: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap()
+    };
+
+    // Advance HEAD but set empty diff (merge commit / metadata-only).
+    let fixture_root = fixture_path("mini-rust");
+    deps.git_mut()
+        .set_head(&fixture_root, Some("newhead123".to_string()));
+    deps.git_mut().set_diff_files(&fixture_root, vec![]);
+
+    let out = run_context_cmd(
+        &ContextCmd::Index(IndexArgs {
+            selector: SourceSelector::Single("mini".to_string()),
+            force: false,
+        }),
+        &deps,
+    )
+    .expect("incremental");
+
+    let count_after: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        count_before, count_after,
+        "no files changed -> chunks unchanged"
+    );
+    assert!(
+        out.stdout.contains("indexed 'mini'"),
+        "should report indexed: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
 fn query_returns_ranked_hits_for_indexed_source() {
     let deps = TestDeps::new();
     seed_single_source(&deps, "mini", "mini-rust");

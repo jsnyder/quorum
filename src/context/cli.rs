@@ -20,8 +20,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use rusqlite::Connection;
 
+use std::collections::HashSet;
+
 use crate::context::config::{SourceEntry, SourceKind, SourceLocation, SourcesConfig};
-use crate::context::extract::dispatch::{ExtractConfig, extract_source};
+use crate::context::extract::dispatch::{ExtractConfig, extract_source, extract_source_filtered};
 use crate::context::index::builder::{IndexBuilder, ensure_vec_loaded};
 use crate::context::index::state::IndexState;
 #[cfg(feature = "embeddings")]
@@ -1041,6 +1043,89 @@ fn index_one_source<D: ContextDeps>(
     let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
     ensure_dir(&layout.dir)?;
 
+    // Check if we can do an incremental update.
+    let prior_head = layout
+        .state
+        .exists()
+        .then(|| IndexState::load(&layout.state).ok().flatten())
+        .flatten()
+        .and_then(|s| s.head_sha);
+
+    let current_head = match source_repo_root(entry) {
+        Some(root) => deps
+            .git()
+            .head_sha(root)
+            .map_err(|e| anyhow!("git head_sha({}): {e}", root.display()))?,
+        None => None,
+    };
+
+    // Try incremental: need prior HEAD, current HEAD, git diff, and existing DB.
+    let incremental_files = if let (Some(prev), Some(_curr)) = (&prior_head, &current_head) {
+        if let Some(root) = source_repo_root(entry) {
+            deps.git()
+                .diff_files(root, prev)
+                .ok()
+                .flatten()
+                .filter(|_| layout.db.exists())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(changed_files) = incremental_files {
+        if changed_files.is_empty() {
+            // HEAD moved but no files changed (merge commit, metadata-only).
+            let state = IndexState::new(deps.embedder().model_hash())
+                .with_head_sha(current_head.clone())
+                .with_indexed_at(deps.clock().now());
+            state
+                .save(&layout.state)
+                .map_err(|e| anyhow!("save state.json: {e}"))?;
+            return Ok(IndexSuccess {
+                chunks_inserted: 0,
+                head_sha: current_head,
+                skipped: None,
+            });
+        }
+
+        let file_filter: HashSet<String> = changed_files.into_iter().collect();
+        let extracted = extract_source_filtered(
+            entry,
+            &ExtractConfig::default(),
+            deps.clock(),
+            Some(&file_filter),
+        )
+        .map_err(|e| anyhow!("extract failed for '{}': {e}", entry.name))?;
+
+        let mut builder = IndexBuilder::new(&layout.db, deps.clock(), deps.embedder())
+            .map_err(|e| anyhow!("open index db: {e}"))?;
+        let report = builder
+            .update_files(
+                &entry.name,
+                &extracted.chunks,
+                &file_filter,
+                &extracted.structural_fingerprints,
+            )
+            .map_err(|e| anyhow!("incremental update failed for '{}': {e}", entry.name))?;
+
+        let state = IndexState::new(deps.embedder().model_hash())
+            .with_head_sha(current_head.clone())
+            .with_indexed_at(deps.clock().now());
+        state
+            .save(&layout.state)
+            .map_err(|e| anyhow!("save state.json: {e}"))?;
+
+        return Ok(IndexSuccess {
+            chunks_inserted: report.chunks_inserted,
+            head_sha: current_head,
+            skipped: None,
+        });
+    }
+
+    // --- Full rebuild path (existing logic) ---
+
     // Extract chunks. This is where nonexistent Path roots error out, and
     // the error propagates up as a single-source failure (caught by
     // run_index so --all can continue).
@@ -1081,7 +1166,7 @@ fn index_one_source<D: ContextDeps>(
 
     created.push(layout.db.clone());
 
-    // Record state so refresh knows whether to re-run.
+    // Record state so staleness checks know whether to re-run.
     let head_sha = match source_repo_root(entry) {
         Some(root) => deps
             .git()
