@@ -71,6 +71,7 @@ impl Embedder for ProdEmbedder {
     }
 }
 use crate::context::inject::stale::{GitOps, SystemGit};
+use crate::context::retrieve::multi_source::{BoostContext, SourceBatch, merge_and_rerank};
 use crate::context::retrieve::{Filters, RetrievalQuery, Retriever};
 use crate::context::store::ChunkStore;
 
@@ -1229,51 +1230,60 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
         return Err(anyhow!("query text must not be empty"));
     }
     let cfg = load_sources_or_err(deps)?;
+    let targets = resolve_query_targets(deps, &cfg, args.source.as_deref())?;
 
-    // If --source is given, verify it's registered and that its index db
-    // exists. Otherwise we query across any source that has an index db on
-    // disk (sources that were never indexed are silently skipped; warning
-    // surfaced so the user isn't confused by empty results).
-    let (source_name, db_path) = resolve_query_target(deps, &cfg, args.source.as_deref())?;
-    if !db_path.exists() {
-        return Err(anyhow!(
-            "source '{source_name}' has no index at {}; run `quorum context index --source {source_name}` first",
-            db_path.display()
-        ));
-    }
-
-    // The index schema uses the `vec0` virtual table; without the sqlite-vec
-    // auto-extension registered, opening the db succeeds but any query that
-    // touches `chunks_vec` fails with `no such module: vec0`. IndexBuilder
-    // registers the hook during `index`, but a fresh process that jumps
-    // straight to `query` has never run it.
     ensure_vec_loaded();
 
-    let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
+    let k = args.k.unwrap_or(5).max(1) as u32;
+    let per_source_k = (k * 2) as usize;
+    let mut batches: Vec<SourceBatch> = Vec::new();
 
-    let k = args.k.unwrap_or(5).max(1);
-    let filters = if args.source.is_some() {
-        Filters {
-            sources: vec![source_name.clone()],
-            kinds: Vec::new(),
-            exclude_source_paths: vec![],
+    for (name, db_path, weight) in &targets {
+        let conn =
+            Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
+        let q = RetrievalQuery {
+            text: args.text.clone(),
+            identifiers: Vec::new(),
+            structural_names: Vec::new(),
+            structural_fingerprints: vec![],
+            filters: Filters {
+                sources: vec![name.clone()],
+                kinds: Vec::new(),
+                exclude_source_paths: vec![],
+            },
+            k: per_source_k,
+            min_score: 0.0,
+            reviewed_file_language: None,
+        };
+        let retriever = Retriever::new(&conn, deps.embedder(), deps.clock());
+        match retriever.query(q) {
+            Ok(chunks) if !chunks.is_empty() => {
+                batches.push(SourceBatch {
+                    source_name: name.clone(),
+                    chunks,
+                    weight: *weight,
+                });
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(source = %name, error = %e, "query failed; skipping"),
         }
+    }
+
+    let hits = if batches.len() == 1 && args.source.is_some() {
+        let mut chunks = batches.into_iter().next().unwrap().chunks;
+        chunks.truncate(k as usize);
+        chunks
+    } else if batches.is_empty() {
+        Vec::new()
     } else {
-        Filters::default()
+        let ctx = BoostContext {
+            current_repo_source: None,
+            dep_manifest_sources: HashSet::new(),
+            reviewed_language: None,
+        };
+        merge_and_rerank(&batches, &cfg.context.multi_source, &ctx, k)
     };
-    let q = RetrievalQuery {
-        text: args.text.clone(),
-        identifiers: Vec::new(),
-        structural_names: Vec::new(),
-        structural_fingerprints: vec![],
-        filters,
-        k,
-        min_score: 0.0,
-        reviewed_file_language: None,
-    };
-    let retriever = Retriever::new(&conn, deps.embedder(), deps.clock());
-    let hits = retriever.query(q).map_err(|e| anyhow!("query: {e}"))?;
 
     let stdout = match args.format {
         QueryFormat::Json => render_query_json(&hits, args.explain)?,
@@ -1289,29 +1299,51 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
     })
 }
 
-fn resolve_query_target<D: ContextDeps>(
+fn resolve_query_targets<D: ContextDeps>(
     deps: &D,
     cfg: &SourcesConfig,
     explicit: Option<&str>,
-) -> Result<(String, PathBuf)> {
+) -> Result<Vec<(String, PathBuf, f32)>> {
     if let Some(name) = explicit {
         let _entry = find_source(cfg, name)?;
         let layout = SourceLayout::for_source(deps.home_dir(), name);
-        return Ok((name.to_string(), layout.db));
+        if !layout.db.exists() {
+            return Err(anyhow!(
+                "source '{name}' has no index; run `quorum context index --source {name}` first"
+            ));
+        }
+        let weight = cfg
+            .sources
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.weight)
+            .unwrap_or(1);
+        if weight == 0 {
+            return Err(anyhow!("source '{name}' is disabled (weight=0)"));
+        }
+        return Ok(vec![(name.to_string(), layout.db, weight as f32)]);
     }
-    // No --source given: pick the first source that has an index db on disk.
-    // This is deliberately simple for MVP — the retriever already filters
-    // across sources inside a single db, but each source currently has its
-    // own db. A cross-source query surface is a later task.
+    let max = cfg.context.multi_source.max_sources_queried as usize;
+    let mut targets = Vec::new();
     for entry in &cfg.sources {
+        if targets.len() >= max {
+            break;
+        }
+        let weight = entry.weight.unwrap_or(1);
+        if weight == 0 {
+            continue;
+        }
         let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
         if layout.db.exists() {
-            return Ok((entry.name.clone(), layout.db));
+            targets.push((entry.name.clone(), layout.db, weight as f32));
         }
     }
-    Err(anyhow!(
-        "no indexed sources found; run `quorum context index --all` first"
-    ))
+    if targets.is_empty() {
+        return Err(anyhow!(
+            "no indexed sources found; run `quorum context index --all` first"
+        ));
+    }
+    Ok(targets)
 }
 
 fn render_query_table(hits: &[crate::context::retrieve::ScoredChunk], explain: bool) -> String {
