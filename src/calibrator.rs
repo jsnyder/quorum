@@ -245,10 +245,25 @@ impl ReviewFeatures {
 /// Compute P(FP) using the stored logistic model.
 ///
 /// Standardizes features using stored means/stddevs, computes logit, applies sigmoid.
+/// Returns 0.5 (neutral) if the model has inconsistent vector lengths.
 pub fn logistic_score(
     model: &crate::calibrator_model::LogisticModel,
     features: &ReviewFeatures,
 ) -> f64 {
+    let n = model.selected_features.len();
+    if n != model.coefficients.len()
+        || n != model.feature_means.len()
+        || n != model.feature_stddevs.len()
+    {
+        tracing::warn!(
+            selected_features = n,
+            coefficients = model.coefficients.len(),
+            feature_means = model.feature_means.len(),
+            feature_stddevs = model.feature_stddevs.len(),
+            "logistic model has inconsistent vector lengths, falling back to 0.5"
+        );
+        return 0.5;
+    }
     let mut logit = model.intercept;
     for (i, feat_name) in model.selected_features.iter().enumerate() {
         let raw = features.get_by_name(feat_name);
@@ -349,8 +364,18 @@ fn calibrate_core_decision(
 
         let p_fp = logistic_score(logistic, &review_features);
 
+        // force_threshold overrides the logistic model's thresholds (same
+        // semantics as the composite path: single value replaces both).
+        let has_composite = config.model.is_some();
+        let effective_suppress =
+            sanitize_threshold(config.force_threshold, has_composite)
+                .unwrap_or(logistic.suppress_threshold);
+        let effective_boost =
+            sanitize_threshold(config.force_threshold, has_composite)
+                .unwrap_or(logistic.boost_threshold);
+
         // Suppress: P(FP) > suppress_threshold AND some FP evidence exists
-        if p_fp > logistic.suppress_threshold && fp_weight > 0.0 {
+        if p_fp > effective_suppress && fp_weight > 0.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
             let mut trace = make_trace_entry(
@@ -375,7 +400,7 @@ fn calibrate_core_decision(
         }
 
         // Boost: P(FP) < boost_threshold AND some TP evidence exists
-        if p_fp < logistic.boost_threshold && tp_weight > 0.0 && config.boost_tp {
+        if p_fp < effective_boost && tp_weight > 0.0 && config.boost_tp {
             let proposed = boost_severity(&finding.severity);
             let gate_on = std::env::var("QUORUM_RUBRIC_GATE")
                 .map(|v| v != "off" && v != "0")

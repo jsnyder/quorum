@@ -2604,7 +2604,7 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
 
     let has_logistic = composite_model
         .as_ref()
-        .map_or(false, |m| m.logistic_model.is_some());
+        .is_some_and(|m| m.logistic_model.is_some());
 
     if opts.dry_run {
         eprintln!("\n(dry run -- no file written)");

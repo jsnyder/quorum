@@ -130,12 +130,17 @@ pub fn univariate_screen(
 ) -> Vec<usize> {
     let threshold = baseline_ap + 0.02;
     let n_features = ExpandedFeatures::feature_names().len(); // 15
+
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*15 -> N).
+    let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
+    let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
     let mut selected = Vec::new();
 
     for feat_idx in 0..n_features {
-        let univariate: Vec<(f64, bool)> = samples
+        let univariate: Vec<(f64, bool)> = matrix
             .iter()
-            .map(|(f, label)| (f.to_vec()[feat_idx], *label))
+            .zip(labels.iter())
+            .map(|(row, &label)| (row[feat_idx], label))
             .collect();
         let ap = crate::metrics::average_precision_stepwise(&univariate);
         if ap >= threshold {
@@ -152,11 +157,17 @@ pub fn feature_importance_scores(
     samples: &[(ExpandedFeatures, bool)],
 ) -> Vec<(usize, f64)> {
     let n_features = ExpandedFeatures::feature_names().len();
+
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations.
+    let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
+    let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
+
     let mut scores: Vec<(usize, f64)> = (0..n_features)
         .map(|feat_idx| {
-            let univariate: Vec<(f64, bool)> = samples
+            let univariate: Vec<(f64, bool)> = matrix
                 .iter()
-                .map(|(f, label)| (f.to_vec()[feat_idx], *label))
+                .zip(labels.iter())
+                .map(|(row, &label)| (row[feat_idx], label))
                 .collect();
             (feat_idx, crate::metrics::average_precision_stepwise(&univariate))
         })

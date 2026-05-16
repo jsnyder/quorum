@@ -74,6 +74,11 @@ pub struct LogisticFit {
 impl LogisticFit {
     /// Predict P(positive) for a single raw (unstandardized) sample.
     pub fn predict_one(&self, x: &[f64]) -> f64 {
+        debug_assert_eq!(
+            x.len(),
+            self.coefficients.len(),
+            "input dimension must match model"
+        );
         let z: f64 = x
             .iter()
             .enumerate()
@@ -130,7 +135,12 @@ fn loss(
 /// is the L2 regularization strength, and `max_iter` is the iteration cap.
 pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> LogisticFit {
     assert!(!x.is_empty(), "fit requires at least one sample");
+    assert_eq!(x.len(), y.len(), "feature matrix rows must match label count");
     let p = x[0].len();
+    debug_assert!(
+        x.iter().all(|row| row.len() == p),
+        "feature matrix must be rectangular"
+    );
     let n = x.len();
 
     // Standardize features
