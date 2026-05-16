@@ -287,6 +287,10 @@ pub struct CalibrateOpts {
     /// Learn composite scoring weights from feedback corpus via grid search
     #[arg(long)]
     pub learn_weights: bool,
+
+    /// Show per-feature univariate AP diagnostics
+    #[arg(long)]
+    pub feature_importance: bool,
 }
 
 #[derive(Parser)]

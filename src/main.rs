@@ -2392,61 +2392,156 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     // Compute composite model from feedback
     let mut composite_model = quorum::calibrate::compute_calibrator_model(&feedback);
 
+    // Feature importance diagnostics (early exit when --feature-importance)
+    if opts.feature_importance {
+        if let Some(ref model) = composite_model {
+            let joined = quorum::calibrate::extract_joined_samples(
+                &feedback, &traces, model, &filter, disable_fuzzy,
+            );
+            if joined.is_empty() {
+                eprintln!("No joined samples available for feature importance.");
+                return 0;
+            }
+            let refs: Vec<&quorum::calibrate::JoinedSample> = joined.iter().collect();
+            let stats = quorum::calibrate::compute_fold_local_stats(&refs);
+            let expanded: Vec<(quorum::calibrate::ExpandedFeatures, bool)> = joined
+                .iter()
+                .map(|s| quorum::calibrate::extract_single_expanded(s, &stats))
+                .collect();
+            let n_fp = expanded.iter().filter(|(_, l)| *l).count();
+            let n_tp = expanded.len() - n_fp;
+            let baseline = n_fp as f64 / expanded.len() as f64;
+
+            eprintln!("Feature importance ({} FP, {} non-FP):", n_fp, n_tp);
+            let scores = quorum::calibrate::feature_importance_scores(&expanded);
+            let names = quorum::calibrate::ExpandedFeatures::feature_names();
+            for (idx, ap) in &scores {
+                let lift = ap - baseline;
+                let marker = if lift < 0.02 {
+                    "  [below threshold]"
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "  {:35} AP={:.4}  (lift {:+.4}){}",
+                    names[*idx], ap, lift, marker
+                );
+            }
+        } else {
+            eprintln!("No composite model available (insufficient feedback for feature importance).");
+        }
+        return 0;
+    }
+
     // Learn weights from data when requested
     if opts.learn_weights
         && let Some(ref mut model) = composite_model
     {
-        let features = quorum::calibrate::extract_join_features(
-            &feedback,
-            &traces,
-            model,
-            &filter,
-            disable_fuzzy,
+        // Try logistic calibrator first
+        let joined = quorum::calibrate::extract_joined_samples(
+            &feedback, &traces, model, &filter, disable_fuzzy,
         );
-        match quorum::calibrate::learn_weights(&features, 5) {
+
+        match quorum::calibrate::learn_logistic(&joined, 5) {
             Some(result) => {
-                let mean_cv_auc = if result.fold_aucs.is_empty() {
-                    0.0
-                } else {
-                    result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64
+                eprintln!(
+                    "\nLogistic model ({} FP, {} non-FP, 5-fold GroupKFold):",
+                    result.n_fp,
+                    result.n_samples - result.n_fp
+                );
+                eprintln!(
+                    "  Selected features ({}/15): {:?}",
+                    result.selected_feature_names.len(),
+                    result.selected_feature_names
+                );
+                eprintln!("  AP (OOF):      {:.4}", result.ap_score);
+                eprintln!("  AP (baseline): {:.4}", result.baseline_ap);
+                eprintln!(
+                    "  Lift:          {:+.4}",
+                    result.ap_score - result.baseline_ap
+                );
+                eprintln!(
+                    "  FP recall @ 99% TP recall: {:.4}",
+                    result.fp_recall_at_99_tp_recall
+                );
+                eprintln!("  Suppress threshold: {:.4}", result.suppress_threshold);
+                eprintln!("  Boost threshold:    {:.4}", result.boost_threshold);
+
+                let lm = quorum::calibrator_model::LogisticModel {
+                    computed_at: chrono::Utc::now().to_rfc3339(),
+                    n_samples: result.n_samples,
+                    n_fp: result.n_fp,
+                    selected_features: result.selected_feature_names,
+                    coefficients: result.coefficients,
+                    intercept: result.intercept,
+                    feature_means: result.feature_means,
+                    feature_stddevs: result.feature_stddevs,
+                    suppress_threshold: result.suppress_threshold,
+                    boost_threshold: result.boost_threshold,
+                    ap_score: result.ap_score,
+                    fp_recall_at_99_tp_recall: result.fp_recall_at_99_tp_recall,
+                    baseline_ap: result.baseline_ap,
                 };
-                let lift = result.pr_auc - result.baseline_auc;
-                eprintln!("\nWeight learning ({} samples):", features.len());
-                eprintln!(
-                    "  score={:.2}  word_lor={:.2}  family_fp_inv={:.2}  language_fp_inv={:.2}",
-                    result.weights.score,
-                    result.weights.word_lor,
-                    result.weights.family_fp_inv,
-                    result.weights.language_fp_inv,
-                );
-                eprintln!("  PR-AUC (full):     {:.4}", result.pr_auc);
-                eprintln!("  PR-AUC (baseline): {:.4}", result.baseline_auc);
-                eprintln!("  PR-AUC (5-fold):   {:.4}", mean_cv_auc);
-                eprintln!("  Lift over baseline: {:.4}", lift);
-                eprintln!(
-                    "  Fold stability:    {}",
-                    if result.stable {
-                        "stable (all folds within 20%)"
-                    } else {
-                        "UNSTABLE (fold weights diverge >20%)"
-                    }
-                );
-                let min_lift = 0.005;
-                if lift < min_lift {
-                    eprintln!("  -> No improvement over baseline (lift < {min_lift})");
-                } else if result.stable {
-                    model.weights = result.weights;
-                    model.meta.learned_weights = Some(true);
-                    eprintln!("  -> Weights applied to model");
-                } else {
-                    eprintln!("  -> Using hardcoded weights (unstable folds)");
-                }
+                model.logistic_model = Some(lm);
+                eprintln!("  -> Logistic model applied");
             }
             None => {
-                eprintln!(
-                    "\nWeight learning: skipped (need >=50 samples, have {})",
-                    features.len()
+                eprintln!("\n  Logistic model: insufficient data or no improvement over baseline.");
+                eprintln!("  Falling back to grid search...");
+
+                // Fallback: existing grid search
+                let features = quorum::calibrate::extract_join_features(
+                    &feedback, &traces, model, &filter, disable_fuzzy,
                 );
+                match quorum::calibrate::learn_weights(&features, 5) {
+                    Some(result) => {
+                        let mean_cv_auc = if result.fold_aucs.is_empty() {
+                            0.0
+                        } else {
+                            result.fold_aucs.iter().sum::<f64>()
+                                / result.fold_aucs.len() as f64
+                        };
+                        let lift = result.pr_auc - result.baseline_auc;
+                        eprintln!("\nWeight learning ({} samples):", features.len());
+                        eprintln!(
+                            "  score={:.2}  word_lor={:.2}  family_fp_inv={:.2}  language_fp_inv={:.2}",
+                            result.weights.score,
+                            result.weights.word_lor,
+                            result.weights.family_fp_inv,
+                            result.weights.language_fp_inv,
+                        );
+                        eprintln!("  PR-AUC (full):     {:.4}", result.pr_auc);
+                        eprintln!("  PR-AUC (baseline): {:.4}", result.baseline_auc);
+                        eprintln!("  PR-AUC (5-fold):   {:.4}", mean_cv_auc);
+                        eprintln!("  Lift over baseline: {:.4}", lift);
+                        eprintln!(
+                            "  Fold stability:    {}",
+                            if result.stable {
+                                "stable (all folds within 20%)"
+                            } else {
+                                "UNSTABLE (fold weights diverge >20%)"
+                            }
+                        );
+                        let min_lift = 0.005;
+                        if lift < min_lift {
+                            eprintln!(
+                                "  -> No improvement over baseline (lift < {min_lift})"
+                            );
+                        } else if result.stable {
+                            model.weights = result.weights;
+                            model.meta.learned_weights = Some(true);
+                            eprintln!("  -> Weights applied to model");
+                        } else {
+                            eprintln!("  -> Using hardcoded weights (unstable folds)");
+                        }
+                    }
+                    None => {
+                        eprintln!(
+                            "\nWeight learning: skipped (need >=50 samples, have {})",
+                            features.len()
+                        );
+                    }
+                }
             }
         }
     }
