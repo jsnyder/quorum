@@ -1434,7 +1434,219 @@ fn tokenize_title(title: &str) -> Vec<String> {
     crate::calibrator_model::WORD_RE
         .find_iter(&lower)
         .map(|m| m.as_str().to_string())
+        .filter(|w| w.len() >= 2)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Fold-local feature extraction (logistic calibrator infrastructure)
+// ---------------------------------------------------------------------------
+
+/// Intermediate representation of a joined sample before feature extraction.
+/// Contains all metadata needed to compute expanded features.
+#[derive(Debug, Clone)]
+pub struct JoinedSample {
+    pub title: String,
+    pub category: String,
+    pub severity: String,
+    pub model: String,
+    pub tp_weight: f64,
+    pub fp_weight: f64,
+    pub soft_fp_weight: f64,
+    pub full_suppress_weight: f64,
+    pub wontfix_weight: f64,
+    pub precedent_count: usize,
+    pub max_similarity: f64,
+    pub mean_similarity: f64,
+    pub is_fp: bool,
+    pub family: String,
+}
+
+/// Per-fold computed statistics for target-encoded features.
+/// Prevents leakage by computing rates only from the training partition.
+#[derive(Debug, Clone)]
+pub struct FoldLocalStats {
+    pub category_fp_rates: HashMap<String, f64>,
+    pub severity_fp_rates: HashMap<String, f64>,
+    pub model_fp_rates: HashMap<String, f64>,
+    pub word_lor: HashMap<String, f64>,
+    pub global_fp_rate: f64,
+}
+
+/// Smoothing parameter for beta-smoothed empirical rates.
+const BETA_ALPHA: f64 = 5.0;
+
+/// Beta-smoothed empirical rate: (count + alpha * prior) / (total + alpha)
+pub fn beta_smoothed_rate(fp_count: usize, total: usize, global_rate: f64) -> f64 {
+    (fp_count as f64 + BETA_ALPHA * global_rate) / (total as f64 + BETA_ALPHA)
+}
+
+/// Compute `FoldLocalStats` from a slice of `JoinedSample` references (training partition).
+///
+/// Builds per-category, per-severity, and per-model FP rates using beta smoothing,
+/// plus word log-odds ratios with Laplace smoothing and minimum support filtering.
+pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
+    let total = samples.len();
+    let fp_total = samples.iter().filter(|s| s.is_fp).count();
+    let tp_total = total.saturating_sub(fp_total);
+    let global_fp_rate = if total > 0 {
+        fp_total as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    // Per-category FP rates
+    let mut cat_fp: HashMap<String, usize> = HashMap::new();
+    let mut cat_total: HashMap<String, usize> = HashMap::new();
+    // Per-severity FP rates
+    let mut sev_fp: HashMap<String, usize> = HashMap::new();
+    let mut sev_total: HashMap<String, usize> = HashMap::new();
+    // Per-model FP rates
+    let mut model_fp: HashMap<String, usize> = HashMap::new();
+    let mut model_total: HashMap<String, usize> = HashMap::new();
+    // Word counts for LOR
+    let mut word_fp_count: HashMap<String, usize> = HashMap::new();
+    let mut word_tp_count: HashMap<String, usize> = HashMap::new();
+
+    for s in samples {
+        // Category
+        *cat_total.entry(s.category.clone()).or_default() += 1;
+        if s.is_fp {
+            *cat_fp.entry(s.category.clone()).or_default() += 1;
+        }
+        // Severity
+        *sev_total.entry(s.severity.clone()).or_default() += 1;
+        if s.is_fp {
+            *sev_fp.entry(s.severity.clone()).or_default() += 1;
+        }
+        // Model
+        *model_total.entry(s.model.clone()).or_default() += 1;
+        if s.is_fp {
+            *model_fp.entry(s.model.clone()).or_default() += 1;
+        }
+        // Words
+        let words = tokenize_title(&s.title);
+        for w in &words {
+            if s.is_fp {
+                *word_fp_count.entry(w.clone()).or_default() += 1;
+            } else {
+                *word_tp_count.entry(w.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    // Beta-smoothed category FP rates
+    let category_fp_rates: HashMap<String, f64> = cat_total
+        .iter()
+        .map(|(cat, &tot)| {
+            let fp_c = cat_fp.get(cat).copied().unwrap_or(0);
+            (cat.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Beta-smoothed severity FP rates
+    let severity_fp_rates: HashMap<String, f64> = sev_total
+        .iter()
+        .map(|(sev, &tot)| {
+            let fp_c = sev_fp.get(sev).copied().unwrap_or(0);
+            (sev.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Beta-smoothed model FP rates
+    let model_fp_rates: HashMap<String, f64> = model_total
+        .iter()
+        .map(|(m, &tot)| {
+            let fp_c = model_fp.get(m).copied().unwrap_or(0);
+            (m.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Word log-odds ratios with Laplace smoothing
+    let mut word_lor_map: HashMap<String, f64> = HashMap::new();
+    if tp_total > 0 && fp_total > 0 {
+        let all_words: HashSet<&String> = word_fp_count.keys().chain(word_tp_count.keys()).collect();
+        let eps = 0.5_f64; // Laplace smoothing
+        for w in all_words {
+            let fp_c = word_fp_count.get(w).copied().unwrap_or(0);
+            let tp_c = word_tp_count.get(w).copied().unwrap_or(0);
+            let support = fp_c + tp_c;
+            if support < WORD_MIN_SUPPORT {
+                continue;
+            }
+            let fp_rate = (fp_c as f64 + eps) / (fp_total as f64 + eps);
+            let tp_rate = (tp_c as f64 + eps) / (tp_total as f64 + eps);
+            let lor = (fp_rate / tp_rate).ln();
+            if lor.is_finite() {
+                word_lor_map.insert(w.clone(), lor);
+            }
+        }
+    }
+
+    FoldLocalStats {
+        category_fp_rates,
+        severity_fp_rates,
+        model_fp_rates,
+        word_lor: word_lor_map,
+        global_fp_rate,
+    }
+}
+
+/// Extract expanded features for a single sample using fold-local stats.
+///
+/// Returns the feature vector and the label (`true` = FP for logistic regression).
+pub fn extract_single_expanded(s: &JoinedSample, stats: &FoldLocalStats) -> (ExpandedFeatures, bool) {
+    let words = tokenize_title(&s.title);
+
+    let max_word_lor = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .copied()
+        .fold(0.0_f64, f64::max);
+
+    let min_word_lor = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .copied()
+        .fold(0.0_f64, f64::min);
+
+    let count_negative_lor_tokens = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .filter(|&&lor| lor < -0.5)
+        .count() as f64;
+
+    let features = ExpandedFeatures {
+        log1p_tp_weight: s.tp_weight.ln_1p(),
+        log1p_fp_weight: s.fp_weight.ln_1p(),
+        precedent_count: (s.precedent_count as f64).min(10.0),
+        max_similarity: s.max_similarity,
+        mean_similarity: s.mean_similarity,
+        has_no_precedents: if s.precedent_count == 0 { 1.0 } else { 0.0 },
+        log1p_soft_fp_weight: s.soft_fp_weight.ln_1p(),
+        log1p_full_suppress_weight: s.full_suppress_weight.ln_1p(),
+        log1p_wontfix_weight: s.wontfix_weight.ln_1p(),
+        category_fp_rate: stats
+            .category_fp_rates
+            .get(&s.category)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        severity_fp_rate: stats
+            .severity_fp_rates
+            .get(&s.severity)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        model_fp_rate: stats
+            .model_fp_rates
+            .get(&s.model)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        max_word_lor,
+        min_word_lor,
+        count_negative_lor_tokens,
+    };
+
+    (features, s.is_fp)
 }
 
 #[cfg(test)]
@@ -3161,5 +3373,104 @@ mod tests {
         let f = ExpandedFeatures::zeros();
         let v = f.to_vec();
         assert!(v.iter().all(|&x| x == 0.0));
+    }
+
+    // --- fold-local feature extraction ---
+
+    #[test]
+    fn beta_smoothed_rate_basic() {
+        // 3 FP out of 10 total, global_rate=0.18, alpha=5
+        let rate = beta_smoothed_rate(3, 10, 0.18);
+        // (3 + 5*0.18) / (10 + 5) = 3.9/15 = 0.26
+        assert!((rate - 0.26).abs() < 0.01);
+    }
+
+    #[test]
+    fn beta_smoothed_rate_zero_observations() {
+        // No observations -> converges to global rate
+        let rate = beta_smoothed_rate(0, 0, 0.18);
+        // (0 + 5*0.18) / (0 + 5) = 0.9/5 = 0.18
+        assert!((rate - 0.18).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_fold_local_stats_basic() {
+        let samples: Vec<JoinedSample> = (0..100)
+            .map(|i| JoinedSample {
+                title: if i < 20 {
+                    "bad unwrap pattern".to_string()
+                } else {
+                    "good error handling".to_string()
+                },
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: if i < 20 { 0.1 } else { 2.0 },
+                fp_weight: if i < 20 { 2.0 } else { 0.1 },
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.0,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 20,
+                family: format!("family_{}", i % 10),
+            })
+            .collect();
+        let refs: Vec<&JoinedSample> = samples.iter().collect();
+        let stats = compute_fold_local_stats(&refs);
+        assert!(
+            (stats.global_fp_rate - 0.20).abs() < 0.01,
+            "global FP rate should be 0.20, got {}",
+            stats.global_fp_rate
+        );
+        // "correctness" has 20/100 FP -> beta_smoothed(20, 100, 0.20) = (20+1)/(100+5) approx 0.20
+        assert!(stats.category_fp_rates.contains_key("correctness"));
+        let cat_rate = stats.category_fp_rates["correctness"];
+        assert!(
+            (cat_rate - 0.20).abs() < 0.02,
+            "category FP rate should be close to 0.20, got {cat_rate}"
+        );
+    }
+
+    #[test]
+    fn extract_single_expanded_all_finite() {
+        let s = JoinedSample {
+            title: "potential SQL injection".to_string(),
+            category: "security".to_string(),
+            severity: "high".to_string(),
+            model: "gpt-5.4".to_string(),
+            tp_weight: 1.5,
+            fp_weight: 0.5,
+            soft_fp_weight: 0.3,
+            full_suppress_weight: 0.5,
+            wontfix_weight: 0.0,
+            precedent_count: 3,
+            max_similarity: 0.85,
+            mean_similarity: 0.72,
+            is_fp: false,
+            family: "sql_injection".to_string(),
+        };
+        let stats = FoldLocalStats {
+            category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
+            severity_fp_rates: HashMap::from([("high".to_string(), 0.12)]),
+            model_fp_rates: HashMap::from([("gpt-5.4".to_string(), 0.20)]),
+            word_lor: HashMap::from([
+                ("sql".to_string(), -0.8),
+                ("injection".to_string(), -1.2),
+            ]),
+            global_fp_rate: 0.18,
+        };
+        let (features, is_fp) = extract_single_expanded(&s, &stats);
+        assert!(!is_fp);
+        let v = features.to_vec();
+        assert_eq!(v.len(), 15);
+        assert!(v.iter().all(|x| x.is_finite()));
+        // Check specific values
+        assert!((features.log1p_tp_weight - 1.5_f64.ln_1p()).abs() < 1e-9);
+        assert!((features.precedent_count - 3.0).abs() < 1e-9);
+        assert!((features.category_fp_rate - 0.15).abs() < 1e-9);
+        assert!((features.min_word_lor - (-1.2)).abs() < 1e-9);
+        assert!((features.count_negative_lor_tokens - 2.0).abs() < 1e-9);
     }
 }
