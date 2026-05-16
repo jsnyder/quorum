@@ -123,6 +123,7 @@ fn injector_produces_context_block_when_auto_inject_enabled() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -159,6 +160,7 @@ fn injector_returns_none_when_auto_inject_disabled() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     };
 
@@ -183,6 +185,7 @@ fn injector_returns_none_when_query_yields_no_hits() {
         language: Some("rust".to_string()),
         identifiers: Vec::new(),
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: String::new(),
     };
 
@@ -207,6 +210,7 @@ fn injector_returns_none_when_retriever_closure_returns_empty_vec() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -232,6 +236,7 @@ fn injector_returns_none_when_retriever_errors() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -265,6 +270,7 @@ fn retriever_errored_flag_is_false_when_retriever_returns_zero_hits() {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation".to_string(),
     };
 
@@ -316,11 +322,14 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
     let source = "fn verify_token(t: &str) -> bool { !t.is_empty() }\n\
                   pub fn check(t: &str) -> bool { verify_token(t) }\n";
     let tree = parser::parse(source, Language::Rust).unwrap();
+    let ast_ctx = crate::pipeline::AstContext {
+        tree: &tree,
+        language: Language::Rust,
+    };
     let result = review_file(
         Path::new("src/auth.rs"),
         source,
-        Language::Rust,
-        &tree,
+        Some(ast_ctx),
         Some(&llm),
         &config,
     )
@@ -396,6 +405,7 @@ fn verify_token_request() -> InjectionRequest {
         language: Some("rust".to_string()),
         identifiers: vec!["verify_token".to_string()],
         structural_names: vec![],
+        structural_fingerprints: vec![],
         text: "jwt validation signing key".to_string(),
     }
 }

@@ -891,6 +891,10 @@ mod tests {
             dep_boost_applied: 0,
             current_repo_reserved_available: 0,
             current_repo_reserved_filled: 0,
+            structural_fingerprints_computed: 0,
+            structural_knn_queries: 0,
+            structural_knn_hits: 0,
+            structural_boost_applied: 0,
         };
         r
     }

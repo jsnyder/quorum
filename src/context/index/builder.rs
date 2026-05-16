@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::traits::{Clock, Embedder};
+use crate::context::extract::fingerprint::{FINGERPRINT_DIMS, FINGERPRINT_VERSION};
 use crate::context::store::{ChunkStore, LoadError};
 use crate::context::types::Chunk;
 
@@ -24,7 +25,7 @@ pub struct RebuildReport {
     pub parse_errors: Vec<LoadError>,
 }
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Pack a `Vec<f32>` as the little-endian byte blob expected by sqlite-vec's
 /// `vec0` virtual table.
@@ -184,6 +185,12 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         let tx = self.conn.transaction()?;
 
         let prior_removed = {
+            let mut del_struct_vec = tx.prepare(
+                "DELETE FROM chunks_struct_vec WHERE chunk_id IN \
+                 (SELECT id FROM chunks WHERE source = ?1)",
+            )?;
+            del_struct_vec.execute(params![source_name])?;
+
             let mut del_vec = tx.prepare(
                 "DELETE FROM chunks_vec WHERE id IN (SELECT id FROM chunks WHERE source = ?1)",
             )?;
@@ -279,6 +286,48 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         Ok(conn)
     }
 
+    /// Insert a structural fingerprint vector for a chunk.
+    pub fn insert_structural_fingerprint(
+        &self,
+        conn: &Connection,
+        chunk_id: &str,
+        vector: &[f32; FINGERPRINT_DIMS],
+    ) -> anyhow::Result<()> {
+        let bytes = f32_vec_to_le_bytes(vector);
+        conn.execute(
+            "INSERT INTO chunks_struct_vec(chunk_id, structural_vec) VALUES (?1, ?2)",
+            params![chunk_id, bytes],
+        )?;
+        Ok(())
+    }
+
+    /// Batch-insert structural fingerprints using the builder's own connection.
+    /// Skips chunk ids that don't exist in the chunks table. Uses a transaction
+    /// for atomicity.
+    pub fn insert_structural_fingerprints_batch(
+        &mut self,
+        fingerprints: &std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]>,
+    ) -> anyhow::Result<usize> {
+        if fingerprints.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.transaction()?;
+        let mut count = 0usize;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO chunks_struct_vec(chunk_id, structural_vec)
+                 SELECT ?1, ?2
+                 WHERE EXISTS (SELECT 1 FROM chunks WHERE id = ?1)",
+            )?;
+            for (chunk_id, vec) in fingerprints {
+                let bytes = f32_vec_to_le_bytes(vec);
+                count += stmt.execute(params![chunk_id, bytes])?;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     fn run_migrations(conn: &Connection, embedder: &E) -> rusqlite::Result<()> {
         // All schema DDL + initial state rows run inside one transaction so a
         // failure mid-way cannot leave the DB partially initialized.
@@ -334,6 +383,14 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
             );
             conn.execute_batch(&vec_sql)?;
 
+            let struct_vec_sql = format!(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_struct_vec USING vec0(
+                    chunk_id TEXT PRIMARY KEY,
+                    structural_vec FLOAT[{FINGERPRINT_DIMS}] distance_metric=cosine
+                )"
+            );
+            conn.execute_batch(&struct_vec_sql)?;
+
             conn.execute(
                 "INSERT OR IGNORE INTO state(key, value) VALUES ('schema_version', ?1)",
                 params![SCHEMA_VERSION.to_string()],
@@ -342,6 +399,14 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
                 "INSERT OR IGNORE INTO state(key, value) VALUES ('embedder_model_hash', ?1)",
                 params![embedder.model_hash()],
             )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO state(key, value) VALUES ('fingerprint_version', ?1)",
+                params![FINGERPRINT_VERSION],
+            )?;
+
+            // --- v1 -> v2 migration ---
+            Self::migrate_v1_to_v2(conn)?;
+
             Ok(())
         })();
 
@@ -356,4 +421,56 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
             }
         }
     }
+
+    /// Migrate an existing v1 database to v2: update schema_version in state
+    /// and ensure the fingerprint_version row exists. The `CREATE VIRTUAL TABLE
+    /// IF NOT EXISTS` above already handles `chunks_struct_vec` idempotently.
+    fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM state WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if stored.as_deref() == Some("1") {
+            conn.execute(
+                "UPDATE state SET value = ?1 WHERE key = 'schema_version'",
+                params![SCHEMA_VERSION.to_string()],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Run a KNN query against the `chunks_struct_vec` table, returning the
+/// `(chunk_id, distance)` pairs ordered by ascending distance.
+///
+/// Standalone function (not on `IndexBuilder`) so callers don't need to
+/// thread the builder's generic parameters through unrelated code paths.
+pub fn query_structural_knn(
+    conn: &Connection,
+    query_vec: &[f32; FINGERPRINT_DIMS],
+    k: usize,
+) -> anyhow::Result<Vec<(String, f32)>> {
+    if k == 0 {
+        return Ok(Vec::new());
+    }
+    let bytes = f32_vec_to_le_bytes(query_vec);
+    let mut stmt = conn.prepare(
+        "SELECT chunk_id, distance
+         FROM chunks_struct_vec
+         WHERE structural_vec MATCH ?1
+         ORDER BY distance
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![bytes, k as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f32>(1)?))
+    })?;
+    let mut results = Vec::with_capacity(k);
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
