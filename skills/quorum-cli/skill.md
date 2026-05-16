@@ -162,7 +162,7 @@ Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert meta
 | **fp** | **Suppresses** similar findings (needs 2+ matches) | Finding is wrong — not a real issue in context |
 | **tp** | **Boosts** similar findings (needs 2+ matches) | Finding is real and actionable |
 | **partial** | None | Real issue but severity overstated (e.g. "critical" should be "medium") |
-| **wontfix** | None | Avoid — use `tp` instead if the issue is real |
+| **wontfix** | None | Prefer `tp` (real) or `fp` (wrong) — `wontfix` is inert |
 | **context_misleading** | Raises injection threshold for blamed chunks | Injected context led the LLM to a wrong finding |
 
 ### Decision tree by scenario
@@ -192,16 +192,16 @@ Work through these in order. The first match wins.
 | Scenario | Verdict | Flags | Why |
 |----------|---------|-------|-----|
 | Real bug, you file an issue for it | `tp` | `--in-diff false --reason "Filed as issue #123"` | Teaches the calibrator this pattern catches real bugs (0.7x weight for out-of-diff). The issue tracks the real fix. |
-| Real bug, not worth filing | Do not record | — | No feedback. Don't pollute the calibrator with findings you can't act on. |
-| Pre-existing, already tracked | Do not record | — | Skip silently. |
+| Real bug, not worth filing | Skip | — | Recording feedback on unactionable findings adds noise. |
+| Pre-existing, already tracked | Skip | — | Already tracked elsewhere. |
 
 **Key principles:**
 - `tp` means "I want to see MORE findings like this." Use for all real bugs — in-diff or out-of-diff.
-- `fp` means "I want to see FEWER findings like this." Use only for findings that are genuinely wrong.
-- For real bugs outside your diff, use `tp --in-diff false`. This teaches the calibrator the pattern is valid (at 0.7x weight). Do NOT use `fp --fp-kind out-of-scope` — out-of-scope FPs are excluded from the calibrator precedent pool and have zero learning effect.
-- `fp --fp-kind out-of-scope --fp-tracked-in "issue #N"` is metadata-only bookkeeping. It records that you filed a follow-up but teaches the calibrator nothing. Use it alongside `tp --in-diff false` if you want the tracking link, or skip it.
-- Never use `wontfix` — it's inert. Use `tp` (real, want more) or `fp` (wrong, want fewer).
-- `partial` is inert metadata — use it only when severity is the issue, not correctness.
+- `fp` means "I want to see FEWER findings like this." Use only for findings that are genuinely wrong. `fp` suppresses globally across all projects, so reserve it for context-specific errors — not intentional design choices you want to keep.
+- Record a verdict for every in-diff finding — each one is a learning opportunity for the calibrator.
+- For real bugs outside your diff, use `tp --in-diff false` (0.7x weight). `fp --fp-kind out-of-scope` is metadata-only — excluded from the calibrator precedent pool. Add it alongside `tp --in-diff false` if you want the tracking link via `--fp-tracked-in`, or skip it.
+- For pre-existing findings you won't file an issue for, skip them — recording feedback on code you can't act on adds noise.
+- Always choose `tp` or `fp` — `wontfix` is inert. `partial` is inert metadata for severity disagreements only.
 
 ### Useful feedback flags
 
@@ -243,7 +243,7 @@ quorum feedback --file src/x.rs --finding "SQL concat" --verdict fp \
 
 Untagged FPs use the default τ=120d (~83d half-life). `quorum stats` reports `fp_kind_utilization_rate` once ≥10% of recent FPs are tagged.
 
-**fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `ExternalVerdictInput` which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary. Don't expect fp_kind to persist for external-agent verdicts.
+**fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `ExternalVerdictInput` which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary. Only the direct/human ingestion path preserves fp_kind.
 
 ### What drives precision and recall
 
@@ -254,13 +254,6 @@ The calibrator learns from `tp` and `fp` verdicts only. Your feedback directly c
 - **Unrecorded findings** teach nothing — the calibrator can't learn from silence
 
 The highest-value feedback is `tp` on real bugs you fixed (the calibrator learns "this pattern catches real issues") and `fp` with a specific `fp_kind` (the calibrator learns "this pattern fires incorrectly in this context"). Generic `fp` without `fp_kind` still helps but decays at the default rate.
-
-### What NOT to do
-
-- **Don't use `wontfix`** — it's inert. If the issue is real, use `tp`. If it's not real, use `fp`.
-- **Don't skip feedback for in-diff findings** — every untriaged finding is a missed learning opportunity for the calibrator.
-- **Don't record feedback for pre-existing findings you can't act on** — it's noise. If you file an issue, record `tp --in-diff false --reason "Filed as issue #N"` so the calibrator learns the pattern is valid.
-- **Don't record `fp` for intentional patterns** (like disabled TLS for self-signed certs) unless you want them suppressed across ALL projects.
 
 ## Context Injection (v0.16.0+)
 
@@ -410,7 +403,7 @@ Use the **Decision tree by scenario** (above) to pick the right verdict for each
 
 **Pre-existing** (unrelated to this branch):
 - Real bugs worth filing: file GitHub issue with `gh issue create` citing file:line + finding text, then record `tp --in-diff false --reason "Filed as issue #N"` (teaches calibrator the pattern is valid at 0.7x weight)
-- Not worth filing: do not record feedback. Do NOT fix in this branch (scope discipline).
+- Not worth filing: skip feedback. Keep this branch focused on its scope.
 
 ### 3. Re-run until clean
 
