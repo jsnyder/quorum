@@ -963,6 +963,7 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
             family_fp_inv: 1.0,
             language_fp_inv: 0.5,
         },
+        logistic_model: None,
         word_lor: word_lor_map,
         family_fp_rate: family_fp_rate_map,
         language_fp_rate: lang_fp_rate_map,

@@ -5082,6 +5082,7 @@ mod tests {
                 family_fp_inv: 1.0,
                 language_fp_inv: 0.5,
             },
+            logistic_model: None,
             word_lor: HashMap::from([
                 ("unwrap".into(), -1.0),
                 ("panic".into(), -0.8),

@@ -37,9 +37,29 @@ pub struct ScoreWeights {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogisticModel {
+    pub computed_at: String,
+    pub n_samples: usize,
+    pub n_fp: usize,
+    pub selected_features: Vec<String>,
+    pub coefficients: Vec<f64>,
+    pub intercept: f64,
+    pub feature_means: Vec<f64>,
+    pub feature_stddevs: Vec<f64>,
+    pub suppress_threshold: f64,
+    pub boost_threshold: f64,
+    pub ap_score: f64,
+    pub fp_recall_at_99_tp_recall: f64,
+    pub baseline_ap: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibratorModel {
     pub meta: ModelMeta,
     pub weights: ScoreWeights,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub logistic_model: Option<LogisticModel>,
     pub word_lor: HashMap<String, f64>,
     pub family_fp_rate: HashMap<String, f64>,
     pub language_fp_rate: HashMap<String, f64>,
@@ -154,6 +174,7 @@ mod tests {
                 family_fp_inv: 1.0,
                 language_fp_inv: 0.5,
             },
+            logistic_model: None,
             word_lor: HashMap::from([
                 ("hardcoded".into(), -1.88),
                 ("secret".into(), -1.50),
@@ -296,5 +317,50 @@ mod tests {
     #[test]
     fn load_from_missing_returns_none() {
         assert!(CalibratorModel::load_from("/nonexistent/path").is_none());
+    }
+
+    #[test]
+    fn logistic_model_toml_roundtrip() {
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1567,
+            n_fp: 279,
+            selected_features: vec![
+                "log1p_fp_weight".to_string(),
+                "category_fp_rate".to_string(),
+            ],
+            coefficients: vec![0.42, -1.3],
+            intercept: -1.2,
+            feature_means: vec![0.5, 0.27],
+            feature_stddevs: vec![0.3, 0.15],
+            suppress_threshold: 0.45,
+            boost_threshold: 0.08,
+            ap_score: 0.67,
+            fp_recall_at_99_tp_recall: 0.35,
+            baseline_ap: 0.18,
+        };
+        let mut model = make_model();
+        model.logistic_model = Some(lm);
+        let toml_str = model.to_toml();
+        assert!(toml_str.contains("[logistic_model]"));
+        let parsed = CalibratorModel::from_toml(&toml_str).unwrap();
+        let parsed_lm = parsed.logistic_model.unwrap();
+        assert_eq!(parsed_lm.n_samples, 1567);
+        assert_eq!(parsed_lm.n_fp, 279);
+        assert_eq!(parsed_lm.selected_features.len(), 2);
+        assert!((parsed_lm.suppress_threshold - 0.45).abs() < 1e-9);
+        assert!((parsed_lm.boost_threshold - 0.08).abs() < 1e-9);
+        assert!((parsed_lm.coefficients[0] - 0.42).abs() < 1e-9);
+        assert!((parsed_lm.intercept - (-1.2)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn logistic_model_absent_parses_as_none() {
+        let mut model = make_model();
+        model.logistic_model = None;
+        let toml_str = model.to_toml();
+        assert!(!toml_str.contains("[logistic_model]"));
+        let parsed = CalibratorModel::from_toml(&toml_str).unwrap();
+        assert!(parsed.logistic_model.is_none());
     }
 }
