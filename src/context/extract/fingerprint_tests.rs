@@ -40,7 +40,10 @@ fn type_category_classify_rust_fn_traits() {
 
 #[test]
 fn type_category_classify_rust_user_type_is_generic() {
-    assert_eq!(TypeCategory::classify_rust("MyStruct"), TypeCategory::Generic);
+    assert_eq!(
+        TypeCategory::classify_rust("MyStruct"),
+        TypeCategory::Generic
+    );
     assert_eq!(TypeCategory::classify_rust("Config"), TypeCategory::Generic);
 }
 
@@ -72,25 +75,46 @@ fn type_category_classify_python_self_cls() {
 
 #[test]
 fn type_category_classify_typescript_primitives() {
-    assert_eq!(TypeCategory::classify_typescript("number"), TypeCategory::Prim);
-    assert_eq!(TypeCategory::classify_typescript("boolean"), TypeCategory::Prim);
-    assert_eq!(TypeCategory::classify_typescript("bigint"), TypeCategory::Prim);
+    assert_eq!(
+        TypeCategory::classify_typescript("number"),
+        TypeCategory::Prim
+    );
+    assert_eq!(
+        TypeCategory::classify_typescript("boolean"),
+        TypeCategory::Prim
+    );
+    assert_eq!(
+        TypeCategory::classify_typescript("bigint"),
+        TypeCategory::Prim
+    );
 }
 
 #[test]
 fn type_category_classify_typescript_string() {
-    assert_eq!(TypeCategory::classify_typescript("string"), TypeCategory::Str);
+    assert_eq!(
+        TypeCategory::classify_typescript("string"),
+        TypeCategory::Str
+    );
 }
 
 #[test]
 fn type_category_classify_typescript_promise_is_result() {
-    assert_eq!(TypeCategory::classify_typescript("Promise"), TypeCategory::Res);
+    assert_eq!(
+        TypeCategory::classify_typescript("Promise"),
+        TypeCategory::Res
+    );
 }
 
 #[test]
 fn type_category_classify_typescript_any_unknown_is_unknown() {
-    assert_eq!(TypeCategory::classify_typescript("any"), TypeCategory::Unknown);
-    assert_eq!(TypeCategory::classify_typescript("unknown"), TypeCategory::Unknown);
+    assert_eq!(
+        TypeCategory::classify_typescript("any"),
+        TypeCategory::Unknown
+    );
+    assert_eq!(
+        TypeCategory::classify_typescript("unknown"),
+        TypeCategory::Unknown
+    );
 }
 
 #[test]
@@ -328,7 +352,10 @@ fn to_vector_saturates_on_large_counts() {
         },
     };
     let vec = fp.to_vector();
-    assert!(vec.iter().all(|v| v.is_finite()), "overflow produced non-finite values");
+    assert!(
+        vec.iter().all(|v| v.is_finite()),
+        "overflow produced non-finite values"
+    );
     assert!(vec[40] > 0.0, "global shape dim should be positive");
 }
 
@@ -349,8 +376,14 @@ fn param_histogram_does_not_overlap_return_one_hot() {
     // Generic param (dim_index=7) is clamped to bucket 6, writing v[7].
     // Prim return (dim_index=0) writes v[8].
     assert!(vec[7] > 0.0, "Generic param should land in dim 7 (clamped)");
-    assert_eq!(vec[8], 1.0, "Prim return one-hot should be exactly 1.0 at dim 8");
-    assert_eq!(vec[1], 0.0, "Prim param slot should be zero (no Prim params)");
+    assert_eq!(
+        vec[8], 1.0,
+        "Prim return one-hot should be exactly 1.0 at dim 8"
+    );
+    assert_eq!(
+        vec[1], 0.0,
+        "Prim param slot should be zero (no Prim params)"
+    );
 }
 
 #[test]

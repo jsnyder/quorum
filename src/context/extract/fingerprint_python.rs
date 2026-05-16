@@ -8,8 +8,8 @@ use ast_grep_core::Doc;
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use super::fingerprint::{
-    ControlFlowSketch, SemanticCounts, SignatureShape, StructuralFingerprint, TypeCategory,
-    MIN_BODY_NODE_COUNT,
+    ControlFlowSketch, MIN_BODY_NODE_COUNT, SemanticCounts, SignatureShape, StructuralFingerprint,
+    TypeCategory,
 };
 
 /// Stateless fingerprinter for Python source code.
@@ -244,10 +244,7 @@ fn extract_params<D: Doc>(
 
 /// Classify a typed parameter's type annotation. Looks for a `type` child
 /// within the `typed_parameter` node.
-fn classify_typed_param<D: Doc>(
-    param: &ast_grep_core::Node<'_, D>,
-    source: &str,
-) -> TypeCategory {
+fn classify_typed_param<D: Doc>(param: &ast_grep_core::Node<'_, D>, source: &str) -> TypeCategory {
     // In tree-sitter-python, a typed_parameter has: identifier, ":", type
     // The type child might be an `identifier`, `attribute`, `subscript`,
     // `generic_type`, etc.
@@ -271,10 +268,7 @@ fn classify_typed_param<D: Doc>(
 }
 
 /// Classify a type node from a `type` wrapper or bare type expression.
-fn classify_type_node<D: Doc>(
-    param: &ast_grep_core::Node<'_, D>,
-    source: &str,
-) -> TypeCategory {
+fn classify_type_node<D: Doc>(param: &ast_grep_core::Node<'_, D>, source: &str) -> TypeCategory {
     if let Some(type_node) = param.children().find(|c| c.kind().as_ref() == "type") {
         return classify_type_expression(&type_node, source);
     }
@@ -433,7 +427,9 @@ fn extract_control_flow<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> ControlFlo
             "yield" => cf.early_returns += 1,
             "await" => cf.awaits += 1,
             "lambda" => cf.closures += 1,
-            "list_comprehension" | "dict_comprehension" | "set_comprehension"
+            "list_comprehension"
+            | "dict_comprehension"
+            | "set_comprehension"
             | "generator_expression" => {
                 cf.loops += 1;
             }
@@ -477,9 +473,12 @@ fn extract_semantic_counts<D: Doc>(
                     sc.index_ops += 1;
                 }
             }
-            "binary_operator" | "boolean_operator" | "comparison_operator"
-            | "not_operator" => sc.binary_ops += 1,
-            "list_comprehension" | "dict_comprehension" | "set_comprehension"
+            "binary_operator" | "boolean_operator" | "comparison_operator" | "not_operator" => {
+                sc.binary_ops += 1
+            }
+            "list_comprehension"
+            | "dict_comprehension"
+            | "set_comprehension"
             | "generator_expression" => {
                 sc.collection_literals += 1;
             }

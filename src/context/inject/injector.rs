@@ -39,7 +39,10 @@ pub struct InjectionRequest {
     pub structural_names: Vec<String>,
     /// Structural fingerprint vectors from the reviewed file's functions,
     /// forwarded into `RetrievalQuery::structural_fingerprints` for KNN search.
-    pub structural_fingerprints: Vec<(String, [f32; crate::context::extract::fingerprint::FINGERPRINT_DIMS])>,
+    pub structural_fingerprints: Vec<(
+        String,
+        [f32; crate::context::extract::fingerprint::FINGERPRINT_DIMS],
+    )>,
     /// Free-text query (e.g., trimmed code slice or import targets joined).
     pub text: String,
 }

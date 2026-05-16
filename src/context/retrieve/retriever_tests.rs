@@ -20,7 +20,16 @@ fn mk_chunk(
     language: &str,
     indexed_at: DateTime<Utc>,
 ) -> Chunk {
-    mk_chunk_with_path(id, source, content, qname, kind, language, indexed_at, &format!("src/{id}.rs"))
+    mk_chunk_with_path(
+        id,
+        source,
+        content,
+        qname,
+        kind,
+        language,
+        indexed_at,
+        &format!("src/{id}.rs"),
+    )
 }
 
 fn mk_chunk_with_path(
@@ -1049,18 +1058,13 @@ fn structural_fingerprint_knn_respects_source_filter() {
 
     let mut fp = [0.0f32; FINGERPRINT_DIMS];
     fp[0] = 1.0;
-    let fingerprints: std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]> = [
-        ("chunk_a".to_string(), fp),
-        ("chunk_b".to_string(), fp),
-    ]
-    .into_iter()
-    .collect();
+    let fingerprints: std::collections::HashMap<String, [f32; FINGERPRINT_DIMS]> =
+        [("chunk_a".to_string(), fp), ("chunk_b".to_string(), fp)]
+            .into_iter()
+            .collect();
 
-    let (conn, emb, clock) = mk_retriever_ctx_with_fingerprints(
-        dir.path(),
-        vec![chunk_a, chunk_b],
-        &fingerprints,
-    );
+    let (conn, emb, clock) =
+        mk_retriever_ctx_with_fingerprints(dir.path(), vec![chunk_a, chunk_b], &fingerprints);
     let r = Retriever::new(&conn, &emb, &clock);
 
     let q = RetrievalQuery {

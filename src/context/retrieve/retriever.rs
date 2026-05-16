@@ -410,8 +410,12 @@ fn filter_chunk_ids(
             sql.push_str(&format!(" AND source_path NOT IN ({ph})"));
         }
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-            Vec::with_capacity(batch.len() + filters.sources.len() + filters.kinds.len() + filters.exclude_source_paths.len());
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(
+            batch.len()
+                + filters.sources.len()
+                + filters.kinds.len()
+                + filters.exclude_source_paths.len(),
+        );
         for id in batch {
             params.push(Box::new(id.clone()));
         }

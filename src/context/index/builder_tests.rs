@@ -641,9 +641,7 @@ fn insert_and_query_structural_fingerprint_roundtrip() {
         .insert_structural_fingerprint(builder.conn(), "chunk-a", &vec_a)
         .unwrap();
 
-    let results =
-        super::builder::query_structural_knn(builder.conn(), &vec_a, 1)
-            .unwrap();
+    let results = super::builder::query_structural_knn(builder.conn(), &vec_a, 1).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "chunk-a");
     // Distance to self should be zero (or very near zero).
@@ -688,9 +686,7 @@ fn structural_knn_returns_sorted_by_distance() {
         .insert_structural_fingerprint(builder.conn(), "far", &far)
         .unwrap();
 
-    let results =
-        super::builder::query_structural_knn(builder.conn(), &query, 3)
-            .unwrap();
+    let results = super::builder::query_structural_knn(builder.conn(), &query, 3).unwrap();
     assert_eq!(results.len(), 3);
 
     // Verify ascending distance order.
@@ -721,9 +717,7 @@ fn structural_knn_with_k_zero_returns_empty() {
         .insert_structural_fingerprint(builder.conn(), "a", &vec_a)
         .unwrap();
 
-    let results =
-        super::builder::query_structural_knn(builder.conn(), &vec_a, 0)
-            .unwrap();
+    let results = super::builder::query_structural_knn(builder.conn(), &vec_a, 0).unwrap();
     assert!(results.is_empty());
 }
 

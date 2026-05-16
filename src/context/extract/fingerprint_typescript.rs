@@ -8,8 +8,8 @@ use ast_grep_core::Doc;
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use super::fingerprint::{
-    ControlFlowSketch, SemanticCounts, SignatureShape, StructuralFingerprint, TypeCategory,
-    MIN_BODY_NODE_COUNT,
+    ControlFlowSketch, MIN_BODY_NODE_COUNT, SemanticCounts, SignatureShape, StructuralFingerprint,
+    TypeCategory,
 };
 
 /// Node kinds that represent function-like constructs in tree-sitter-typescript.
@@ -241,10 +241,7 @@ fn extract_params<D: Doc>(
 }
 
 /// Classify a parameter's type by finding the type annotation.
-fn classify_param_type<D: Doc>(
-    param: &ast_grep_core::Node<'_, D>,
-    _source: &str,
-) -> TypeCategory {
+fn classify_param_type<D: Doc>(param: &ast_grep_core::Node<'_, D>, _source: &str) -> TypeCategory {
     // In tree-sitter-typescript, a parameter with a type annotation has a
     // `type_annotation` child that wraps the actual type node.
     if let Some(type_ann) = param
@@ -408,10 +405,7 @@ fn count_type_nesting<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
 /// can count closures/lambdas) while its subtree is **not** traversed. This
 /// prevents a parent function's control-flow and semantic counts from being
 /// inflated by the bodies of nested closures or local function expressions.
-fn shallow_dfs_visit<D: Doc>(
-    body: &ast_grep_core::Node<'_, D>,
-    mut visitor: impl FnMut(&str),
-) {
+fn shallow_dfs_visit<D: Doc>(body: &ast_grep_core::Node<'_, D>, mut visitor: impl FnMut(&str)) {
     // Manual DFS using the children() iterator, skipping subtrees of
     // nested function-like nodes.
     let body_id = body.node_id();
@@ -453,21 +447,19 @@ fn shallow_dfs_visit<D: Doc>(
 fn extract_control_flow<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> ControlFlowSketch {
     let mut cf = ControlFlowSketch::default();
 
-    shallow_dfs_visit(body, |kind| {
-        match kind {
-            "if_statement" => cf.branches += 1,
-            "else_clause" => cf.branches += 1,
-            "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
-                cf.loops += 1;
-            }
-            "return_statement" | "throw_statement" => cf.early_returns += 1,
-            "try_statement" => cf.error_propagations += 1,
-            "catch_clause" => cf.error_propagations += 1,
-            "await_expression" => cf.awaits += 1,
-            "arrow_function" => cf.closures += 1,
-            "switch_case" => cf.match_arms += 1,
-            _ => {}
+    shallow_dfs_visit(body, |kind| match kind {
+        "if_statement" => cf.branches += 1,
+        "else_clause" => cf.branches += 1,
+        "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
+            cf.loops += 1;
         }
+        "return_statement" | "throw_statement" => cf.early_returns += 1,
+        "try_statement" => cf.error_propagations += 1,
+        "catch_clause" => cf.error_propagations += 1,
+        "await_expression" => cf.awaits += 1,
+        "arrow_function" => cf.closures += 1,
+        "switch_case" => cf.match_arms += 1,
+        _ => {}
     });
 
     cf
@@ -480,20 +472,18 @@ fn extract_control_flow<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> ControlFlo
 fn extract_semantic_counts<D: Doc>(body: &ast_grep_core::Node<'_, D>) -> SemanticCounts {
     let mut sc = SemanticCounts::default();
 
-    shallow_dfs_visit(body, |kind| {
-        match kind {
-            "call_expression" => sc.calls += 1,
-            "assignment_expression" | "augmented_assignment_expression" => sc.assignments += 1,
-            "variable_declarator" => sc.assignments += 1,
-            "member_expression" => sc.member_access += 1,
-            "subscript_expression" => sc.index_ops += 1,
-            "binary_expression" | "ternary_expression" => sc.binary_ops += 1,
-            "array" => sc.collection_literals += 1,
-            "object" => sc.collection_literals += 1,
-            "type_annotation" => sc.type_annotations += 1,
-            "arrow_function" => sc.lambdas += 1,
-            _ => {}
-        }
+    shallow_dfs_visit(body, |kind| match kind {
+        "call_expression" => sc.calls += 1,
+        "assignment_expression" | "augmented_assignment_expression" => sc.assignments += 1,
+        "variable_declarator" => sc.assignments += 1,
+        "member_expression" => sc.member_access += 1,
+        "subscript_expression" => sc.index_ops += 1,
+        "binary_expression" | "ternary_expression" => sc.binary_ops += 1,
+        "array" => sc.collection_literals += 1,
+        "object" => sc.collection_literals += 1,
+        "type_annotation" => sc.type_annotations += 1,
+        "arrow_function" => sc.lambdas += 1,
+        _ => {}
     });
 
     sc

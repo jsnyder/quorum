@@ -8,8 +8,8 @@ use ast_grep_core::Doc;
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use super::fingerprint::{
-    ControlFlowSketch, SemanticCounts, SignatureShape, StructuralFingerprint, TypeCategory,
-    MIN_BODY_NODE_COUNT,
+    ControlFlowSketch, MIN_BODY_NODE_COUNT, SemanticCounts, SignatureShape, StructuralFingerprint,
+    TypeCategory,
 };
 
 /// Stateless fingerprinter for Rust source code.
@@ -271,7 +271,9 @@ fn is_type_node(kind: &str) -> bool {
 }
 
 /// Classify a return type node recursively, tracking nesting and wrapping.
-fn classify_return_type<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> (TypeCategory, u8, bool, bool) {
+fn classify_return_type<D: Doc>(
+    node: &ast_grep_core::Node<'_, D>,
+) -> (TypeCategory, u8, bool, bool) {
     let kind = node.kind();
     let kind_str = kind.as_ref();
 

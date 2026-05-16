@@ -54,10 +54,7 @@ impl Foo {
     assert!(fp.signature.is_method, "inside impl block");
     assert!(!fp.signature.is_static, "has self, so not static");
     assert_eq!(fp.signature.arity, 1, "one param besides self");
-    assert!(
-        fp.signature.return_wraps_result,
-        "return type wraps Result"
-    );
+    assert!(fp.signature.return_wraps_result, "return type wraps Result");
     assert!(fp.control_flow.loops >= 1, "has a for loop");
     assert!(fp.control_flow.branches >= 1, "has an if branch");
 }

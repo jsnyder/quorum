@@ -1263,10 +1263,10 @@ pub(crate) async fn build_file_context(
         let lang_str = lang_name(ast_ctx.language);
         let mut structural_fingerprints =
             crate::context::extract::dispatch::compute_source_fingerprints(
-                &redacted_code, lang_str,
+                &redacted_code,
+                lang_str,
             );
-        structural_fingerprints
-            .truncate(crate::context::extract::fingerprint::MAX_QUERY_SYMBOLS);
+        structural_fingerprints.truncate(crate::context::extract::fingerprint::MAX_QUERY_SYMBOLS);
         let req = crate::context::inject::InjectionRequest {
             file_path: file_str.clone(),
             language: Some(lang_str.to_string()),

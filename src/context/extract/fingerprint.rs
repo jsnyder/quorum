@@ -24,8 +24,8 @@ impl TypeCategory {
             "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
             | "i128" | "isize" | "f32" | "f64" | "bool" | "char" => Self::Prim,
             "String" | "str" => Self::Str,
-            "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet" | "VecDeque"
-            | "LinkedList" | "BinaryHeap" => Self::Col,
+            "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet" | "VecDeque" | "LinkedList"
+            | "BinaryHeap" => Self::Col,
             "Option" => Self::Opt,
             "Result" => Self::Res,
             "Fn" | "FnMut" | "FnOnce" => Self::Fn,
@@ -38,8 +38,8 @@ impl TypeCategory {
         match type_name {
             "int" | "float" | "bool" | "complex" => Self::Prim,
             "str" | "bytes" => Self::Str,
-            "list" | "dict" | "set" | "frozenset" | "tuple" | "List" | "Dict" | "Set"
-            | "Tuple" | "Sequence" | "Mapping" => Self::Col,
+            "list" | "dict" | "set" | "frozenset" | "tuple" | "List" | "Dict" | "Set" | "Tuple"
+            | "Sequence" | "Mapping" => Self::Col,
             "Optional" | "None" => Self::Opt,
             "Callable" => Self::Fn,
             "self" | "cls" => Self::SelfRef,

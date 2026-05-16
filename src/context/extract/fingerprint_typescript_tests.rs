@@ -98,14 +98,8 @@ function outer(items: string[]): () => void {
     // inner might be too small for MIN_BODY_NODE_COUNT; if it fingerprints,
     // check that its counts are self-contained.
     if let Some((_, fp)) = inner_fp {
-        assert!(
-            fp.control_flow.branches >= 1,
-            "inner has an if branch"
-        );
-        assert!(
-            fp.control_flow.loops >= 1,
-            "inner has a for-of loop"
-        );
+        assert!(fp.control_flow.branches >= 1, "inner has an if branch");
+        assert!(fp.control_flow.loops >= 1, "inner has a for-of loop");
     }
 }
 
@@ -392,18 +386,23 @@ class Config {
     let fp_ctor = TypeScriptFingerprinter.fingerprint_source(src);
     let fp_ctor = fp_ctor.expect("constructor should fingerprint");
 
-    assert!(fp_ctor.signature.is_constructor, "should detect constructor");
+    assert!(
+        fp_ctor.signature.is_constructor,
+        "should detect constructor"
+    );
     assert!(fp_ctor.signature.is_method, "constructor is a method");
     assert!(fp_ctor.signature.has_self, "constructor has implicit this");
 
-    let root = ast_grep_language::LanguageExt::ast_grep(&ast_grep_language::SupportLang::TypeScript, src);
+    let root =
+        ast_grep_language::LanguageExt::ast_grep(&ast_grep_language::SupportLang::TypeScript, src);
     let root_node = root.root();
     let static_method = root_node
         .dfs()
         .find(|n| {
             n.kind().as_ref() == "method_definition"
-                && n.children()
-                    .any(|c| c.kind().as_ref() == "property_identifier" && c.text().as_ref() == "create")
+                && n.children().any(|c| {
+                    c.kind().as_ref() == "property_identifier" && c.text().as_ref() == "create"
+                })
         })
         .expect("should find static create method");
 
@@ -412,7 +411,10 @@ class Config {
         .expect("static method should fingerprint");
 
     assert!(fp_static.signature.is_static, "should detect static method");
-    assert!(fp_static.signature.is_method, "static method is still a method");
+    assert!(
+        fp_static.signature.is_method,
+        "static method is still a method"
+    );
     assert!(
         !fp_static.signature.has_self,
         "static method does not have this"
