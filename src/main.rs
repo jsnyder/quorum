@@ -1089,6 +1089,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             word_lor_entries = model.word_lor.len(),
             family_rates = model.family_fp_rate.len(),
             language_rates = model.language_fp_rate.len(),
+            has_logistic = model.logistic_model.is_some(),
             "loaded composite calibrator model"
         );
         calibrator_config.model = Some(model);

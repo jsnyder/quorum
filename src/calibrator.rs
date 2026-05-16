@@ -329,6 +329,37 @@ fn calibrate_core_decision(
 
     // Logistic model path: when present, P(FP) directly drives suppress/boost decisions.
     if let Some(logistic) = config.model.as_ref().and_then(|m| m.logistic_model.as_ref()) {
+        // Compute word LOR features from the model's vocabulary
+        let (max_word_lor, min_word_lor, count_negative_lor_tokens) =
+            if let Some(model) = config.model.as_ref() {
+                let lower = finding.title.to_lowercase();
+                let word_lors: Vec<f64> = lower
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|w| w.len() >= 2)
+                    .filter_map(|w| model.word_lor.get(w).copied())
+                    .collect();
+                (
+                    word_lors.iter().copied().fold(0.0_f64, f64::max),
+                    word_lors.iter().copied().fold(0.0_f64, f64::min),
+                    word_lors.iter().filter(|&&v| v < -0.5).count() as f64,
+                )
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+        // Compute category FP rate from family_fp_rate (closest available proxy)
+        let category_fp_rate = config
+            .model
+            .as_ref()
+            .map(|m| {
+                let family = CalibratorModel::title_family(&finding.title);
+                m.family_fp_rate
+                    .get(&family)
+                    .copied()
+                    .unwrap_or(m.meta.global_fp_rate)
+            })
+            .unwrap_or(0.0);
+
         let review_features = ReviewFeatures {
             log1p_tp_weight: tp_weight.ln_1p(),
             log1p_fp_weight: fp_weight.ln_1p(),
@@ -351,15 +382,12 @@ fn calibrate_core_decision(
             log1p_soft_fp_weight: soft_fp_weight.ln_1p(),
             log1p_full_suppress_weight: fp_weight.ln_1p(),
             log1p_wontfix_weight: wontfix_weight.ln_1p(),
-            // Features that require fold-local stats not available at review time
-            // default to 0.0. The logistic model's standardization handles this
-            // (0.0 -> below-mean -> shifts logit accordingly).
-            category_fp_rate: 0.0,
+            category_fp_rate,
             severity_fp_rate: 0.0,
             model_fp_rate: 0.0,
-            max_word_lor: 0.0,
-            min_word_lor: 0.0,
-            count_negative_lor_tokens: 0.0,
+            max_word_lor,
+            min_word_lor,
+            count_negative_lor_tokens,
         };
 
         let p_fp = logistic_score(logistic, &review_features);
