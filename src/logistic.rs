@@ -2,7 +2,6 @@
 ///
 /// No external dependencies — pure Rust implementation using batch gradient
 /// descent with backtracking line search (Armijo condition).
-
 const EPSILON: f64 = 1e-8;
 const ARMIJO_C: f64 = 1e-4;
 const ARMIJO_BETA: f64 = 0.5;
