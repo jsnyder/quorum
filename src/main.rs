@@ -45,6 +45,7 @@ mod http_server;
 mod judge;
 mod linter;
 mod llm_client;
+mod logistic;
 mod mcp;
 mod output;
 mod pipeline;
