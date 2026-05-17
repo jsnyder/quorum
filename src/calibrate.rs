@@ -2222,34 +2222,33 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
 
     let prod_model = crate::logistic::fit(&prod_x, &prod_y, 1.0, MAX_LOGISTIC_ITER);
 
-    // Threshold selection from production model predictions
-    let prod_predictions = prod_model.predict(&prod_x);
-
-    // Separate predictions by class
-    let mut tp_predictions: Vec<f64> = prod_predictions
+    // Threshold selection from OOF predictions (not in-sample) to avoid
+    // optimistic safety estimates. The production model provides deployed
+    // coefficients; thresholds come from held-out data.
+    let mut oof_tp_predictions: Vec<f64> = filled_predictions
         .iter()
-        .zip(prod_y.iter())
-        .filter(|(_, is_fp)| !**is_fp)
+        .filter(|(_, is_fp)| !*is_fp)
         .map(|(pred, _)| *pred)
         .collect();
-    let mut fp_predictions: Vec<f64> = prod_predictions
+    let mut oof_fp_predictions: Vec<f64> = filled_predictions
         .iter()
-        .zip(prod_y.iter())
-        .filter(|(_, is_fp)| **is_fp)
+        .filter(|(_, is_fp)| *is_fp)
         .map(|(pred, _)| *pred)
         .collect();
 
-    // Suppress threshold: sort TP predictions descending, pick at ceil(n_tp * 0.01)
-    // This ensures 99% of TPs have prediction below the threshold (safe from suppression)
-    tp_predictions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let suppress_idx = ((n_tp as f64 * 0.01).ceil() as usize).min(tp_predictions.len() - 1);
-    let suppress_threshold = tp_predictions[suppress_idx];
+    // Suppress threshold: sort TP OOF predictions descending, pick at ceil(n_tp * 0.01)
+    // This ensures 99% of TPs have OOF prediction below the threshold (safe from suppression)
+    oof_tp_predictions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let suppress_idx =
+        ((oof_tp_predictions.len() as f64 * 0.01).ceil() as usize).min(oof_tp_predictions.len() - 1);
+    let suppress_threshold = oof_tp_predictions[suppress_idx];
 
-    // Boost threshold: sort FP predictions ascending, pick at ceil(n_fp * 0.05)
-    // This ensures 95% of FPs have prediction above the threshold
-    fp_predictions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let boost_idx = ((n_fp as f64 * 0.05).ceil() as usize).min(fp_predictions.len() - 1);
-    let boost_threshold = fp_predictions[boost_idx];
+    // Boost threshold: sort FP OOF predictions ascending, pick at ceil(n_fp * 0.05)
+    // This ensures 95% of FPs have OOF prediction above the threshold
+    oof_fp_predictions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let boost_idx =
+        ((oof_fp_predictions.len() as f64 * 0.05).ceil() as usize).min(oof_fp_predictions.len() - 1);
+    let boost_threshold = oof_fp_predictions[boost_idx];
 
     let feature_names = ExpandedFeatures::feature_names();
     let selected_feature_names: Vec<String> = consensus_features
