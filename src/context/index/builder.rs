@@ -39,40 +39,29 @@ fn f32_vec_to_le_bytes(v: &[f32]) -> Vec<u8> {
 
 static VEC_INIT: OnceLock<()> = OnceLock::new();
 
-/// Register the sqlite-vec extension as an auto-extension so every subsequent
-/// `Connection::open` loads `vec0`. Idempotent and thread-safe.
-///
-/// Safety note on the transmute below: the `sqlite-vec` crate (v0.1.x)
-/// declares `sqlite3_vec_init` as `extern "C" fn()` with no arguments in its
-/// Rust bindings, but the underlying C symbol produced by the amalgamation
-/// actually implements the standard SQLite extension entrypoint
-/// `int sqlite3_vec_init(sqlite3*, char**, const sqlite3_api_routines*)`.
-/// The no-arg Rust declaration is a convenience lie; the real C ABI matches
-/// `ExtInit`. This is the exact pattern documented in sqlite-vec's own
-/// rusqlite test (see crate `tests` module). We verify the source pointer
-/// via a `cast`-then-typed-binding so any future ABI divergence (e.g. the
-/// crate switches to a correct signature) surfaces as a type error rather
-/// than silent UB.
 /// Register sqlite-vec as a process-wide auto-extension so every subsequent
-/// `Connection::open*` call transparently gets the `vec0` virtual table
-/// available. Callers that open the index db without going through
-/// `IndexBuilder` (e.g. the read-only `quorum context query` path) must
-/// invoke this before `Connection::open*` — otherwise the first SQL that
-/// touches `chunks_vec` fails with `no such module: vec0`.
+/// `Connection::open*` call transparently gets the `vec0` virtual table.
+/// Idempotent and thread-safe.
 pub(crate) fn ensure_vec_loaded() {
-    type ExtInit = unsafe extern "C" fn(
-        *mut rusqlite::ffi::sqlite3,
-        *mut *mut std::os::raw::c_char,
-        *const rusqlite::ffi::sqlite3_api_routines,
-    ) -> std::os::raw::c_int;
-
     VEC_INIT.get_or_init(|| unsafe {
-        // Force source type: `unsafe extern "C" fn()`. If sqlite-vec ever
-        // corrects the declaration to match `ExtInit`, this `as *const ()`
-        // plus the transmute becomes a redundant identity cast (still sound).
-        let src: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;
-        let init: ExtInit = std::mem::transmute::<unsafe extern "C" fn(), ExtInit>(src);
-        rusqlite::ffi::sqlite3_auto_extension(Some(init));
+        // sqlite-vec v0.1.x declares `sqlite3_vec_init` as `extern "C" fn()`
+        // but the real C symbol implements the standard SQLite extension entry
+        // point `int sqlite3_vec_init(sqlite3*, char**, const
+        // sqlite3_api_routines*)`.  We cast through `*const ()` (erased
+        // function pointer) then transmute to the type expected by
+        // `sqlite3_auto_extension`.  This is sound because the underlying C
+        // symbol has the correct ABI — only the Rust declaration is wrong.
+        // Re-verify if sqlite-vec changes its Rust bindings signature.
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::os::raw::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> std::os::raw::c_int,
+        >(
+            sqlite_vec::sqlite3_vec_init as *const ()
+        )));
     });
 }
 

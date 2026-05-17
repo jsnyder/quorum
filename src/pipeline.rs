@@ -46,7 +46,16 @@ fn write_calibrator_traces(
             .open(&trace_path)
         {
             Ok(mut file) => {
+                use fs2::FileExt;
                 use std::io::Write;
+                if let Err(e) = file.lock_exclusive() {
+                    tracing::warn!(
+                        path = %trace_path.display(),
+                        error = %e,
+                        "calibrator trace file lock failed, skipping write"
+                    );
+                    return;
+                }
                 for trace in traces {
                     // #307: normalize file_path at write time
                     let mut trace = trace.clone();
@@ -72,6 +81,7 @@ fn write_calibrator_traces(
                         ),
                     }
                 }
+                let _ = file.unlock();
             }
             Err(e) => tracing::warn!(
                 path = %trace_path.display(),
