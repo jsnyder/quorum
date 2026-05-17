@@ -60,6 +60,7 @@ pub fn load_cache(path: &Path) -> std::io::Result<HashMap<String, CacheEntry>> {
 /// Append a single verdict cache entry to the JSONL file, creating parent
 /// directories as needed.
 pub fn write_cache_entry(path: &Path, entry: &CacheEntry) -> std::io::Result<()> {
+    use fs2::FileExt;
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -68,9 +69,12 @@ pub fn write_cache_entry(path: &Path, entry: &CacheEntry) -> std::io::Result<()>
         .create(true)
         .append(true)
         .open(path)?;
+    file.lock_exclusive()?;
     let json = serde_json::to_string(entry)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    writeln!(file, "{json}")
+    let result = writeln!(file, "{json}");
+    let _ = file.unlock();
+    result
 }
 
 // ---------------------------------------------------------------------------
