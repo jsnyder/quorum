@@ -2463,8 +2463,9 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                     result.n_samples - result.n_fp
                 );
                 eprintln!(
-                    "  Selected features ({}/15): {:?}",
+                    "  Selected features ({}/{}): {:?}",
                     result.selected_feature_names.len(),
+                    quorum::calibrate::ExpandedFeatures::feature_names().len(),
                     result.selected_feature_names
                 );
                 eprintln!("  AP (OOF):      {:.4}", result.ap_score);
