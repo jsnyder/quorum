@@ -2012,6 +2012,7 @@ fn run_feedback_inner(
     category: Option<&str>,
     fp_kind: Option<feedback::FpKind>,
     in_diff: Option<bool>,
+    provenance: Option<feedback::Provenance>,
     json: bool,
     feedback_path: &std::path::Path,
 ) -> (i32, String) {
@@ -2049,7 +2050,7 @@ fn run_feedback_inner(
         reason: reason.to_string(),
         model: model.map(|s| s.to_string()),
         timestamp: chrono::Utc::now(),
-        provenance: feedback::Provenance::Human,
+        provenance: provenance.unwrap_or(feedback::Provenance::Human),
         fp_kind,
         finding_id: None,
         rule_id: None,
@@ -2211,6 +2212,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.category.as_deref(),
             fp_kind,
             opts.in_diff,
+            opts.provenance,
             opts.json,
             &feedback_path,
         );
@@ -2751,6 +2753,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2770,6 +2773,7 @@ mod feedback_tests {
             "SQL injection",
             "maybe",
             "Not sure",
+            None,
             None,
             None,
             None,
@@ -2796,12 +2800,36 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("\"provenance\":\"human\""));
+    }
+
+    #[test]
+    fn feedback_provenance_post_fix() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let (exit_code, _) = run_feedback_inner(
+            "src/auth.rs",
+            "SQL injection",
+            "tp",
+            "Fixed in this branch",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(feedback::Provenance::PostFix),
+            false,
+            &path,
+        );
+        assert_eq!(exit_code, 0);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"provenance\":\"post_fix\""));
     }
 
     #[test]
@@ -2813,6 +2841,7 @@ mod feedback_tests {
             "Test finding",
             "fp",
             "Not real",
+            None,
             None,
             None,
             None,
@@ -2840,6 +2869,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2857,6 +2887,7 @@ mod feedback_tests {
             "SQL injection",
             "fp",
             "Not a real issue",
+            None,
             None,
             None,
             None,
@@ -2890,6 +2921,7 @@ mod feedback_tests {
             None,
             None,
             None,
+            None,
             false,
             &path,
         );
@@ -2912,6 +2944,7 @@ mod feedback_tests {
             None,
             None, // fp_kind
             None, // in_diff
+            None, // provenance
             false,
             &path,
         );
@@ -2963,6 +2996,7 @@ mod feedback_tests {
             None,
             None, // fp_kind
             None, // in_diff
+            None, // provenance
             false,
             &path,
         );
@@ -2990,6 +3024,7 @@ mod feedback_tests {
             None,
             None, // fp_kind
             None, // in_diff
+            None, // provenance
             false,
             &path,
         );

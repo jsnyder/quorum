@@ -616,6 +616,13 @@ pub struct FeedbackOpts {
     /// unknown (omitted). Flows through both Human and External paths.
     #[arg(long)]
     pub in_diff: Option<bool>,
+
+    /// Provenance tier: post_fix (1.5x weight, strongest signal) or human
+    /// (1.0x, default). Use post_fix when recording a verdict AFTER fixing
+    /// the bug in the same branch. Ignored when --from-agent is set (External
+    /// path always uses its own provenance).
+    #[arg(long, value_parser = parse_provenance)]
+    pub provenance: Option<crate::feedback::Provenance>,
 }
 
 impl FeedbackOpts {
@@ -673,6 +680,16 @@ impl FeedbackOpts {
 /// Validate `--confidence` at the CLI boundary. Accepts finite values in
 /// [0,1] only. NaN/Inf and out-of-range values are rejected with a clear
 /// error rather than silently clamped.
+pub fn parse_provenance(s: &str) -> Result<crate::feedback::Provenance, String> {
+    match s.trim().to_lowercase().as_str() {
+        "post_fix" | "postfix" | "post-fix" => Ok(crate::feedback::Provenance::PostFix),
+        "human" => Ok(crate::feedback::Provenance::Human),
+        other => Err(format!(
+            "unknown provenance '{other}': expected post_fix or human"
+        )),
+    }
+}
+
 pub fn parse_confidence(s: &str) -> Result<f32, String> {
     let v: f32 = s
         .parse()
@@ -1687,5 +1704,31 @@ mod tests {
         use clap::Parser;
         let res = Args::try_parse_from(["quorum", "stats", "--by-file", "--top", "0"]);
         assert!(res.is_err(), "--top 0 should be rejected");
+    }
+
+    #[test]
+    fn parse_provenance_accepts_variants() {
+        assert!(matches!(
+            parse_provenance("post_fix").unwrap(),
+            crate::feedback::Provenance::PostFix
+        ));
+        assert!(matches!(
+            parse_provenance("postfix").unwrap(),
+            crate::feedback::Provenance::PostFix
+        ));
+        assert!(matches!(
+            parse_provenance("post-fix").unwrap(),
+            crate::feedback::Provenance::PostFix
+        ));
+        assert!(matches!(
+            parse_provenance("human").unwrap(),
+            crate::feedback::Provenance::Human
+        ));
+    }
+
+    #[test]
+    fn parse_provenance_rejects_unknown() {
+        assert!(parse_provenance("external").is_err());
+        assert!(parse_provenance("auto_calibrate").is_err());
     }
 }
