@@ -2089,6 +2089,7 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
     let mut all_oof_predictions: Vec<(f64, bool)> = vec![(0.0, false); n];
     let mut oof_filled = vec![false; n];
     let mut fold_selected_features: Vec<Vec<usize>> = Vec::with_capacity(k_folds);
+    let mut fold_best_lambdas: Vec<f64> = Vec::with_capacity(k_folds);
 
     for fold_idx in 0..k_folds {
         // Split into train/val by fold assignment
@@ -2163,6 +2164,8 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
             }
         }
 
+        fold_best_lambdas.push(best_lambda);
+
         // Refit with best lambda, produce OOF predictions for val indices
         let best_model = crate::logistic::fit(&train_x, &train_y, best_lambda, MAX_LOGISTIC_ITER);
         let oof_preds = best_model.predict(&val_x);
@@ -2223,7 +2226,13 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
         .collect();
     let prod_y: Vec<bool> = all_expanded.iter().map(|(_, label)| *label).collect();
 
-    let prod_model = crate::logistic::fit(&prod_x, &prod_y, 1.0, MAX_LOGISTIC_ITER);
+    // Use median of per-fold CV-selected lambdas for production refit
+    let prod_lambda = {
+        let mut sorted_lambdas = fold_best_lambdas.clone();
+        sorted_lambdas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_lambdas[sorted_lambdas.len() / 2]
+    };
+    let prod_model = crate::logistic::fit(&prod_x, &prod_y, prod_lambda, MAX_LOGISTIC_ITER);
 
     // Threshold selection from OOF predictions (not in-sample) to avoid
     // optimistic safety estimates. The production model provides deployed
