@@ -318,6 +318,22 @@ Hydration context scoped to changed lines only. Same finding quality, smaller pr
 | Sequential | --parallel 1 (debugging) | ~45s/file |
 | No API key | (local only) | 7ms |
 
+### Logistic Calibrator (v0.25.0+)
+
+An L2-regularized logistic model predicts P(FP) from 15 engineered features to suppress false positives and boost true positives:
+
+```bash
+quorum calibrate --learn-weights     # train model from feedback corpus
+quorum calibrate --feature-importance # show per-feature AP scores
+```
+
+Key features (ranked by univariate AP): `min_word_lor`, `max_word_lor`, `category_fp_rate`, `log1p_fp_weight`, `log1p_soft_fp_weight`, `log1p_full_suppress_weight`.
+
+- **Suppress** (p_fp >= threshold): high-confidence FP findings suppressed (requires `fp_weight > 0`)
+- **Boost** (p_fp <= threshold): high-confidence TP findings get boosted
+- Thresholds derived from out-of-fold predictions (5-fold GroupKFold)
+- Model written to `~/.quorum/calibrator_model.toml`
+
 ### Feedback provenance
 
 Verdicts from different sources carry different calibration weight:
@@ -326,6 +342,13 @@ Verdicts from different sources carry different calibration weight:
 - **external** (0.7x): Verdict from another review agent (pal, third-opinion, gemini, reviewdog, ...) — capped at 1.4 globally so a single agent cannot dominate
 - **auto_calibrate** (0.5x): LLM triage pass
 - **unknown** (0.3x): Legacy entries
+
+Use `--provenance post_fix` on the CLI to record post-fix verdicts (1.5x weight):
+
+```bash
+quorum feedback --file src/x.rs --finding "SQL injection" --verdict tp \
+    --provenance post_fix --reason "Fixed by parameterizing query"
+```
 
 ### Recording External-agent verdicts (v0.17.0+)
 
