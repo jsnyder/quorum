@@ -199,12 +199,10 @@ pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> Logistic
             if new_loss <= prev_loss - ARMIJO_C * step * grad_norm_sq {
                 weights = new_weights;
                 intercept = new_intercept;
-                prev_loss = new_loss;
                 break;
             }
             step *= ARMIJO_BETA;
 
-            // If we exhaust line search iterations, take the last step
             if step < 1e-15 {
                 weights = weights
                     .iter()
@@ -212,12 +210,11 @@ pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> Logistic
                     .map(|(w, g)| w - step * g)
                     .collect();
                 intercept -= step * grad_b;
-                prev_loss = loss(&x_norm, &y_f, &weights, intercept, lambda);
                 break;
             }
         }
 
-        // Check convergence: relative loss change
+        // Check convergence: relative loss change between iterations
         let curr_loss = loss(&x_norm, &y_f, &weights, intercept, lambda);
         let rel_change = (prev_loss - curr_loss).abs() / (prev_loss.abs() + EPSILON);
         prev_loss = curr_loss;

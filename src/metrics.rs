@@ -134,19 +134,19 @@ pub fn fp_recall_at_tp_recall(predictions: &[(f64, bool)], min_tp_recall: f64) -
         return 0.0;
     }
 
-    let total_fp = predictions.iter().filter(|(_, is_fp)| *is_fp).count();
-    let total_non_fp = predictions.iter().filter(|(_, is_fp)| !*is_fp).count();
-
-    if total_fp == 0 || total_non_fp == 0 {
-        return 0.0;
-    }
-
     let mut sorted: Vec<(f64, bool)> = predictions
         .iter()
         .filter(|(s, _)| s.is_finite())
         .copied()
         .collect();
     sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let total_fp = sorted.iter().filter(|(_, is_fp)| *is_fp).count();
+    let total_non_fp = sorted.iter().filter(|(_, is_fp)| !*is_fp).count();
+
+    if total_fp == 0 || total_non_fp == 0 {
+        return 0.0;
+    }
 
     // If all scores are tied, we can't make any distinction
     if sorted.first().map(|f| f.0) == sorted.last().map(|l| l.0) {

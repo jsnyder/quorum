@@ -338,11 +338,15 @@ fn calibrate_core_decision(
                     .filter(|w| w.len() >= 2)
                     .filter_map(|w| model.word_lor.get(w).copied())
                     .collect();
-                (
-                    word_lors.iter().copied().fold(0.0_f64, f64::max),
-                    word_lors.iter().copied().fold(0.0_f64, f64::min),
-                    word_lors.iter().filter(|&&v| v < -0.5).count() as f64,
-                )
+                if word_lors.is_empty() {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    (
+                        word_lors.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                        word_lors.iter().copied().fold(f64::INFINITY, f64::min),
+                        word_lors.iter().filter(|&&v| v < -0.5).count() as f64,
+                    )
+                }
             } else {
                 (0.0, 0.0, 0.0)
             };
@@ -392,14 +396,14 @@ fn calibrate_core_decision(
 
         let p_fp = logistic_score(logistic, &review_features);
 
-        // force_threshold overrides the logistic model's thresholds (same
-        // semantics as the composite path: single value replaces both).
-        let has_composite = config.model.is_some();
+        // force_threshold overrides the logistic model's thresholds.
+        // Logistic thresholds are probabilities [0,1] — use non-composite
+        // semantics (false) so force_threshold is validated to [0,1].
         let effective_suppress =
-            sanitize_threshold(config.force_threshold, has_composite)
+            sanitize_threshold(config.force_threshold, false)
                 .unwrap_or(logistic.suppress_threshold);
         let effective_boost =
-            sanitize_threshold(config.force_threshold, has_composite)
+            sanitize_threshold(config.force_threshold, false)
                 .unwrap_or(logistic.boost_threshold);
 
         // Suppress: P(FP) > suppress_threshold AND some FP evidence exists
