@@ -124,10 +124,7 @@ impl ExpandedFeatures {
 ///
 /// Each feature is evaluated independently as a predictor of the positive class.
 /// `baseline_ap` is typically the class prevalence (proportion of positives).
-pub fn univariate_screen(
-    samples: &[(ExpandedFeatures, bool)],
-    baseline_ap: f64,
-) -> Vec<usize> {
+pub fn univariate_screen(samples: &[(ExpandedFeatures, bool)], baseline_ap: f64) -> Vec<usize> {
     let threshold = baseline_ap + 0.02;
     let n_features = ExpandedFeatures::feature_names().len(); // 15
 
@@ -153,9 +150,7 @@ pub fn univariate_screen(
 
 /// Compute per-feature univariate AP scores for diagnostics.
 /// Returns (feature_index, ap_score) pairs sorted by AP descending.
-pub fn feature_importance_scores(
-    samples: &[(ExpandedFeatures, bool)],
-) -> Vec<(usize, f64)> {
+pub fn feature_importance_scores(samples: &[(ExpandedFeatures, bool)]) -> Vec<(usize, f64)> {
     let n_features = ExpandedFeatures::feature_names().len();
 
     // Pre-compute feature matrix to avoid repeated to_vec() allocations.
@@ -169,7 +164,10 @@ pub fn feature_importance_scores(
                 .zip(labels.iter())
                 .map(|(row, &label)| (row[feat_idx], label))
                 .collect();
-            (feat_idx, crate::metrics::average_precision_stepwise(&univariate))
+            (
+                feat_idx,
+                crate::metrics::average_precision_stepwise(&univariate),
+            )
         })
         .collect();
     scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1359,7 +1357,11 @@ pub fn learn_weights(
 
     for i in 0..k {
         let start = i * fold_size;
-        let end = if i == k - 1 { features.len() } else { start + fold_size };
+        let end = if i == k - 1 {
+            features.len()
+        } else {
+            start + fold_size
+        };
 
         let train: Vec<(SampleFeatures, bool)> = indices
             .iter()
@@ -1375,10 +1377,8 @@ pub fn learn_weights(
         let (best_w, _) =
             grid_search_best(&train, score_grid, word_lor_grid, family_grid, lang_grid);
 
-        let val_scored: Vec<(f64, bool)> = val
-            .iter()
-            .map(|(f, l)| (f.score(&best_w), *l))
-            .collect();
+        let val_scored: Vec<(f64, bool)> =
+            val.iter().map(|(f, l)| (f.score(&best_w), *l)).collect();
         let val_auc = metrics::pr_auc(&val_scored);
 
         fold_weights.push(best_w);
@@ -1622,7 +1622,8 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
     // Word log-odds ratios with Laplace smoothing
     let mut word_lor_map: HashMap<String, f64> = HashMap::new();
     if tp_total > 0 && fp_total > 0 {
-        let all_words: HashSet<&String> = word_fp_count.keys().chain(word_tp_count.keys()).collect();
+        let all_words: HashSet<&String> =
+            word_fp_count.keys().chain(word_tp_count.keys()).collect();
         let eps = 0.5_f64; // Laplace smoothing
         for w in all_words {
             let fp_c = word_fp_count.get(w).copied().unwrap_or(0);
@@ -1652,7 +1653,10 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
 /// Extract expanded features for a single sample using fold-local stats.
 ///
 /// Returns the feature vector and the label (`true` = FP for logistic regression).
-pub fn extract_single_expanded(s: &JoinedSample, stats: &FoldLocalStats) -> (ExpandedFeatures, bool) {
+pub fn extract_single_expanded(
+    s: &JoinedSample,
+    stats: &FoldLocalStats,
+) -> (ExpandedFeatures, bool) {
     let words = tokenize_title(&s.title);
 
     let max_word_lor = words
@@ -1750,7 +1754,8 @@ pub fn extract_joined_samples(
     let mut deep_path_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
     let mut deep_path_ambiguous: HashSet<(String, String)> = HashSet::new();
     let mut file_traces: HashMap<String, Vec<(String, TraceInfoExpanded)>> = HashMap::new();
-    let mut suffix_index: HashMap<String, Vec<(String, String, TraceInfoExpanded)>> = HashMap::new();
+    let mut suffix_index: HashMap<String, Vec<(String, String, TraceInfoExpanded)>> =
+        HashMap::new();
     let mut norm_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
     let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
     let mut raw_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
@@ -1779,10 +1784,7 @@ pub fn extract_joined_samples(
             .as_str()
             .unwrap_or("unknown")
             .to_string();
-        let severity = t["input_severity"]
-            .as_str()
-            .unwrap_or("medium")
-            .to_string();
+        let severity = t["input_severity"].as_str().unwrap_or("medium").to_string();
         let model_name = t["model"].as_str().unwrap_or("unknown").to_string();
 
         let norm = normalize_title(&title);
@@ -2162,8 +2164,7 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
         }
 
         // Refit with best lambda, produce OOF predictions for val indices
-        let best_model =
-            crate::logistic::fit(&train_x, &train_y, best_lambda, MAX_LOGISTIC_ITER);
+        let best_model = crate::logistic::fit(&train_x, &train_y, best_lambda, MAX_LOGISTIC_ITER);
         let oof_preds = best_model.predict(&val_x);
 
         for (local_idx, &global_idx) in val_indices.iter().enumerate() {
@@ -3902,7 +3903,10 @@ mod tests {
             result.weights.score > 0.0,
             "score weight should be positive for separable data"
         );
-        assert!(result.pr_auc > 0.8, "PR-AUC should be high for separable data");
+        assert!(
+            result.pr_auc > 0.8,
+            "PR-AUC should be high for separable data"
+        );
     }
 
     #[test]
@@ -4087,10 +4091,7 @@ mod tests {
             category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
             severity_fp_rates: HashMap::from([("high".to_string(), 0.12)]),
             model_fp_rates: HashMap::from([("gpt-5.4".to_string(), 0.20)]),
-            word_lor: HashMap::from([
-                ("sql".to_string(), -0.8),
-                ("injection".to_string(), -1.2),
-            ]),
+            word_lor: HashMap::from([("sql".to_string(), -0.8), ("injection".to_string(), -1.2)]),
             global_fp_rate: 0.18,
         };
         let (features, is_fp) = extract_single_expanded(&s, &stats);
@@ -4130,7 +4131,10 @@ mod tests {
         // Feature 0 should be selected (perfect -> AP=1.0, lift=0.80)
         assert!(selected.contains(&0), "Perfect feature should be selected");
         // Feature 1 should NOT be selected (random -> AP~0.20, lift~0)
-        assert!(!selected.contains(&1), "Random feature should not be selected");
+        assert!(
+            !selected.contains(&1),
+            "Random feature should not be selected"
+        );
         // Feature 2 should be selected (moderate separation)
         assert!(selected.contains(&2), "Moderate feature should be selected");
     }

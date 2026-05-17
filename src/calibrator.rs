@@ -328,7 +328,11 @@ fn calibrate_core_decision(
     let mut boosted = false;
 
     // Logistic model path: when present, P(FP) directly drives suppress/boost decisions.
-    if let Some(logistic) = config.model.as_ref().and_then(|m| m.logistic_model.as_ref()) {
+    if let Some(logistic) = config
+        .model
+        .as_ref()
+        .and_then(|m| m.logistic_model.as_ref())
+    {
         // Compute word LOR features from the model's vocabulary
         let (max_word_lor, min_word_lor, count_negative_lor_tokens) =
             if let Some(model) = config.model.as_ref() {
@@ -399,12 +403,10 @@ fn calibrate_core_decision(
         // force_threshold overrides the logistic model's thresholds.
         // Logistic thresholds are probabilities [0,1] — use non-composite
         // semantics (false) so force_threshold is validated to [0,1].
-        let effective_suppress =
-            sanitize_threshold(config.force_threshold, false)
-                .unwrap_or(logistic.suppress_threshold);
+        let effective_suppress = sanitize_threshold(config.force_threshold, false)
+            .unwrap_or(logistic.suppress_threshold);
         let effective_boost =
-            sanitize_threshold(config.force_threshold, false)
-                .unwrap_or(logistic.boost_threshold);
+            sanitize_threshold(config.force_threshold, false).unwrap_or(logistic.boost_threshold);
 
         // Suppress: P(FP) > suppress_threshold AND some FP evidence exists
         if p_fp > effective_suppress && fp_weight > 0.0 {
@@ -2979,8 +2981,15 @@ mod tests {
             "",
         );
         assert!(!decision.suppressed, "should not be fully suppressed");
-        assert!(!decision.boosted, "soft-suppressed finding must not be boosted");
-        assert_eq!(finding.severity, Severity::Info, "soft-suppress should downgrade to Info");
+        assert!(
+            !decision.boosted,
+            "soft-suppressed finding must not be boosted"
+        );
+        assert_eq!(
+            finding.severity,
+            Severity::Info,
+            "soft-suppress should downgrade to Info"
+        );
         assert_eq!(
             finding.calibrator_action,
             Some(CalibratorAction::Disputed),
@@ -5572,9 +5581,7 @@ mod tests {
 
     #[test]
     fn logistic_model_suppresses_finding() {
-        use crate::calibrator_model::{
-            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
-        };
+        use crate::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
         use std::collections::HashMap;
         // Model with logistic: high P(FP) for findings with fp_weight
         let lm = LogisticModel {
@@ -5623,8 +5630,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.1,  // tp_weight (low)
-            2.0,  // fp_weight (high -> ln_1p(2.0) ~ 1.099, well above mean 0.3)
+            0.1, // tp_weight (low)
+            2.0, // fp_weight (high -> ln_1p(2.0) ~ 1.099, well above mean 0.3)
             0.0,
             2.0,
             vec![],
@@ -5647,9 +5654,7 @@ mod tests {
 
     #[test]
     fn logistic_model_boosts_finding() {
-        use crate::calibrator_model::{
-            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
-        };
+        use crate::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
         use std::collections::HashMap;
         // Model where low fp_weight -> low P(FP) -> boost
         let lm = LogisticModel {
@@ -5698,8 +5703,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            2.0,  // tp_weight (high TP evidence)
-            0.0,  // fp_weight (zero -> ln_1p(0) = 0.0, below mean 0.5)
+            2.0, // tp_weight (high TP evidence)
+            0.0, // fp_weight (zero -> ln_1p(0) = 0.0, below mean 0.5)
             0.0,
             0.0,
             vec![],
@@ -5720,9 +5725,7 @@ mod tests {
 
     #[test]
     fn logistic_model_passthrough_no_action() {
-        use crate::calibrator_model::{
-            CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
-        };
+        use crate::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
         use std::collections::HashMap;
         // Model where P(FP) is between thresholds -> no suppress or boost
         let lm = LogisticModel {
@@ -5771,8 +5774,8 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.5,  // tp_weight (some TP)
-            0.3,  // fp_weight (some FP, ln_1p(0.3) ~ 0.26, near mean 0.5)
+            0.5, // tp_weight (some TP)
+            0.3, // fp_weight (some FP, ln_1p(0.3) ~ 0.26, near mean 0.5)
             0.0,
             0.3,
             vec![],

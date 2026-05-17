@@ -83,8 +83,7 @@ impl LogisticFit {
             .iter()
             .enumerate()
             .map(|(j, val)| {
-                let normed = (val - self.feature_means[j])
-                    / (self.feature_stddevs[j] + EPSILON);
+                let normed = (val - self.feature_means[j]) / (self.feature_stddevs[j] + EPSILON);
                 normed * self.coefficients[j]
             })
             .sum::<f64>()
@@ -106,21 +105,18 @@ fn cross_entropy_single(z: f64, y: f64) -> f64 {
 }
 
 /// Compute total loss (cross-entropy + L2 penalty on weights).
-fn loss(
-    x_norm: &[Vec<f64>],
-    y: &[f64],
-    weights: &[f64],
-    intercept: f64,
-    lambda: f64,
-) -> f64 {
+fn loss(x_norm: &[Vec<f64>], y: &[f64], weights: &[f64], intercept: f64, lambda: f64) -> f64 {
     let n = x_norm.len() as f64;
     let ce: f64 = x_norm
         .iter()
         .zip(y.iter())
         .map(|(xi, &yi)| {
-            let z: f64 =
-                xi.iter().zip(weights.iter()).map(|(a, b)| a * b).sum::<f64>()
-                    + intercept;
+            let z: f64 = xi
+                .iter()
+                .zip(weights.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>()
+                + intercept;
             cross_entropy_single(z, yi)
         })
         .sum();
@@ -135,7 +131,11 @@ fn loss(
 /// is the L2 regularization strength, and `max_iter` is the iteration cap.
 pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> LogisticFit {
     assert!(!x.is_empty(), "fit requires at least one sample");
-    assert_eq!(x.len(), y.len(), "feature matrix rows must match label count");
+    assert_eq!(
+        x.len(),
+        y.len(),
+        "feature matrix rows must match label count"
+    );
     let p = x[0].len();
     debug_assert!(
         x.iter().all(|row| row.len() == p),
@@ -161,9 +161,12 @@ pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> Logistic
         let mut grad_b = 0.0;
 
         for (xi, &yi) in x_norm.iter().zip(y_f.iter()) {
-            let z: f64 =
-                xi.iter().zip(weights.iter()).map(|(a, b)| a * b).sum::<f64>()
-                    + intercept;
+            let z: f64 = xi
+                .iter()
+                .zip(weights.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>()
+                + intercept;
             let residual = sigmoid(z) - yi;
             for (j, xij) in xi.iter().enumerate() {
                 grad_w[j] += residual * xij;
@@ -178,8 +181,7 @@ pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> Logistic
         grad_b /= n_f;
 
         // Compute squared gradient norm for Armijo condition
-        let grad_norm_sq: f64 = grad_w.iter().map(|g| g * g).sum::<f64>()
-            + grad_b * grad_b;
+        let grad_norm_sq: f64 = grad_w.iter().map(|g| g * g).sum::<f64>() + grad_b * grad_b;
 
         // Backtracking line search
         let mut step = 1.0;

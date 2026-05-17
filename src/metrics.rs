@@ -287,14 +287,20 @@ mod tests {
     fn pr_auc_basic() {
         let samples = vec![(0.9, true), (0.7, false), (0.5, true), (0.3, false)];
         let auc = pr_auc(&samples);
-        assert!(auc > 0.0 && auc <= 1.0, "PR-AUC should be in (0,1], got {auc}");
+        assert!(
+            auc > 0.0 && auc <= 1.0,
+            "PR-AUC should be in (0,1], got {auc}"
+        );
     }
 
     #[test]
     fn pr_auc_perfect_separation() {
         let samples = vec![(0.9, true), (0.8, true), (0.2, false), (0.1, false)];
         let auc = pr_auc(&samples);
-        assert!(auc > 0.9, "perfect separation should yield high PR-AUC, got {auc}");
+        assert!(
+            auc > 0.9,
+            "perfect separation should yield high PR-AUC, got {auc}"
+        );
     }
 
     #[test]
@@ -406,12 +412,7 @@ mod tests {
     #[test]
     fn fp_recall_no_separation() {
         // All items have the same score -> can't distinguish, return 0.0
-        let predictions = vec![
-            (0.5, true),
-            (0.5, false),
-            (0.5, true),
-            (0.5, false),
-        ];
+        let predictions = vec![(0.5, true), (0.5, false), (0.5, true), (0.5, false)];
         let recall = fp_recall_at_tp_recall(&predictions, 0.95);
         assert!(
             (recall - 0.0).abs() < 1e-9,

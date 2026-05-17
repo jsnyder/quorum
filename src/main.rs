@@ -18,6 +18,7 @@ pub use quorum::file_util;
 pub use quorum::finding;
 pub use quorum::grounding;
 pub use quorum::hydration;
+pub use quorum::logistic;
 pub use quorum::merge;
 pub use quorum::parser;
 pub use quorum::patterns;
@@ -25,7 +26,6 @@ pub use quorum::prompt_sanitize;
 pub use quorum::prose_prompts;
 pub use quorum::redact;
 pub use quorum::review_mode;
-pub use quorum::logistic;
 pub use quorum::storage;
 
 mod agent;
@@ -2399,7 +2399,11 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     if opts.feature_importance {
         if let Some(ref model) = composite_model {
             let joined = quorum::calibrate::extract_joined_samples(
-                &feedback, &traces, model, &filter, disable_fuzzy,
+                &feedback,
+                &traces,
+                model,
+                &filter,
+                disable_fuzzy,
             );
             if joined.is_empty() {
                 eprintln!("No joined samples available for feature importance.");
@@ -2431,7 +2435,9 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                 );
             }
         } else {
-            eprintln!("No composite model available (insufficient feedback for feature importance).");
+            eprintln!(
+                "No composite model available (insufficient feedback for feature importance)."
+            );
         }
         return 0;
     }
@@ -2442,7 +2448,11 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     {
         // Try logistic calibrator first
         let joined = quorum::calibrate::extract_joined_samples(
-            &feedback, &traces, model, &filter, disable_fuzzy,
+            &feedback,
+            &traces,
+            model,
+            &filter,
+            disable_fuzzy,
         );
 
         match quorum::calibrate::learn_logistic(&joined, 5) {
@@ -2494,15 +2504,18 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
 
                 // Fallback: existing grid search
                 let features = quorum::calibrate::extract_join_features(
-                    &feedback, &traces, model, &filter, disable_fuzzy,
+                    &feedback,
+                    &traces,
+                    model,
+                    &filter,
+                    disable_fuzzy,
                 );
                 match quorum::calibrate::learn_weights(&features, 5) {
                     Some(result) => {
                         let mean_cv_auc = if result.fold_aucs.is_empty() {
                             0.0
                         } else {
-                            result.fold_aucs.iter().sum::<f64>()
-                                / result.fold_aucs.len() as f64
+                            result.fold_aucs.iter().sum::<f64>() / result.fold_aucs.len() as f64
                         };
                         let lift = result.pr_auc - result.baseline_auc;
                         eprintln!("\nWeight learning ({} samples):", features.len());
@@ -2527,9 +2540,7 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                         );
                         let min_lift = 0.005;
                         if lift < min_lift {
-                            eprintln!(
-                                "  -> No improvement over baseline (lift < {min_lift})"
-                            );
+                            eprintln!("  -> No improvement over baseline (lift < {min_lift})");
                         } else if result.stable {
                             model.weights = result.weights;
                             model.meta.learned_weights = Some(true);
