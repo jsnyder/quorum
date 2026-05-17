@@ -56,7 +56,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
-    dot / (norm_a * norm_b)
+    let result = dot / (norm_a * norm_b);
+    if result.is_finite() { result } else { 0.0 }
 }
 
 #[cfg(test)]
