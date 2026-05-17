@@ -434,8 +434,16 @@ fn calibrate_core_decision(
             finding_count_same_file: 0.0,
             file_fp_rate: 0.0,
             finding_span_lines: (finding.line_end.saturating_sub(finding.line_start) + 1) as f64,
-            is_mock_or_fixture: if crate::calibrate::is_mock_or_fixture_path(file_path) { 1.0 } else { 0.0 },
-            is_generated_or_vendor: if crate::calibrate::is_generated_or_vendor_path(file_path) { 1.0 } else { 0.0 },
+            is_mock_or_fixture: if crate::calibrate::is_mock_or_fixture_path(file_path) {
+                1.0
+            } else {
+                0.0
+            },
+            is_generated_or_vendor: if crate::calibrate::is_generated_or_vendor_path(file_path) {
+                1.0
+            } else {
+                0.0
+            },
         };
 
         let p_fp = logistic_score(logistic, &review_features);

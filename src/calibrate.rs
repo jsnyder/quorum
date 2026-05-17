@@ -29,7 +29,7 @@ impl SampleFeatures {
     }
 }
 
-/// Expanded feature vector for logistic calibrator (19 dimensions).
+/// Expanded feature vector for logistic calibrator (22 dimensions).
 /// Field order matches `to_vec()` and `feature_names()`.
 #[derive(Debug, Clone)]
 pub struct ExpandedFeatures {
@@ -155,9 +155,9 @@ impl ExpandedFeatures {
 /// `baseline_ap` is typically the class prevalence (proportion of positives).
 pub fn univariate_screen(samples: &[(ExpandedFeatures, bool)], baseline_ap: f64) -> Vec<usize> {
     let threshold = baseline_ap + 0.02;
-    let n_features = ExpandedFeatures::feature_names().len(); // 19
+    let n_features = ExpandedFeatures::feature_names().len(); // 22
 
-    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*19 -> N).
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*22 -> N).
     let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
     let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
     let mut selected = Vec::new();
@@ -1764,7 +1764,11 @@ pub fn extract_single_expanded(
         max_word_lor,
         min_word_lor,
         count_negative_lor_tokens,
-        is_test_file: if is_test_file_path(&s.file_path) { 1.0 } else { 0.0 },
+        is_test_file: if is_test_file_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
         source_is_ast: if s.source_is_ast { 1.0 } else { 0.0 },
         finding_count_same_file: if s.file_path.is_empty() {
             0.0
@@ -1786,8 +1790,16 @@ pub fn extract_single_expanded(
                 .unwrap_or(stats.global_fp_rate)
         },
         finding_span_lines: (s.finding_span_lines as f64).ln_1p(),
-        is_mock_or_fixture: if is_mock_or_fixture_path(&s.file_path) { 1.0 } else { 0.0 },
-        is_generated_or_vendor: if is_generated_or_vendor_path(&s.file_path) { 1.0 } else { 0.0 },
+        is_mock_or_fixture: if is_mock_or_fixture_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
+        is_generated_or_vendor: if is_generated_or_vendor_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
     };
 
     (features, s.is_fp)
@@ -2160,8 +2172,7 @@ pub fn extract_joined_samples(
 
         if let Some(info) = matched {
             let family = CalibratorModel::title_family(&title);
-            let source_is_ast =
-                info.model == "unknown" || info.category == "ast-pattern";
+            let source_is_ast = info.model == "unknown" || info.category == "ast-pattern";
             samples.push(JoinedSample {
                 title,
                 category: info.category.clone(),
@@ -4181,9 +4192,12 @@ mod tests {
             source_is_ast: 0.0,
             finding_count_same_file: 0.0,
             file_fp_rate: 0.0,
+            finding_span_lines: 0.0,
+            is_mock_or_fixture: 0.0,
+            is_generated_or_vendor: 0.0,
         };
         let v = f.to_vec();
-        assert_eq!(v.len(), 19);
+        assert_eq!(v.len(), 22);
         assert!((v[0] - 1.0).abs() < 1e-9); // log1p_tp_weight
         assert!((v[1] - 0.5).abs() < 1e-9); // log1p_fp_weight
         assert!((v[5] - 0.0).abs() < 1e-9); // has_no_precedents
@@ -4193,7 +4207,7 @@ mod tests {
     #[test]
     fn expanded_features_names_match_vec_order() {
         let names = ExpandedFeatures::feature_names();
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 22);
         assert_eq!(names[0], "log1p_tp_weight");
         assert_eq!(names[5], "has_no_precedents");
         assert_eq!(names[9], "category_fp_rate");
@@ -4202,6 +4216,9 @@ mod tests {
         assert_eq!(names[16], "source_is_ast");
         assert_eq!(names[17], "finding_count_same_file");
         assert_eq!(names[18], "file_fp_rate");
+        assert_eq!(names[19], "finding_span_lines");
+        assert_eq!(names[20], "is_mock_or_fixture");
+        assert_eq!(names[21], "is_generated_or_vendor");
     }
 
     #[test]
@@ -4291,6 +4308,7 @@ mod tests {
             family: "sql_injection".to_string(),
             file_path: "src/some_file.rs".to_string(),
             source_is_ast: false,
+            finding_span_lines: 3,
         };
         let stats = FoldLocalStats {
             category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
@@ -4304,7 +4322,7 @@ mod tests {
         let (features, is_fp) = extract_single_expanded(&s, &stats);
         assert!(!is_fp);
         let v = features.to_vec();
-        assert_eq!(v.len(), 19);
+        assert_eq!(v.len(), 22);
         assert!(v.iter().all(|x| x.is_finite()));
         // Check specific values
         assert!((features.log1p_tp_weight - 1.5_f64.ln_1p()).abs() < 1e-9);
@@ -4364,7 +4382,7 @@ mod tests {
             })
             .collect();
         let scores = feature_importance_scores(&samples);
-        assert_eq!(scores.len(), 15);
+        assert_eq!(scores.len(), 22);
         // Should be sorted descending by AP
         for w in scores.windows(2) {
             assert!(w[0].1 >= w[1].1);
@@ -4675,6 +4693,7 @@ mod tests {
                     family: format!("family_{}", i % 30),
                     file_path: "src/some_file.rs".to_string(),
                     source_is_ast: false,
+                    finding_span_lines: 3,
                 }
             })
             .collect();
