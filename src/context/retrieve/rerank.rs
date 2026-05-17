@@ -124,7 +124,11 @@ pub(crate) fn rerank(
     // above the no-decay baseline.
     let config = RerankConfig {
         recency_halflife_days: config.recency_halflife_days,
-        recency_floor: config.recency_floor.clamp(0.0, 1.0),
+        recency_floor: if config.recency_floor.is_finite() {
+            config.recency_floor.clamp(0.0, 1.0)
+        } else {
+            0.25
+        },
     };
     let bm25_raw: Vec<f32> = inputs.iter().map(|i| i.bm25_raw).collect();
     let vec_raw: Vec<f32> = inputs.iter().map(|i| i.vec_raw).collect();
@@ -143,7 +147,11 @@ pub(crate) fn rerank(
             } else {
                 0.0
             };
-            let struct_sim = input.struct_sim;
+            let struct_sim = if input.struct_sim.is_finite() {
+                input.struct_sim.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let struct_boost = STRUCT_BOOST_WEIGHT * struct_sim;
             let blended = BM25_WEIGHT * bn + VEC_WEIGHT * vn;
             let recency_mul = recency_multiplier(now, input.indexed_at, &config);
