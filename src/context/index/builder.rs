@@ -49,9 +49,9 @@ pub(crate) fn ensure_vec_loaded() {
         // point `int sqlite3_vec_init(sqlite3*, char**, const
         // sqlite3_api_routines*)`.  We cast through `*const ()` (erased
         // function pointer) then transmute to the type expected by
-        // `sqlite3_auto_extension`, matching the pattern in the crate's own
-        // test suite.  This is sound because the underlying C symbol has the
-        // correct ABI — only the Rust declaration is wrong.
+        // `sqlite3_auto_extension`.  This is sound because the underlying C
+        // symbol has the correct ABI — only the Rust declaration is wrong.
+        // Re-verify if sqlite-vec changes its Rust bindings signature.
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
             *const (),
             unsafe extern "C" fn(
