@@ -147,7 +147,7 @@ Review telemetry is local-only and append-only at `~/.quorum/telemetry.jsonl`. R
 - Model used, tokens in/out, duration
 - No file contents, no finding text, no code snippets
 
-Telemetry is best-effort — failures don't break reviews. Delete the file at any time with no impact.
+Telemetry is best-effort — reviews complete normally regardless of telemetry write errors. Delete the file at any time with no impact.
 
 ## Recording Feedback
 
@@ -155,7 +155,7 @@ Feedback improves future reviews via the calibrator. Use the MCP `feedback` tool
 
 ### Which verdict to use
 
-Only `fp` and `tp` affect the calibrator. `partial` and `wontfix` are inert metadata — they don't suppress or boost anything. `context_misleading` trains the context injector.
+Only `fp` and `tp` train the calibrator. `partial` and `wontfix` are inert metadata. `context_misleading` trains the context injector.
 
 | Verdict | Calibrator effect | When to use |
 |---------|-------------------|-------------|
@@ -183,8 +183,8 @@ Work through these in order. The first match wins. If a finding describes a real
 
 | Scenario | Verdict | Flags | Why |
 |----------|---------|-------|-----|
-| Real bug, you fixed it | `tp` | `--in-diff true --reason "Fixed by ..."` | Strongest learning signal for the calibrator |
-| Real bug, you won't fix it now | `tp` | `--in-diff true --reason "Accepted: ..."` | Still a real pattern — helps calibrator recognize similar issues |
+| Real bug, you fixed it | `tp` | `--in-diff true --provenance post_fix --reason "Fixed by ..."` | Strongest learning signal (1.5x weight) |
+| Real bug, you won't fix it now | `tp` | `--in-diff true --reason "Accepted: ..."` | Real pattern — helps calibrator recognize similar bugs |
 | Real but severity overstated (e.g. "critical" should be "medium") | `partial` | `--in-diff true --reason "Severity should be medium"` | Inert for calibrator but records your assessment |
 
 **Step 3: Is the finding real but outside your diff?**
@@ -192,8 +192,8 @@ Work through these in order. The first match wins. If a finding describes a real
 | Scenario | Verdict | Flags | Why |
 |----------|---------|-------|-----|
 | Real bug, you file an issue for it | `tp` | `--in-diff false --reason "Filed as issue #123"` | Teaches the calibrator this pattern catches real bugs (0.7x weight for out-of-diff). The issue tracks the real fix. |
-| Real bug, not worth filing | Skip | — | Recording feedback on unactionable findings adds noise. |
-| Pre-existing, already tracked | Skip | — | Already tracked elsewhere. |
+| Real bug, not worth filing | Skip | — | Out-of-diff only. Recording feedback on unactionable findings adds noise. |
+| Pre-existing, already tracked | Skip | — | Out-of-diff only. Already tracked elsewhere. |
 
 **Key principles:**
 - `tp` means "I want to see MORE findings like this." Use for all real bugs — in-diff or out-of-diff.
@@ -318,6 +318,24 @@ Hydration context scoped to changed lines only. Same finding quality, smaller pr
 | Sequential | --parallel 1 (debugging) | ~45s/file |
 | No API key | (local only) | 7ms |
 
+### Configuration
+
+```bash
+QUORUM_BASE_URL=https://litellm.example.com  # OpenAI-compatible endpoint
+QUORUM_API_KEY=sk-...                         # enables LLM review
+QUORUM_MODEL=gpt-5.4                          # default model
+QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro # for --ensemble
+
+# HTTP timeouts (v0.18.0+)
+QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
+QUORUM_HTTP_READ_TIMEOUT=120   # idle/read timeout, seconds (default 120)
+
+# base_url validation (v0.18.0+)
+QUORUM_ALLOWED_BASE_URL_HOSTS=litellm.example.com  # comma-separated host allowlist
+QUORUM_ALLOW_PRIVATE_BASE_URL=1                     # allow private/loopback IPs
+QUORUM_UNSAFE_BASE_URL=1                            # disable SSRF/scheme guards (last resort)
+```
+
 ### Logistic Calibrator (v0.25.0+)
 
 An L2-regularized logistic model predicts P(FP) from 15 engineered features to suppress false positives and boost true positives:
@@ -333,6 +351,7 @@ Key features (ranked by univariate AP): `min_word_lor`, `max_word_lor`, `categor
 - **Boost** (p_fp <= threshold): high-confidence TP findings get boosted
 - Thresholds derived from out-of-fold predictions (5-fold GroupKFold)
 - Model written to `~/.quorum/calibrator_model.toml`
+- The "Suppress/Boost: not computed" message in calibrate output refers to legacy composite thresholds — the logistic model operates independently via its own thresholds shown above.
 
 ### Feedback provenance
 
@@ -466,24 +485,6 @@ quorum feedback --file src/x.rs --finding "SQL concat" --verdict fp \
 ```
 
 Untagged FPs use the default τ=120d (~83d half-life). `quorum stats` reports `fp_kind_utilization_rate` once ≥10% of recent FPs are tagged. `fp_kind` is dropped on the External path (`--from-agent`) — only the direct/human ingestion path preserves it.
-
-## Configuration
-
-```bash
-QUORUM_BASE_URL=https://litellm.example.com  # OpenAI-compatible endpoint
-QUORUM_API_KEY=sk-...                         # enables LLM review
-QUORUM_MODEL=gpt-5.4                          # default model
-QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro # for --ensemble
-
-# HTTP timeouts (v0.18.0+)
-QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
-QUORUM_HTTP_READ_TIMEOUT=120   # idle/read timeout, seconds (default 120)
-
-# base_url validation (v0.18.0+)
-QUORUM_ALLOWED_BASE_URL_HOSTS=litellm.example.com  # comma-separated host allowlist
-QUORUM_ALLOW_PRIVATE_BASE_URL=1                     # allow private/loopback IPs
-QUORUM_UNSAFE_BASE_URL=1                            # disable SSRF/scheme guards (last resort)
-```
 
 ## Exit Codes
 
