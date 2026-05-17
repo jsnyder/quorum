@@ -183,6 +183,7 @@ mod tests {
             in_diff: None,
             composite_score: None,
             logistic_p_fp: None,
+            finding_span_lines: None,
         }
     }
 

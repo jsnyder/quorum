@@ -127,6 +127,7 @@ fn make_no_match_trace(
         in_diff: finding.in_diff,
         composite_score: None,
         logistic_p_fp: None,
+        finding_span_lines: Some(finding.line_end.saturating_sub(finding.line_start) + 1),
     }
 }
 
@@ -170,6 +171,7 @@ fn make_trace_entry(
         in_diff: finding.in_diff,
         composite_score: None,
         logistic_p_fp: None,
+        finding_span_lines: Some(finding.line_end.saturating_sub(finding.line_start) + 1),
     }
 }
 
@@ -195,6 +197,13 @@ pub struct ReviewFeatures {
     pub max_word_lor: f64,
     pub min_word_lor: f64,
     pub count_negative_lor_tokens: f64,
+    pub is_test_file: f64,
+    pub source_is_ast: f64,
+    pub finding_count_same_file: f64,
+    pub file_fp_rate: f64,
+    pub finding_span_lines: f64,
+    pub is_mock_or_fixture: f64,
+    pub is_generated_or_vendor: f64,
 }
 
 impl ReviewFeatures {
@@ -216,6 +225,13 @@ impl ReviewFeatures {
             max_word_lor: 0.0,
             min_word_lor: 0.0,
             count_negative_lor_tokens: 0.0,
+            is_test_file: 0.0,
+            source_is_ast: 0.0,
+            finding_count_same_file: 0.0,
+            file_fp_rate: 0.0,
+            finding_span_lines: 0.0,
+            is_mock_or_fixture: 0.0,
+            is_generated_or_vendor: 0.0,
         }
     }
 
@@ -237,6 +253,13 @@ impl ReviewFeatures {
             "max_word_lor" => self.max_word_lor,
             "min_word_lor" => self.min_word_lor,
             "count_negative_lor_tokens" => self.count_negative_lor_tokens,
+            "is_test_file" => self.is_test_file,
+            "source_is_ast" => self.source_is_ast,
+            "finding_count_same_file" => self.finding_count_same_file,
+            "file_fp_rate" => self.file_fp_rate,
+            "finding_span_lines" => self.finding_span_lines,
+            "is_mock_or_fixture" => self.is_mock_or_fixture,
+            "is_generated_or_vendor" => self.is_generated_or_vendor,
             _ => 0.0,
         }
     }
@@ -368,6 +391,16 @@ fn calibrate_core_decision(
             })
             .unwrap_or(0.0);
 
+        let is_test_file = if crate::calibrate::is_test_file_path(file_path) {
+            1.0
+        } else {
+            0.0
+        };
+        let source_is_ast = matches!(
+            finding.source,
+            crate::finding::Source::LocalAst | crate::finding::Source::Linter(_)
+        );
+
         let review_features = ReviewFeatures {
             log1p_tp_weight: tp_weight.ln_1p(),
             log1p_fp_weight: fp_weight.ln_1p(),
@@ -396,6 +429,21 @@ fn calibrate_core_decision(
             max_word_lor,
             min_word_lor,
             count_negative_lor_tokens,
+            is_test_file,
+            source_is_ast: if source_is_ast { 1.0 } else { 0.0 },
+            finding_count_same_file: 0.0,
+            file_fp_rate: 0.0,
+            finding_span_lines: (finding.line_end.saturating_sub(finding.line_start) + 1) as f64,
+            is_mock_or_fixture: if crate::calibrate::is_mock_or_fixture_path(file_path) {
+                1.0
+            } else {
+                0.0
+            },
+            is_generated_or_vendor: if crate::calibrate::is_generated_or_vendor_path(file_path) {
+                1.0
+            } else {
+                0.0
+            },
         };
 
         let p_fp = logistic_score(logistic, &review_features);

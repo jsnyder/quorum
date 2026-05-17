@@ -29,7 +29,7 @@ impl SampleFeatures {
     }
 }
 
-/// Expanded feature vector for logistic calibrator (15 dimensions).
+/// Expanded feature vector for logistic calibrator (22 dimensions).
 /// Field order matches `to_vec()` and `feature_names()`.
 #[derive(Debug, Clone)]
 pub struct ExpandedFeatures {
@@ -52,6 +52,14 @@ pub struct ExpandedFeatures {
     pub max_word_lor: f64,
     pub min_word_lor: f64,
     pub count_negative_lor_tokens: f64,
+    // Structural features (7)
+    pub is_test_file: f64,
+    pub source_is_ast: f64,
+    pub finding_count_same_file: f64,
+    pub file_fp_rate: f64,
+    pub finding_span_lines: f64,
+    pub is_mock_or_fixture: f64,
+    pub is_generated_or_vendor: f64,
 }
 
 impl ExpandedFeatures {
@@ -73,6 +81,13 @@ impl ExpandedFeatures {
             self.max_word_lor,
             self.min_word_lor,
             self.count_negative_lor_tokens,
+            self.is_test_file,
+            self.source_is_ast,
+            self.finding_count_same_file,
+            self.file_fp_rate,
+            self.finding_span_lines,
+            self.is_mock_or_fixture,
+            self.is_generated_or_vendor,
         ]
     }
 
@@ -94,6 +109,13 @@ impl ExpandedFeatures {
             "max_word_lor",
             "min_word_lor",
             "count_negative_lor_tokens",
+            "is_test_file",
+            "source_is_ast",
+            "finding_count_same_file",
+            "file_fp_rate",
+            "finding_span_lines",
+            "is_mock_or_fixture",
+            "is_generated_or_vendor",
         ]
     }
 
@@ -115,6 +137,13 @@ impl ExpandedFeatures {
             max_word_lor: 0.0,
             min_word_lor: 0.0,
             count_negative_lor_tokens: 0.0,
+            is_test_file: 0.0,
+            source_is_ast: 0.0,
+            finding_count_same_file: 0.0,
+            file_fp_rate: 0.0,
+            finding_span_lines: 0.0,
+            is_mock_or_fixture: 0.0,
+            is_generated_or_vendor: 0.0,
         }
     }
 }
@@ -126,9 +155,9 @@ impl ExpandedFeatures {
 /// `baseline_ap` is typically the class prevalence (proportion of positives).
 pub fn univariate_screen(samples: &[(ExpandedFeatures, bool)], baseline_ap: f64) -> Vec<usize> {
     let threshold = baseline_ap + 0.02;
-    let n_features = ExpandedFeatures::feature_names().len(); // 15
+    let n_features = ExpandedFeatures::feature_names().len(); // 22
 
-    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*15 -> N).
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*22 -> N).
     let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
     let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
     let mut selected = Vec::new();
@@ -1517,6 +1546,9 @@ pub struct JoinedSample {
     pub mean_similarity: f64,
     pub is_fp: bool,
     pub family: String,
+    pub file_path: String,
+    pub source_is_ast: bool,
+    pub finding_span_lines: u32,
 }
 
 /// Per-fold computed statistics for target-encoded features.
@@ -1528,6 +1560,8 @@ pub struct FoldLocalStats {
     pub model_fp_rates: HashMap<String, f64>,
     pub word_lor: HashMap<String, f64>,
     pub global_fp_rate: f64,
+    pub file_fp_rates: HashMap<String, f64>,
+    pub file_finding_counts: HashMap<String, usize>,
 }
 
 /// Smoothing parameter for beta-smoothed empirical rates.
@@ -1564,6 +1598,9 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
     // Word counts for LOR
     let mut word_fp_count: HashMap<String, usize> = HashMap::new();
     let mut word_tp_count: HashMap<String, usize> = HashMap::new();
+    // Per-file FP rates and finding counts
+    let mut file_fp: HashMap<String, usize> = HashMap::new();
+    let mut file_total: HashMap<String, usize> = HashMap::new();
 
     for s in samples {
         // Category
@@ -1580,6 +1617,13 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
         *model_total.entry(s.model.clone()).or_default() += 1;
         if s.is_fp {
             *model_fp.entry(s.model.clone()).or_default() += 1;
+        }
+        // File
+        if !s.file_path.is_empty() {
+            *file_total.entry(s.file_path.clone()).or_default() += 1;
+            if s.is_fp {
+                *file_fp.entry(s.file_path.clone()).or_default() += 1;
+            }
         }
         // Words
         let words = tokenize_title(&s.title);
@@ -1641,12 +1685,25 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
         }
     }
 
+    // Beta-smoothed file FP rates
+    let file_fp_rates: HashMap<String, f64> = file_total
+        .iter()
+        .map(|(f, &tot)| {
+            let fp_c = file_fp.get(f).copied().unwrap_or(0);
+            (f.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    let file_finding_counts: HashMap<String, usize> = file_total;
+
     FoldLocalStats {
         category_fp_rates,
         severity_fp_rates,
         model_fp_rates,
         word_lor: word_lor_map,
         global_fp_rate,
+        file_fp_rates,
+        file_finding_counts,
     }
 }
 
@@ -1707,9 +1764,139 @@ pub fn extract_single_expanded(
         max_word_lor,
         min_word_lor,
         count_negative_lor_tokens,
+        is_test_file: if is_test_file_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
+        source_is_ast: if s.source_is_ast { 1.0 } else { 0.0 },
+        finding_count_same_file: if s.file_path.is_empty() {
+            0.0
+        } else {
+            (stats
+                .file_finding_counts
+                .get(&s.file_path)
+                .copied()
+                .unwrap_or(1) as f64)
+                .ln_1p()
+        },
+        file_fp_rate: if s.file_path.is_empty() {
+            stats.global_fp_rate
+        } else {
+            stats
+                .file_fp_rates
+                .get(&s.file_path)
+                .copied()
+                .unwrap_or(stats.global_fp_rate)
+        },
+        finding_span_lines: (s.finding_span_lines as f64).ln_1p(),
+        is_mock_or_fixture: if is_mock_or_fixture_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
+        is_generated_or_vendor: if is_generated_or_vendor_path(&s.file_path) {
+            1.0
+        } else {
+            0.0
+        },
     };
 
     (features, s.is_fp)
+}
+
+/// Returns `true` if the file path looks like a test file.
+pub fn is_test_file_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let lower = path.to_lowercase();
+    let parts: Vec<&str> = lower.split('/').collect();
+    for part in &parts {
+        if *part == "tests" || *part == "test" || *part == "spec" || *part == "__tests__" {
+            return true;
+        }
+    }
+    let filename = parts.last().unwrap_or(&"");
+    filename.starts_with("test_")
+        || filename.ends_with("_test.rs")
+        || filename.ends_with("_test.py")
+        || filename.ends_with("_test.ts")
+        || filename.ends_with("_test.js")
+        || filename.ends_with(".test.ts")
+        || filename.ends_with(".test.js")
+        || filename.ends_with(".test.tsx")
+        || filename.ends_with(".test.jsx")
+        || filename.ends_with(".spec.ts")
+        || filename.ends_with(".spec.js")
+        || filename.ends_with("_spec.rb")
+}
+
+/// Returns `true` if the file path looks like a mock, stub, or fixture file.
+pub fn is_mock_or_fixture_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let lower = path.to_lowercase();
+    let parts: Vec<&str> = lower.split('/').collect();
+    for part in &parts {
+        if *part == "mocks"
+            || *part == "mock"
+            || *part == "stubs"
+            || *part == "fixtures"
+            || *part == "fixture"
+            || *part == "__mocks__"
+            || *part == "__fixtures__"
+        {
+            return true;
+        }
+    }
+    let filename = parts.last().unwrap_or(&"");
+    filename.contains("mock")
+        || filename.contains("stub")
+        || filename.contains("fixture")
+        || filename.contains("dummy")
+        || filename.contains("fake")
+}
+
+/// Returns `true` if the file path looks like generated, vendored, or build output.
+pub fn is_generated_or_vendor_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let lower = path.to_lowercase();
+    let parts: Vec<&str> = lower.split('/').collect();
+    for part in &parts {
+        if *part == "vendor"
+            || *part == "vendored"
+            || *part == "third_party"
+            || *part == "third-party"
+            || *part == "node_modules"
+            || *part == "dist"
+            || *part == "build"
+            || *part == "generated"
+            || *part == "gen"
+            || *part == "autogen"
+            || *part == "proto"
+            || *part == "target"
+        {
+            return true;
+        }
+    }
+    let filename = parts.last().unwrap_or(&"");
+    filename.ends_with(".generated.rs")
+        || filename.ends_with(".generated.ts")
+        || filename.ends_with(".generated.go")
+        || filename.ends_with(".pb.go")
+        || filename.ends_with(".pb.rs")
+        || filename.ends_with(".min.js")
+        || filename.ends_with(".min.css")
+        || filename.starts_with("generated_")
+        || filename.starts_with("autogen_")
+        || *filename == "package-lock.json"
+        || *filename == "yarn.lock"
+        || *filename == "pnpm-lock.yaml"
+        || *filename == "cargo.lock"
 }
 
 // ---------------------------------------------------------------------------
@@ -1731,6 +1918,7 @@ struct TraceInfoExpanded {
     category: String,
     severity: String,
     model: String,
+    finding_span_lines: u32,
 }
 
 /// Extract `JoinedSample` records by walking the same multi-tier join as
@@ -1786,6 +1974,7 @@ pub fn extract_joined_samples(
             .to_string();
         let severity = t["input_severity"].as_str().unwrap_or("medium").to_string();
         let model_name = t["model"].as_str().unwrap_or("unknown").to_string();
+        let span_lines = t["finding_span_lines"].as_u64().unwrap_or(1) as u32;
 
         let norm = normalize_title(&title);
         let deep_fp = normalize_file_path_deep(&fp);
@@ -1801,6 +1990,7 @@ pub fn extract_joined_samples(
             category,
             severity,
             model: model_name,
+            finding_span_lines: span_lines,
         };
 
         if fp.is_empty() {
@@ -1982,6 +2172,7 @@ pub fn extract_joined_samples(
 
         if let Some(info) = matched {
             let family = CalibratorModel::title_family(&title);
+            let source_is_ast = info.model == "unknown" || info.category == "ast-pattern";
             samples.push(JoinedSample {
                 title,
                 category: info.category.clone(),
@@ -1997,6 +2188,9 @@ pub fn extract_joined_samples(
                 mean_similarity: info.mean_similarity,
                 is_fp,
                 family,
+                file_path: fp.clone(),
+                source_is_ast,
+                finding_span_lines: info.finding_span_lines,
             });
         }
     }
@@ -3994,9 +4188,16 @@ mod tests {
             max_word_lor: 2.1,
             min_word_lor: -1.5,
             count_negative_lor_tokens: 3.0,
+            is_test_file: 0.0,
+            source_is_ast: 0.0,
+            finding_count_same_file: 0.0,
+            file_fp_rate: 0.0,
+            finding_span_lines: 0.0,
+            is_mock_or_fixture: 0.0,
+            is_generated_or_vendor: 0.0,
         };
         let v = f.to_vec();
-        assert_eq!(v.len(), 15);
+        assert_eq!(v.len(), 22);
         assert!((v[0] - 1.0).abs() < 1e-9); // log1p_tp_weight
         assert!((v[1] - 0.5).abs() < 1e-9); // log1p_fp_weight
         assert!((v[5] - 0.0).abs() < 1e-9); // has_no_precedents
@@ -4006,11 +4207,18 @@ mod tests {
     #[test]
     fn expanded_features_names_match_vec_order() {
         let names = ExpandedFeatures::feature_names();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 22);
         assert_eq!(names[0], "log1p_tp_weight");
         assert_eq!(names[5], "has_no_precedents");
         assert_eq!(names[9], "category_fp_rate");
         assert_eq!(names[14], "count_negative_lor_tokens");
+        assert_eq!(names[15], "is_test_file");
+        assert_eq!(names[16], "source_is_ast");
+        assert_eq!(names[17], "finding_count_same_file");
+        assert_eq!(names[18], "file_fp_rate");
+        assert_eq!(names[19], "finding_span_lines");
+        assert_eq!(names[20], "is_mock_or_fixture");
+        assert_eq!(names[21], "is_generated_or_vendor");
     }
 
     #[test]
@@ -4060,6 +4268,9 @@ mod tests {
                 mean_similarity: 0.5,
                 is_fp: i < 20,
                 family: format!("family_{}", i % 10),
+                file_path: "src/some_file.rs".to_string(),
+                source_is_ast: false,
+                finding_span_lines: 3,
             })
             .collect();
         let refs: Vec<&JoinedSample> = samples.iter().collect();
@@ -4095,6 +4306,9 @@ mod tests {
             mean_similarity: 0.72,
             is_fp: false,
             family: "sql_injection".to_string(),
+            file_path: "src/some_file.rs".to_string(),
+            source_is_ast: false,
+            finding_span_lines: 3,
         };
         let stats = FoldLocalStats {
             category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
@@ -4102,11 +4316,13 @@ mod tests {
             model_fp_rates: HashMap::from([("gpt-5.4".to_string(), 0.20)]),
             word_lor: HashMap::from([("sql".to_string(), -0.8), ("injection".to_string(), -1.2)]),
             global_fp_rate: 0.18,
+            file_fp_rates: HashMap::new(),
+            file_finding_counts: HashMap::new(),
         };
         let (features, is_fp) = extract_single_expanded(&s, &stats);
         assert!(!is_fp);
         let v = features.to_vec();
-        assert_eq!(v.len(), 15);
+        assert_eq!(v.len(), 22);
         assert!(v.iter().all(|x| x.is_finite()));
         // Check specific values
         assert!((features.log1p_tp_weight - 1.5_f64.ln_1p()).abs() < 1e-9);
@@ -4166,7 +4382,7 @@ mod tests {
             })
             .collect();
         let scores = feature_importance_scores(&samples);
-        assert_eq!(scores.len(), 15);
+        assert_eq!(scores.len(), 22);
         // Should be sorted descending by AP
         for w in scores.windows(2) {
             assert!(w[0].1 >= w[1].1);
@@ -4411,6 +4627,9 @@ mod tests {
                 mean_similarity: 0.5,
                 is_fp: i < 10,
                 family: format!("family_{}", i % 5),
+                file_path: "src/some_file.rs".to_string(),
+                source_is_ast: false,
+                finding_span_lines: 3,
             })
             .collect();
         assert!(learn_logistic(&samples, 5).is_none());
@@ -4435,6 +4654,9 @@ mod tests {
                 mean_similarity: 0.5,
                 is_fp: i < 5, // only 5 FP
                 family: format!("family_{}", i % 20),
+                file_path: "src/some_file.rs".to_string(),
+                source_is_ast: false,
+                finding_span_lines: 3,
             })
             .collect();
         assert!(learn_logistic(&samples, 5).is_none());
@@ -4469,6 +4691,9 @@ mod tests {
                     mean_similarity: if is_fp { 0.2 } else { 0.75 },
                     is_fp,
                     family: format!("family_{}", i % 30),
+                    file_path: "src/some_file.rs".to_string(),
+                    source_is_ast: false,
+                    finding_span_lines: 3,
                 }
             })
             .collect();
