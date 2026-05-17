@@ -1659,13 +1659,15 @@ pub fn extract_single_expanded(s: &JoinedSample, stats: &FoldLocalStats) -> (Exp
         .iter()
         .filter_map(|w| stats.word_lor.get(w))
         .copied()
-        .fold(0.0_f64, f64::max);
+        .reduce(f64::max)
+        .unwrap_or(0.0);
 
     let min_word_lor = words
         .iter()
         .filter_map(|w| stats.word_lor.get(w))
         .copied()
-        .fold(0.0_f64, f64::min);
+        .reduce(f64::min)
+        .unwrap_or(0.0);
 
     let count_negative_lor_tokens = words
         .iter()
@@ -2236,18 +2238,24 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
         .map(|(pred, _)| *pred)
         .collect();
 
+    if oof_tp_predictions.is_empty() || oof_fp_predictions.is_empty() {
+        return None;
+    }
+
     // Suppress threshold: sort TP OOF predictions descending, pick at ceil(n_tp * 0.01)
     // This ensures 99% of TPs have OOF prediction below the threshold (safe from suppression)
     oof_tp_predictions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let suppress_idx =
-        ((oof_tp_predictions.len() as f64 * 0.01).ceil() as usize).min(oof_tp_predictions.len() - 1);
+    let suppress_idx = ((oof_tp_predictions.len() as f64 * 0.01).ceil() as usize)
+        .saturating_sub(1)
+        .min(oof_tp_predictions.len() - 1);
     let suppress_threshold = oof_tp_predictions[suppress_idx];
 
     // Boost threshold: sort FP OOF predictions ascending, pick at ceil(n_fp * 0.05)
     // This ensures 95% of FPs have OOF prediction above the threshold
     oof_fp_predictions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let boost_idx =
-        ((oof_fp_predictions.len() as f64 * 0.05).ceil() as usize).min(oof_fp_predictions.len() - 1);
+    let boost_idx = ((oof_fp_predictions.len() as f64 * 0.05).ceil() as usize)
+        .saturating_sub(1)
+        .min(oof_fp_predictions.len() - 1);
     let boost_threshold = oof_fp_predictions[boost_idx];
 
     let feature_names = ExpandedFeatures::feature_names();
