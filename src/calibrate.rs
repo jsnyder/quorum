@@ -29,6 +29,151 @@ impl SampleFeatures {
     }
 }
 
+/// Expanded feature vector for logistic calibrator (15 dimensions).
+/// Field order matches `to_vec()` and `feature_names()`.
+#[derive(Debug, Clone)]
+pub struct ExpandedFeatures {
+    // Precedent decomposition (6)
+    pub log1p_tp_weight: f64,
+    pub log1p_fp_weight: f64,
+    pub precedent_count: f64,
+    pub max_similarity: f64,
+    pub mean_similarity: f64,
+    pub has_no_precedents: f64,
+    // Weight accumulators (3)
+    pub log1p_soft_fp_weight: f64,
+    pub log1p_full_suppress_weight: f64,
+    pub log1p_wontfix_weight: f64,
+    // Smoothed priors (3)
+    pub category_fp_rate: f64,
+    pub severity_fp_rate: f64,
+    pub model_fp_rate: f64,
+    // Text statistics (3)
+    pub max_word_lor: f64,
+    pub min_word_lor: f64,
+    pub count_negative_lor_tokens: f64,
+}
+
+impl ExpandedFeatures {
+    /// Convert to ordered `Vec<f64>` matching `feature_names()` order.
+    pub fn to_vec(&self) -> Vec<f64> {
+        vec![
+            self.log1p_tp_weight,
+            self.log1p_fp_weight,
+            self.precedent_count,
+            self.max_similarity,
+            self.mean_similarity,
+            self.has_no_precedents,
+            self.log1p_soft_fp_weight,
+            self.log1p_full_suppress_weight,
+            self.log1p_wontfix_weight,
+            self.category_fp_rate,
+            self.severity_fp_rate,
+            self.model_fp_rate,
+            self.max_word_lor,
+            self.min_word_lor,
+            self.count_negative_lor_tokens,
+        ]
+    }
+
+    /// Feature names matching `to_vec()` order.
+    pub fn feature_names() -> Vec<&'static str> {
+        vec![
+            "log1p_tp_weight",
+            "log1p_fp_weight",
+            "precedent_count",
+            "max_similarity",
+            "mean_similarity",
+            "has_no_precedents",
+            "log1p_soft_fp_weight",
+            "log1p_full_suppress_weight",
+            "log1p_wontfix_weight",
+            "category_fp_rate",
+            "severity_fp_rate",
+            "model_fp_rate",
+            "max_word_lor",
+            "min_word_lor",
+            "count_negative_lor_tokens",
+        ]
+    }
+
+    /// All zeros (useful for tests).
+    pub fn zeros() -> Self {
+        Self {
+            log1p_tp_weight: 0.0,
+            log1p_fp_weight: 0.0,
+            precedent_count: 0.0,
+            max_similarity: 0.0,
+            mean_similarity: 0.0,
+            has_no_precedents: 0.0,
+            log1p_soft_fp_weight: 0.0,
+            log1p_full_suppress_weight: 0.0,
+            log1p_wontfix_weight: 0.0,
+            category_fp_rate: 0.0,
+            severity_fp_rate: 0.0,
+            model_fp_rate: 0.0,
+            max_word_lor: 0.0,
+            min_word_lor: 0.0,
+            count_negative_lor_tokens: 0.0,
+        }
+    }
+}
+
+/// Univariate feature screening: returns indices of features with
+/// stepwise AP >= baseline_ap + 0.02 (the minimum lift threshold).
+///
+/// Each feature is evaluated independently as a predictor of the positive class.
+/// `baseline_ap` is typically the class prevalence (proportion of positives).
+pub fn univariate_screen(samples: &[(ExpandedFeatures, bool)], baseline_ap: f64) -> Vec<usize> {
+    let threshold = baseline_ap + 0.02;
+    let n_features = ExpandedFeatures::feature_names().len(); // 15
+
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations (N*15 -> N).
+    let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
+    let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
+    let mut selected = Vec::new();
+
+    for feat_idx in 0..n_features {
+        let univariate: Vec<(f64, bool)> = matrix
+            .iter()
+            .zip(labels.iter())
+            .map(|(row, &label)| (row[feat_idx], label))
+            .collect();
+        let ap = crate::metrics::average_precision_stepwise(&univariate);
+        if ap >= threshold {
+            selected.push(feat_idx);
+        }
+    }
+
+    selected
+}
+
+/// Compute per-feature univariate AP scores for diagnostics.
+/// Returns (feature_index, ap_score) pairs sorted by AP descending.
+pub fn feature_importance_scores(samples: &[(ExpandedFeatures, bool)]) -> Vec<(usize, f64)> {
+    let n_features = ExpandedFeatures::feature_names().len();
+
+    // Pre-compute feature matrix to avoid repeated to_vec() allocations.
+    let matrix: Vec<Vec<f64>> = samples.iter().map(|(f, _)| f.to_vec()).collect();
+    let labels: Vec<bool> = samples.iter().map(|(_, l)| *l).collect();
+
+    let mut scores: Vec<(usize, f64)> = (0..n_features)
+        .map(|feat_idx| {
+            let univariate: Vec<(f64, bool)> = matrix
+                .iter()
+                .zip(labels.iter())
+                .map(|(row, &label)| (row[feat_idx], label))
+                .collect();
+            (
+                feat_idx,
+                crate::metrics::average_precision_stepwise(&univariate),
+            )
+        })
+        .collect();
+    scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scores
+}
+
 /// Filters applied to traces before joining with feedback.
 ///
 /// Default filter retains all traces (including legacy ones without provenance).
@@ -873,6 +1018,7 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
             family_fp_inv: 1.0,
             language_fp_inv: 0.5,
         },
+        logistic_model: None,
         word_lor: word_lor_map,
         family_fp_rate: family_fp_rate_map,
         language_fp_rate: lang_fp_rate_map,
@@ -1164,6 +1310,7 @@ const WEIGHT_STABILITY_TOLERANCE: f64 = 0.20;
 pub struct LearnedWeights {
     pub weights: ScoreWeights,
     pub pr_auc: f64,
+    pub baseline_auc: f64,
     pub stable: bool,
     pub fold_aucs: Vec<f64>,
 }
@@ -1181,6 +1328,10 @@ pub fn learn_weights(
         return None;
     }
 
+    // Baseline: PR-AUC of trivial classifier (constant score, all samples tied)
+    let baseline_scored: Vec<(f64, bool)> = features.iter().map(|(_, l)| (0.0, *l)).collect();
+    let baseline_auc = metrics::pr_auc(&baseline_scored);
+
     let score_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
     let word_lor_grid: &[f64] = &[0.0, 0.5, 1.0, 1.5, 2.0, 3.0];
     let family_grid: &[f64] = &[0.0, 0.25, 0.5, 1.0, 1.5, 2.0];
@@ -1193,6 +1344,7 @@ pub fn learn_weights(
         return Some(LearnedWeights {
             weights: full_best.0,
             pr_auc: full_best.1,
+            baseline_auc,
             stable: true,
             fold_aucs: vec![full_best.1],
         });
@@ -1205,7 +1357,11 @@ pub fn learn_weights(
 
     for i in 0..k {
         let start = i * fold_size;
-        let end = if i == k - 1 { features.len() } else { start + fold_size };
+        let end = if i == k - 1 {
+            features.len()
+        } else {
+            start + fold_size
+        };
 
         let train: Vec<(SampleFeatures, bool)> = indices
             .iter()
@@ -1221,10 +1377,8 @@ pub fn learn_weights(
         let (best_w, _) =
             grid_search_best(&train, score_grid, word_lor_grid, family_grid, lang_grid);
 
-        let val_scored: Vec<(f64, bool)> = val
-            .iter()
-            .map(|(f, l)| (f.score(&best_w), *l))
-            .collect();
+        let val_scored: Vec<(f64, bool)> =
+            val.iter().map(|(f, l)| (f.score(&best_w), *l)).collect();
         let val_auc = metrics::pr_auc(&val_scored);
 
         fold_weights.push(best_w);
@@ -1236,6 +1390,7 @@ pub fn learn_weights(
     Some(LearnedWeights {
         weights: full_best.0,
         pr_auc: full_best.1,
+        baseline_auc,
         stable,
         fold_aucs,
     })
@@ -1260,6 +1415,9 @@ fn grid_search_best(
         for &w in word_lor_grid {
             for &f in family_grid {
                 for &l in lang_grid {
+                    if s == 0.0 && w == 0.0 && f == 0.0 && l == 0.0 {
+                        continue;
+                    }
                     let weights = ScoreWeights {
                         score: s,
                         word_lor: w,
@@ -1333,7 +1491,804 @@ fn tokenize_title(title: &str) -> Vec<String> {
     crate::calibrator_model::WORD_RE
         .find_iter(&lower)
         .map(|m| m.as_str().to_string())
+        .filter(|w| w.len() >= 2)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Fold-local feature extraction (logistic calibrator infrastructure)
+// ---------------------------------------------------------------------------
+
+/// Intermediate representation of a joined sample before feature extraction.
+/// Contains all metadata needed to compute expanded features.
+#[derive(Debug, Clone)]
+pub struct JoinedSample {
+    pub title: String,
+    pub category: String,
+    pub severity: String,
+    pub model: String,
+    pub tp_weight: f64,
+    pub fp_weight: f64,
+    pub soft_fp_weight: f64,
+    pub full_suppress_weight: f64,
+    pub wontfix_weight: f64,
+    pub precedent_count: usize,
+    pub max_similarity: f64,
+    pub mean_similarity: f64,
+    pub is_fp: bool,
+    pub family: String,
+}
+
+/// Per-fold computed statistics for target-encoded features.
+/// Prevents leakage by computing rates only from the training partition.
+#[derive(Debug, Clone)]
+pub struct FoldLocalStats {
+    pub category_fp_rates: HashMap<String, f64>,
+    pub severity_fp_rates: HashMap<String, f64>,
+    pub model_fp_rates: HashMap<String, f64>,
+    pub word_lor: HashMap<String, f64>,
+    pub global_fp_rate: f64,
+}
+
+/// Smoothing parameter for beta-smoothed empirical rates.
+const BETA_ALPHA: f64 = 5.0;
+
+/// Beta-smoothed empirical rate: (count + alpha * prior) / (total + alpha)
+pub fn beta_smoothed_rate(fp_count: usize, total: usize, global_rate: f64) -> f64 {
+    (fp_count as f64 + BETA_ALPHA * global_rate) / (total as f64 + BETA_ALPHA)
+}
+
+/// Compute `FoldLocalStats` from a slice of `JoinedSample` references (training partition).
+///
+/// Builds per-category, per-severity, and per-model FP rates using beta smoothing,
+/// plus word log-odds ratios with Laplace smoothing and minimum support filtering.
+pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
+    let total = samples.len();
+    let fp_total = samples.iter().filter(|s| s.is_fp).count();
+    let tp_total = total.saturating_sub(fp_total);
+    let global_fp_rate = if total > 0 {
+        fp_total as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    // Per-category FP rates
+    let mut cat_fp: HashMap<String, usize> = HashMap::new();
+    let mut cat_total: HashMap<String, usize> = HashMap::new();
+    // Per-severity FP rates
+    let mut sev_fp: HashMap<String, usize> = HashMap::new();
+    let mut sev_total: HashMap<String, usize> = HashMap::new();
+    // Per-model FP rates
+    let mut model_fp: HashMap<String, usize> = HashMap::new();
+    let mut model_total: HashMap<String, usize> = HashMap::new();
+    // Word counts for LOR
+    let mut word_fp_count: HashMap<String, usize> = HashMap::new();
+    let mut word_tp_count: HashMap<String, usize> = HashMap::new();
+
+    for s in samples {
+        // Category
+        *cat_total.entry(s.category.clone()).or_default() += 1;
+        if s.is_fp {
+            *cat_fp.entry(s.category.clone()).or_default() += 1;
+        }
+        // Severity
+        *sev_total.entry(s.severity.clone()).or_default() += 1;
+        if s.is_fp {
+            *sev_fp.entry(s.severity.clone()).or_default() += 1;
+        }
+        // Model
+        *model_total.entry(s.model.clone()).or_default() += 1;
+        if s.is_fp {
+            *model_fp.entry(s.model.clone()).or_default() += 1;
+        }
+        // Words
+        let words = tokenize_title(&s.title);
+        for w in &words {
+            if s.is_fp {
+                *word_fp_count.entry(w.clone()).or_default() += 1;
+            } else {
+                *word_tp_count.entry(w.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    // Beta-smoothed category FP rates
+    let category_fp_rates: HashMap<String, f64> = cat_total
+        .iter()
+        .map(|(cat, &tot)| {
+            let fp_c = cat_fp.get(cat).copied().unwrap_or(0);
+            (cat.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Beta-smoothed severity FP rates
+    let severity_fp_rates: HashMap<String, f64> = sev_total
+        .iter()
+        .map(|(sev, &tot)| {
+            let fp_c = sev_fp.get(sev).copied().unwrap_or(0);
+            (sev.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Beta-smoothed model FP rates
+    let model_fp_rates: HashMap<String, f64> = model_total
+        .iter()
+        .map(|(m, &tot)| {
+            let fp_c = model_fp.get(m).copied().unwrap_or(0);
+            (m.clone(), beta_smoothed_rate(fp_c, tot, global_fp_rate))
+        })
+        .collect();
+
+    // Word log-odds ratios with Laplace smoothing
+    let mut word_lor_map: HashMap<String, f64> = HashMap::new();
+    if tp_total > 0 && fp_total > 0 {
+        let all_words: HashSet<&String> =
+            word_fp_count.keys().chain(word_tp_count.keys()).collect();
+        let eps = 0.5_f64; // Laplace smoothing
+        for w in all_words {
+            let fp_c = word_fp_count.get(w).copied().unwrap_or(0);
+            let tp_c = word_tp_count.get(w).copied().unwrap_or(0);
+            let support = fp_c + tp_c;
+            if support < WORD_MIN_SUPPORT {
+                continue;
+            }
+            let fp_rate = (fp_c as f64 + eps) / (fp_total as f64 + eps);
+            let tp_rate = (tp_c as f64 + eps) / (tp_total as f64 + eps);
+            let lor = (fp_rate / tp_rate).ln();
+            if lor.is_finite() {
+                word_lor_map.insert(w.clone(), lor);
+            }
+        }
+    }
+
+    FoldLocalStats {
+        category_fp_rates,
+        severity_fp_rates,
+        model_fp_rates,
+        word_lor: word_lor_map,
+        global_fp_rate,
+    }
+}
+
+/// Extract expanded features for a single sample using fold-local stats.
+///
+/// Returns the feature vector and the label (`true` = FP for logistic regression).
+pub fn extract_single_expanded(
+    s: &JoinedSample,
+    stats: &FoldLocalStats,
+) -> (ExpandedFeatures, bool) {
+    let words = tokenize_title(&s.title);
+
+    let max_word_lor = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .copied()
+        .reduce(f64::max)
+        .unwrap_or(0.0);
+
+    let min_word_lor = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .copied()
+        .reduce(f64::min)
+        .unwrap_or(0.0);
+
+    let count_negative_lor_tokens = words
+        .iter()
+        .filter_map(|w| stats.word_lor.get(w))
+        .filter(|&&lor| lor < -0.5)
+        .count() as f64;
+
+    let features = ExpandedFeatures {
+        log1p_tp_weight: s.tp_weight.ln_1p(),
+        log1p_fp_weight: s.fp_weight.ln_1p(),
+        precedent_count: (s.precedent_count as f64).min(10.0),
+        max_similarity: s.max_similarity,
+        mean_similarity: s.mean_similarity,
+        has_no_precedents: if s.precedent_count == 0 { 1.0 } else { 0.0 },
+        log1p_soft_fp_weight: s.soft_fp_weight.ln_1p(),
+        log1p_full_suppress_weight: s.full_suppress_weight.ln_1p(),
+        log1p_wontfix_weight: s.wontfix_weight.ln_1p(),
+        category_fp_rate: stats
+            .category_fp_rates
+            .get(&s.category)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        severity_fp_rate: stats
+            .severity_fp_rates
+            .get(&s.severity)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        model_fp_rate: stats
+            .model_fp_rates
+            .get(&s.model)
+            .copied()
+            .unwrap_or(stats.global_fp_rate),
+        max_word_lor,
+        min_word_lor,
+        count_negative_lor_tokens,
+    };
+
+    (features, s.is_fp)
+}
+
+// ---------------------------------------------------------------------------
+// Expanded trace info for extract_joined_samples
+// ---------------------------------------------------------------------------
+
+/// Richer variant of `TraceInfo` carrying all metadata fields needed to
+/// populate a `JoinedSample`.
+#[derive(Clone)]
+struct TraceInfoExpanded {
+    tp_weight: f64,
+    fp_weight: f64,
+    soft_fp_weight: f64,
+    full_suppress_weight: f64,
+    wontfix_weight: f64,
+    precedent_count: usize,
+    max_similarity: f64,
+    mean_similarity: f64,
+    category: String,
+    severity: String,
+    model: String,
+}
+
+/// Extract `JoinedSample` records by walking the same multi-tier join as
+/// `extract_join_features`, but returning richer metadata instead of composite
+/// features. Used by the logistic calibrator's cross-validation pipeline.
+pub fn extract_joined_samples(
+    feedback: &[serde_json::Value],
+    traces: &[serde_json::Value],
+    _model: &CalibratorModel,
+    filter: &JoinFilter,
+    disable_fuzzy: bool,
+) -> Vec<JoinedSample> {
+    let filtered_traces: Vec<&serde_json::Value> =
+        traces.iter().filter(|t| filter.accepts(t)).collect();
+
+    // Build the same index structures as extract_join_features, using TraceInfoExpanded.
+    let mut raw_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut raw_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut norm_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut norm_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut deep_path_map: HashMap<(String, String), TraceInfoExpanded> = HashMap::new();
+    let mut deep_path_ambiguous: HashSet<(String, String)> = HashSet::new();
+    let mut file_traces: HashMap<String, Vec<(String, TraceInfoExpanded)>> = HashMap::new();
+    let mut suffix_index: HashMap<String, Vec<(String, String, TraceInfoExpanded)>> =
+        HashMap::new();
+    let mut norm_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
+    let mut norm_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut raw_title_only: HashMap<String, TraceInfoExpanded> = HashMap::new();
+    let mut raw_title_only_ambiguous: HashSet<String> = HashSet::new();
+    let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
+    let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
+
+    for t in &filtered_traces {
+        let title = t["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = t["file_path"].as_str().unwrap_or("").to_string();
+        let tp_w = t["tp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let fp_w = t["fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let soft_fp_w = t["soft_fp_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let full_suppress_w = t["full_suppress_weight"].as_f64().unwrap_or(fp_w).max(0.0);
+        let wontfix_w = t["wontfix_weight"].as_f64().unwrap_or(0.0).max(0.0);
+        let precedent_count = t["precedent_count"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or_else(|| if tp_w > 0.0 || fp_w > 0.0 { 1 } else { 0 });
+        let max_sim = t["max_similarity"].as_f64().unwrap_or(0.0);
+        let mean_sim = t["mean_similarity"].as_f64().unwrap_or(0.0);
+        let category = t["finding_category"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let severity = t["input_severity"].as_str().unwrap_or("medium").to_string();
+        let model_name = t["model"].as_str().unwrap_or("unknown").to_string();
+
+        let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
+        let info = TraceInfoExpanded {
+            tp_weight: tp_w,
+            fp_weight: fp_w,
+            soft_fp_weight: soft_fp_w,
+            full_suppress_weight: full_suppress_w,
+            wontfix_weight: wontfix_w,
+            precedent_count,
+            max_similarity: max_sim,
+            mean_similarity: mean_sim,
+            category,
+            severity,
+            model: model_name,
+        };
+
+        if fp.is_empty() {
+            match raw_title_only.entry(title.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_title_only_ambiguous.insert(title.clone());
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_for_ambiguous = norm.clone();
+                match norm_title_only.entry(norm) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_title_only_ambiguous.insert(norm_for_ambiguous);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info);
+                    }
+                }
+            }
+        } else {
+            raw_titles_with_file_scoped.insert(title.clone());
+            if !norm.is_empty() {
+                norm_titles_with_file_scoped.insert(norm.clone());
+            }
+            let raw_key = (title, fp.clone());
+            match raw_map.entry(raw_key.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    raw_ambiguous.insert(raw_key);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+            if !disable_fuzzy && !norm.is_empty() {
+                let norm_key = (norm.clone(), fp.clone());
+                match norm_map.entry(norm_key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        norm_ambiguous.insert(norm_key);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(info.clone());
+                    }
+                }
+                if !deep_fp.is_empty() {
+                    let deep_key = (norm.clone(), deep_fp.clone());
+                    match deep_path_map.entry(deep_key.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            deep_path_ambiguous.insert(deep_key);
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(info.clone());
+                        }
+                    }
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("").to_string();
+                    if !filename.is_empty() {
+                        suffix_index.entry(filename).or_default().push((
+                            deep_fp,
+                            norm.clone(),
+                            info.clone(),
+                        ));
+                    }
+                }
+                file_traces.entry(fp).or_default().push((norm, info));
+            }
+        }
+    }
+
+    for key in &raw_ambiguous {
+        raw_map.remove(key);
+    }
+    for key in &norm_ambiguous {
+        norm_map.remove(key);
+    }
+    for key in &deep_path_ambiguous {
+        deep_path_map.remove(key);
+    }
+    for key in &raw_title_only_ambiguous {
+        raw_title_only.remove(key);
+    }
+    for key in &norm_title_only_ambiguous {
+        norm_title_only.remove(key);
+    }
+    for title in &raw_titles_with_file_scoped {
+        raw_title_only.remove(title);
+    }
+    for norm in &norm_titles_with_file_scoped {
+        norm_title_only.remove(norm);
+    }
+
+    let mut samples = Vec::new();
+
+    for f in feedback {
+        let verdict = f["verdict"].as_str().unwrap_or("");
+        let is_fp = match verdict {
+            "tp" | "partial" => false,
+            "fp" => true,
+            _ => continue,
+        };
+        let title = f["finding_title"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let fp = f["file_path"].as_str().unwrap_or("").to_string();
+        let norm = normalize_title(&title);
+        let deep_fp = normalize_file_path_deep(&fp);
+
+        let matched = raw_map
+            .get(&(title.clone(), fp.clone()))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_map.get(&(norm.clone(), fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    deep_path_map.get(&(norm.clone(), deep_fp.clone()))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if !disable_fuzzy
+                    && !norm.is_empty()
+                    && !fp.is_empty()
+                    && let Some(candidates) = file_traces.get(&fp)
+                {
+                    let mut best_score = 0.0_f64;
+                    let mut second_best = 0.0_f64;
+                    let mut best_info: Option<&TraceInfoExpanded> = None;
+                    for (cand_norm, info) in candidates {
+                        let j = token_jaccard(&norm, cand_norm);
+                        if j > best_score {
+                            second_best = best_score;
+                            best_score = j;
+                            best_info = Some(info);
+                        } else if j > second_best {
+                            second_best = j;
+                        }
+                    }
+                    if best_score >= FUZZY_THRESHOLD
+                        && (best_score - second_best) >= FUZZY_AMBIGUITY_MARGIN
+                    {
+                        return best_info;
+                    }
+                }
+                None
+            })
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() && !deep_fp.is_empty() {
+                    let filename = deep_fp.rsplit('/').next().unwrap_or("");
+                    if let Some(candidates) = suffix_index.get(filename) {
+                        let matches: Vec<&TraceInfoExpanded> = candidates
+                            .iter()
+                            .filter(|(cand_path, cand_norm, _)| {
+                                *cand_norm == norm && path_suffix_eq(cand_path, &deep_fp)
+                            })
+                            .map(|(_, _, info)| info)
+                            .collect();
+                        if matches.len() == 1 {
+                            return Some(matches[0]);
+                        }
+                    }
+                }
+                None
+            })
+            .or_else(|| raw_title_only.get(&title))
+            .or_else(|| {
+                if !disable_fuzzy && !norm.is_empty() {
+                    norm_title_only.get(&norm)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(info) = matched {
+            let family = CalibratorModel::title_family(&title);
+            samples.push(JoinedSample {
+                title,
+                category: info.category.clone(),
+                severity: info.severity.clone(),
+                model: info.model.clone(),
+                tp_weight: info.tp_weight,
+                fp_weight: info.fp_weight,
+                soft_fp_weight: info.soft_fp_weight,
+                full_suppress_weight: info.full_suppress_weight,
+                wontfix_weight: info.wontfix_weight,
+                precedent_count: info.precedent_count,
+                max_similarity: info.max_similarity,
+                mean_similarity: info.mean_similarity,
+                is_fp,
+                family,
+            });
+        }
+    }
+
+    samples
+}
+
+// ---------------------------------------------------------------------------
+// Logistic calibrator: cross-validated training pipeline
+// ---------------------------------------------------------------------------
+
+/// Minimum total samples required for logistic model training.
+const MIN_SAMPLES_FOR_LOGISTIC: usize = 200;
+
+/// Minimum count of each class (FP and TP) required.
+const MIN_CLASS_COUNT: usize = 30;
+
+/// L2 regularization strengths to search over.
+const LAMBDA_GRID: &[f64] = &[0.01, 0.1, 1.0, 10.0];
+
+/// Maximum iterations for logistic regression fitting.
+const MAX_LOGISTIC_ITER: usize = 500;
+
+/// Result of logistic calibrator training.
+#[derive(Debug, Clone)]
+pub struct LogisticResult {
+    pub selected_features: Vec<usize>,
+    pub selected_feature_names: Vec<String>,
+    pub coefficients: Vec<f64>,
+    pub intercept: f64,
+    pub feature_means: Vec<f64>,
+    pub feature_stddevs: Vec<f64>,
+    pub suppress_threshold: f64,
+    pub boost_threshold: f64,
+    pub ap_score: f64,
+    pub fp_recall_at_99_tp_recall: f64,
+    pub baseline_ap: f64,
+    pub n_samples: usize,
+    pub n_fp: usize,
+}
+
+/// Assigns each sample to a fold based on its family (group).
+/// Families are assigned to folds round-robin in order of first appearance.
+fn group_k_fold(families: &[&str], k: usize) -> Vec<usize> {
+    let mut family_to_fold: HashMap<&str, usize> = HashMap::new();
+    let mut next_fold = 0usize;
+    families
+        .iter()
+        .map(|f| {
+            *family_to_fold.entry(f).or_insert_with(|| {
+                let fold = next_fold % k;
+                next_fold += 1;
+                fold
+            })
+        })
+        .collect()
+}
+
+/// Train a logistic model via cross-validation with per-fold feature screening.
+///
+/// Returns `None` when:
+/// - Insufficient samples (< 200)
+/// - Class imbalance (min class < 30)
+/// - Fewer than 2 features pass consensus selection
+/// - Model fails to beat baseline AP by >= 0.02
+pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<LogisticResult> {
+    let n = samples.len();
+
+    // Safety gate: minimum sample count
+    if n < MIN_SAMPLES_FOR_LOGISTIC {
+        return None;
+    }
+
+    let n_fp = samples.iter().filter(|s| s.is_fp).count();
+    let n_tp = n - n_fp;
+
+    // Safety gate: minimum class count
+    if n_fp < MIN_CLASS_COUNT || n_tp < MIN_CLASS_COUNT {
+        return None;
+    }
+
+    // Baseline AP: FP prevalence (trivial classifier)
+    let baseline_ap = n_fp as f64 / n as f64;
+
+    // GroupKFold assignment by family
+    let families: Vec<&str> = samples.iter().map(|s| s.family.as_str()).collect();
+    let fold_assignments = group_k_fold(&families, k_folds);
+
+    // Per-fold tracking
+    let mut all_oof_predictions: Vec<(f64, bool)> = vec![(0.0, false); n];
+    let mut oof_filled = vec![false; n];
+    let mut fold_selected_features: Vec<Vec<usize>> = Vec::with_capacity(k_folds);
+    let mut fold_best_lambdas: Vec<f64> = Vec::with_capacity(k_folds);
+
+    for fold_idx in 0..k_folds {
+        // Split into train/val by fold assignment
+        let train_indices: Vec<usize> = (0..n)
+            .filter(|&i| fold_assignments[i] != fold_idx)
+            .collect();
+        let val_indices: Vec<usize> = (0..n)
+            .filter(|&i| fold_assignments[i] == fold_idx)
+            .collect();
+
+        if val_indices.is_empty() || train_indices.is_empty() {
+            continue;
+        }
+
+        // Compute FoldLocalStats from training samples
+        let train_refs: Vec<&JoinedSample> = train_indices.iter().map(|&i| &samples[i]).collect();
+        let stats = compute_fold_local_stats(&train_refs);
+
+        // Extract expanded features for train and val
+        let train_expanded: Vec<(ExpandedFeatures, bool)> = train_indices
+            .iter()
+            .map(|&i| extract_single_expanded(&samples[i], &stats))
+            .collect();
+        let val_expanded: Vec<(ExpandedFeatures, bool)> = val_indices
+            .iter()
+            .map(|&i| extract_single_expanded(&samples[i], &stats))
+            .collect();
+
+        // Univariate screen on train features
+        let selected = univariate_screen(&train_expanded, baseline_ap);
+
+        // If < 2 features selected, this fold cannot proceed
+        if selected.len() < 2 {
+            return None;
+        }
+
+        fold_selected_features.push(selected.clone());
+
+        // Build feature matrices (only selected columns)
+        let train_x: Vec<Vec<f64>> = train_expanded
+            .iter()
+            .map(|(f, _)| {
+                let full = f.to_vec();
+                selected.iter().map(|&idx| full[idx]).collect()
+            })
+            .collect();
+        let train_y: Vec<bool> = train_expanded.iter().map(|(_, label)| *label).collect();
+
+        let val_x: Vec<Vec<f64>> = val_expanded
+            .iter()
+            .map(|(f, _)| {
+                let full = f.to_vec();
+                selected.iter().map(|&idx| full[idx]).collect()
+            })
+            .collect();
+
+        // Lambda grid search
+        let mut best_lambda = LAMBDA_GRID[0];
+        let mut best_ap = f64::NEG_INFINITY;
+
+        for &lambda in LAMBDA_GRID {
+            let model = crate::logistic::fit(&train_x, &train_y, lambda, MAX_LOGISTIC_ITER);
+            let val_preds = model.predict(&val_x);
+            let val_scored: Vec<(f64, bool)> = val_preds
+                .into_iter()
+                .zip(val_expanded.iter().map(|(_, label)| *label))
+                .collect();
+            let ap = crate::metrics::average_precision_stepwise(&val_scored);
+            if ap > best_ap {
+                best_ap = ap;
+                best_lambda = lambda;
+            }
+        }
+
+        fold_best_lambdas.push(best_lambda);
+
+        // Refit with best lambda, produce OOF predictions for val indices
+        let best_model = crate::logistic::fit(&train_x, &train_y, best_lambda, MAX_LOGISTIC_ITER);
+        let oof_preds = best_model.predict(&val_x);
+
+        for (local_idx, &global_idx) in val_indices.iter().enumerate() {
+            all_oof_predictions[global_idx] = (oof_preds[local_idx], val_expanded[local_idx].1);
+            oof_filled[global_idx] = true;
+        }
+    }
+
+    // Consensus feature selection: feature must be selected in >= ceil(k_folds/2 + 1) folds
+    let consensus_threshold = k_folds / 2 + 1;
+    let n_features = ExpandedFeatures::feature_names().len();
+    let mut feature_vote_count = vec![0usize; n_features];
+    for fold_features in &fold_selected_features {
+        for &feat_idx in fold_features {
+            feature_vote_count[feat_idx] += 1;
+        }
+    }
+    let consensus_features: Vec<usize> = (0..n_features)
+        .filter(|&i| feature_vote_count[i] >= consensus_threshold)
+        .collect();
+
+    if consensus_features.len() < 2 {
+        return None;
+    }
+
+    // Aggregated OOF metrics (only use filled slots)
+    let filled_predictions: Vec<(f64, bool)> = all_oof_predictions
+        .iter()
+        .zip(oof_filled.iter())
+        .filter(|(_, filled)| **filled)
+        .map(|(pred, _)| *pred)
+        .collect();
+
+    let ap_score = crate::metrics::average_precision_stepwise(&filled_predictions);
+    let fp_recall = crate::metrics::fp_recall_at_tp_recall(&filled_predictions, 0.99);
+
+    // If AP does not beat baseline by at least 0.02, return None
+    if ap_score <= baseline_ap + 0.02 {
+        return None;
+    }
+
+    // Production model: retrain on 100% of data with consensus features
+    let all_refs: Vec<&JoinedSample> = samples.iter().collect();
+    let all_stats = compute_fold_local_stats(&all_refs);
+    let all_expanded: Vec<(ExpandedFeatures, bool)> = samples
+        .iter()
+        .map(|s| extract_single_expanded(s, &all_stats))
+        .collect();
+
+    let prod_x: Vec<Vec<f64>> = all_expanded
+        .iter()
+        .map(|(f, _)| {
+            let full = f.to_vec();
+            consensus_features.iter().map(|&idx| full[idx]).collect()
+        })
+        .collect();
+    let prod_y: Vec<bool> = all_expanded.iter().map(|(_, label)| *label).collect();
+
+    // Use median of per-fold CV-selected lambdas for production refit
+    let prod_lambda = {
+        let mut sorted_lambdas = fold_best_lambdas.clone();
+        sorted_lambdas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_lambdas[sorted_lambdas.len() / 2]
+    };
+    let prod_model = crate::logistic::fit(&prod_x, &prod_y, prod_lambda, MAX_LOGISTIC_ITER);
+
+    // Threshold selection from OOF predictions (not in-sample) to avoid
+    // optimistic safety estimates. The production model provides deployed
+    // coefficients; thresholds come from held-out data.
+    let mut oof_tp_predictions: Vec<f64> = filled_predictions
+        .iter()
+        .filter(|(_, is_fp)| !*is_fp)
+        .map(|(pred, _)| *pred)
+        .collect();
+    let mut oof_fp_predictions: Vec<f64> = filled_predictions
+        .iter()
+        .filter(|(_, is_fp)| *is_fp)
+        .map(|(pred, _)| *pred)
+        .collect();
+
+    if oof_tp_predictions.is_empty() || oof_fp_predictions.is_empty() {
+        return None;
+    }
+
+    // Suppress threshold: sort TP OOF predictions descending, pick at ceil(n_tp * 0.01)
+    // This ensures 99% of TPs have OOF prediction below the threshold (safe from suppression)
+    oof_tp_predictions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let suppress_idx = ((oof_tp_predictions.len() as f64 * 0.01).ceil() as usize)
+        .saturating_sub(1)
+        .min(oof_tp_predictions.len() - 1);
+    let suppress_threshold = oof_tp_predictions[suppress_idx];
+
+    // Boost threshold: sort FP OOF predictions ascending, pick at ceil(n_fp * 0.05)
+    // This ensures 95% of FPs have OOF prediction above the threshold
+    oof_fp_predictions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let boost_idx = ((oof_fp_predictions.len() as f64 * 0.05).ceil() as usize)
+        .saturating_sub(1)
+        .min(oof_fp_predictions.len() - 1);
+    let boost_threshold = oof_fp_predictions[boost_idx];
+
+    let feature_names = ExpandedFeatures::feature_names();
+    let selected_feature_names: Vec<String> = consensus_features
+        .iter()
+        .map(|&i| feature_names[i].to_string())
+        .collect();
+
+    Some(LogisticResult {
+        selected_features: consensus_features,
+        selected_feature_names,
+        coefficients: prod_model.coefficients,
+        intercept: prod_model.intercept,
+        feature_means: prod_model.feature_means,
+        feature_stddevs: prod_model.feature_stddevs,
+        suppress_threshold,
+        boost_threshold,
+        ap_score,
+        fp_recall_at_99_tp_recall: fp_recall,
+        baseline_ap,
+        n_samples: n,
+        n_fp,
+    })
 }
 
 #[cfg(test)]
@@ -2957,7 +3912,10 @@ mod tests {
             result.weights.score > 0.0,
             "score weight should be positive for separable data"
         );
-        assert!(result.pr_auc > 0.8, "PR-AUC should be high for separable data");
+        assert!(
+            result.pr_auc > 0.8,
+            "PR-AUC should be high for separable data"
+        );
     }
 
     #[test]
@@ -3016,5 +3974,549 @@ mod tests {
             language_fp_inv: 1.5,
         };
         assert!(!super::weights_stable(&[w1, w2], 0.20));
+    }
+
+    #[test]
+    fn expanded_features_to_vec_correct_order() {
+        let f = ExpandedFeatures {
+            log1p_tp_weight: 1.0,
+            log1p_fp_weight: 0.5,
+            precedent_count: 3.0,
+            max_similarity: 0.9,
+            mean_similarity: 0.7,
+            has_no_precedents: 0.0,
+            log1p_soft_fp_weight: 0.3,
+            log1p_full_suppress_weight: 0.1,
+            log1p_wontfix_weight: 0.0,
+            category_fp_rate: 0.25,
+            severity_fp_rate: 0.18,
+            model_fp_rate: 0.22,
+            max_word_lor: 2.1,
+            min_word_lor: -1.5,
+            count_negative_lor_tokens: 3.0,
+        };
+        let v = f.to_vec();
+        assert_eq!(v.len(), 15);
+        assert!((v[0] - 1.0).abs() < 1e-9); // log1p_tp_weight
+        assert!((v[1] - 0.5).abs() < 1e-9); // log1p_fp_weight
+        assert!((v[5] - 0.0).abs() < 1e-9); // has_no_precedents
+        assert!((v[14] - 3.0).abs() < 1e-9); // count_negative_lor_tokens
+    }
+
+    #[test]
+    fn expanded_features_names_match_vec_order() {
+        let names = ExpandedFeatures::feature_names();
+        assert_eq!(names.len(), 15);
+        assert_eq!(names[0], "log1p_tp_weight");
+        assert_eq!(names[5], "has_no_precedents");
+        assert_eq!(names[9], "category_fp_rate");
+        assert_eq!(names[14], "count_negative_lor_tokens");
+    }
+
+    #[test]
+    fn expanded_features_zeros() {
+        let f = ExpandedFeatures::zeros();
+        let v = f.to_vec();
+        assert!(v.iter().all(|&x| x == 0.0));
+    }
+
+    // --- fold-local feature extraction ---
+
+    #[test]
+    fn beta_smoothed_rate_basic() {
+        // 3 FP out of 10 total, global_rate=0.18, alpha=5
+        let rate = beta_smoothed_rate(3, 10, 0.18);
+        // (3 + 5*0.18) / (10 + 5) = 3.9/15 = 0.26
+        assert!((rate - 0.26).abs() < 0.01);
+    }
+
+    #[test]
+    fn beta_smoothed_rate_zero_observations() {
+        // No observations -> converges to global rate
+        let rate = beta_smoothed_rate(0, 0, 0.18);
+        // (0 + 5*0.18) / (0 + 5) = 0.9/5 = 0.18
+        assert!((rate - 0.18).abs() < 0.01);
+    }
+
+    #[test]
+    fn compute_fold_local_stats_basic() {
+        let samples: Vec<JoinedSample> = (0..100)
+            .map(|i| JoinedSample {
+                title: if i < 20 {
+                    "bad unwrap pattern".to_string()
+                } else {
+                    "good error handling".to_string()
+                },
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: if i < 20 { 0.1 } else { 2.0 },
+                fp_weight: if i < 20 { 2.0 } else { 0.1 },
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.0,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 20,
+                family: format!("family_{}", i % 10),
+            })
+            .collect();
+        let refs: Vec<&JoinedSample> = samples.iter().collect();
+        let stats = compute_fold_local_stats(&refs);
+        assert!(
+            (stats.global_fp_rate - 0.20).abs() < 0.01,
+            "global FP rate should be 0.20, got {}",
+            stats.global_fp_rate
+        );
+        // "correctness" has 20/100 FP -> beta_smoothed(20, 100, 0.20) = (20+1)/(100+5) approx 0.20
+        assert!(stats.category_fp_rates.contains_key("correctness"));
+        let cat_rate = stats.category_fp_rates["correctness"];
+        assert!(
+            (cat_rate - 0.20).abs() < 0.02,
+            "category FP rate should be close to 0.20, got {cat_rate}"
+        );
+    }
+
+    #[test]
+    fn extract_single_expanded_all_finite() {
+        let s = JoinedSample {
+            title: "potential SQL injection".to_string(),
+            category: "security".to_string(),
+            severity: "high".to_string(),
+            model: "gpt-5.4".to_string(),
+            tp_weight: 1.5,
+            fp_weight: 0.5,
+            soft_fp_weight: 0.3,
+            full_suppress_weight: 0.5,
+            wontfix_weight: 0.0,
+            precedent_count: 3,
+            max_similarity: 0.85,
+            mean_similarity: 0.72,
+            is_fp: false,
+            family: "sql_injection".to_string(),
+        };
+        let stats = FoldLocalStats {
+            category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
+            severity_fp_rates: HashMap::from([("high".to_string(), 0.12)]),
+            model_fp_rates: HashMap::from([("gpt-5.4".to_string(), 0.20)]),
+            word_lor: HashMap::from([("sql".to_string(), -0.8), ("injection".to_string(), -1.2)]),
+            global_fp_rate: 0.18,
+        };
+        let (features, is_fp) = extract_single_expanded(&s, &stats);
+        assert!(!is_fp);
+        let v = features.to_vec();
+        assert_eq!(v.len(), 15);
+        assert!(v.iter().all(|x| x.is_finite()));
+        // Check specific values
+        assert!((features.log1p_tp_weight - 1.5_f64.ln_1p()).abs() < 1e-9);
+        assert!((features.precedent_count - 3.0).abs() < 1e-9);
+        assert!((features.category_fp_rate - 0.15).abs() < 1e-9);
+        assert!((features.min_word_lor - (-1.2)).abs() < 1e-9);
+        assert!((features.count_negative_lor_tokens - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn univariate_screen_selects_discriminative_features() {
+        // 100 samples, 20% FP (baseline AP = 0.20)
+        let samples: Vec<(ExpandedFeatures, bool)> = (0..100)
+            .map(|i| {
+                let is_fp = i < 20;
+                let mut f = ExpandedFeatures::zeros();
+                // Feature 0 (log1p_tp_weight): perfect separation
+                f.log1p_tp_weight = if is_fp { 0.9 } else { 0.1 };
+                // Feature 1 (log1p_fp_weight): anti-correlated with label order
+                // Assign linearly increasing scores so positives (first 20) get LOW
+                // scores and negatives (last 80) get HIGH scores. This means ranking
+                // by descending score puts negatives first -> AP should be near baseline.
+                f.log1p_fp_weight = i as f64 / 100.0;
+                // Feature 2 (precedent_count): moderate separation
+                f.precedent_count = if is_fp { 0.7 } else { 0.3 };
+                (f, is_fp)
+            })
+            .collect();
+
+        let selected = univariate_screen(&samples, 0.20);
+        // Feature 0 should be selected (perfect -> AP=1.0, lift=0.80)
+        assert!(selected.contains(&0), "Perfect feature should be selected");
+        // Feature 1 should NOT be selected (random -> AP~0.20, lift~0)
+        assert!(
+            !selected.contains(&1),
+            "Random feature should not be selected"
+        );
+        // Feature 2 should be selected (moderate separation)
+        assert!(selected.contains(&2), "Moderate feature should be selected");
+    }
+
+    #[test]
+    fn univariate_screen_empty_returns_empty() {
+        let samples: Vec<(ExpandedFeatures, bool)> = vec![];
+        let selected = univariate_screen(&samples, 0.20);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn feature_importance_scores_sorted_descending() {
+        let samples: Vec<(ExpandedFeatures, bool)> = (0..50)
+            .map(|i| {
+                let is_fp = i < 10;
+                let mut f = ExpandedFeatures::zeros();
+                f.log1p_tp_weight = if is_fp { 1.0 } else { 0.0 };
+                (f, is_fp)
+            })
+            .collect();
+        let scores = feature_importance_scores(&samples);
+        assert_eq!(scores.len(), 15);
+        // Should be sorted descending by AP
+        for w in scores.windows(2) {
+            assert!(w[0].1 >= w[1].1);
+        }
+        // Feature 0 should be first (highest AP)
+        assert_eq!(scores[0].0, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_joined_samples tests
+    // -----------------------------------------------------------------------
+
+    fn make_test_model() -> CalibratorModel {
+        CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16T00:00:00Z".to_string(),
+                feedback_count: 10,
+                global_fp_rate: 0.3,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.5,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: None,
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn extract_joined_samples_basic() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.5,
+            "fp_weight": 0.5,
+            "soft_fp_weight": 0.3,
+            "wontfix_weight": 0.0,
+            "finding_category": "security",
+            "input_severity": "high",
+            "model": "gpt-5.4",
+            "precedent_count": 2,
+            "max_similarity": 0.85,
+            "mean_similarity": 0.72,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        let s = &samples[0];
+        assert_eq!(s.title, "SQL injection risk");
+        assert_eq!(s.category, "security");
+        assert_eq!(s.severity, "high");
+        assert_eq!(s.model, "gpt-5.4");
+        assert!(!s.is_fp);
+        assert!((s.tp_weight - 1.5).abs() < 1e-9);
+        assert!((s.fp_weight - 0.5).abs() < 1e-9);
+        assert!((s.soft_fp_weight - 0.3).abs() < 1e-9);
+        assert_eq!(s.precedent_count, 2);
+        assert!((s.max_similarity - 0.85).abs() < 1e-9);
+        assert!((s.mean_similarity - 0.72).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extract_joined_samples_fp_label() {
+        let trace = serde_json::json!({
+            "finding_title": "Unused import",
+            "file_path": "src/lib.rs",
+            "tp_weight": 0.1,
+            "fp_weight": 2.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Unused import",
+            "file_path": "src/lib.rs",
+            "verdict": "fp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert!(samples[0].is_fp);
+        // Verify defaults for missing fields
+        assert_eq!(samples[0].category, "unknown");
+        assert_eq!(samples[0].severity, "medium");
+        assert_eq!(samples[0].model, "unknown");
+    }
+
+    #[test]
+    fn extract_joined_samples_skips_wontfix() {
+        let trace = serde_json::json!({
+            "finding_title": "Style issue",
+            "file_path": "src/main.rs",
+            "tp_weight": 0.5,
+            "fp_weight": 0.5,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Style issue",
+            "file_path": "src/main.rs",
+            "verdict": "wontfix",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn extract_joined_samples_partial_counts_as_tp() {
+        let trace = serde_json::json!({
+            "finding_title": "Buffer overflow",
+            "file_path": "src/buf.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.2,
+            "finding_category": "memory-safety",
+            "input_severity": "critical",
+            "model": "gemini-2.5-pro",
+            "precedent_count": 5,
+            "max_similarity": 0.95,
+            "mean_similarity": 0.80,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Buffer overflow",
+            "file_path": "src/buf.rs",
+            "verdict": "partial",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert!(!samples[0].is_fp); // partial = not FP
+        assert_eq!(samples[0].category, "memory-safety");
+        assert_eq!(samples[0].severity, "critical");
+    }
+
+    #[test]
+    fn extract_joined_samples_precedent_count_inferred() {
+        // When precedent_count is absent but weights > 0, infer 1
+        let trace = serde_json::json!({
+            "finding_title": "Inferred precedent",
+            "file_path": "src/a.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Inferred precedent",
+            "file_path": "src/a.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].precedent_count, 1);
+    }
+
+    #[test]
+    fn extract_joined_samples_unmatched_feedback_skipped() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.5,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "Completely different finding",
+            "file_path": "src/other.rs",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn extract_joined_samples_family_populated() {
+        let trace = serde_json::json!({
+            "finding_title": "bare-except-pass: dangerous pattern",
+            "file_path": "src/main.py",
+            "tp_weight": 1.0,
+            "fp_weight": 0.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "bare-except-pass: dangerous pattern",
+            "file_path": "src/main.py",
+            "verdict": "tp",
+        });
+        let traces = vec![trace];
+        let feedback = vec![feedback_entry];
+        let model = make_test_model();
+        let filter = JoinFilter::default();
+
+        let samples = extract_joined_samples(&feedback, &traces, &model, &filter, false);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].family, "dangerous pattern");
+    }
+
+    // --- learn_logistic tests ---
+
+    #[test]
+    fn learn_logistic_returns_none_below_min_samples() {
+        let samples: Vec<JoinedSample> = (0..50)
+            .map(|i| JoinedSample {
+                title: format!("finding {}", i),
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 1.0,
+                fp_weight: 0.5,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.5,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 10,
+                family: format!("family_{}", i % 5),
+            })
+            .collect();
+        assert!(learn_logistic(&samples, 5).is_none());
+    }
+
+    #[test]
+    fn learn_logistic_returns_none_class_imbalance() {
+        // 200 samples but only 5 FP (below MIN_CLASS_COUNT=30)
+        let samples: Vec<JoinedSample> = (0..200)
+            .map(|i| JoinedSample {
+                title: format!("finding {}", i),
+                category: "correctness".to_string(),
+                severity: "medium".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 1.0,
+                fp_weight: 0.5,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.5,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.5,
+                mean_similarity: 0.5,
+                is_fp: i < 5, // only 5 FP
+                family: format!("family_{}", i % 20),
+            })
+            .collect();
+        assert!(learn_logistic(&samples, 5).is_none());
+    }
+
+    #[test]
+    fn learn_logistic_on_separable_synthetic_data() {
+        // 300 samples with clear signal in tp_weight/fp_weight
+        let samples: Vec<JoinedSample> = (0..300)
+            .map(|i| {
+                let is_fp = i < 60; // 20% FP
+                JoinedSample {
+                    title: if is_fp {
+                        "bad pattern unwrap".to_string()
+                    } else {
+                        "good error handling code".to_string()
+                    },
+                    category: if is_fp {
+                        "style".to_string()
+                    } else {
+                        "correctness".to_string()
+                    },
+                    severity: "medium".to_string(),
+                    model: "gpt-5.4".to_string(),
+                    tp_weight: if is_fp { 0.1 } else { 2.5 },
+                    fp_weight: if is_fp { 2.5 } else { 0.1 },
+                    soft_fp_weight: if is_fp { 1.5 } else { 0.0 },
+                    full_suppress_weight: if is_fp { 2.5 } else { 0.1 },
+                    wontfix_weight: 0.0,
+                    precedent_count: if is_fp { 0 } else { 4 },
+                    max_similarity: if is_fp { 0.3 } else { 0.85 },
+                    mean_similarity: if is_fp { 0.2 } else { 0.75 },
+                    is_fp,
+                    family: format!("family_{}", i % 30),
+                }
+            })
+            .collect();
+
+        let result = learn_logistic(&samples, 5);
+        assert!(result.is_some(), "Should succeed on well-separated data");
+        let r = result.unwrap();
+        assert!(
+            r.ap_score > r.baseline_ap + 0.02,
+            "AP {} should beat baseline {} + 0.02",
+            r.ap_score,
+            r.baseline_ap
+        );
+        assert!(
+            r.selected_feature_names.len() >= 2,
+            "Should select at least 2 features"
+        );
+        assert_eq!(r.n_samples, 300);
+        assert_eq!(r.n_fp, 60);
+        assert!(
+            r.suppress_threshold < r.boost_threshold,
+            "suppress {} should be < boost {} for well-separated data (suppress = 99th pctl TP P(FP), boost = 5th pctl FP P(FP))",
+            r.suppress_threshold,
+            r.boost_threshold
+        );
+        assert!(r.coefficients.len() == r.selected_features.len());
+        assert!(r.feature_means.len() == r.selected_features.len());
+    }
+
+    #[test]
+    fn group_k_fold_same_family_same_fold() {
+        let families = vec!["a", "a", "b", "b", "c", "c", "a", "b"];
+        let folds = group_k_fold(&families, 3);
+        // All "a" should be in the same fold
+        let a_folds: Vec<usize> = families
+            .iter()
+            .zip(folds.iter())
+            .filter(|(f, _)| **f == "a")
+            .map(|(_, fold)| *fold)
+            .collect();
+        assert!(a_folds.iter().all(|f| *f == a_folds[0]));
+        // All "b" should be in the same fold
+        let b_folds: Vec<usize> = families
+            .iter()
+            .zip(folds.iter())
+            .filter(|(f, _)| **f == "b")
+            .map(|(_, fold)| *fold)
+            .collect();
+        assert!(b_folds.iter().all(|f| *f == b_folds[0]));
     }
 }

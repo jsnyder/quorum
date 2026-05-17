@@ -91,6 +91,9 @@ pub struct CalibratorTraceEntry {
     pub in_diff: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composite_score: Option<f64>,
+    /// Logistic model P(FP) probability when a logistic model was used for the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logistic_p_fp: Option<f64>,
 }
 
 #[cfg(test)]
@@ -126,6 +129,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -152,6 +156,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -197,6 +202,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -240,6 +246,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"file_path\":\"src/main.rs\""));
@@ -317,6 +324,7 @@ mod tests {
             same_file_precedent_count: Some(2),
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"same_file_precedent_count\":2"));
@@ -379,6 +387,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -421,6 +430,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: None,
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -449,6 +459,7 @@ mod tests {
             same_file_precedent_count: None,
             in_diff: Some(false),
             composite_score: None,
+            logistic_p_fp: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(

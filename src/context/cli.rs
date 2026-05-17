@@ -1239,9 +1239,8 @@ fn run_query<D: ContextDeps>(args: &QueryArgs, deps: &D) -> Result<CmdOutput> {
     let mut batches: Vec<SourceBatch> = Vec::new();
 
     for (name, db_path, weight) in &targets {
-        let conn =
-            Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
+        let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| anyhow!("open {}: {e}", db_path.display()))?;
         let q = RetrievalQuery {
             text: args.text.clone(),
             identifiers: Vec::new(),

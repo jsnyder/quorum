@@ -94,6 +94,9 @@ pub mod threshold_config;
 // Learned model for composite calibrator scoring.
 pub mod calibrator_model;
 
+// L2-regularized logistic regression (pure Rust, no external deps).
+pub mod logistic;
+
 // Calibrate: corpus join + threshold computation from feedback + traces.
 pub mod calibrate;
 
