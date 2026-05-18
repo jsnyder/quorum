@@ -5915,10 +5915,10 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.1,  // tp_weight
-            2.0,  // fp_weight
-            0.3,  // wontfix_weight
-            0.5,  // soft_fp_weight
+            0.1, // tp_weight
+            2.0, // fp_weight
+            0.3, // wontfix_weight
+            0.5, // soft_fp_weight
             vec![],
             Severity::Medium,
             "config.rs",
@@ -5989,10 +5989,10 @@ mod tests {
         let decision = calibrate_core_decision(
             &mut finding,
             &config,
-            0.1,  // tp_weight (low)
-            2.0,  // fp_weight (high -> suppress)
-            0.3,  // wontfix_weight
-            0.5,  // soft_fp_weight
+            0.1, // tp_weight (low)
+            2.0, // fp_weight (high -> suppress)
+            0.3, // wontfix_weight
+            0.5, // soft_fp_weight
             vec![],
             Severity::High,
             "test.rs",
@@ -6050,21 +6050,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
-            category_fp_rate_map: Some(HashMap::from([
-                ("security".to_string(), 0.15),
-            ])),
-            severity_fp_rate: Some(HashMap::from([
-                ("high".to_string(), 0.35),
-            ])),
-            model_fp_rate: Some(HashMap::from([
-                ("unknown".to_string(), 0.42),
-            ])),
-            file_fp_rate: Some(HashMap::from([
-                ("src/app.py".to_string(), 0.55),
-            ])),
-            file_finding_counts: Some(HashMap::from([
-                ("src/app.py".to_string(), 7),
-            ])),
+            category_fp_rate_map: Some(HashMap::from([("security".to_string(), 0.15)])),
+            severity_fp_rate: Some(HashMap::from([("high".to_string(), 0.35)])),
+            model_fp_rate: Some(HashMap::from([("unknown".to_string(), 0.42)])),
+            file_fp_rate: Some(HashMap::from([("src/app.py".to_string(), 0.55)])),
+            file_finding_counts: Some(HashMap::from([("src/app.py".to_string(), 7)])),
         };
         let mut finding = finding_at(
             "SQL injection risk",

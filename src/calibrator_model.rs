@@ -400,16 +400,15 @@ mod tests {
 
         // Populated maps survive round-trip
         let mut model2 = make_model();
-        model2.category_fp_rate_map =
-            Some(HashMap::from([("security".into(), 0.15), ("quality".into(), 0.42)]));
+        model2.category_fp_rate_map = Some(HashMap::from([
+            ("security".into(), 0.15),
+            ("quality".into(), 0.42),
+        ]));
         model2.severity_fp_rate =
             Some(HashMap::from([("high".into(), 0.10), ("low".into(), 0.55)]));
-        model2.model_fp_rate =
-            Some(HashMap::from([("gpt-5.4".into(), 0.22)]));
-        model2.file_fp_rate =
-            Some(HashMap::from([("src/main.rs".into(), 0.33)]));
-        model2.file_finding_counts =
-            Some(HashMap::from([("src/main.rs".into(), 7)]));
+        model2.model_fp_rate = Some(HashMap::from([("gpt-5.4".into(), 0.22)]));
+        model2.file_fp_rate = Some(HashMap::from([("src/main.rs".into(), 0.33)]));
+        model2.file_finding_counts = Some(HashMap::from([("src/main.rs".into(), 7)]));
 
         let toml_str2 = model2.to_toml();
         assert!(toml_str2.contains("category_fp_rate_map"));

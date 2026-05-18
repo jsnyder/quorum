@@ -4792,7 +4792,11 @@ mod tests {
         assert!(tokens.contains(&"overflow".to_string()));
         assert!(tokens.contains(&"parse".to_string()));
         assert!(tokens.contains(&"at".to_string()));
-        assert!(!tokens.iter().any(|t| t == "123" || t == "42" || t == "parse123"));
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t == "123" || t == "42" || t == "parse123")
+        );
         assert!(!tokens.iter().any(|t| t.len() < 2));
     }
 

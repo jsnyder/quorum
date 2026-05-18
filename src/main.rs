@@ -2622,7 +2622,11 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     {
         let joined_for_maps = composite_model.as_ref().map(|model| {
             quorum::calibrate::extract_joined_samples(
-                &feedback, &traces, model, &filter, disable_fuzzy,
+                &feedback,
+                &traces,
+                model,
+                &filter,
+                disable_fuzzy,
             )
         });
         if let (Some(model), Some(joined)) = (&mut composite_model, joined_for_maps)
