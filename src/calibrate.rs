@@ -4824,7 +4824,7 @@ mod tests {
 
     #[test]
     fn store_rate_maps_populates_model() {
-        let samples = vec![
+        let samples = [
             JoinedSample {
                 title: "SQL injection".to_string(),
                 category: "security".to_string(),
