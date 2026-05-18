@@ -111,12 +111,12 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
         Ok(stored.as_deref() != Some(self.embedder.model_hash().as_str()))
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }

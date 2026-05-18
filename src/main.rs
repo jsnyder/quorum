@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 // Library half of the bin/lib hybrid split: re-export `quorum::foo` modules
 // at the binary crate root so existing `crate::foo` paths inside main.rs and
 // its submodules continue to resolve unchanged. See `src/lib.rs` for the
@@ -28,36 +26,55 @@ pub use quorum::redact;
 pub use quorum::review_mode;
 pub use quorum::storage;
 
+#[allow(dead_code)]
 mod agent;
+#[allow(dead_code)]
 mod analytics;
+#[allow(dead_code)]
 mod cache;
 mod cli;
 mod cli_io;
 mod config;
+#[allow(dead_code)]
 mod context;
+#[allow(dead_code)]
 mod context_enrichment;
+#[allow(dead_code)]
 mod daemon;
 mod dep_manifest;
 mod dimensions;
+#[allow(dead_code)]
 mod enrichment_policy;
+#[allow(dead_code)]
 mod formatting;
 mod glyphs;
+#[allow(dead_code)]
 mod http_server;
 mod judge;
+#[allow(dead_code)]
 mod linter;
+#[allow(dead_code)]
 mod llm_client;
+#[allow(dead_code)]
 mod mcp;
+#[allow(dead_code)]
 mod output;
+#[allow(dead_code)]
 mod pipeline;
+#[allow(dead_code)]
 mod progress;
 mod review;
+#[allow(dead_code)]
 mod review_log;
+#[allow(dead_code)]
 mod stats;
 mod stats_math;
 mod suppress;
+#[allow(dead_code)]
 mod telemetry;
 #[cfg(test)]
 mod test_support;
+#[allow(dead_code)]
 mod tools;
 mod trace_subscriber;
 
