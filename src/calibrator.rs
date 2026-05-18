@@ -60,6 +60,9 @@ pub struct CalibratorConfig {
     /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
     /// keeps all tiers active (default).
     pub disable_fuzzy_matching: Option<bool>,
+    /// LLM model used for this review (e.g. "gpt-5.4"). Used for
+    /// `model_fp_rate` feature lookup in the logistic calibrator.
+    pub review_model: Option<String>,
     /// Composite scoring model. When present, threshold comparisons use
     /// composite scores instead of raw `tp_weight / total`.
     pub model: Option<CalibratorModel>,
@@ -79,6 +82,7 @@ impl Default for CalibratorConfig {
             force_threshold: None,
             trace_provenance: None,
             disable_fuzzy_matching: None,
+            review_model: None,
             model: None,
         }
     }
@@ -440,7 +444,10 @@ fn calibrate_core_decision(
                 .model
                 .as_ref()
                 .and_then(|m| m.model_fp_rate.as_ref())
-                .and_then(|map| map.get("unknown").copied())
+                .and_then(|map| {
+                    let key = config.review_model.as_deref().unwrap_or("unknown");
+                    map.get(key).copied()
+                })
                 .unwrap_or(global_fp_rate),
             max_word_lor,
             min_word_lor,

@@ -2004,7 +2004,11 @@ pub fn extract_joined_samples(
             .unwrap_or("unknown")
             .to_string();
         let severity = t["input_severity"].as_str().unwrap_or("medium").to_string();
-        let model_name = t["model"].as_str().unwrap_or("unknown").to_string();
+        let model_name = t["provenance"]["review_model"]
+            .as_str()
+            .or_else(|| t["model"].as_str())
+            .unwrap_or("unknown")
+            .to_string();
         let span_lines = t["finding_span_lines"].as_u64().unwrap_or(1) as u32;
 
         let norm = normalize_title(&title);

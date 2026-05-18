@@ -1064,6 +1064,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // Build calibrator config, loading data-driven thresholds if available.
     let mut calibrator_config = calibrator::CalibratorConfig {
+        review_model: models.first().cloned(),
         trace_provenance: Some(trace_provenance),
         ..Default::default()
     };
