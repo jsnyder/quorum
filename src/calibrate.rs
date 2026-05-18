@@ -1712,6 +1712,32 @@ pub fn compute_fold_local_stats(samples: &[&JoinedSample]) -> FoldLocalStats {
     }
 }
 
+/// Populate the rate-map fields on a [`CalibratorModel`] from full-corpus
+/// [`FoldLocalStats`].  File paths are deep-normalized so the keys match
+/// review-time lookups regardless of leading `./` or `../` prefixes.
+pub fn store_rate_maps_in_model(
+    model: &mut crate::calibrator_model::CalibratorModel,
+    stats: &FoldLocalStats,
+) {
+    model.category_fp_rate_map = Some(stats.category_fp_rates.clone());
+    model.severity_fp_rate = Some(stats.severity_fp_rates.clone());
+    model.model_fp_rate = Some(stats.model_fp_rates.clone());
+
+    let file_fp: std::collections::HashMap<String, f64> = stats
+        .file_fp_rates
+        .iter()
+        .map(|(k, &v)| (crate::file_util::normalize_file_path_deep(k), v))
+        .collect();
+    model.file_fp_rate = Some(file_fp);
+
+    let file_counts: std::collections::HashMap<String, usize> = stats
+        .file_finding_counts
+        .iter()
+        .map(|(k, &v)| (crate::file_util::normalize_file_path_deep(k), v))
+        .collect();
+    model.file_finding_counts = Some(file_counts);
+}
+
 /// Extract expanded features for a single sample using fold-local stats.
 ///
 /// Returns the feature vector and the label (`true` = FP for logistic regression).
@@ -4786,5 +4812,81 @@ mod tests {
             .filter(|w| w.len() >= 2)
             .collect();
         assert_eq!(tokens, regex_tokens);
+    }
+
+    #[test]
+    fn store_rate_maps_populates_model() {
+        let samples = vec![
+            JoinedSample {
+                title: "SQL injection".to_string(),
+                category: "security".to_string(),
+                severity: "critical".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 0.0,
+                fp_weight: 1.0,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 1.0,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.9,
+                mean_similarity: 0.9,
+                is_fp: true,
+                family: "sql".to_string(),
+                file_path: "./src/db.rs".to_string(),
+                source_is_ast: false,
+                finding_span_lines: 5,
+            },
+            JoinedSample {
+                title: "Buffer overflow".to_string(),
+                category: "correctness".to_string(),
+                severity: "warning".to_string(),
+                model: "gpt-5.4".to_string(),
+                tp_weight: 1.0,
+                fp_weight: 0.0,
+                soft_fp_weight: 0.0,
+                full_suppress_weight: 0.0,
+                wontfix_weight: 0.0,
+                precedent_count: 1,
+                max_similarity: 0.8,
+                mean_similarity: 0.8,
+                is_fp: false,
+                family: "memory".to_string(),
+                file_path: "./src/db.rs".to_string(),
+                source_is_ast: true,
+                finding_span_lines: 10,
+            },
+        ];
+        let refs: Vec<&JoinedSample> = samples.iter().collect();
+        let stats = compute_fold_local_stats(&refs);
+
+        let mut model = make_test_model();
+        store_rate_maps_in_model(&mut model, &stats);
+
+        // Maps populated
+        assert!(model.category_fp_rate_map.is_some());
+        assert!(model.severity_fp_rate.is_some());
+        assert!(model.model_fp_rate.is_some());
+        assert!(model.file_fp_rate.is_some());
+        assert!(model.file_finding_counts.is_some());
+
+        // Category rates are correct (beta-smoothed)
+        let cat = model.category_fp_rate_map.unwrap();
+        assert!(cat.contains_key("security"));
+        assert!(cat.contains_key("correctness"));
+
+        // File path normalized: ./src/db.rs -> src/db.rs
+        let file_fp = model.file_fp_rate.unwrap();
+        assert!(
+            file_fp.contains_key("src/db.rs"),
+            "file path should be normalized"
+        );
+        assert!(
+            !file_fp.contains_key("./src/db.rs"),
+            "raw path should not be key"
+        );
+
+        // File finding counts normalized too
+        let counts = model.file_finding_counts.unwrap();
+        assert_eq!(counts.get("src/db.rs"), Some(&2));
     }
 }
