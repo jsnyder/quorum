@@ -1,6 +1,6 @@
-use crate::finding::{Finding, FindingBuilder, Severity};
 #[cfg(test)]
 use crate::finding::Source;
+use crate::finding::{Finding, FindingBuilder, Severity};
 use crate::parser::Language;
 
 pub fn analyze_complexity(
@@ -237,14 +237,21 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     {
         let field_name = &source[field.byte_range()];
         if field_name == "unwrap" {
-            findings.push(FindingBuilder::new()
-                .title("Use of `.unwrap()` may panic at runtime")
-                .description("Consider using `.expect()` with a message or proper error handling.")
-                .severity(Severity::Low)
-                .category("security".into())
-                .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
-                .rule_id("local-ast:rust/unwrap-in-non-test")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `.unwrap()` may panic at runtime")
+                    .description(
+                        "Consider using `.expect()` with a message or proper error handling.",
+                    )
+                    .severity(Severity::Low)
+                    .category("security".into())
+                    .lines(
+                        node.start_position().row as u32 + 1,
+                        node.end_position().row as u32 + 1,
+                    )
+                    .rule_id("local-ast:rust/unwrap-in-non-test")
+                    .build(),
+            );
         }
     }
 }
@@ -258,18 +265,28 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             if func_name == "eval" || func_name == "exec" {
-                findings.push(FindingBuilder::new()
-                    .title(&format!("Use of `{}()` is a code injection risk", func_name))
-                    .description(&format!(
-                        "`{}()` executes arbitrary code. Avoid using it with untrusted input.",
-                        func_name
-                    ))
-                    .severity(Severity::Critical)
-                    .category("security".into())
-                    .lines(line, end_line)
-                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
-                    .rule_id("local-ast:python/eval-exec")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title(&format!(
+                            "Use of `{}()` is a code injection risk",
+                            func_name
+                        ))
+                        .description(&format!(
+                            "`{}()` executes arbitrary code. Avoid using it with untrusted input.",
+                            func_name
+                        ))
+                        .severity(Severity::Critical)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .evidence(
+                            &source[node.byte_range()]
+                                .chars()
+                                .take(200)
+                                .collect::<String>(),
+                        )
+                        .rule_id("local-ast:python/eval-exec")
+                        .build(),
+                );
             }
         }
 
@@ -954,13 +971,15 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
             // 4. Missing mode
             if !keys.contains(&"mode") {
-                findings.push(FindingBuilder::new()
-                    .title("Automation has no explicit `mode` (defaults to `single`)")
-                    .description("Automation has no explicit `mode` (defaults to `single`)")
-                    .category("quality".into())
-                    .lines(line, end_line)
-                    .rule_id("local-ast:yaml/ha-no-mode")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title("Automation has no explicit `mode` (defaults to `single`)")
+                        .description("Automation has no explicit `mode` (defaults to `single`)")
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/ha-no-mode")
+                        .build(),
+                );
             }
 
             // 5. Deprecated singular trigger/action/condition
@@ -1146,15 +1165,22 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         {
             let val_text = source[value.byte_range()].trim();
             if !val_text.is_empty() {
-                findings.push(FindingBuilder::new()
-                    .title(&format!("Hardcoded secret in `{}`", source[key.byte_range()].trim()))
-                    .description("Secrets should use `!secret` references, not hardcoded values.")
-                    .severity(Severity::High)
-                    .category("security".into())
-                    .lines(line, end_line)
-                    .evidence(&format!("{}: [REDACTED]", source[key.byte_range()].trim()))
-                    .rule_id("local-ast:yaml/hardcoded-secret")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title(&format!(
+                            "Hardcoded secret in `{}`",
+                            source[key.byte_range()].trim()
+                        ))
+                        .description(
+                            "Secrets should use `!secret` references, not hardcoded values.",
+                        )
+                        .severity(Severity::High)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .evidence(&format!("{}: [REDACTED]", source[key.byte_range()].trim()))
+                        .rule_id("local-ast:yaml/hardcoded-secret")
+                        .build(),
+                );
             }
         }
 
@@ -1178,17 +1204,22 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 .trim_start_matches("- ")
                                 .trim();
                             if !item_text.is_empty() && !item_text.contains('.') {
-                                findings.push(FindingBuilder::new()
-                                    .title("entity_id without domain prefix")
-                                    .description(&format!(
-                                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                                        item_text, item_text
-                                    ))
-                                    .severity(Severity::High)
-                                    .category("bug".into())
-                                    .lines(item.start_position().row as u32 + 1, item.end_position().row as u32 + 1)
-                                    .rule_id("local-ast:yaml/entity-id-no-domain")
-                                    .build());
+                                findings.push(
+                                    FindingBuilder::new()
+                                        .title("entity_id without domain prefix")
+                                        .description(&format!(
+                                            "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                                            item_text, item_text
+                                        ))
+                                        .severity(Severity::High)
+                                        .category("bug".into())
+                                        .lines(
+                                            item.start_position().row as u32 + 1,
+                                            item.end_position().row as u32 + 1,
+                                        )
+                                        .rule_id("local-ast:yaml/entity-id-no-domain")
+                                        .build(),
+                                );
                             }
                         }
                     }
@@ -1196,17 +1227,19 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 }
             }
             if !is_list && !val_text.is_empty() && !val_text.contains('.') {
-                findings.push(FindingBuilder::new()
-                    .title("entity_id without domain prefix")
-                    .description(&format!(
-                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                        val_text, val_text
-                    ))
-                    .severity(Severity::High)
-                    .category("bug".into())
-                    .lines(line, end_line)
-                    .rule_id("local-ast:yaml/entity-id-no-domain")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title("entity_id without domain prefix")
+                        .description(&format!(
+                            "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                            val_text, val_text
+                        ))
+                        .severity(Severity::High)
+                        .category("bug".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/entity-id-no-domain")
+                        .build(),
+                );
             }
         }
 
@@ -1216,17 +1249,19 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         {
             let val_text = source[value.byte_range()].trim();
             if !val_text.is_empty() && !val_text.contains('.') {
-                findings.push(FindingBuilder::new()
-                    .title("service without domain prefix")
-                    .description(&format!(
-                        "`{}` is missing a domain prefix (e.g. `light.{}`)",
-                        val_text, val_text
-                    ))
-                    .severity(Severity::Medium)
-                    .category("bug".into())
-                    .lines(line, end_line)
-                    .rule_id("local-ast:yaml/service-no-domain")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title("service without domain prefix")
+                        .description(&format!(
+                            "`{}` is missing a domain prefix (e.g. `light.{}`)",
+                            val_text, val_text
+                        ))
+                        .severity(Severity::Medium)
+                        .category("bug".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/service-no-domain")
+                        .build(),
+                );
             }
         }
 
@@ -1327,15 +1362,17 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 "states.alarm_control_panel.",
             ];
             if dot_domains.iter().any(|d| val_text.contains(d)) {
-                findings.push(FindingBuilder::new()
-                    .title("Deprecated dot-notation state access")
-                    .description("Use states('sensor.xxx') instead of states.sensor.xxx.state")
-                    .severity(Severity::Medium)
-                    .category("quality".into())
-                    .lines(line, end_line)
-                    .evidence(&val_text.chars().take(200).collect::<String>())
-                    .rule_id("local-ast:yaml/deprecated-dot-state")
-                    .build());
+                findings.push(
+                    FindingBuilder::new()
+                        .title("Deprecated dot-notation state access")
+                        .description("Use states('sensor.xxx') instead of states.sensor.xxx.state")
+                        .severity(Severity::Medium)
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .evidence(&val_text.chars().take(200).collect::<String>())
+                        .rule_id("local-ast:yaml/deprecated-dot-state")
+                        .build(),
+                );
             }
         }
     }
@@ -1351,14 +1388,18 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     {
         let func_name = &source[func.byte_range()];
         if func_name == "eval" {
-            findings.push(FindingBuilder::new()
-                .title("Use of `eval()` is a code injection risk")
-                .description("`eval()` executes arbitrary code. Avoid using it with untrusted input.")
-                .severity(Severity::Critical)
-                .category("security".into())
-                .lines(line, end_line)
-                .rule_id("local-ast:typescript/eval")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `eval()` is a code injection risk")
+                    .description(
+                        "`eval()` executes arbitrary code. Avoid using it with untrusted input.",
+                    )
+                    .severity(Severity::Critical)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .rule_id("local-ast:typescript/eval")
+                    .build(),
+            );
         }
 
         // document.write XSS
@@ -1458,14 +1499,21 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     if node.kind() == "type_annotation" {
         let text = &source[node.byte_range()];
         if text.contains(": any") {
-            findings.push(FindingBuilder::new()
-                .title("Use of `any` type defeats TypeScript's type safety")
-                .description("Prefer `unknown`, generics, or a specific type instead of `any`.")
-                .category("quality".into())
-                .lines(line, end_line)
-                .evidence(&source[node.byte_range()].chars().take(100).collect::<String>())
-                .rule_id("local-ast:typescript/any-type")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `any` type defeats TypeScript's type safety")
+                    .description("Prefer `unknown`, generics, or a specific type instead of `any`.")
+                    .category("quality".into())
+                    .lines(line, end_line)
+                    .evidence(
+                        &source[node.byte_range()]
+                            .chars()
+                            .take(100)
+                            .collect::<String>(),
+                    )
+                    .rule_id("local-ast:typescript/any-type")
+                    .build(),
+            );
         }
     }
 
@@ -1603,14 +1651,18 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             }
         }
         if !found_set_e {
-            findings.push(FindingBuilder::new()
-                .title("Script has no `set -e` -- errors will be silently ignored")
-                .description("Add `set -euo pipefail` near the top of the script to fail on errors.")
-                .severity(Severity::Medium)
-                .category("reliability".into())
-                .lines(1, 1)
-                .rule_id("local-ast:bash/no-set-e")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title("Script has no `set -e` -- errors will be silently ignored")
+                    .description(
+                        "Add `set -euo pipefail` near the top of the script to fail on errors.",
+                    )
+                    .severity(Severity::Medium)
+                    .category("reliability".into())
+                    .lines(1, 1)
+                    .rule_id("local-ast:bash/no-set-e")
+                    .build(),
+            );
         }
     }
 
@@ -1620,15 +1672,24 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     {
         let name = &source[name_node.byte_range()];
         if name == "eval" {
-            findings.push(FindingBuilder::new()
-                .title("Use of `eval` is a code injection risk")
-                .description("Avoid `eval` -- use arrays, printf, or parameter expansion instead.")
-                .severity(Severity::High)
-                .category("security".into())
-                .lines(line, end_line)
-                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
-                .rule_id("local-ast:bash/eval")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `eval` is a code injection risk")
+                    .description(
+                        "Avoid `eval` -- use arrays, printf, or parameter expansion instead.",
+                    )
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(
+                        &source[node.byte_range()]
+                            .chars()
+                            .take(200)
+                            .collect::<String>(),
+                    )
+                    .rule_id("local-ast:bash/eval")
+                    .build(),
+            );
         }
 
         // B9: chmod 777
@@ -1637,15 +1698,22 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 if let Some(arg) = node.child(i as u32) {
                     let text = &source[arg.byte_range()];
                     if text == "777" {
-                        findings.push(FindingBuilder::new()
-                            .title("`chmod 777` grants world-writable permissions")
-                            .description("Use more restrictive permissions (e.g. 755 or 700).")
-                            .severity(Severity::Medium)
-                            .category("security".into())
-                            .lines(line, end_line)
-                            .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
-                            .rule_id("local-ast:bash/chmod-777")
-                            .build());
+                        findings.push(
+                            FindingBuilder::new()
+                                .title("`chmod 777` grants world-writable permissions")
+                                .description("Use more restrictive permissions (e.g. 755 or 700).")
+                                .severity(Severity::Medium)
+                                .category("security".into())
+                                .lines(line, end_line)
+                                .evidence(
+                                    &source[node.byte_range()]
+                                        .chars()
+                                        .take(200)
+                                        .collect::<String>(),
+                                )
+                                .rule_id("local-ast:bash/chmod-777")
+                                .build(),
+                        );
                         break;
                     }
                 }
@@ -1665,15 +1733,22 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 if name == "curl" || name == "wget" {
                     saw_curl = true;
                 } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
-                    findings.push(FindingBuilder::new()
-                        .title("Piping curl/wget to shell executes untrusted remote code")
-                        .description("Download to a file first, inspect it, then execute.")
-                        .severity(Severity::Critical)
-                        .category("security".into())
-                        .lines(line, end_line)
-                        .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
-                        .rule_id("local-ast:bash/curl-pipe-bash")
-                        .build());
+                    findings.push(
+                        FindingBuilder::new()
+                            .title("Piping curl/wget to shell executes untrusted remote code")
+                            .description("Download to a file first, inspect it, then execute.")
+                            .severity(Severity::Critical)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .evidence(
+                                &source[node.byte_range()]
+                                    .chars()
+                                    .take(200)
+                                    .collect::<String>(),
+                            )
+                            .rule_id("local-ast:bash/curl-pipe-bash")
+                            .build(),
+                    );
                     break;
                 }
             }
@@ -2118,17 +2193,24 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
         walk_for_object_keys(expr, source, &mut has_source, &mut has_version);
 
         if has_source && !has_version {
-            findings.push(FindingBuilder::new()
-                .title(&format!(
-                    "Provider `{}` in required_providers has no version constraint",
-                    provider_name.unwrap_or("unknown")
-                ))
-                .description("Add a `version` constraint to prevent unexpected provider upgrades.")
-                .severity(Severity::Medium)
-                .category("reliability".into())
-                .lines(attr.start_position().row as u32 + 1, attr.end_position().row as u32 + 1)
-                .rule_id("local-ast:terraform/no-provider-version")
-                .build());
+            findings.push(
+                FindingBuilder::new()
+                    .title(&format!(
+                        "Provider `{}` in required_providers has no version constraint",
+                        provider_name.unwrap_or("unknown")
+                    ))
+                    .description(
+                        "Add a `version` constraint to prevent unexpected provider upgrades.",
+                    )
+                    .severity(Severity::Medium)
+                    .category("reliability".into())
+                    .lines(
+                        attr.start_position().row as u32 + 1,
+                        attr.end_position().row as u32 + 1,
+                    )
+                    .rule_id("local-ast:terraform/no-provider-version")
+                    .build(),
+            );
         }
     }
 }
@@ -2231,14 +2313,16 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
 
     // D6: No USER instruction
     if !has_user {
-        findings.push(FindingBuilder::new()
-            .title("No USER instruction -- container runs as root")
-            .description("Add a USER instruction to run the container as a non-root user.")
-            .severity(Severity::Medium)
-            .category("security".into())
-            .lines(1, 1)
-            .rule_id("local-ast:dockerfile/no-user")
-            .build());
+        findings.push(
+            FindingBuilder::new()
+                .title("No USER instruction -- container runs as root")
+                .description("Add a USER instruction to run the container as a non-root user.")
+                .severity(Severity::Medium)
+                .category("security".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/no-user")
+                .build(),
+        );
     }
 
     // D8: No HEALTHCHECK
@@ -2255,30 +2339,34 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
 
     // D11: Multiple CMD/ENTRYPOINT
     if cmd_count > 1 {
-        findings.push(FindingBuilder::new()
-            .title("Multiple CMD instructions -- only the last one takes effect")
-            .description(&format!(
-                "Found {} CMD instructions; only the last one will be used.",
-                cmd_count
-            ))
-            .severity(Severity::Medium)
-            .category("bug".into())
-            .lines(1, 1)
-            .rule_id("local-ast:dockerfile/multiple-cmd")
-            .build());
+        findings.push(
+            FindingBuilder::new()
+                .title("Multiple CMD instructions -- only the last one takes effect")
+                .description(&format!(
+                    "Found {} CMD instructions; only the last one will be used.",
+                    cmd_count
+                ))
+                .severity(Severity::Medium)
+                .category("bug".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/multiple-cmd")
+                .build(),
+        );
     }
     if entrypoint_count > 1 {
-        findings.push(FindingBuilder::new()
-            .title("Multiple ENTRYPOINT instructions -- only the last one takes effect")
-            .description(&format!(
-                "Found {} ENTRYPOINT instructions; only the last one will be used.",
-                entrypoint_count
-            ))
-            .severity(Severity::Medium)
-            .category("bug".into())
-            .lines(1, 1)
-            .rule_id("local-ast:dockerfile/multiple-entrypoint")
-            .build());
+        findings.push(
+            FindingBuilder::new()
+                .title("Multiple ENTRYPOINT instructions -- only the last one takes effect")
+                .description(&format!(
+                    "Found {} ENTRYPOINT instructions; only the last one will be used.",
+                    entrypoint_count
+                ))
+                .severity(Severity::Medium)
+                .category("bug".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/multiple-entrypoint")
+                .build(),
+        );
     }
 
     findings
