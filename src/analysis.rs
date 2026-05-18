@@ -1730,7 +1730,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     .severity(Severity::Medium)
                     .category("quality".into())
                     .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
-                    .evidence(&text.trim().to_string())
+                    .evidence(text.trim())
                     .rule_id("local-ast:dockerfile/add-vs-copy")
                     .build());
             }
@@ -1786,7 +1786,7 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     .severity(Severity::Critical)
                     .category("security".into())
                     .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
-                    .evidence(&text.trim().to_string())
+                    .evidence(text.trim())
                     .rule_id("local-ast:dockerfile/curl-pipe-bash")
                     .build());
             }
@@ -2214,7 +2214,7 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                             .severity(Severity::Medium)
                             .category("reliability".into())
                             .lines(child.start_position().row as u32 + 1, child.end_position().row as u32 + 1)
-                            .evidence(&image_ref.to_string())
+                            .evidence(image_ref)
                             .rule_id("local-ast:dockerfile/from-latest")
                             .build());
                     }
