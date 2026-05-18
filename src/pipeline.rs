@@ -2938,7 +2938,11 @@ mod tests {
         let changed = vec![(15, 25)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(findings[0].in_diff, Some(true), "anchor 15 inside [15,25]");
-        assert_eq!(findings[1].in_diff, Some(false), "anchor 50 outside [15,25]");
+        assert_eq!(
+            findings[1].in_diff,
+            Some(false),
+            "anchor 50 outside [15,25]"
+        );
         assert_eq!(findings[2].in_diff, Some(false), "anchor 100 outside");
     }
 
@@ -2956,11 +2960,7 @@ mod tests {
             Some(false),
             "anchor 10 outside [20,30] even though span overlaps"
         );
-        assert_eq!(
-            findings[1].in_diff,
-            Some(true),
-            "anchor 30 inside [20,30]"
-        );
+        assert_eq!(findings[1].in_diff, Some(true), "anchor 30 inside [20,30]");
     }
 
     #[test]
@@ -2996,11 +2996,13 @@ mod tests {
     #[test]
     fn classify_in_diff_large_span_with_cited_lines_in_hunk() {
         use crate::finding::FindingBuilder;
-        let mut findings = vec![FindingBuilder::new()
-            .line_start(1)
-            .line_end(500)
-            .cited_lines(255, 258)
-            .build()];
+        let mut findings = vec![
+            FindingBuilder::new()
+                .line_start(1)
+                .line_end(500)
+                .cited_lines(255, 258)
+                .build(),
+        ];
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
         assert_eq!(
@@ -3027,11 +3029,7 @@ mod tests {
             "anchor 5 outside both hunks"
         );
         assert_eq!(findings[1].in_diff, Some(false));
-        assert_eq!(
-            findings[2].in_diff,
-            Some(true),
-            "anchor 50 inside [48,60]"
-        );
+        assert_eq!(findings[2].in_diff, Some(true), "anchor 50 inside [48,60]");
         assert_eq!(findings[3].in_diff, Some(false));
     }
 
