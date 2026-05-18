@@ -1520,7 +1520,7 @@ struct TraceInfo {
     fp_weight: f64,
 }
 
-fn tokenize_title(title: &str) -> Vec<String> {
+pub fn tokenize_title(title: &str) -> Vec<String> {
     let lower = title.to_lowercase();
     crate::calibrator_model::WORD_RE
         .find_iter(&lower)
@@ -4753,5 +4753,38 @@ mod tests {
             .map(|(_, fold)| *fold)
             .collect();
         assert!(b_folds.iter().all(|f| *f == b_folds[0]));
+    }
+
+    #[test]
+    fn tokenize_title_drops_digits_and_lowercases() {
+        let tokens = tokenize_title("Buffer overflow in parse123 at L42");
+        assert!(tokens.contains(&"buffer".to_string()));
+        assert!(tokens.contains(&"overflow".to_string()));
+        assert!(tokens.contains(&"parse".to_string()));
+        assert!(tokens.contains(&"at".to_string()));
+        assert!(!tokens.iter().any(|t| t == "123" || t == "42" || t == "parse123"));
+        assert!(!tokens.iter().any(|t| t.len() < 2));
+    }
+
+    #[test]
+    fn tokenize_title_keeps_underscores() {
+        let tokens = tokenize_title("buffer_overflow detected in my_func");
+        assert!(tokens.contains(&"buffer_overflow".to_string()));
+        assert!(tokens.contains(&"detected".to_string()));
+        assert!(tokens.contains(&"my_func".to_string()));
+    }
+
+    #[test]
+    fn tokenize_title_matches_word_re_regex() {
+        use crate::calibrator_model::WORD_RE;
+        let title = "SQL injection in `process_data` at line 42";
+        let tokens = tokenize_title(title);
+        let lower = title.to_lowercase();
+        let regex_tokens: Vec<String> = WORD_RE
+            .find_iter(&lower)
+            .map(|m| m.as_str().to_string())
+            .filter(|w| w.len() >= 2)
+            .collect();
+        assert_eq!(tokens, regex_tokens);
     }
 }
