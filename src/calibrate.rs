@@ -1051,6 +1051,11 @@ pub fn compute_calibrator_model(feedback: &[serde_json::Value]) -> Option<Calibr
         word_lor: word_lor_map,
         family_fp_rate: family_fp_rate_map,
         language_fp_rate: lang_fp_rate_map,
+        category_fp_rate_map: None,
+        severity_fp_rate: None,
+        model_fp_rate: None,
+        file_fp_rate: None,
+        file_finding_counts: None,
     })
 }
 
@@ -4413,6 +4418,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         }
     }
 

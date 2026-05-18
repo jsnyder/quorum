@@ -5435,6 +5435,11 @@ mod tests {
             ]),
             family_fp_rate: HashMap::from([("use of `` may panic at runtime".into(), 0.90)]),
             language_fp_rate: HashMap::from([("rust".into(), 0.328), ("python".into(), 0.208)]),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         }
     }
 
@@ -5664,6 +5669,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "hardcoded secret in API_KEY",
@@ -5737,6 +5747,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "SQL injection via user input",
@@ -5808,6 +5823,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "unused variable x",
