@@ -63,6 +63,16 @@ pub struct CalibratorModel {
     pub word_lor: HashMap<String, f64>,
     pub family_fp_rate: HashMap<String, f64>,
     pub language_fp_rate: HashMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_fp_rate_map: Option<HashMap<String, f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity_fp_rate: Option<HashMap<String, f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_fp_rate: Option<HashMap<String, f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_fp_rate: Option<HashMap<String, f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_finding_counts: Option<HashMap<String, usize>>,
 }
 
 impl CalibratorModel {
@@ -187,6 +197,11 @@ mod tests {
                 0.30,
             )]),
             language_fp_rate: HashMap::from([("rust".into(), 0.328), ("python".into(), 0.208)]),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         }
     }
 
@@ -362,5 +377,103 @@ mod tests {
         assert!(!toml_str.contains("[logistic_model]"));
         let parsed = CalibratorModel::from_toml(&toml_str).unwrap();
         assert!(parsed.logistic_model.is_none());
+    }
+
+    #[test]
+    fn rate_maps_round_trip() {
+        // None maps should be absent from TOML output
+        let model = make_model();
+        let toml_str = model.to_toml();
+        assert!(!toml_str.contains("category_fp_rate_map"));
+        assert!(!toml_str.contains("severity_fp_rate"));
+        assert!(!toml_str.contains("model_fp_rate"));
+        assert!(!toml_str.contains("file_fp_rate"));
+        assert!(!toml_str.contains("file_finding_counts"));
+
+        // Round-trip with None maps
+        let parsed = CalibratorModel::from_toml(&toml_str).unwrap();
+        assert!(parsed.category_fp_rate_map.is_none());
+        assert!(parsed.severity_fp_rate.is_none());
+        assert!(parsed.model_fp_rate.is_none());
+        assert!(parsed.file_fp_rate.is_none());
+        assert!(parsed.file_finding_counts.is_none());
+
+        // Populated maps survive round-trip
+        let mut model2 = make_model();
+        model2.category_fp_rate_map = Some(HashMap::from([
+            ("security".into(), 0.15),
+            ("quality".into(), 0.42),
+        ]));
+        model2.severity_fp_rate =
+            Some(HashMap::from([("high".into(), 0.10), ("low".into(), 0.55)]));
+        model2.model_fp_rate = Some(HashMap::from([("gpt-5.4".into(), 0.22)]));
+        model2.file_fp_rate = Some(HashMap::from([("src/main.rs".into(), 0.33)]));
+        model2.file_finding_counts = Some(HashMap::from([("src/main.rs".into(), 7)]));
+
+        let toml_str2 = model2.to_toml();
+        assert!(toml_str2.contains("category_fp_rate_map"));
+        assert!(toml_str2.contains("file_finding_counts"));
+
+        let parsed2 = CalibratorModel::from_toml(&toml_str2).unwrap();
+        let cat_map = parsed2.category_fp_rate_map.unwrap();
+        assert_eq!(cat_map.len(), 2);
+        assert!((cat_map["security"] - 0.15).abs() < 1e-9);
+        assert!((cat_map["quality"] - 0.42).abs() < 1e-9);
+
+        let sev_map = parsed2.severity_fp_rate.unwrap();
+        assert!((sev_map["high"] - 0.10).abs() < 1e-9);
+
+        let model_map = parsed2.model_fp_rate.unwrap();
+        assert!((model_map["gpt-5.4"] - 0.22).abs() < 1e-9);
+
+        let file_map = parsed2.file_fp_rate.unwrap();
+        assert!((file_map["src/main.rs"] - 0.33).abs() < 1e-9);
+
+        let count_map = parsed2.file_finding_counts.unwrap();
+        assert_eq!(count_map["src/main.rs"], 7);
+
+        // Some(empty map) vs None: empty map IS serialized (not skipped)
+        let mut model3 = make_model();
+        model3.category_fp_rate_map = Some(HashMap::new());
+        let toml_str3 = model3.to_toml();
+        assert!(toml_str3.contains("category_fp_rate_map"));
+        let parsed3 = CalibratorModel::from_toml(&toml_str3).unwrap();
+        assert!(parsed3.category_fp_rate_map.is_some());
+        assert!(parsed3.category_fp_rate_map.unwrap().is_empty());
+    }
+
+    #[test]
+    fn old_toml_without_rate_maps_loads() {
+        // Simulates a pre-upgrade model.toml that lacks the new fields
+        let old_toml = r#"
+[meta]
+computed_at = "2026-01-01T00:00:00Z"
+feedback_count = 50
+global_fp_rate = 0.25
+
+[weights]
+score = 0.5
+word_lor = 1.5
+family_fp_inv = 1.0
+language_fp_inv = 0.5
+
+[word_lor]
+hardcoded = -1.88
+
+[family_fp_rate]
+
+[language_fp_rate]
+rust = 0.33
+"#;
+        let parsed = CalibratorModel::from_toml(old_toml).unwrap();
+        assert!(parsed.category_fp_rate_map.is_none());
+        assert!(parsed.severity_fp_rate.is_none());
+        assert!(parsed.model_fp_rate.is_none());
+        assert!(parsed.file_fp_rate.is_none());
+        assert!(parsed.file_finding_counts.is_none());
+        assert_eq!(parsed.meta.feedback_count, 50);
+        assert!((parsed.meta.global_fp_rate - 0.25).abs() < 1e-9);
+        assert_eq!(parsed.word_lor.len(), 1);
+        assert_eq!(parsed.language_fp_rate.len(), 1);
     }
 }

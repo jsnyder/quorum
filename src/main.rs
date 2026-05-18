@@ -1064,6 +1064,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // Build calibrator config, loading data-driven thresholds if available.
     let mut calibrator_config = calibrator::CalibratorConfig {
+        review_model: models.first().cloned(),
         trace_provenance: Some(trace_provenance),
         ..Default::default()
     };
@@ -2615,6 +2616,33 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         );
     } else {
         println!("Boost:    not computed (insufficient data or precision target unachievable)");
+    }
+
+    // Populate rate maps from full corpus stats
+    {
+        let joined_for_maps = composite_model.as_ref().map(|model| {
+            quorum::calibrate::extract_joined_samples(
+                &feedback,
+                &traces,
+                model,
+                &filter,
+                disable_fuzzy,
+            )
+        });
+        if let (Some(model), Some(joined)) = (&mut composite_model, joined_for_maps)
+            && !joined.is_empty()
+        {
+            let refs: Vec<&quorum::calibrate::JoinedSample> = joined.iter().collect();
+            let all_stats = quorum::calibrate::compute_fold_local_stats(&refs);
+            quorum::calibrate::store_rate_maps_in_model(model, &all_stats);
+            eprintln!(
+                "Rate maps: {} categories, {} severities, {} models, {} files",
+                model.category_fp_rate_map.as_ref().map_or(0, |m| m.len()),
+                model.severity_fp_rate.as_ref().map_or(0, |m| m.len()),
+                model.model_fp_rate.as_ref().map_or(0, |m| m.len()),
+                model.file_fp_rate.as_ref().map_or(0, |m| m.len()),
+            );
+        }
     }
 
     let has_logistic = composite_model

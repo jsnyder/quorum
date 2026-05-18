@@ -60,6 +60,9 @@ pub struct CalibratorConfig {
     /// uses only raw exact + raw title-only fallback. `None` or `Some(false)`
     /// keeps all tiers active (default).
     pub disable_fuzzy_matching: Option<bool>,
+    /// LLM model used for this review (e.g. "gpt-5.4"). Used for
+    /// `model_fp_rate` feature lookup in the logistic calibrator.
+    pub review_model: Option<String>,
     /// Composite scoring model. When present, threshold comparisons use
     /// composite scores instead of raw `tp_weight / total`.
     pub model: Option<CalibratorModel>,
@@ -79,6 +82,7 @@ impl Default for CalibratorConfig {
             force_threshold: None,
             trace_provenance: None,
             disable_fuzzy_matching: None,
+            review_model: None,
             model: None,
         }
     }
@@ -349,6 +353,7 @@ fn calibrate_core_decision(
     let mut reason: Option<crate::calibrator_trace::SeverityChangeReason> = None;
     let mut suppressed = false;
     let mut boosted = false;
+    let full_suppress_weight = fp_weight + soft_fp_weight + wontfix_weight;
 
     // Logistic model path: when present, P(FP) directly drives suppress/boost decisions.
     if let Some(logistic) = config
@@ -359,11 +364,10 @@ fn calibrate_core_decision(
         // Compute word LOR features from the model's vocabulary
         let (max_word_lor, min_word_lor, count_negative_lor_tokens) =
             if let Some(model) = config.model.as_ref() {
-                let lower = finding.title.to_lowercase();
-                let word_lors: Vec<f64> = lower
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|w| w.len() >= 2)
-                    .filter_map(|w| model.word_lor.get(w).copied())
+                let words = crate::calibrate::tokenize_title(&finding.title);
+                let word_lors: Vec<f64> = words
+                    .iter()
+                    .filter_map(|w| model.word_lor.get(w.as_str()).copied())
                     .collect();
                 if word_lors.is_empty() {
                     (0.0, 0.0, 0.0)
@@ -378,18 +382,19 @@ fn calibrate_core_decision(
                 (0.0, 0.0, 0.0)
             };
 
-        // Compute category FP rate from family_fp_rate (closest available proxy)
-        let category_fp_rate = config
+        let normalized_file_path = crate::file_util::normalize_file_path_deep(file_path);
+        let global_fp_rate = config
             .model
             .as_ref()
-            .map(|m| {
-                let family = CalibratorModel::title_family(&finding.title);
-                m.family_fp_rate
-                    .get(&family)
-                    .copied()
-                    .unwrap_or(m.meta.global_fp_rate)
-            })
+            .map(|m| m.meta.global_fp_rate)
             .unwrap_or(0.0);
+        let severity_str = match input_severity {
+            Severity::Info => "info",
+            Severity::Low => "low",
+            Severity::Medium => "medium",
+            Severity::High => "high",
+            Severity::Critical => "critical",
+        };
 
         let is_test_file = if crate::calibrate::is_test_file_path(file_path) {
             1.0
@@ -421,19 +426,49 @@ fn calibrate_core_decision(
                 0.0
             },
             log1p_soft_fp_weight: soft_fp_weight.ln_1p(),
-            log1p_full_suppress_weight: fp_weight.ln_1p(),
+            log1p_full_suppress_weight: full_suppress_weight.ln_1p(),
             log1p_wontfix_weight: wontfix_weight.ln_1p(),
-            category_fp_rate,
-            severity_fp_rate: 0.0,
-            model_fp_rate: 0.0,
+            category_fp_rate: config
+                .model
+                .as_ref()
+                .and_then(|m| m.category_fp_rate_map.as_ref())
+                .and_then(|map| map.get(finding.category.as_str()).copied())
+                .unwrap_or(global_fp_rate),
+            severity_fp_rate: config
+                .model
+                .as_ref()
+                .and_then(|m| m.severity_fp_rate.as_ref())
+                .and_then(|map| map.get(severity_str).copied())
+                .unwrap_or(global_fp_rate),
+            model_fp_rate: config
+                .model
+                .as_ref()
+                .and_then(|m| m.model_fp_rate.as_ref())
+                .and_then(|map| {
+                    let key = config.review_model.as_deref().unwrap_or("unknown");
+                    map.get(key).copied()
+                })
+                .unwrap_or(global_fp_rate),
             max_word_lor,
             min_word_lor,
             count_negative_lor_tokens,
             is_test_file,
             source_is_ast: if source_is_ast { 1.0 } else { 0.0 },
-            finding_count_same_file: 0.0,
-            file_fp_rate: 0.0,
-            finding_span_lines: (finding.line_end.saturating_sub(finding.line_start) + 1) as f64,
+            finding_count_same_file: config
+                .model
+                .as_ref()
+                .and_then(|m| m.file_finding_counts.as_ref())
+                .and_then(|counts| counts.get(&normalized_file_path))
+                .map(|&c| (c as f64).ln_1p())
+                .unwrap_or(0.0),
+            file_fp_rate: config
+                .model
+                .as_ref()
+                .and_then(|m| m.file_fp_rate.as_ref())
+                .and_then(|map| map.get(&normalized_file_path).copied())
+                .unwrap_or(global_fp_rate),
+            finding_span_lines: ((finding.line_end.saturating_sub(finding.line_start) + 1) as f64)
+                .ln_1p(),
             is_mock_or_fixture: if crate::calibrate::is_mock_or_fixture_path(file_path) {
                 1.0
             } else {
@@ -465,7 +500,7 @@ fn calibrate_core_decision(
                 tp_weight,
                 fp_weight,
                 wontfix_weight,
-                fp_weight, // full_suppress_weight = fp_weight
+                full_suppress_weight,
                 soft_fp_weight,
                 matched_precedents,
                 finding.calibrator_action.clone(),
@@ -500,7 +535,7 @@ fn calibrate_core_decision(
                 tp_weight,
                 fp_weight,
                 wontfix_weight,
-                fp_weight,
+                full_suppress_weight,
                 soft_fp_weight,
                 matched_precedents,
                 finding.calibrator_action.clone(),
@@ -518,8 +553,6 @@ fn calibrate_core_decision(
 
         // Neither threshold triggered: pass through (no data-driven action).
         // Fall through to legacy soft-suppress path only.
-        // Record logistic_p_fp on trace but don't use composite/data-driven thresholds.
-        let full_suppress_weight = fp_weight;
 
         // Legacy soft suppress still applies even with logistic model present.
         let soft_suppressed = (soft_fp_weight >= 1.0 && soft_fp_weight > tp_weight * 2.0)
@@ -579,8 +612,6 @@ fn calibrate_core_decision(
         .map(|m| m.composite_score(precedent_score, &finding.title, lang));
     let score = composite.unwrap_or(precedent_score);
 
-    // Full suppress: FP weight only. Wontfix no longer contributes.
-    let full_suppress_weight = fp_weight;
     let suppress_thresh = force_threshold.or(suppress_threshold);
     if let Some(thresh) = suppress_thresh {
         // Data-driven path: suppress when score is below the threshold and
@@ -609,9 +640,9 @@ fn calibrate_core_decision(
             };
         }
     } else {
-        // Legacy fallback: magic numbers.
-        if full_suppress_weight >= 1.5 && fp_weight > 0.0 && full_suppress_weight > tp_weight * 2.0
-        {
+        // Legacy fallback: magic numbers. Threshold uses fp_weight only
+        // (wontfix/soft_fp do not contribute to the legacy suppress decision).
+        if fp_weight >= 1.5 && fp_weight > tp_weight * 2.0 {
             finding.calibrator_action = Some(CalibratorAction::Disputed);
             suppressed = true;
             let mut trace = make_trace_entry(
@@ -5435,6 +5466,11 @@ mod tests {
             ]),
             family_fp_rate: HashMap::from([("use of `` may panic at runtime".into(), 0.90)]),
             language_fp_rate: HashMap::from([("rust".into(), 0.328), ("python".into(), 0.208)]),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         }
     }
 
@@ -5664,6 +5700,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "hardcoded secret in API_KEY",
@@ -5737,6 +5778,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "SQL injection via user input",
@@ -5808,6 +5854,11 @@ mod tests {
             word_lor: HashMap::new(),
             family_fp_rate: HashMap::new(),
             language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
         };
         let mut finding = finding_at(
             "unused variable x",
@@ -5843,6 +5894,235 @@ mod tests {
         assert!(
             decision.trace.logistic_p_fp.is_some(),
             "logistic_p_fp should still be recorded on trace"
+        );
+    }
+
+    #[test]
+    fn trace_full_suppress_weight_is_composite() {
+        // When soft_fp_weight > 0 or wontfix_weight > 0, the trace's
+        // full_suppress_weight must be fp + soft_fp + wontfix (composite),
+        // not just fp_weight alone.
+        let mut finding = finding_at(
+            "hardcoded secret in config",
+            "security",
+            Severity::Medium,
+            "secret in config file",
+        );
+        let config = CalibratorConfig {
+            suppress_threshold: Some(0.3),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.1, // tp_weight
+            2.0, // fp_weight
+            0.3, // wontfix_weight
+            0.5, // soft_fp_weight
+            vec![],
+            Severity::Medium,
+            "config.rs",
+        );
+        let expected = 2.0 + 0.5 + 0.3; // fp + soft_fp + wontfix = 2.8
+        assert!(
+            (decision.trace.full_suppress_weight - expected).abs() < 1e-9,
+            "full_suppress_weight should be composite (fp + soft_fp + wontfix = {}), got {}",
+            expected,
+            decision.trace.full_suppress_weight,
+        );
+    }
+
+    #[test]
+    fn trace_full_suppress_weight_composite_in_logistic_path() {
+        // Verify the logistic path also passes the composite full_suppress_weight
+        // to the trace, not just fp_weight.
+        use crate::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
+        use std::collections::HashMap;
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1000,
+            n_fp: 200,
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![3.0],
+            intercept: 0.0,
+            feature_means: vec![0.3],
+            feature_stddevs: vec![0.2],
+            suppress_threshold: 0.7,
+            boost_threshold: 0.1,
+            ap_score: 0.6,
+            fp_recall_at_99_tp_recall: 0.3,
+            baseline_ap: 0.15,
+        };
+        let model = CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16".into(),
+                feedback_count: 100,
+                global_fp_rate: 0.2,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.0,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: Some(lm),
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
+        };
+        let mut finding = finding_at(
+            "hardcoded API key",
+            "security",
+            Severity::High,
+            "API key exposed",
+        );
+        let config = CalibratorConfig {
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.1, // tp_weight (low)
+            2.0, // fp_weight (high -> suppress)
+            0.3, // wontfix_weight
+            0.5, // soft_fp_weight
+            vec![],
+            Severity::High,
+            "test.rs",
+        );
+        let expected = 2.0 + 0.5 + 0.3; // 2.8
+        assert!(
+            decision.suppressed,
+            "should be suppressed with high fp_weight in logistic path"
+        );
+        assert!(
+            (decision.trace.full_suppress_weight - expected).abs() < 1e-9,
+            "logistic suppress path: full_suppress_weight should be composite {}, got {}",
+            expected,
+            decision.trace.full_suppress_weight,
+        );
+    }
+
+    #[test]
+    fn review_features_use_rate_maps_from_model() {
+        // Verify that when the model has rate maps populated, the ReviewFeatures
+        // struct picks them up instead of defaulting to 0.0.
+        use crate::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
+        use std::collections::HashMap;
+        let lm = LogisticModel {
+            computed_at: "2026-05-16T12:00:00Z".to_string(),
+            n_samples: 1000,
+            n_fp: 200,
+            // Use a feature that doesn't trigger suppress or boost so we can
+            // inspect the passthrough trace.
+            selected_features: vec!["log1p_fp_weight".to_string()],
+            coefficients: vec![1.0],
+            intercept: 0.0,
+            feature_means: vec![0.5],
+            feature_stddevs: vec![0.5],
+            suppress_threshold: 0.95,
+            boost_threshold: 0.01,
+            ap_score: 0.6,
+            fp_recall_at_99_tp_recall: 0.3,
+            baseline_ap: 0.15,
+        };
+        let model = CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-05-16".into(),
+                feedback_count: 100,
+                global_fp_rate: 0.25,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.0,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: Some(lm),
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+            category_fp_rate_map: Some(HashMap::from([("security".to_string(), 0.15)])),
+            severity_fp_rate: Some(HashMap::from([("high".to_string(), 0.35)])),
+            model_fp_rate: Some(HashMap::from([("unknown".to_string(), 0.42)])),
+            file_fp_rate: Some(HashMap::from([("src/app.py".to_string(), 0.55)])),
+            file_finding_counts: Some(HashMap::from([("src/app.py".to_string(), 7)])),
+        };
+        let mut finding = finding_at(
+            "SQL injection risk",
+            "security",
+            Severity::High,
+            "unsanitized user input",
+        );
+        // Set line span to 10 lines so we can verify ln_1p transform
+        finding.line_start = 10;
+        finding.line_end = 19;
+
+        let config = CalibratorConfig {
+            model: Some(model),
+            ..Default::default()
+        };
+        let decision = calibrate_core_decision(
+            &mut finding,
+            &config,
+            0.5,
+            0.3,
+            0.1,
+            0.2,
+            vec![],
+            Severity::High,
+            "src/app.py",
+        );
+        // The trace itself doesn't expose ReviewFeatures directly, but we
+        // can verify full_suppress_weight is composite and the function
+        // didn't panic — the feature lookups worked.
+        let expected_fsw = 0.3 + 0.2 + 0.1; // 0.6
+        assert!(
+            (decision.trace.full_suppress_weight - expected_fsw).abs() < 1e-9,
+            "full_suppress_weight should be {} (composite), got {}",
+            expected_fsw,
+            decision.trace.full_suppress_weight,
+        );
+        // Verify finding_span_lines on trace is raw span (10), while the
+        // ReviewFeatures internally used ln_1p(10) for the logistic model.
+        assert_eq!(
+            decision.trace.finding_span_lines,
+            Some(10),
+            "trace finding_span_lines should be raw span",
+        );
+    }
+
+    #[test]
+    fn tokenize_title_drops_digits_matching_training() {
+        // The inline tokenizer used to include digits (e.g. "v2", "123").
+        // Training uses tokenize_title() which drops digits via [a-z_]+ regex.
+        // Verify the fix by checking that digit-only tokens are excluded.
+        let words = crate::calibrate::tokenize_title("Use v2 API for 403 errors");
+        // "v2" contains a digit -> dropped by [a-z_]+ regex
+        // "403" is all digits -> dropped
+        // Expected tokens: "use", "api", "for", "errors"
+        assert!(
+            !words.contains(&"v2".to_string()),
+            "tokenize_title should drop tokens containing digits, got: {:?}",
+            words,
+        );
+        assert!(
+            !words.contains(&"403".to_string()),
+            "tokenize_title should drop all-digit tokens, got: {:?}",
+            words,
+        );
+        assert!(
+            words.contains(&"use".to_string()),
+            "tokenize_title should include alphabetic tokens, got: {:?}",
+            words,
         );
     }
 }
