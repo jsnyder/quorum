@@ -1255,6 +1255,24 @@ rule:
                 "ts-regex-word-merge",
                 2,
             ),
+            (
+                "rules/rust/tests/discarded-fallible-result.rs",
+                "rs",
+                "discarded-fallible-result",
+                4,
+            ),
+            (
+                "rules/typescript/tests/console-log-non-test.ts",
+                "ts",
+                "console-log-non-test",
+                3,
+            ),
+            (
+                "rules/rust/tests/unwrap-after-infallible.rs",
+                "rs",
+                "unwrap-after-infallible",
+                3,
+            ),
         ];
 
         let mut failures = Vec::new();

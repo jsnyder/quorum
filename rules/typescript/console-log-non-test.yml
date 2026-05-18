@@ -1,0 +1,23 @@
+id: console-log-non-test
+language: TypeScript
+severity: hint
+message: "`console.log()` left in production code. Remove debug artifacts before shipping, or use a structured logger."
+note: "Feedback: 23 FPs from flagging in test code. This rule excludes test contexts. Issue #381."
+metadata:
+  precision: speculative
+rule:
+  any:
+    - pattern: console.log($$$)
+    - pattern: console.debug($$$)
+    - pattern: console.warn($$$)
+  not:
+    any:
+      - inside:
+          kind: call_expression
+          has:
+            field: function
+            regex: "^(describe|it|test|beforeEach|afterEach|beforeAll|afterAll)$"
+          stopBy: end
+      - inside:
+          kind: catch_clause
+          stopBy: end
