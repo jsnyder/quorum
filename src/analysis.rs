@@ -1,4 +1,6 @@
-use crate::finding::{Finding, Severity, Source};
+#[cfg(test)]
+use crate::finding::Source;
+use crate::finding::{Finding, FindingBuilder, Severity};
 use crate::parser::Language;
 
 pub fn analyze_complexity(
@@ -43,37 +45,18 @@ pub fn analyze_complexity(
                 } else {
                     Severity::Low
                 };
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("Function `{}` has cyclomatic complexity {}", name, cc),
-                    description: format!(
+                findings.push(FindingBuilder::new()
+                    .title(&format!("Function `{}` has cyclomatic complexity {}", name, cc))
+                    .description(&format!(
                         "Cyclomatic complexity of {} exceeds threshold of {}. Consider refactoring.",
                         cc, threshold
-                    ),
-                    severity,
-                    category: "complexity".into(),
-                    source: Source::LocalAst,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
-                    evidence: vec![format!("cyclomatic_complexity={}", cc)],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:complexity".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                    ))
+                    .severity(severity)
+                    .category("complexity".into())
+                    .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
+                    .evidence(&format!("cyclomatic_complexity={}", cc))
+                    .rule_id("local-ast:complexity")
+                    .build());
             }
         }
     }
@@ -234,34 +217,14 @@ fn has_attribute(node: &tree_sitter::Node, source: &str, attr_name: &str) -> boo
 fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec<Finding>) {
     // unsafe blocks
     if node.kind() == "unsafe_block" {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "Use of `unsafe` block".into(),
-            description: "Unsafe code bypasses Rust's safety guarantees. Ensure this is necessary and correct.".into(),
-            severity: Severity::Info,
-            category: "security".into(),
-            source: Source::LocalAst,
-            line_start: node.start_position().row as u32 + 1,
-            line_end: node.end_position().row as u32 + 1,
-            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-        model_agreement: None,
-        rule_id: Some("local-ast:rust/unsafe-block".into()),
-        judge_verdict: None,
-        judge_confidence: None,
-        precision_tier: None,
-                    in_diff: None,
-        });
+        findings.push(FindingBuilder::new()
+            .title("Use of `unsafe` block")
+            .description("Unsafe code bypasses Rust's safety guarantees. Ensure this is necessary and correct.")
+            .category("security".into())
+            .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
+            .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+            .rule_id("local-ast:rust/unsafe-block")
+            .build());
     }
 
     // .unwrap() calls — tree-sitter-rust: call_expression with function=field_expression
@@ -274,35 +237,21 @@ fn scan_insecure_rust(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     {
         let field_name = &source[field.byte_range()];
         if field_name == "unwrap" {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Use of `.unwrap()` may panic at runtime".into(),
-                description: "Consider using `.expect()` with a message or proper error handling."
-                    .into(),
-                severity: Severity::Low,
-                category: "security".into(),
-                source: Source::LocalAst,
-                line_start: node.start_position().row as u32 + 1,
-                line_end: node.end_position().row as u32 + 1,
-                evidence: vec![],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:rust/unwrap-in-non-test".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `.unwrap()` may panic at runtime")
+                    .description(
+                        "Consider using `.expect()` with a message or proper error handling.",
+                    )
+                    .severity(Severity::Low)
+                    .category("security".into())
+                    .lines(
+                        node.start_position().row as u32 + 1,
+                        node.end_position().row as u32 + 1,
+                    )
+                    .rule_id("local-ast:rust/unwrap-in-non-test")
+                    .build(),
+            );
         }
     }
 }
@@ -316,37 +265,28 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = &source[func.byte_range()];
             if func_name == "eval" || func_name == "exec" {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("Use of `{}()` is a code injection risk", func_name),
-                    description: format!(
-                        "`{}()` executes arbitrary code. Avoid using it with untrusted input.",
-                        func_name
-                    ),
-                    severity: Severity::Critical,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:python/eval-exec".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title(&format!(
+                            "Use of `{}()` is a code injection risk",
+                            func_name
+                        ))
+                        .description(&format!(
+                            "`{}()` executes arbitrary code. Avoid using it with untrusted input.",
+                            func_name
+                        ))
+                        .severity(Severity::Critical)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .evidence(
+                            &source[node.byte_range()]
+                                .chars()
+                                .take(200)
+                                .collect::<String>(),
+                        )
+                        .rule_id("local-ast:python/eval-exec")
+                        .build(),
+                );
             }
         }
 
@@ -354,64 +294,26 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if let Some(args) = node.child_by_field_name("arguments") {
             let args_text = &source[args.byte_range()];
             if args_text.contains("debug=True") || args_text.contains("debug = True") {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Server running with debug=True".into(),
-                    description: "Debug mode exposes detailed error pages and may enable a debugger. Disable in production.".into(),
-                    severity: Severity::High,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:python/debug-true".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(FindingBuilder::new()
+                    .title("Server running with debug=True")
+                    .description("Debug mode exposes detailed error pages and may enable a debugger. Disable in production.")
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:python/debug-true")
+                    .build());
             }
             if args_text.contains("host=\"0.0.0.0\"") || args_text.contains("host='0.0.0.0'") {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Server binding to 0.0.0.0 exposes all network interfaces".into(),
-                    description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
-                    severity: Severity::Medium,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:python/bind-all-interfaces".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(FindingBuilder::new()
+                    .title("Server binding to 0.0.0.0 exposes all network interfaces")
+                    .description("Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.")
+                    .severity(Severity::Medium)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:python/bind-all-interfaces")
+                    .build());
             }
         }
 
@@ -428,63 +330,25 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                     if arg_kind == "string"
                         && (arg_text.starts_with("f\"") || arg_text.starts_with("f'"))
                     {
-                        findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "Potential SQL injection via f-string in execute()".into(),
-                                description: "String interpolation in SQL queries allows injection. Use parameterized queries instead.".into(),
-                                severity: Severity::Critical,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:python/sql-injection".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                        findings.push(FindingBuilder::new()
+                            .title("Potential SQL injection via f-string in execute()")
+                            .description("String interpolation in SQL queries allows injection. Use parameterized queries instead.")
+                            .severity(Severity::Critical)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                            .rule_id("local-ast:python/sql-injection")
+                            .build());
                     } else if arg_text.contains(".format(") {
-                        findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "Potential SQL injection via .format() in execute()".into(),
-                                description: "String formatting in SQL queries allows injection. Use parameterized queries instead.".into(),
-                                severity: Severity::Critical,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:python/sql-injection".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                        findings.push(FindingBuilder::new()
+                            .title("Potential SQL injection via .format() in execute()")
+                            .description("String formatting in SQL queries allows injection. Use parameterized queries instead.")
+                            .severity(Severity::Critical)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                            .rule_id("local-ast:python/sql-injection")
+                            .build());
                     }
                 }
             }
@@ -506,34 +370,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 let has_encoding =
                     args_text.contains("encoding=") || args_text.contains("encoding =");
                 if !is_binary && !has_encoding {
-                    findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "`open()` without explicit `encoding` parameter".into(),
-                            description: "Without `encoding=`, open() uses the system default which varies by platform. Specify `encoding='utf-8'` for portable behavior.".into(),
-                            severity: Severity::Low,
-                            category: "reliability".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:python/open-no-encoding".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                    findings.push(FindingBuilder::new()
+                        .title("`open()` without explicit `encoding` parameter")
+                        .description("Without `encoding=`, open() uses the system default which varies by platform. Specify `encoding='utf-8'` for portable behavior.")
+                        .severity(Severity::Low)
+                        .category("reliability".into())
+                        .lines(line, end_line)
+                        .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                        .rule_id("local-ast:python/open-no-encoding")
+                        .build());
                 }
             }
         }
@@ -572,34 +417,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
             let body_has_only_pass = body.named_child_count() == 1
                 && body.named_child(0).map(|c| c.kind()) == Some("pass_statement");
             if body_has_only_pass {
-                findings.push(Finding {
-                        id: crate::finding::new_finding_ulid(),
-                        title: "Catch-all `except: pass` silently swallows errors".into(),
-                        description: "Catching all exceptions with `pass` hides bugs. Log the error or catch a specific exception type.".into(),
-                        severity: Severity::Medium,
-                        category: "reliability".into(),
-                        source: Source::LocalAst,
-                        line_start: line,
-                        line_end: end_line,
-                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                        calibrator_action: None,
-                        similar_precedent: vec![],
-                        canonical_pattern: None,
-                        suggested_fix: None,
-                        based_on_excerpt: None,
-                        reasoning: None,
-                        llm_confidence: None,
-                    confidence: None,
-                        cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:python/bare-except-pass".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                    });
+                findings.push(FindingBuilder::new()
+                    .title("Catch-all `except: pass` silently swallows errors")
+                    .description("Catching all exceptions with `pass` hides bugs. Log the error or catch a specific exception type.")
+                    .severity(Severity::Medium)
+                    .category("reliability".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:python/bare-except-pass")
+                    .build());
             }
         }
     }
@@ -654,34 +480,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 && !inner.starts_with("http://")
                 && !inner.starts_with("https://")
             {
-                findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: format!("Hardcoded secret in `{}`", &source[left.byte_range()]),
-                            description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
-                            severity: Severity::High,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![format!("{} = [REDACTED]", &source[left.byte_range()])],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:python/hardcoded-secret".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                findings.push(FindingBuilder::new()
+                    .title(&format!("Hardcoded secret in `{}`", &source[left.byte_range()]))
+                    .description("Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.")
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&format!("{} = [REDACTED]", &source[left.byte_range()]))
+                    .rule_id("local-ast:python/hardcoded-secret")
+                    .build());
             }
         }
     }
@@ -697,34 +504,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 if let Some(body) = node.child_by_field_name("body")
                     && has_mutating_call(&body, source, iterable_name)
                 {
-                    findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: format!("Mutating `{}` while iterating over it", iterable_name),
-                            description: "Modifying a collection while iterating over it leads to skipped elements or RuntimeError. Iterate over a copy instead.".into(),
-                            severity: Severity::High,
-                            category: "bug".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:python/mutation-during-iteration".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                    findings.push(FindingBuilder::new()
+                        .title(&format!("Mutating `{}` while iterating over it", iterable_name))
+                        .description("Modifying a collection while iterating over it leads to skipped elements or RuntimeError. Iterate over a copy instead.")
+                        .severity(Severity::High)
+                        .category("bug".into())
+                        .lines(line, end_line)
+                        .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                        .rule_id("local-ast:python/mutation-during-iteration")
+                        .build());
                 }
             }
         }
@@ -755,37 +543,18 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         if let Some(var_name) = exc_var {
             // Look for return statements that expose the exception
             if has_exception_in_return(node, source, var_name) {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Exception details disclosed in API response".into(),
-                    description: format!(
+                findings.push(FindingBuilder::new()
+                    .title("Exception details disclosed in API response")
+                    .description(&format!(
                         "Returning `str({0})` or `repr({0})` in an API response leaks internal details to clients. Log the exception and return a generic error message.",
                         var_name
-                    ),
-                    severity: Severity::Medium,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:python/exception-disclosure".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                    ))
+                    .severity(Severity::Medium)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:python/exception-disclosure")
+                    .build());
             }
         }
     }
@@ -797,34 +566,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
         // the node text starts with "async"
         let func_text = &source[node.byte_range()];
         if func_text.starts_with("async ") && has_result_call(node, source) {
-            findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Blocking `.result()` call in async function".into(),
-                    description: "Calling `.result()` on a future inside an async function blocks the event loop. Use `await` or run in an executor.".into(),
-                    severity: Severity::High,
-                    category: "concurrency".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:python/blocking-in-async".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+            findings.push(FindingBuilder::new()
+                .title("Blocking `.result()` call in async function")
+                .description("Calling `.result()` on a future inside an async function blocks the event loop. Use `await` or run in an executor.")
+                .severity(Severity::High)
+                .category("concurrency".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:python/blocking-in-async")
+                .build());
         }
     }
 
@@ -838,34 +588,15 @@ fn scan_insecure_python(node: &tree_sitter::Node, source: &str, findings: &mut V
                 .child_by_field_name("name")
                 .map(|n| &source[n.byte_range()])
                 .unwrap_or("parameter");
-            findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("Mutable default argument `{}`", param_name),
-                    description: "Mutable default arguments are shared across calls and cause subtle bugs. Use None and initialize inside the function.".into(),
-                    severity: Severity::Medium,
-                    category: "bug".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(100).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:python/mutable-default-arg".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+            findings.push(FindingBuilder::new()
+                .title(&format!("Mutable default argument `{}`", param_name))
+                .description("Mutable default arguments are shared across calls and cause subtle bugs. Use None and initialize inside the function.")
+                .severity(Severity::Medium)
+                .category("bug".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(100).collect::<String>())
+                .rule_id("local-ast:python/mutable-default-arg")
+                .build());
         }
     }
 }
@@ -1205,37 +936,17 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 let key_text = source[key.byte_range()].trim();
                 let key_line = key.start_position().row as u32 + 1;
                 if let Some((_, first_line)) = seen_keys.iter().find(|(k, _)| *k == key_text) {
-                    findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: format!("Duplicate key `{}` in mapping", key_text),
-                                description: format!(
+                    findings.push(FindingBuilder::new()
+                        .title(&format!("Duplicate key `{}` in mapping", key_text))
+                        .description(&format!(
                                     "Key `{}` appears multiple times in the same mapping (first at line {}). The last value silently wins.",
                                     key_text, first_line
-                                ),
-                                severity: Severity::High,
-                                category: "bug".into(),
-                                source: Source::LocalAst,
-                                line_start: key_line,
-                                line_end: key_line,
-                                evidence: vec![],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:yaml/duplicate-key".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                                ))
+                        .severity(Severity::High)
+                        .category("bug".into())
+                        .lines(key_line, key_line)
+                        .rule_id("local-ast:yaml/duplicate-key")
+                        .build());
                 } else {
                     seen_keys.push((key_text, key_line));
                 }
@@ -1248,69 +959,27 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
             // 3. Missing id
             if !keys.contains(&"id") {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Automation missing `id` -- UI management and debug traces are disabled"
-                        .into(),
-                    description:
-                        "Automation missing `id` -- UI management and debug traces are disabled"
-                            .into(),
-                    severity: Severity::Medium,
-                    category: "quality".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/ha-no-id".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(FindingBuilder::new()
+                    .title("Automation missing `id` -- UI management and debug traces are disabled")
+                    .description("Automation missing `id` -- UI management and debug traces are disabled")
+                    .severity(Severity::Medium)
+                    .category("quality".into())
+                    .lines(line, end_line)
+                    .rule_id("local-ast:yaml/ha-no-id")
+                    .build());
             }
 
             // 4. Missing mode
             if !keys.contains(&"mode") {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Automation has no explicit `mode` (defaults to `single`)".into(),
-                    description: "Automation has no explicit `mode` (defaults to `single`)".into(),
-                    severity: Severity::Info,
-                    category: "quality".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/ha-no-mode".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title("Automation has no explicit `mode` (defaults to `single`)")
+                        .description("Automation has no explicit `mode` (defaults to `single`)")
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/ha-no-mode")
+                        .build(),
+                );
             }
 
             // 5. Deprecated singular trigger/action/condition
@@ -1321,37 +990,17 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             ];
             for (singular, plural) in &deprecated {
                 if keys.contains(singular) && !keys.contains(plural) {
-                    findings.push(Finding {
-                        id: crate::finding::new_finding_ulid(),
-                        title: format!("Deprecated singular `{}:` -- use `{}:` instead", singular, plural),
-                        description: format!(
+                    findings.push(FindingBuilder::new()
+                        .title(&format!("Deprecated singular `{}:` -- use `{}:` instead", singular, plural))
+                        .description(&format!(
                             "Home Assistant deprecated the singular `{}:` key. Use `{}:` (plural) for forward compatibility.",
                             singular, plural
-                        ),
-                        severity: Severity::Medium,
-                        category: "quality".into(),
-                        source: Source::LocalAst,
-                        line_start: line,
-                        line_end: end_line,
-                        evidence: vec![],
-                        calibrator_action: None,
-                        similar_precedent: vec![],
-                        canonical_pattern: None,
-                        suggested_fix: None,
-                        based_on_excerpt: None,
-                        reasoning: None,
-                        llm_confidence: None,
-                    confidence: None,
-                        cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/ha-deprecated-singular".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                    });
+                        ))
+                        .severity(Severity::Medium)
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/ha-deprecated-singular")
+                        .build());
                 }
             }
 
@@ -1365,37 +1014,17 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                     if (key_text == "triggers" || key_text == "actions")
                         && yaml_value_is_empty(&child, source)
                     {
-                        findings.push(Finding {
-                                    id: crate::finding::new_finding_ulid(),
-                                    title: format!("Empty `{}:` in automation", key_text),
-                                    description: format!(
+                        findings.push(FindingBuilder::new()
+                            .title(&format!("Empty `{}:` in automation", key_text))
+                            .description(&format!(
                                         "The `{}:` key has no items. This automation will not function correctly.",
                                         key_text
-                                    ),
-                                    severity: Severity::High,
-                                    category: "bug".into(),
-                                    source: Source::LocalAst,
-                                    line_start: child.start_position().row as u32 + 1,
-                                    line_end: child.end_position().row as u32 + 1,
-                                    evidence: vec![],
-                                    calibrator_action: None,
-                                    similar_precedent: vec![],
-                                    canonical_pattern: None,
-                                    suggested_fix: None,
-                                    based_on_excerpt: None,
-                                    reasoning: None,
-                                    llm_confidence: None,
-                    confidence: None,
-                                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                                model_agreement: None,
-                                rule_id: Some("local-ast:yaml/ha-empty-section".into()),
-                                judge_verdict: None,
-                                judge_confidence: None,
-                                precision_tier: None,
-                    in_diff: None,
-                                });
+                                    ))
+                            .severity(Severity::High)
+                            .category("bug".into())
+                            .lines(child.start_position().row as u32 + 1, child.end_position().row as u32 + 1)
+                            .rule_id("local-ast:yaml/ha-empty-section")
+                            .build());
                     }
                 }
             }
@@ -1416,34 +1045,14 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             false
                         };
                     if !has_password {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "ESPHome OTA section has no password -- firmware updates are unprotected".into(),
-                            description: "ESPHome OTA section has no password -- firmware updates are unprotected. Add a password to prevent unauthorized firmware uploads.".into(),
-                            severity: Severity::Medium,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:yaml/esphome-ota-no-password".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                        findings.push(FindingBuilder::new()
+                            .title("ESPHome OTA section has no password -- firmware updates are unprotected")
+                            .description("ESPHome OTA section has no password -- firmware updates are unprotected. Add a password to prevent unauthorized firmware uploads.")
+                            .severity(Severity::Medium)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .rule_id("local-ast:yaml/esphome-ota-no-password")
+                            .build());
                     }
                 }
 
@@ -1457,34 +1066,14 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                             false
                         };
                     if !has_encryption {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "ESPHome API has no encryption configured".into(),
-                            description: "ESPHome API has no encryption configured. Add an encryption key to secure communication.".into(),
-                            severity: Severity::Medium,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:yaml/esphome-api-no-encryption".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                        findings.push(FindingBuilder::new()
+                            .title("ESPHome API has no encryption configured")
+                            .description("ESPHome API has no encryption configured. Add an encryption key to secure communication.")
+                            .severity(Severity::Medium)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .rule_id("local-ast:yaml/esphome-api-no-encryption")
+                            .build());
                     }
                 }
             }
@@ -1532,66 +1121,28 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 false
                             };
                             if !has_no_new_privs {
-                                findings.push(Finding {
-                                            id: crate::finding::new_finding_ulid(),
-                                            title: format!("Docker Compose service `{}` missing `no-new-privileges` security option", svc_name),
-                                            description: "Without `security_opt: [no-new-privileges:true]`, containers can escalate privileges via setuid binaries.".into(),
-                                            severity: Severity::Medium,
-                                            category: "security".into(),
-                                            source: Source::LocalAst,
-                                            line_start: svc_line,
-                                            line_end: svc_end,
-                                            evidence: vec![],
-                                            calibrator_action: None,
-                                            similar_precedent: vec![],
-                                            canonical_pattern: None,
-                                            suggested_fix: Some(format!("Add `security_opt: [no-new-privileges:true]` to the `{}` service.", svc_name)),
-                                            based_on_excerpt: None,
-                                            reasoning: None,
-                                            llm_confidence: None,
-                    confidence: None,
-                                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                                        model_agreement: None,
-                                        rule_id: Some("local-ast:yaml/compose-no-new-privileges".into()),
-                                        judge_verdict: None,
-                                        judge_confidence: None,
-                                        precision_tier: None,
-                    in_diff: None,
-                                        });
+                                findings.push(FindingBuilder::new()
+                                    .title(&format!("Docker Compose service `{}` missing `no-new-privileges` security option", svc_name))
+                                    .description("Without `security_opt: [no-new-privileges:true]`, containers can escalate privileges via setuid binaries.")
+                                    .severity(Severity::Medium)
+                                    .category("security".into())
+                                    .lines(svc_line, svc_end)
+                                    .rule_id("local-ast:yaml/compose-no-new-privileges")
+                                    .suggested_fix(&format!("Add `security_opt: [no-new-privileges:true]` to the `{}` service.", svc_name))
+                                    .build());
                             }
 
                             // Pattern: Docker Compose service missing read_only
                             if !svc_keys.contains(&"read_only") {
-                                findings.push(Finding {
-                                            id: crate::finding::new_finding_ulid(),
-                                            title: format!("Docker Compose service `{}` has writable root filesystem", svc_name),
-                                            description: "Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.".into(),
-                                            severity: Severity::Low,
-                                            category: "security".into(),
-                                            source: Source::LocalAst,
-                                            line_start: svc_line,
-                                            line_end: svc_end,
-                                            evidence: vec![],
-                                            calibrator_action: None,
-                                            similar_precedent: vec![],
-                                            canonical_pattern: None,
-                                            suggested_fix: Some(format!("Add `read_only: true` to the `{}` service and use tmpfs mounts for writable paths.", svc_name)),
-                                            based_on_excerpt: None,
-                                            reasoning: None,
-                                            llm_confidence: None,
-                    confidence: None,
-                                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                                        model_agreement: None,
-                                        rule_id: Some("local-ast:yaml/compose-writable-rootfs".into()),
-                                        judge_verdict: None,
-                                        judge_confidence: None,
-                                        precision_tier: None,
-                    in_diff: None,
-                                        });
+                                findings.push(FindingBuilder::new()
+                                    .title(&format!("Docker Compose service `{}` has writable root filesystem", svc_name))
+                                    .description("Without `read_only: true`, the container root filesystem is writable, which allows malicious payload download.")
+                                    .severity(Severity::Low)
+                                    .category("security".into())
+                                    .lines(svc_line, svc_end)
+                                    .rule_id("local-ast:yaml/compose-writable-rootfs")
+                                    .suggested_fix(&format!("Add `read_only: true` to the `{}` service and use tmpfs mounts for writable paths.", svc_name))
+                                    .build());
                             }
                         }
                     }
@@ -1614,35 +1165,22 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         {
             let val_text = source[value.byte_range()].trim();
             if !val_text.is_empty() {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("Hardcoded secret in `{}`", source[key.byte_range()].trim()),
-                    description: "Secrets should use `!secret` references, not hardcoded values."
-                        .into(),
-                    severity: Severity::High,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/hardcoded-secret".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title(&format!(
+                            "Hardcoded secret in `{}`",
+                            source[key.byte_range()].trim()
+                        ))
+                        .description(
+                            "Secrets should use `!secret` references, not hardcoded values.",
+                        )
+                        .severity(Severity::High)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .evidence(&format!("{}: [REDACTED]", source[key.byte_range()].trim()))
+                        .rule_id("local-ast:yaml/hardcoded-secret")
+                        .build(),
+                );
             }
         }
 
@@ -1666,37 +1204,22 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                                 .trim_start_matches("- ")
                                 .trim();
                             if !item_text.is_empty() && !item_text.contains('.') {
-                                findings.push(Finding {
-                                    id: crate::finding::new_finding_ulid(),
-                                    title: "entity_id without domain prefix".into(),
-                                    description: format!(
-                                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                                        item_text, item_text
-                                    ),
-                                    severity: Severity::High,
-                                    category: "bug".into(),
-                                    source: Source::LocalAst,
-                                    line_start: item.start_position().row as u32 + 1,
-                                    line_end: item.end_position().row as u32 + 1,
-                                    evidence: vec![],
-                                    calibrator_action: None,
-                                    similar_precedent: vec![],
-                                    canonical_pattern: None,
-                                    suggested_fix: None,
-                                    based_on_excerpt: None,
-                                    reasoning: None,
-                                    llm_confidence: None,
-                                    confidence: None,
-                                    cited_lines: None,
-                                    grounding_status: None,
-                                    grounding_confidence: None,
-                                    model_agreement: None,
-                                    rule_id: Some("local-ast:yaml/entity-id-no-domain".into()),
-                                    judge_verdict: None,
-                                    judge_confidence: None,
-                                    precision_tier: None,
-                                    in_diff: None,
-                                });
+                                findings.push(
+                                    FindingBuilder::new()
+                                        .title("entity_id without domain prefix")
+                                        .description(&format!(
+                                            "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                                            item_text, item_text
+                                        ))
+                                        .severity(Severity::High)
+                                        .category("bug".into())
+                                        .lines(
+                                            item.start_position().row as u32 + 1,
+                                            item.end_position().row as u32 + 1,
+                                        )
+                                        .rule_id("local-ast:yaml/entity-id-no-domain")
+                                        .build(),
+                                );
                             }
                         }
                     }
@@ -1704,37 +1227,19 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 }
             }
             if !is_list && !val_text.is_empty() && !val_text.contains('.') {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "entity_id without domain prefix".into(),
-                    description: format!(
-                        "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
-                        val_text, val_text
-                    ),
-                    severity: Severity::High,
-                    category: "bug".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/entity-id-no-domain".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title("entity_id without domain prefix")
+                        .description(&format!(
+                            "`{}` is missing a domain prefix (e.g. `sensor.{}`)",
+                            val_text, val_text
+                        ))
+                        .severity(Severity::High)
+                        .category("bug".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/entity-id-no-domain")
+                        .build(),
+                );
             }
         }
 
@@ -1744,37 +1249,19 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         {
             let val_text = source[value.byte_range()].trim();
             if !val_text.is_empty() && !val_text.contains('.') {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "service without domain prefix".into(),
-                    description: format!(
-                        "`{}` is missing a domain prefix (e.g. `light.{}`)",
-                        val_text, val_text
-                    ),
-                    severity: Severity::Medium,
-                    category: "bug".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/service-no-domain".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title("service without domain prefix")
+                        .description(&format!(
+                            "`{}` is missing a domain prefix (e.g. `light.{}`)",
+                            val_text, val_text
+                        ))
+                        .severity(Severity::Medium)
+                        .category("bug".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:yaml/service-no-domain")
+                        .build(),
+                );
             }
         }
 
@@ -1784,34 +1271,14 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
         {
             let val_text = source[value.byte_range()].trim();
             if val_text.contains("0.0.0.0") {
-                findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "Server binding to 0.0.0.0 exposes all interfaces".into(),
-                            description: "Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.".into(),
-                            severity: Severity::Medium,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:yaml/bind-all-interfaces".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                findings.push(FindingBuilder::new()
+                    .title("Server binding to 0.0.0.0 exposes all interfaces")
+                    .description("Binding to 0.0.0.0 makes the server accessible from any network interface. Use 127.0.0.1 for local-only access.")
+                    .severity(Severity::Medium)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .rule_id("local-ast:yaml/bind-all-interfaces")
+                    .build());
             }
         }
 
@@ -1823,34 +1290,15 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 && val_text.contains("://")
                 && yaml_url_has_credentials(val_text)
             {
-                findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "URL contains embedded credentials".into(),
-                            description: "URLs with embedded user:password credentials are a security risk. Use environment variables or secret references.".into(),
-                            severity: Severity::High,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![format!("{}: [REDACTED]", source[key.byte_range()].trim())],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:yaml/url-credentials".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                findings.push(FindingBuilder::new()
+                    .title("URL contains embedded credentials")
+                    .description("URLs with embedded user:password credentials are a security risk. Use environment variables or secret references.")
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&format!("{}: [REDACTED]", source[key.byte_range()].trim()))
+                    .rule_id("local-ast:yaml/url-credentials")
+                    .build());
             }
         }
     }
@@ -1869,34 +1317,14 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 let has_availability =
                     val_text.contains("unavailable") || val_text.contains("unknown");
                 if !has_availability {
-                    findings.push(Finding {
-                        id: crate::finding::new_finding_ulid(),
-                        title: "Template uses `states()` without availability check".into(),
-                        description: "Templates using states() should check for 'unavailable' and 'unknown' to avoid errors when entities are offline".into(),
-                        severity: Severity::Info,
-                        category: "quality".into(),
-                        source: Source::LocalAst,
-                        line_start: line,
-                        line_end: end_line,
-                        evidence: vec![val_text.chars().take(200).collect()],
-                        calibrator_action: None,
-                        similar_precedent: vec![],
-                        canonical_pattern: None,
-                        suggested_fix: None,
-                        based_on_excerpt: None,
-                        reasoning: None,
-                        llm_confidence: None,
-                    confidence: None,
-                        cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/states-no-availability-check".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                    });
+                    findings.push(FindingBuilder::new()
+                        .title("Template uses `states()` without availability check")
+                        .description("Templates using states() should check for 'unavailable' and 'unknown' to avoid errors when entities are offline")
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .evidence(&val_text.chars().take(200).collect::<String>())
+                        .rule_id("local-ast:yaml/states-no-availability-check")
+                        .build());
                 }
             }
 
@@ -1934,35 +1362,17 @@ fn scan_insecure_yaml(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 "states.alarm_control_panel.",
             ];
             if dot_domains.iter().any(|d| val_text.contains(d)) {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Deprecated dot-notation state access".into(),
-                    description: "Use states('sensor.xxx') instead of states.sensor.xxx.state"
-                        .into(),
-                    severity: Severity::Medium,
-                    category: "quality".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![val_text.chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:yaml/deprecated-dot-state".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(
+                    FindingBuilder::new()
+                        .title("Deprecated dot-notation state access")
+                        .description("Use states('sensor.xxx') instead of states.sensor.xxx.state")
+                        .severity(Severity::Medium)
+                        .category("quality".into())
+                        .lines(line, end_line)
+                        .evidence(&val_text.chars().take(200).collect::<String>())
+                        .rule_id("local-ast:yaml/deprecated-dot-state")
+                        .build(),
+                );
             }
         }
     }
@@ -1978,99 +1388,43 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     {
         let func_name = &source[func.byte_range()];
         if func_name == "eval" {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Use of `eval()` is a code injection risk".into(),
-                description:
-                    "`eval()` executes arbitrary code. Avoid using it with untrusted input.".into(),
-                severity: Severity::Critical,
-                category: "security".into(),
-                source: Source::LocalAst,
-                line_start: line,
-                line_end: end_line,
-                evidence: vec![],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/eval".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `eval()` is a code injection risk")
+                    .description(
+                        "`eval()` executes arbitrary code. Avoid using it with untrusted input.",
+                    )
+                    .severity(Severity::Critical)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .rule_id("local-ast:typescript/eval")
+                    .build(),
+            );
         }
 
         // document.write XSS
         if func_name == "document.write" {
-            findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Use of `document.write()` is an XSS risk".into(),
-                    description: "`document.write()` injects raw HTML into the page. Use DOM APIs or a framework's safe rendering instead.".into(),
-                    severity: Severity::Critical,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/document-write-xss".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+            findings.push(FindingBuilder::new()
+                .title("Use of `document.write()` is an XSS risk")
+                .description("`document.write()` injects raw HTML into the page. Use DOM APIs or a framework's safe rendering instead.")
+                .severity(Severity::Critical)
+                .category("security".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:typescript/document-write-xss")
+                .build());
         }
 
         // console.log / console.debug debug artifacts
         if func_name == "console.log" || func_name == "console.debug" {
-            findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("`{}` debug artifact left in code", func_name),
-                    description: "Debug logging should be removed or replaced with a proper logging framework before production.".into(),
-                    severity: Severity::Info,
-                    category: "quality".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/console-log-artifact".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+            findings.push(FindingBuilder::new()
+                .title(&format!("`{}` debug artifact left in code", func_name))
+                .description("Debug logging should be removed or replaced with a proper logging framework before production.")
+                .category("quality".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:typescript/console-log-artifact")
+                .build());
         }
     }
 
@@ -2104,34 +1458,15 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 let has_special = inner.chars().any(|c| matches!(c, '-' | '/' | '+' | '='));
                 let looks_like_secret = (has_upper || has_digit || has_special) && inner_len > 8;
                 if looks_like_secret && !val_text.contains("process.env") {
-                    findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
-                                description: "Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.".into(),
-                                severity: Severity::High,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![format!("{} = [REDACTED]", &source[name_node.byte_range()])],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:typescript/hardcoded-secret".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                    findings.push(FindingBuilder::new()
+                        .title(&format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]))
+                        .description("Secrets should be loaded from environment variables or a secrets manager, not hardcoded in source.")
+                        .severity(Severity::High)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .evidence(&format!("{} = [REDACTED]", &source[name_node.byte_range()]))
+                        .rule_id("local-ast:typescript/hardcoded-secret")
+                        .build());
                 }
             }
         }
@@ -2148,34 +1483,15 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
             } else {
                 "outerHTML"
             };
-            findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: format!("Direct `{}` assignment is an XSS risk", prop),
-                    description: format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop),
-                    severity: Severity::High,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: line,
-                    line_end: end_line,
-                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/innerhtml-xss".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+            findings.push(FindingBuilder::new()
+                .title(&format!("Direct `{}` assignment is an XSS risk", prop))
+                .description(&format!("Setting `{}` with untrusted data enables XSS. Use `textContent` or a sanitization library.", prop))
+                .severity(Severity::High)
+                .category("security".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:typescript/innerhtml-xss")
+                .build());
         }
     }
 
@@ -2183,35 +1499,21 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
     if node.kind() == "type_annotation" {
         let text = &source[node.byte_range()];
         if text.contains(": any") {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Use of `any` type defeats TypeScript's type safety".into(),
-                description: "Prefer `unknown`, generics, or a specific type instead of `any`."
-                    .into(),
-                severity: Severity::Info,
-                category: "quality".into(),
-                source: Source::LocalAst,
-                line_start: line,
-                line_end: end_line,
-                evidence: vec![source[node.byte_range()].chars().take(100).collect()],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/any-type".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `any` type defeats TypeScript's type safety")
+                    .description("Prefer `unknown`, generics, or a specific type instead of `any`.")
+                    .category("quality".into())
+                    .lines(line, end_line)
+                    .evidence(
+                        &source[node.byte_range()]
+                            .chars()
+                            .take(100)
+                            .collect::<String>(),
+                    )
+                    .rule_id("local-ast:typescript/any-type")
+                    .build(),
+            );
         }
     }
 
@@ -2225,36 +1527,15 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                 .unwrap_or(false)
         });
         if !has_statements {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Empty `catch` block silently swallows errors".into(),
-                description:
-                    "An empty catch block hides failures. Log the error, handle it, or rethrow."
-                        .into(),
-                severity: Severity::Medium,
-                category: "reliability".into(),
-                source: Source::LocalAst,
-                line_start: line,
-                line_end: end_line,
-                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:typescript/empty-catch".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(FindingBuilder::new()
+                .title("Empty `catch` block silently swallows errors")
+                .description("An empty catch block hides failures. Log the error, handle it, or rethrow.")
+                .severity(Severity::Medium)
+                .category("reliability".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:typescript/empty-catch")
+                .build());
         }
     }
 
@@ -2278,37 +1559,18 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
         ];
         for api in &sync_apis {
             if func_name.ends_with(api) && is_in_async_function(node, source) {
-                findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: format!("`{}` blocks the event loop in async function", api),
-                            description: format!(
+                findings.push(FindingBuilder::new()
+                    .title(&format!("`{}` blocks the event loop in async function", api))
+                    .description(&format!(
                                 "Calling synchronous `{}` inside an async function blocks the event loop. Use the async equivalent from `fs/promises`.",
                                 api
-                            ),
-                            severity: Severity::Medium,
-                            category: "concurrency".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:typescript/sync-in-async".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                            ))
+                    .severity(Severity::Medium)
+                    .category("concurrency".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:typescript/sync-in-async")
+                    .build());
                 break;
             }
         }
@@ -2330,68 +1592,29 @@ fn scan_insecure_typescript(node: &tree_sitter::Node, source: &str, findings: &m
                     .map(|p| &source[p.byte_range()] == "length")
                     .unwrap_or(false);
             if is_length_access && right_text.trim() == "0" {
-                findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "`.length >= 0` is always true".into(),
-                                description: "Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?".into(),
-                                severity: Severity::Medium,
-                                category: "correctness".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:typescript/tautological-length".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                findings.push(FindingBuilder::new()
+                    .title("`.length >= 0` is always true")
+                    .description("Array and string `.length` is always >= 0. This condition is tautological. Did you mean `.length > 0`?")
+                    .severity(Severity::Medium)
+                    .category("correctness".into())
+                    .lines(line, end_line)
+                    .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                    .rule_id("local-ast:typescript/tautological-length")
+                    .build());
             }
         }
     }
 
     // Non-null assertion operator (!)
     if node.kind() == "non_null_expression" {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "Use of non-null assertion operator `!` bypasses type safety".into(),
-            description: "The non-null assertion operator tells TypeScript to ignore possible null/undefined. Use proper null checks instead.".into(),
-            severity: Severity::Info,
-            category: "quality".into(),
-            source: Source::LocalAst,
-            line_start: line,
-            line_end: end_line,
-            evidence: vec![source[node.byte_range()].chars().take(100).collect()],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-        model_agreement: None,
-        rule_id: Some("local-ast:typescript/non-null-assertion".into()),
-        judge_verdict: None,
-        judge_confidence: None,
-        precision_tier: None,
-                    in_diff: None,
-        });
+        findings.push(FindingBuilder::new()
+            .title("Use of non-null assertion operator `!` bypasses type safety")
+            .description("The non-null assertion operator tells TypeScript to ignore possible null/undefined. Use proper null checks instead.")
+            .category("quality".into())
+            .lines(line, end_line)
+            .evidence(&source[node.byte_range()].chars().take(100).collect::<String>())
+            .rule_id("local-ast:typescript/non-null-assertion")
+            .build());
     }
 }
 
@@ -2402,34 +1625,14 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
 
     // B11: Missing shebang (root program node only)
     if kind == "program" && !source.starts_with("#!") {
-        findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Script has no shebang line".into(),
-                description: "Add a shebang (e.g. #!/usr/bin/env bash) so the script runs with the intended interpreter.".into(),
-                severity: Severity::Low,
-                category: "quality".into(),
-                source: Source::LocalAst,
-                line_start: 1,
-                line_end: 1,
-                evidence: vec![],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                    grounding_status: None,
-                grounding_confidence: None,
-            model_agreement: None,
-            rule_id: Some("local-ast:bash/no-shebang".into()),
-            judge_verdict: None,
-            judge_confidence: None,
-            precision_tier: None,
-                    in_diff: None,
-            });
+        findings.push(FindingBuilder::new()
+            .title("Script has no shebang line")
+            .description("Add a shebang (e.g. #!/usr/bin/env bash) so the script runs with the intended interpreter.")
+            .severity(Severity::Low)
+            .category("quality".into())
+            .lines(1, 1)
+            .rule_id("local-ast:bash/no-shebang")
+            .build());
     }
 
     // B4: Missing set -e (root program node only)
@@ -2448,35 +1651,18 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
             }
         }
         if !found_set_e {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Script has no `set -e` -- errors will be silently ignored".into(),
-                description:
-                    "Add `set -euo pipefail` near the top of the script to fail on errors.".into(),
-                severity: Severity::Medium,
-                category: "reliability".into(),
-                source: Source::LocalAst,
-                line_start: 1,
-                line_end: 1,
-                evidence: vec![],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:bash/no-set-e".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title("Script has no `set -e` -- errors will be silently ignored")
+                    .description(
+                        "Add `set -euo pipefail` near the top of the script to fail on errors.",
+                    )
+                    .severity(Severity::Medium)
+                    .category("reliability".into())
+                    .lines(1, 1)
+                    .rule_id("local-ast:bash/no-set-e")
+                    .build(),
+            );
         }
     }
 
@@ -2486,35 +1672,24 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
     {
         let name = &source[name_node.byte_range()];
         if name == "eval" {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: "Use of `eval` is a code injection risk".into(),
-                description: "Avoid `eval` -- use arrays, printf, or parameter expansion instead."
-                    .into(),
-                severity: Severity::High,
-                category: "security".into(),
-                source: Source::LocalAst,
-                line_start: line,
-                line_end: end_line,
-                evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:bash/eval".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title("Use of `eval` is a code injection risk")
+                    .description(
+                        "Avoid `eval` -- use arrays, printf, or parameter expansion instead.",
+                    )
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(
+                        &source[node.byte_range()]
+                            .chars()
+                            .take(200)
+                            .collect::<String>(),
+                    )
+                    .rule_id("local-ast:bash/eval")
+                    .build(),
+            );
         }
 
         // B9: chmod 777
@@ -2523,35 +1698,22 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 if let Some(arg) = node.child(i as u32) {
                     let text = &source[arg.byte_range()];
                     if text == "777" {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "`chmod 777` grants world-writable permissions".into(),
-                            description: "Use more restrictive permissions (e.g. 755 or 700)."
-                                .into(),
-                            severity: Severity::Medium,
-                            category: "security".into(),
-                            source: Source::LocalAst,
-                            line_start: line,
-                            line_end: end_line,
-                            evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                            confidence: None,
-                            cited_lines: None,
-                            grounding_status: None,
-                            grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:bash/chmod-777".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                            in_diff: None,
-                        });
+                        findings.push(
+                            FindingBuilder::new()
+                                .title("`chmod 777` grants world-writable permissions")
+                                .description("Use more restrictive permissions (e.g. 755 or 700).")
+                                .severity(Severity::Medium)
+                                .category("security".into())
+                                .lines(line, end_line)
+                                .evidence(
+                                    &source[node.byte_range()]
+                                        .chars()
+                                        .take(200)
+                                        .collect::<String>(),
+                                )
+                                .rule_id("local-ast:bash/chmod-777")
+                                .build(),
+                        );
                         break;
                     }
                 }
@@ -2571,34 +1733,22 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 if name == "curl" || name == "wget" {
                     saw_curl = true;
                 } else if saw_curl && (name == "bash" || name == "sh" || name == "zsh") {
-                    findings.push(Finding {
-                        id: crate::finding::new_finding_ulid(),
-                        title: "Piping curl/wget to shell executes untrusted remote code".into(),
-                        description: "Download to a file first, inspect it, then execute.".into(),
-                        severity: Severity::Critical,
-                        category: "security".into(),
-                        source: Source::LocalAst,
-                        line_start: line,
-                        line_end: end_line,
-                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                        calibrator_action: None,
-                        similar_precedent: vec![],
-                        canonical_pattern: None,
-                        suggested_fix: None,
-                        based_on_excerpt: None,
-                        reasoning: None,
-                        llm_confidence: None,
-                        confidence: None,
-                        cited_lines: None,
-                        grounding_status: None,
-                        grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:bash/curl-pipe-bash".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                        in_diff: None,
-                    });
+                    findings.push(
+                        FindingBuilder::new()
+                            .title("Piping curl/wget to shell executes untrusted remote code")
+                            .description("Download to a file first, inspect it, then execute.")
+                            .severity(Severity::Critical)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .evidence(
+                                &source[node.byte_range()]
+                                    .chars()
+                                    .take(200)
+                                    .collect::<String>(),
+                            )
+                            .rule_id("local-ast:bash/curl-pipe-bash")
+                            .build(),
+                    );
                     break;
                 }
             }
@@ -2627,34 +1777,14 @@ fn scan_insecure_bash(node: &tree_sitter::Node, source: &str, findings: &mut Vec
                 let val_text = &source[value_node.byte_range()];
                 // Skip if value contains $ (env var reference)
                 if !val_text.contains('$') {
-                    findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: format!("Hardcoded secret in shell variable `{}`", var_name),
-                                description: "Use environment variables or a secrets manager instead of hardcoded values.".into(),
-                                severity: Severity::High,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: line,
-                                line_end: end_line,
-                                evidence: vec![],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:bash/hardcoded-secret".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                    findings.push(FindingBuilder::new()
+                        .title(&format!("Hardcoded secret in shell variable `{}`", var_name))
+                        .description("Use environment variables or a secrets manager instead of hardcoded values.")
+                        .severity(Severity::High)
+                        .category("security".into())
+                        .lines(line, end_line)
+                        .rule_id("local-ast:bash/hardcoded-secret")
+                        .build());
                 }
             }
         }
@@ -2669,34 +1799,15 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
         "add_instruction" => {
             let text = &source[node.byte_range()];
             if !text.contains("http://") && !text.contains("https://") {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "Use COPY instead of ADD for local files".into(),
-                    description: "ADD has extra functionality (tar extraction, remote URLs) that can be surprising. Use COPY for simple file copies.".into(),
-                    severity: Severity::Medium,
-                    category: "quality".into(),
-                    source: Source::LocalAst,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
-                    evidence: vec![text.trim().to_string()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:dockerfile/add-vs-copy".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(FindingBuilder::new()
+                    .title("Use COPY instead of ADD for local files")
+                    .description("ADD has extra functionality (tar extraction, remote URLs) that can be surprising. Use COPY for simple file copies.")
+                    .severity(Severity::Medium)
+                    .category("quality".into())
+                    .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
+                    .evidence(text.trim())
+                    .rule_id("local-ast:dockerfile/add-vs-copy")
+                    .build());
             }
         }
 
@@ -2722,34 +1833,14 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
                     if let Some(eq_pos) = line.find('=') {
                         let value = line[eq_pos + 1..].trim().trim_matches('"');
                         if !value.is_empty() && !value.starts_with('$') {
-                            findings.push(Finding {
-                                id: crate::finding::new_finding_ulid(),
-                                title: "Secret hardcoded in Dockerfile ENV/ARG".into(),
-                                description: "Secrets should not be hardcoded in Dockerfiles. Use build secrets (--mount=type=secret) or runtime environment variables instead.".into(),
-                                severity: Severity::High,
-                                category: "security".into(),
-                                source: Source::LocalAst,
-                                line_start: node.start_position().row as u32 + 1,
-                                line_end: node.end_position().row as u32 + 1,
-                                evidence: vec![],
-                                calibrator_action: None,
-                                similar_precedent: vec![],
-                                canonical_pattern: None,
-                                suggested_fix: None,
-                                based_on_excerpt: None,
-                                reasoning: None,
-                                llm_confidence: None,
-                    confidence: None,
-                                cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                            model_agreement: None,
-                            rule_id: Some("local-ast:dockerfile/hardcoded-secret".into()),
-                            judge_verdict: None,
-                            judge_confidence: None,
-                            precision_tier: None,
-                    in_diff: None,
-                            });
+                            findings.push(FindingBuilder::new()
+                                .title("Secret hardcoded in Dockerfile ENV/ARG")
+                                .description("Secrets should not be hardcoded in Dockerfiles. Use build secrets (--mount=type=secret) or runtime environment variables instead.")
+                                .severity(Severity::High)
+                                .category("security".into())
+                                .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
+                                .rule_id("local-ast:dockerfile/hardcoded-secret")
+                                .build());
                             break;
                         }
                     }
@@ -2764,34 +1855,15 @@ fn scan_insecure_dockerfile(node: &tree_sitter::Node, source: &str, findings: &m
             let has_pipe = text.contains('|');
             let has_shell = text.contains("bash") || text.contains("/sh") || text.contains("| sh");
             if has_downloader && has_pipe && has_shell {
-                findings.push(Finding {
-                    id: crate::finding::new_finding_ulid(),
-                    title: "RUN pipes curl/wget to shell -- executes untrusted remote code".into(),
-                    description: "Piping downloaded scripts directly to a shell is dangerous. Download the script first, verify its checksum, then execute.".into(),
-                    severity: Severity::Critical,
-                    category: "security".into(),
-                    source: Source::LocalAst,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
-                    evidence: vec![text.trim().to_string()],
-                    calibrator_action: None,
-                    similar_precedent: vec![],
-                    canonical_pattern: None,
-                    suggested_fix: None,
-                    based_on_excerpt: None,
-                    reasoning: None,
-                    llm_confidence: None,
-                    confidence: None,
-                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:dockerfile/curl-pipe-bash".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                    in_diff: None,
-                });
+                findings.push(FindingBuilder::new()
+                    .title("RUN pipes curl/wget to shell -- executes untrusted remote code")
+                    .description("Piping downloaded scripts directly to a shell is dangerous. Download the script first, verify its checksum, then execute.")
+                    .severity(Severity::Critical)
+                    .category("security".into())
+                    .lines(node.start_position().row as u32 + 1, node.end_position().row as u32 + 1)
+                    .evidence(text.trim())
+                    .rule_id("local-ast:dockerfile/curl-pipe-bash")
+                    .build());
             }
         }
 
@@ -2875,34 +1947,15 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                 && !inner.starts_with("${var.")
                 && !inner.starts_with("${")
             {
-                findings.push(Finding {
-                                    id: crate::finding::new_finding_ulid(),
-                                    title: format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]),
-                                    description: "Secrets should be loaded from variables or a secrets manager, not hardcoded in Terraform files.".into(),
-                                    severity: Severity::High,
-                                    category: "security".into(),
-                                    source: Source::LocalAst,
-                                    line_start: line,
-                                    line_end: end_line,
-                                    evidence: vec![format!("{} = [REDACTED]", &source[name_node.byte_range()])],
-                                    calibrator_action: None,
-                                    similar_precedent: vec![],
-                                    canonical_pattern: None,
-                                    suggested_fix: None,
-                                    based_on_excerpt: None,
-                                    reasoning: None,
-                                    llm_confidence: None,
-                    confidence: None,
-                                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                                model_agreement: None,
-                                rule_id: Some("local-ast:terraform/hardcoded-secret".into()),
-                                judge_verdict: None,
-                                judge_confidence: None,
-                                precision_tier: None,
-                    in_diff: None,
-                                });
+                findings.push(FindingBuilder::new()
+                    .title(&format!("Hardcoded secret in `{}`", &source[name_node.byte_range()]))
+                    .description("Secrets should be loaded from variables or a secrets manager, not hardcoded in Terraform files.")
+                    .severity(Severity::High)
+                    .category("security".into())
+                    .lines(line, end_line)
+                    .evidence(&format!("{} = [REDACTED]", &source[name_node.byte_range()]))
+                    .rule_id("local-ast:terraform/hardcoded-secret")
+                    .build());
             }
         }
     }
@@ -2923,34 +1976,15 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
                     let val_text = source[val_expr.byte_range()].trim();
                     let inner = val_text.trim_matches('"');
                     if inner == "*" {
-                        findings.push(Finding {
-                                    id: crate::finding::new_finding_ulid(),
-                                    title: "Wildcard IAM action grants unrestricted permissions".into(),
-                                    description: "Using `Action = \"*\"` grants all permissions. Follow the principle of least privilege.".into(),
-                                    severity: Severity::High,
-                                    category: "security".into(),
-                                    source: Source::LocalAst,
-                                    line_start: line,
-                                    line_end: end_line,
-                                    evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                                    calibrator_action: None,
-                                    similar_precedent: vec![],
-                                    canonical_pattern: None,
-                                    suggested_fix: None,
-                                    based_on_excerpt: None,
-                                    reasoning: None,
-                                    llm_confidence: None,
-                    confidence: None,
-                                    cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                                model_agreement: None,
-                                rule_id: Some("local-ast:terraform/wildcard-iam".into()),
-                                judge_verdict: None,
-                                judge_confidence: None,
-                                precision_tier: None,
-                    in_diff: None,
-                                });
+                        findings.push(FindingBuilder::new()
+                            .title("Wildcard IAM action grants unrestricted permissions")
+                            .description("Using `Action = \"*\"` grants all permissions. Follow the principle of least privilege.")
+                            .severity(Severity::High)
+                            .category("security".into())
+                            .lines(line, end_line)
+                            .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                            .rule_id("local-ast:terraform/wildcard-iam")
+                            .build());
                     }
                 }
             }
@@ -2999,34 +2033,15 @@ fn scan_insecure_terraform(node: &tree_sitter::Node, source: &str, findings: &mu
         }
 
         if has_open_cidr && port_is_sensitive && found_port {
-            findings.push(Finding {
-                        id: crate::finding::new_finding_ulid(),
-                        title: "Security group open to 0.0.0.0/0 on sensitive port".into(),
-                        description: "Allowing ingress from 0.0.0.0/0 on non-HTTP(S) ports exposes the service to the internet. Restrict to specific CIDR ranges.".into(),
-                        severity: Severity::High,
-                        category: "security".into(),
-                        source: Source::LocalAst,
-                        line_start: line,
-                        line_end: end_line,
-                        evidence: vec![source[node.byte_range()].chars().take(200).collect()],
-                        calibrator_action: None,
-                        similar_precedent: vec![],
-                        canonical_pattern: None,
-                        suggested_fix: None,
-                        based_on_excerpt: None,
-                        reasoning: None,
-                        llm_confidence: None,
-                    confidence: None,
-                        cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                    model_agreement: None,
-                    rule_id: Some("local-ast:terraform/open-security-group".into()),
-                    judge_verdict: None,
-                    judge_confidence: None,
-                    precision_tier: None,
-                    in_diff: None,
-                    });
+            findings.push(FindingBuilder::new()
+                .title("Security group open to 0.0.0.0/0 on sensitive port")
+                .description("Allowing ingress from 0.0.0.0/0 on non-HTTP(S) ports exposes the service to the internet. Restrict to specific CIDR ranges.")
+                .severity(Severity::High)
+                .category("security".into())
+                .lines(line, end_line)
+                .evidence(&source[node.byte_range()].chars().take(200).collect::<String>())
+                .rule_id("local-ast:terraform/open-security-group")
+                .build());
         }
     }
 }
@@ -3100,34 +2115,14 @@ fn analyze_terraform_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<Fi
 
     // S1: Missing required_version
     if (!has_terraform_block || !has_required_version) && has_resource_or_data {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "Missing required_version in terraform block".into(),
-            description: "Add a `terraform { required_version = \">= X.Y\" }` block to pin the Terraform version and prevent unexpected upgrades.".into(),
-            severity: Severity::Medium,
-            category: "reliability".into(),
-            source: Source::LocalAst,
-            line_start: 1,
-            line_end: 1,
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-        model_agreement: None,
-        rule_id: Some("local-ast:terraform/no-version-pin".into()),
-        judge_verdict: None,
-        judge_confidence: None,
-        precision_tier: None,
-                    in_diff: None,
-        });
+        findings.push(FindingBuilder::new()
+            .title("Missing required_version in terraform block")
+            .description("Add a `terraform { required_version = \">= X.Y\" }` block to pin the Terraform version and prevent unexpected upgrades.")
+            .severity(Severity::Medium)
+            .category("reliability".into())
+            .lines(1, 1)
+            .rule_id("local-ast:terraform/no-version-pin")
+            .build());
     }
 
     findings
@@ -3198,38 +2193,24 @@ fn check_required_providers(rp_body: tree_sitter::Node, source: &str, findings: 
         walk_for_object_keys(expr, source, &mut has_source, &mut has_version);
 
         if has_source && !has_version {
-            findings.push(Finding {
-                id: crate::finding::new_finding_ulid(),
-                title: format!(
-                    "Provider `{}` in required_providers has no version constraint",
-                    provider_name.unwrap_or("unknown")
-                ),
-                description: "Add a `version` constraint to prevent unexpected provider upgrades."
-                    .into(),
-                severity: Severity::Medium,
-                category: "reliability".into(),
-                source: Source::LocalAst,
-                line_start: attr.start_position().row as u32 + 1,
-                line_end: attr.end_position().row as u32 + 1,
-                evidence: vec![],
-                calibrator_action: None,
-                similar_precedent: vec![],
-                canonical_pattern: None,
-                suggested_fix: None,
-                based_on_excerpt: None,
-                reasoning: None,
-                llm_confidence: None,
-                confidence: None,
-                cited_lines: None,
-                grounding_status: None,
-                grounding_confidence: None,
-                model_agreement: None,
-                rule_id: Some("local-ast:terraform/no-provider-version".into()),
-                judge_verdict: None,
-                judge_confidence: None,
-                precision_tier: None,
-                in_diff: None,
-            });
+            findings.push(
+                FindingBuilder::new()
+                    .title(&format!(
+                        "Provider `{}` in required_providers has no version constraint",
+                        provider_name.unwrap_or("unknown")
+                    ))
+                    .description(
+                        "Add a `version` constraint to prevent unexpected provider upgrades.",
+                    )
+                    .severity(Severity::Medium)
+                    .category("reliability".into())
+                    .lines(
+                        attr.start_position().row as u32 + 1,
+                        attr.end_position().row as u32 + 1,
+                    )
+                    .rule_id("local-ast:terraform/no-provider-version")
+                    .build(),
+            );
         }
     }
 }
@@ -3309,34 +2290,15 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
                     let has_tag = image_ref.contains(':');
                     let uses_latest = image_ref.ends_with(":latest");
                     if !has_tag || uses_latest {
-                        findings.push(Finding {
-                            id: crate::finding::new_finding_ulid(),
-                            title: "FROM uses `latest` or untagged image -- builds are not reproducible".into(),
-                            description: format!("Pin the image to a specific tag or digest: {}", image_ref),
-                            severity: Severity::Medium,
-                            category: "reliability".into(),
-                            source: Source::LocalAst,
-                            line_start: child.start_position().row as u32 + 1,
-                            line_end: child.end_position().row as u32 + 1,
-                            evidence: vec![image_ref.to_string()],
-                            calibrator_action: None,
-                            similar_precedent: vec![],
-                            canonical_pattern: None,
-                            suggested_fix: None,
-                            based_on_excerpt: None,
-                            reasoning: None,
-                            llm_confidence: None,
-                    confidence: None,
-                            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-                        model_agreement: None,
-                        rule_id: Some("local-ast:dockerfile/from-latest".into()),
-                        judge_verdict: None,
-                        judge_confidence: None,
-                        precision_tier: None,
-                    in_diff: None,
-                        });
+                        findings.push(FindingBuilder::new()
+                            .title("FROM uses `latest` or untagged image -- builds are not reproducible")
+                            .description(&format!("Pin the image to a specific tag or digest: {}", image_ref))
+                            .severity(Severity::Medium)
+                            .category("reliability".into())
+                            .lines(child.start_position().row as u32 + 1, child.end_position().row as u32 + 1)
+                            .evidence(image_ref)
+                            .rule_id("local-ast:dockerfile/from-latest")
+                            .build());
                     }
                 }
             }
@@ -3351,134 +2313,60 @@ fn analyze_dockerfile_structure(tree: &tree_sitter::Tree, source: &str) -> Vec<F
 
     // D6: No USER instruction
     if !has_user {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "No USER instruction -- container runs as root".into(),
-            description: "Add a USER instruction to run the container as a non-root user.".into(),
-            severity: Severity::Medium,
-            category: "security".into(),
-            source: Source::LocalAst,
-            line_start: 1,
-            line_end: 1,
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-            grounding_status: None,
-            grounding_confidence: None,
-            model_agreement: None,
-            rule_id: Some("local-ast:dockerfile/no-user".into()),
-            judge_verdict: None,
-            judge_confidence: None,
-            precision_tier: None,
-            in_diff: None,
-        });
+        findings.push(
+            FindingBuilder::new()
+                .title("No USER instruction -- container runs as root")
+                .description("Add a USER instruction to run the container as a non-root user.")
+                .severity(Severity::Medium)
+                .category("security".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/no-user")
+                .build(),
+        );
     }
 
     // D8: No HEALTHCHECK
     if !has_healthcheck {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "No HEALTHCHECK instruction".into(),
-            description: "Add a HEALTHCHECK instruction so the container runtime can detect unhealthy containers.".into(),
-            severity: Severity::Low,
-            category: "reliability".into(),
-            source: Source::LocalAst,
-            line_start: 1,
-            line_end: 1,
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-                    grounding_status: None,
-                    grounding_confidence: None,
-        model_agreement: None,
-        rule_id: Some("local-ast:dockerfile/no-healthcheck".into()),
-        judge_verdict: None,
-        judge_confidence: None,
-        precision_tier: None,
-                    in_diff: None,
-        });
+        findings.push(FindingBuilder::new()
+            .title("No HEALTHCHECK instruction")
+            .description("Add a HEALTHCHECK instruction so the container runtime can detect unhealthy containers.")
+            .severity(Severity::Low)
+            .category("reliability".into())
+            .lines(1, 1)
+            .rule_id("local-ast:dockerfile/no-healthcheck")
+            .build());
     }
 
     // D11: Multiple CMD/ENTRYPOINT
     if cmd_count > 1 {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "Multiple CMD instructions -- only the last one takes effect".into(),
-            description: format!(
-                "Found {} CMD instructions; only the last one will be used.",
-                cmd_count
-            ),
-            severity: Severity::Medium,
-            category: "bug".into(),
-            source: Source::LocalAst,
-            line_start: 1,
-            line_end: 1,
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-            grounding_status: None,
-            grounding_confidence: None,
-            model_agreement: None,
-            rule_id: Some("local-ast:dockerfile/multiple-cmd".into()),
-            judge_verdict: None,
-            judge_confidence: None,
-            precision_tier: None,
-            in_diff: None,
-        });
+        findings.push(
+            FindingBuilder::new()
+                .title("Multiple CMD instructions -- only the last one takes effect")
+                .description(&format!(
+                    "Found {} CMD instructions; only the last one will be used.",
+                    cmd_count
+                ))
+                .severity(Severity::Medium)
+                .category("bug".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/multiple-cmd")
+                .build(),
+        );
     }
     if entrypoint_count > 1 {
-        findings.push(Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: "Multiple ENTRYPOINT instructions -- only the last one takes effect".into(),
-            description: format!(
-                "Found {} ENTRYPOINT instructions; only the last one will be used.",
-                entrypoint_count
-            ),
-            severity: Severity::Medium,
-            category: "bug".into(),
-            source: Source::LocalAst,
-            line_start: 1,
-            line_end: 1,
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: None,
-            based_on_excerpt: None,
-            reasoning: None,
-            llm_confidence: None,
-            confidence: None,
-            cited_lines: None,
-            grounding_status: None,
-            grounding_confidence: None,
-            model_agreement: None,
-            rule_id: Some("local-ast:dockerfile/multiple-entrypoint".into()),
-            judge_verdict: None,
-            judge_confidence: None,
-            precision_tier: None,
-            in_diff: None,
-        });
+        findings.push(
+            FindingBuilder::new()
+                .title("Multiple ENTRYPOINT instructions -- only the last one takes effect")
+                .description(&format!(
+                    "Found {} ENTRYPOINT instructions; only the last one will be used.",
+                    entrypoint_count
+                ))
+                .severity(Severity::Medium)
+                .category("bug".into())
+                .lines(1, 1)
+                .rule_id("local-ast:dockerfile/multiple-entrypoint")
+                .build(),
+        );
     }
 
     findings

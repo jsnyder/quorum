@@ -1,0 +1,22 @@
+id: discarded-fallible-result
+language: Rust
+severity: warning
+message: "Fallible result discarded with `let _ = ...`. If this operation fails (lock poisoned, channel closed, I/O error) the error is silently lost. Handle with `?`, `.expect(\"…\")`, or log the error."
+note: "Broadens ignored-io-result to cover lock/send/flush/close/connect/bind patterns. Issue #380."
+metadata:
+  precision: high
+rule:
+  kind: let_declaration
+  all:
+    - has:
+        field: pattern
+        regex: "^_$"
+    - has:
+        field: value
+        kind: call_expression
+        has:
+          field: function
+          kind: field_expression
+          has:
+            field: field
+            regex: "^(lock|send|flush|close|write_all|connect|bind|try_lock|try_send|try_recv|recv|shutdown)$"

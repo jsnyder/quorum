@@ -1,0 +1,25 @@
+id: unwrap-after-infallible
+language: Rust
+severity: hint
+message: "`.unwrap()` on a value known to be `Some`/`Ok` at construction site. This is safe but consider using the inner value directly."
+note: "Suppression rule: presence indicates nearby unwrap() findings are likely FP. Issue #382."
+metadata:
+  precision: high
+  judge: suppress_if_matched
+rule:
+  kind: call_expression
+  has:
+    field: function
+    kind: field_expression
+    all:
+      - has:
+          field: field
+          regex: "^unwrap$"
+      - has:
+          field: value
+          kind: call_expression
+          has:
+            field: function
+            any:
+              - regex: "^Some$"
+              - regex: "^Ok$"

@@ -22,6 +22,7 @@ pub mod fakes {
             }
         }
 
+        #[allow(dead_code)]
         pub fn sequence(responses: Vec<&str>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().map(|r| Ok(r.to_string())).collect()),
