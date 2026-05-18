@@ -1476,7 +1476,12 @@ fn lang_name_from_path(path: &Path) -> String {
         .to_lowercase()
 }
 
-/// Stamp each finding with `in_diff` based on line-range overlap with changed hunks.
+/// Stamp each finding with `in_diff` based on whether the finding's anchor
+/// line falls within a changed hunk.
+///
+/// The anchor line is `cited_lines.start` if available, else `line_start`.
+/// This avoids marking wide-span findings (e.g. function complexity) as
+/// in-diff when only a small portion of the function was changed.
 ///
 /// Only called when `--diff-file` was explicitly provided. Invalid findings
 /// (malformed line ranges) are skipped.
@@ -1485,11 +1490,12 @@ fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
         if !finding.is_valid() {
             continue;
         }
-        let overlaps = !changed_lines.is_empty()
+        let anchor = finding.anchor_line();
+        let in_changed = !changed_lines.is_empty()
             && changed_lines
                 .iter()
-                .any(|(start, end)| finding.line_start <= *end && finding.line_end >= *start);
-        finding.in_diff = Some(overlaps);
+                .any(|(start, end)| anchor >= *start && anchor <= *end);
+        finding.in_diff = Some(in_changed);
     }
 }
 
@@ -2922,22 +2928,22 @@ mod tests {
     // -- classify_in_diff --
 
     #[test]
-    fn classify_in_diff_tags_overlapping_findings() {
+    fn classify_in_diff_anchor_inside_hunk() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![
-            FindingBuilder::new().line_start(10).line_end(20).build(),
+            FindingBuilder::new().line_start(15).line_end(20).build(),
             FindingBuilder::new().line_start(50).line_end(60).build(),
             FindingBuilder::new().line_start(100).line_end(100).build(),
         ];
         let changed = vec![(15, 25)];
         classify_in_diff(&mut findings, &changed);
-        assert_eq!(findings[0].in_diff, Some(true));
-        assert_eq!(findings[1].in_diff, Some(false));
-        assert_eq!(findings[2].in_diff, Some(false));
+        assert_eq!(findings[0].in_diff, Some(true), "anchor 15 inside [15,25]");
+        assert_eq!(findings[1].in_diff, Some(false), "anchor 50 outside [15,25]");
+        assert_eq!(findings[2].in_diff, Some(false), "anchor 100 outside");
     }
 
     #[test]
-    fn classify_in_diff_boundary_overlap() {
+    fn classify_in_diff_span_overlaps_but_anchor_outside() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![
             FindingBuilder::new().line_start(10).line_end(20).build(),
@@ -2945,8 +2951,16 @@ mod tests {
         ];
         let changed = vec![(20, 30)];
         classify_in_diff(&mut findings, &changed);
-        assert_eq!(findings[0].in_diff, Some(true));
-        assert_eq!(findings[1].in_diff, Some(true));
+        assert_eq!(
+            findings[0].in_diff,
+            Some(false),
+            "anchor 10 outside [20,30] even though span overlaps"
+        );
+        assert_eq!(
+            findings[1].in_diff,
+            Some(true),
+            "anchor 30 inside [20,30]"
+        );
     }
 
     #[test]
@@ -2967,16 +2981,37 @@ mod tests {
     }
 
     #[test]
-    fn classify_in_diff_large_span_finding() {
+    fn classify_in_diff_large_span_anchor_outside_hunk() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().line_start(1).line_end(500).build()];
         let changed = vec![(250, 260)];
         classify_in_diff(&mut findings, &changed);
-        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(
+            findings[0].in_diff,
+            Some(false),
+            "anchor 1 outside [250,260] — pre-existing complexity"
+        );
     }
 
     #[test]
-    fn classify_in_diff_multiple_hunks_mixed_classification() {
+    fn classify_in_diff_large_span_with_cited_lines_in_hunk() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![FindingBuilder::new()
+            .line_start(1)
+            .line_end(500)
+            .cited_lines(255, 258)
+            .build()];
+        let changed = vec![(250, 260)];
+        classify_in_diff(&mut findings, &changed);
+        assert_eq!(
+            findings[0].in_diff,
+            Some(true),
+            "cited_lines anchor 255 inside [250,260]"
+        );
+    }
+
+    #[test]
+    fn classify_in_diff_multiple_hunks_anchor_matching() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![
             FindingBuilder::new().line_start(5).line_end(10).build(),
@@ -2986,9 +3021,17 @@ mod tests {
         ];
         let changed = vec![(8, 12), (48, 60)];
         classify_in_diff(&mut findings, &changed);
-        assert_eq!(findings[0].in_diff, Some(true));
+        assert_eq!(
+            findings[0].in_diff,
+            Some(false),
+            "anchor 5 outside both hunks"
+        );
         assert_eq!(findings[1].in_diff, Some(false));
-        assert_eq!(findings[2].in_diff, Some(true));
+        assert_eq!(
+            findings[2].in_diff,
+            Some(true),
+            "anchor 50 inside [48,60]"
+        );
         assert_eq!(findings[3].in_diff, Some(false));
     }
 

@@ -157,6 +157,12 @@ impl Finding {
         self.line_start >= 1 && self.line_start <= self.line_end
     }
 
+    pub fn anchor_line(&self) -> u32 {
+        self.cited_lines
+            .map(|(start, _)| start)
+            .unwrap_or(self.line_start)
+    }
+
     pub fn compute_confidence(&mut self) {
         let base = match (&self.source, &self.precision_tier) {
             (Source::LocalAst, Some(PrecisionTier::High)) | (Source::LocalAst, None) => 0.95,
