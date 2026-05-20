@@ -83,11 +83,8 @@ pub fn extract_go(
     let chunks: Vec<Chunk> = raw
         .into_iter()
         .map(|(_byte_start, name, start_line, end_line, signature)| {
-            let neighboring_symbols: Vec<String> = all_names
-                .iter()
-                .filter(|n| **n != name)
-                .cloned()
-                .collect();
+            let neighboring_symbols: Vec<String> =
+                all_names.iter().filter(|n| **n != name).cloned().collect();
 
             let id = format!("{source}:{source_path}:{name}");
 

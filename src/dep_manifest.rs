@@ -1776,17 +1776,32 @@ django = "*"
     #[test]
     fn go_mod_single_require_parsed() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "go.mod", "module github.com/example/app\n\ngo 1.21\n\nrequire github.com/gin-gonic/gin v1.9.1\n");
+        write(
+            dir.path(),
+            "go.mod",
+            "module github.com/example/app\n\ngo 1.21\n\nrequire github.com/gin-gonic/gin v1.9.1\n",
+        );
         let deps = parse_dependencies(dir.path());
-        assert!(deps.iter().any(|d| d.name == "github.com/gin-gonic/gin" && d.language == "go"));
+        assert!(
+            deps.iter()
+                .any(|d| d.name == "github.com/gin-gonic/gin" && d.language == "go")
+        );
     }
 
     #[test]
     fn go_mod_block_require_parsed() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "go.mod", "module github.com/example/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgithub.com/stretchr/testify v1.8.4 // indirect\n\tgoogle.golang.org/grpc v1.58.0\n)\n");
+        write(
+            dir.path(),
+            "go.mod",
+            "module github.com/example/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgithub.com/stretchr/testify v1.8.4 // indirect\n\tgoogle.golang.org/grpc v1.58.0\n)\n",
+        );
         let deps = parse_dependencies(dir.path());
-        let names: Vec<_> = deps.iter().filter(|d| d.language == "go").map(|d| d.name.as_str()).collect();
+        let names: Vec<_> = deps
+            .iter()
+            .filter(|d| d.language == "go")
+            .map(|d| d.name.as_str())
+            .collect();
         assert!(names.contains(&"github.com/gin-gonic/gin"));
         assert!(names.contains(&"github.com/stretchr/testify"));
         assert!(names.contains(&"google.golang.org/grpc"));
@@ -1795,15 +1810,27 @@ django = "*"
     #[test]
     fn go_mod_version_suffix_preserved() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "go.mod", "module github.com/example/app\n\nrequire github.com/acme/lib/v2 v2.3.0\n");
+        write(
+            dir.path(),
+            "go.mod",
+            "module github.com/example/app\n\nrequire github.com/acme/lib/v2 v2.3.0\n",
+        );
         let deps = parse_dependencies(dir.path());
-        assert!(deps.iter().any(|d| d.name == "github.com/acme/lib/v2"), "v2 suffix must be preserved: {:?}", deps);
+        assert!(
+            deps.iter().any(|d| d.name == "github.com/acme/lib/v2"),
+            "v2 suffix must be preserved: {:?}",
+            deps
+        );
     }
 
     #[test]
     fn go_mod_replace_directive_handled() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "go.mod", "module github.com/example/app\n\nrequire github.com/foo/bar v1.0.0\n\nreplace github.com/foo/bar => github.com/my/fork v1.0.1\n");
+        write(
+            dir.path(),
+            "go.mod",
+            "module github.com/example/app\n\nrequire github.com/foo/bar v1.0.0\n\nreplace github.com/foo/bar => github.com/my/fork v1.0.1\n",
+        );
         let deps = parse_dependencies(dir.path());
         assert!(deps.iter().any(|d| d.name == "github.com/foo/bar"));
     }
@@ -1811,7 +1838,11 @@ django = "*"
     #[test]
     fn go_mod_indirect_deps_included() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), "go.mod", "module example.com/app\n\nrequire (\n\tgithub.com/direct v1.0.0\n\tgithub.com/indirect v2.0.0 // indirect\n)\n");
+        write(
+            dir.path(),
+            "go.mod",
+            "module example.com/app\n\nrequire (\n\tgithub.com/direct v1.0.0\n\tgithub.com/indirect v2.0.0 // indirect\n)\n",
+        );
         let deps = parse_dependencies(dir.path());
         let go_deps: Vec<_> = deps.iter().filter(|d| d.language == "go").collect();
         assert_eq!(go_deps.len(), 2);

@@ -11,15 +11,15 @@ use std::path::{Path, PathBuf};
 use glob::Pattern;
 use walkdir::WalkDir;
 
+use super::astgrep_go::extract_go;
 use super::astgrep_hcl::extract_hcl;
 use super::astgrep_py::extract_python;
 use super::astgrep_rust::extract_rust;
-use super::astgrep_go::extract_go;
 use super::astgrep_ts::extract_typescript;
 use super::fingerprint::FINGERPRINT_DIMS;
+use super::fingerprint_go::GoFingerprinter;
 use super::fingerprint_python::PythonFingerprinter;
 use super::fingerprint_rust::RustFingerprinter;
-use super::fingerprint_go::GoFingerprinter;
 use super::fingerprint_typescript::TypeScriptFingerprinter;
 use super::markdown::{DocSubtype, split_markdown};
 use crate::context::config::{SourceEntry, SourceLocation};

@@ -33,7 +33,11 @@ func (s *Server) stop() {}
         .iter()
         .filter_map(|c| c.qualified_name.as_deref())
         .collect();
-    assert!(names.contains(&"Server.Start"), "expected receiver-qualified method, got: {:?}", names);
+    assert!(
+        names.contains(&"Server.Start"),
+        "expected receiver-qualified method, got: {:?}",
+        names
+    );
     assert!(!names.iter().any(|n| n.ends_with("stop")));
 }
 

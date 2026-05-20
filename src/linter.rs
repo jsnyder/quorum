@@ -219,7 +219,9 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         ".golangci.toml",
         ".golangci.json",
     ];
-    let has_golangci_config = golangci_configs.iter().any(|c| project_dir.join(c).exists());
+    let has_golangci_config = golangci_configs
+        .iter()
+        .any(|c| project_dir.join(c).exists());
     if has_golangci_config || project_dir.join("go.mod").exists() {
         linters.push(LinterKind::Golangcilint);
     }
@@ -250,9 +252,11 @@ pub fn run_linter(
         LinterKind::Tflint => {
             runner.run("tflint", &["--format=json", "--force", &file_str], cwd)?
         }
-        LinterKind::Golangcilint => {
-            runner.run("golangci-lint", &["run", "--out-format=json", &file_str], cwd)?
-        }
+        LinterKind::Golangcilint => runner.run(
+            "golangci-lint",
+            &["run", "--out-format=json", &file_str],
+            cwd,
+        )?,
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
