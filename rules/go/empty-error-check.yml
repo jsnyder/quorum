@@ -3,13 +3,12 @@ language: go
 severity: warning
 message: "Error is checked but silently swallowed. Return or log the error."
 rule:
-  pattern: |
-    if $ERR != nil {
-      return $$$RETVALS
-    }
-constraints:
-  ERR:
-    regex: '^err'
-  RETVALS:
-    not:
-      regex: 'err'
+  all:
+    - kind: if_statement
+    - has:
+        kind: binary_expression
+        regex: 'err\s*!=\s*nil'
+    - has:
+        kind: block
+        not:
+          regex: 'err'
