@@ -67,10 +67,11 @@ The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS b
 | Bash | .sh, .bash, .zsh, .bats | eval, curl\|bash, set -e, secrets, chmod 777, shebang | shellcheck |
 | Dockerfile | Dockerfile* | FROM latest, no USER, no HEALTHCHECK, secrets in ENV, ADD vs COPY, curl\|bash | hadolint |
 | Terraform | .tf, .tfvars | secrets, wildcard IAM, open SGs, missing version pins | tflint |
+| Go | .go | error handling, concurrency, SQL injection, TLS, defer patterns | golangci-lint |
 | Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
 
-### ast-grep custom rules (53 bundled)
+### ast-grep custom rules (71 bundled)
 
 Bundled rules live in `rules/<language>/`. Users can add custom rules to `~/.quorum/rules/<language>/` (e.g. `~/.quorum/rules/typescript/my-rule.yml`). Both directories are scanned automatically when ast-grep is in PATH.
 
@@ -81,6 +82,7 @@ Bundled rules by language:
 - **Rust** (5): block-on-in-async, expect-empty-message, ignored-io-result, silent-error-conversion, string-byte-slice
 - **Bash** (4): predictable-tmp, toctou-lock-touch, unquoted-variable, unsafe-grep-variable
 - **YAML** (3): float-zero-fallback, ha-jinja-loop-scoped-reassignment, ha-template-none-fallback
+- **Go** (18): bare-error-format, bind-all-interfaces, defer-in-loop, empty-error-check, error-sprintf, errors-new-fmt, exec-command-variable, http-body-not-closed, ignored-error-return, init-side-effects, mutex-copy, nil-map-assign, range-loop-variable-capture, sql-string-concat, string-byte-slice-in-loop, sync-pool-non-pointer, tls-insecure-skip, waitgroup-add-in-goroutine
 - **HCL/Terraform** (2): iam-wildcard-action, iam-wildcard-resource
 
 Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-pattern-mining.md`.
