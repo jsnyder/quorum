@@ -702,16 +702,38 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
 
 pub fn normalize_golangcilint_output(json_output: &str) -> anyhow::Result<Vec<Finding>> {
     let wrapper: serde_json::Value = serde_json::from_str(json_output)?;
-    let issues = wrapper.get("Issues").and_then(|i| i.as_array());
+    let issues = wrapper
+        .get("Issues")
+        .or_else(|| wrapper.get("issues"))
+        .and_then(|i| i.as_array());
     let mut findings = Vec::new();
 
     if let Some(items) = issues {
         for item in items {
-            let from_linter = item["FromLinter"].as_str().unwrap_or("unknown");
-            let message = item["Text"].as_str().unwrap_or("");
-            let severity_str = item["Severity"].as_str().unwrap_or("warning");
-            let line = item["Pos"]["Line"].as_u64().unwrap_or(1) as u32;
-            let col = item["Pos"]["Column"].as_u64().unwrap_or(1) as u32;
+            let from_linter = item
+                .get("FromLinter")
+                .or_else(|| item.get("from_linter"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let message = item
+                .get("Text")
+                .or_else(|| item.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let severity_str = item
+                .get("Severity")
+                .or_else(|| item.get("severity"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("warning");
+            let pos = item.get("Pos").or_else(|| item.get("pos"));
+            let line = pos
+                .and_then(|p| p.get("Line").or_else(|| p.get("line")))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32;
+            let col = pos
+                .and_then(|p| p.get("Column").or_else(|| p.get("column")))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32;
 
             let severity = match severity_str {
                 "error" => Severity::High,

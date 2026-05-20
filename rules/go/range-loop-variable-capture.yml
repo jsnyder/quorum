@@ -1,7 +1,7 @@
 id: range-loop-variable-capture
 language: go
 severity: warning
-message: "Loop variable captured by goroutine closure. In Go <1.22 this causes a data race."
+message: "Goroutine launched inside loop body. Verify loop variables are not captured by closure (safe in Go 1.22+, or when passed as function arguments)."
 rule:
   pattern: |
     go func($$$PARAMS) {

@@ -1,6 +1,6 @@
 id: sync-pool-non-pointer
 language: go
-severity: hint
-message: "sync.Pool storing non-pointer types defeats pooling. Return pointer types from New."
+severity: info
+message: "Review sync.Pool usage: ensure New returns pointer types for effective pooling."
 rule:
   pattern: sync.Pool{$$$}

@@ -78,6 +78,9 @@ pub fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
             // TS forms always carry a quoted source (`from '<pkg>'` or bare
             // `'<pkg>'` for side-effect imports). Python `import X.Y` does not.
             if let Some(pkg) = extract_quoted_source(stmt) {
+                if is_go_module_path(&pkg) {
+                    return vec![pkg];
+                }
                 return normalize_ts_package(&pkg);
             }
             return parse_python_import(stmt);
@@ -168,6 +171,20 @@ fn extract_quoted_source(stmt: &str) -> Option<String> {
     None
 }
 
+fn is_go_module_path(pkg: &str) -> bool {
+    pkg.contains('/') && pkg.split('/').next().is_some_and(|host| host.contains('.'))
+}
+
+fn strip_go_version_suffix(name: &str) -> &str {
+    if let Some(pos) = name.rfind("/v") {
+        let suffix = &name[pos + 2..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &name[..pos];
+        }
+    }
+    name
+}
+
 fn normalize_ts_package(pkg: &str) -> Vec<String> {
     if let Some(stripped) = pkg.strip_prefix('@') {
         let parts: Vec<&str> = stripped.splitn(3, '/').collect();
@@ -220,7 +237,10 @@ pub fn enrich_for_review(
     let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
-            if let Some(dep) = deps.iter().find(|d| d.name == name)
+            if let Some(dep) = deps
+                .iter()
+                .find(|d| d.name == name)
+                .or_else(|| match_go_import_to_dep(&name, deps))
                 && !import_matched.iter().any(|d| d.name == dep.name)
             {
                 import_matched.push(dep);
@@ -280,7 +300,10 @@ pub fn enrich_for_review_with_policy(
     let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
-            if let Some(dep) = deps.iter().find(|d| d.name == name)
+            if let Some(dep) = deps
+                .iter()
+                .find(|d| d.name == name)
+                .or_else(|| match_go_import_to_dep(&name, deps))
                 && !import_matched.iter().any(|d| d.name == dep.name)
             {
                 import_matched.push(dep);
@@ -425,6 +448,7 @@ pub fn generic_query_for_language(lang: &str) -> &'static str {
 /// Look up the curated Context7 query for a known framework name.
 /// Returns None for uncurated names — callers should fall back to a generic query.
 pub fn curated_query_for(name: &str) -> Option<String> {
+    let name = strip_go_version_suffix(name);
     let q = match name {
         "react" => "hooks rules component lifecycle common pitfalls",
         "nextjs" | "next" | "next.js" => "server components data fetching security",

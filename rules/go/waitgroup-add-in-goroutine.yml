@@ -1,7 +1,7 @@
 id: waitgroup-add-in-goroutine
 language: go
 severity: warning
-message: "wg.Add() called inside goroutine. Call wg.Add() before launching the goroutine."
+message: "wg.Add() called inside goroutine. Call wg.Add() before launching the goroutine. Note: this rule matches any .Add() call inside a go statement, which may include false positives for non-WaitGroup types."
 rule:
   all:
     - kind: call_expression

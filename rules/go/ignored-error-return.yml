@@ -3,4 +3,6 @@ language: go
 severity: warning
 message: "Error return value assigned to blank identifier. Handle or propagate the error."
 rule:
-  pattern: $_, _ = $FUNC($$$ARGS)
+  any:
+    - pattern: $_, _ = $FUNC($$$ARGS)
+    - pattern: $VAL, _ = $FUNC($$$ARGS)

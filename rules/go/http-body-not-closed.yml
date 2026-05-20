@@ -1,7 +1,7 @@
 id: http-body-not-closed
 language: go
 severity: warning
-message: "HTTP response body should be closed with defer resp.Body.Close()"
+message: "HTTP response body may not be closed. Ensure defer resp.Body.Close() follows."
 rule:
   all:
     - kind: short_var_declaration

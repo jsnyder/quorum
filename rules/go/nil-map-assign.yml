@@ -1,7 +1,7 @@
 id: nil-map-assign
 language: go
 severity: error
-message: "Uninitialized map variable. Initialize with make() to avoid nil map panic on assignment."
+message: "Map variable declared without initialization. Use make() or a composite literal to avoid nil map panics."
 rule:
   kind: var_declaration
   has:
