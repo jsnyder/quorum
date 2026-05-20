@@ -735,7 +735,7 @@ pub fn normalize_golangcilint_output(json_output: &str) -> anyhow::Result<Vec<Fi
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1) as u32;
 
-            let severity = match severity_str {
+            let severity = match severity_str.to_ascii_lowercase().as_str() {
                 "error" => Severity::High,
                 "warning" => Severity::Medium,
                 _ => Severity::Low,

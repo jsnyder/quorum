@@ -4,6 +4,5 @@ severity: warning
 message: "Error return value assigned to blank identifier. Handle or propagate the error."
 rule:
   any:
-    - pattern: $_, _ = $FUNC($$$ARGS)
     - pattern: $VAL, _ = $FUNC($$$ARGS)
     - pattern: _ = $FUNC($$$ARGS)
