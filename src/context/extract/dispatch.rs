@@ -14,10 +14,12 @@ use walkdir::WalkDir;
 use super::astgrep_hcl::extract_hcl;
 use super::astgrep_py::extract_python;
 use super::astgrep_rust::extract_rust;
+use super::astgrep_go::extract_go;
 use super::astgrep_ts::extract_typescript;
 use super::fingerprint::FINGERPRINT_DIMS;
 use super::fingerprint_python::PythonFingerprinter;
 use super::fingerprint_rust::RustFingerprinter;
+use super::fingerprint_go::GoFingerprinter;
 use super::fingerprint_typescript::TypeScriptFingerprinter;
 use super::markdown::{DocSubtype, split_markdown};
 use crate::context::config::{SourceEntry, SourceLocation};
@@ -304,6 +306,9 @@ fn extract_source_inner(
                 FileKind::Hcl => {
                     extract_hcl(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
                 }
+                FileKind::Go => {
+                    extract_go(&src_text, &rel, &source.name, UNVERSIONED_SHA, indexed_at)
+                }
                 FileKind::Markdown => {
                     let subtype = classify_markdown(&rel);
                     Ok(split_markdown(
@@ -364,6 +369,7 @@ pub fn compute_source_fingerprints(
         "rust" => RustFingerprinter.fingerprint_all_functions(src),
         "python" => PythonFingerprinter.fingerprint_all_functions(src),
         "typescript" | "javascript" => TypeScriptFingerprinter.fingerprint_all_functions(src),
+        "go" => GoFingerprinter.fingerprint_all_functions(src),
         _ => return Vec::new(),
     };
     fps.into_iter().map(|(n, fp)| (n, fp.to_vector())).collect()
@@ -381,6 +387,7 @@ fn compute_fingerprints_for_file(
         FileKind::Rust => "rust",
         FileKind::Python => "python",
         FileKind::Typescript => "typescript",
+        FileKind::Go => "go",
         _ => return,
     };
 
@@ -412,6 +419,7 @@ enum FileKind {
     Typescript,
     Python,
     Hcl,
+    Go,
     Markdown,
     Unknown,
 }
@@ -426,6 +434,7 @@ fn classify(path: &Path) -> FileKind {
         Some("ts" | "tsx" | "js" | "mjs" | "cjs" | "jsx") => FileKind::Typescript,
         Some("py") => FileKind::Python,
         Some("tf" | "tfvars") => FileKind::Hcl,
+        Some("go") => FileKind::Go,
         Some("md" | "markdown") => FileKind::Markdown,
         _ => FileKind::Unknown,
     }

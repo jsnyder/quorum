@@ -399,6 +399,17 @@ fn try_fetch_one(
     }
 }
 
+/// Match a Go import path to a module from go.mod using longest-prefix matching.
+pub fn match_go_import_to_dep<'a>(
+    import_path: &str,
+    deps: &'a [crate::dep_manifest::Dependency],
+) -> Option<&'a crate::dep_manifest::Dependency> {
+    deps.iter()
+        .filter(|d| d.language == "go")
+        .filter(|d| import_path == d.name || import_path.starts_with(&format!("{}/", d.name)))
+        .max_by_key(|d| d.name.len())
+}
+
 /// Generic Context7 query baseline for an arbitrary dep, parameterized by language.
 /// Used when the dep name is not in the curated allow-list.
 pub fn generic_query_for_language(lang: &str) -> &'static str {
@@ -406,6 +417,7 @@ pub fn generic_query_for_language(lang: &str) -> &'static str {
         "rust" => "common pitfalls async safety error handling",
         "python" => "common pitfalls security type safety",
         "typescript" | "javascript" => "common pitfalls security type safety async",
+        "go" => "common pitfalls error handling concurrency goroutine safety",
         _ => "common pitfalls security",
     }
 }
@@ -427,6 +439,23 @@ pub fn curated_query_for(name: &str) -> Option<String> {
         }
         "esphome" => "yaml components lambda sensors substitutions",
         "terraform" => "provider resource data module security best practices",
+        "gin" | "github.com/gin-gonic/gin" => "gin HTTP router middleware handlers",
+        "echo" | "github.com/labstack/echo" => "echo HTTP framework middleware context",
+        "fiber" | "github.com/gofiber/fiber" => "fiber HTTP framework middleware",
+        "cobra" | "github.com/spf13/cobra" => "cobra CLI command flags arguments",
+        "viper" | "github.com/spf13/viper" => "viper configuration binding environment",
+        "gorm" | "gorm.io/gorm" => "gorm ORM model associations migrations",
+        "sqlx" | "github.com/jmoiron/sqlx" => "sqlx database query named parameters",
+        "grpc" | "google.golang.org/grpc" => "gRPC server client interceptors streaming",
+        "zap" | "go.uber.org/zap" => "zap structured logging fields",
+        "logrus" | "github.com/sirupsen/logrus" => "logrus structured logging hooks",
+        "testify" | "github.com/stretchr/testify" => "testify assert require mock suite",
+        "chi" | "github.com/go-chi/chi" => "chi router middleware context",
+        "mux" | "github.com/gorilla/mux" => "gorilla mux router variables middleware",
+        "wire" | "github.com/google/wire" => "wire dependency injection providers",
+        "protobuf" | "google.golang.org/protobuf" => {
+            "protobuf generated code message serialization"
+        }
         _ => return None,
     };
     Some(q.into())
