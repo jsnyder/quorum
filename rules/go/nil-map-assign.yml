@@ -12,4 +12,6 @@ rule:
     has:
       kind: var_spec
       has:
-        kind: call_expression
+        any:
+          - kind: call_expression
+          - kind: composite_literal

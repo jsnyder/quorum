@@ -6,3 +6,4 @@ rule:
   any:
     - pattern: $_, _ = $FUNC($$$ARGS)
     - pattern: $VAL, _ = $FUNC($$$ARGS)
+    - pattern: _ = $FUNC($$$ARGS)

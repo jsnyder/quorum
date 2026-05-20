@@ -4,7 +4,11 @@ severity: warning
 message: "HTTP response body may not be closed. Ensure defer resp.Body.Close() follows."
 rule:
   all:
-    - kind: short_var_declaration
+    - any:
+        - kind: short_var_declaration
+        - kind: assignment_statement
+        - kind: expression_statement
+        - kind: if_statement
     - regex: 'http\.(Get|Post|Head|Do)\b'
     - not:
         precedes:
