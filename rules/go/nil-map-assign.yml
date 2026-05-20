@@ -1,9 +1,15 @@
 id: nil-map-assign
-language: Go
+language: go
 severity: error
-message: "Assignment to nil map causes runtime panic. Initialize with make() first."
+message: "Uninitialized map variable. Initialize with make() to avoid nil map panic on assignment."
 rule:
-  pattern: |
-    var $M map[$K]$V
-    $$$
-    $M[$KEY] = $VAL
+  kind: var_declaration
+  has:
+    kind: var_spec
+    has:
+      kind: map_type
+  not:
+    has:
+      kind: var_spec
+      has:
+        kind: call_expression

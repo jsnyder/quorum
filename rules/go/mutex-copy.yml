@@ -1,5 +1,5 @@
 id: mutex-copy
-language: Go
+language: go
 severity: error
 message: "sync.Mutex must not be copied. Pass by pointer instead."
 rule:

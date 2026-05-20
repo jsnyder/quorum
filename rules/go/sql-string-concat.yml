@@ -1,12 +1,27 @@
 id: sql-string-concat
-language: Go
+language: go
 severity: error
 message: "SQL query built with string concatenation. Use parameterized queries."
 rule:
   any:
-    - pattern: $DB.Query($SQL + $$$)
-    - pattern: $DB.Exec($SQL + $$$)
-    - pattern: $DB.QueryRow($SQL + $$$)
-    - pattern: $DB.Query(fmt.Sprintf($$$))
-    - pattern: $DB.Exec(fmt.Sprintf($$$))
-    - pattern: $DB.QueryRow(fmt.Sprintf($$$))
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: '\.(Query|Exec|QueryRow)$'
+        - has:
+            kind: argument_list
+            has:
+              kind: binary_expression
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: '\.(Query|Exec|QueryRow)$'
+        - has:
+            kind: argument_list
+            has:
+              kind: call_expression
+              has:
+                kind: selector_expression
+                regex: 'fmt\.Sprintf'

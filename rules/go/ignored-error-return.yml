@@ -1,5 +1,5 @@
 id: ignored-error-return
-language: Go
+language: go
 severity: warning
 message: "Error return value assigned to blank identifier. Handle or propagate the error."
 rule:

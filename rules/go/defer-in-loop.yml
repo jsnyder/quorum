@@ -1,5 +1,5 @@
 id: defer-in-loop
-language: Go
+language: go
 severity: warning
 message: "defer inside loop body defers until function exit, not loop iteration. Resources accumulate."
 rule:

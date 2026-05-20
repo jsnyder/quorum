@@ -1,14 +1,15 @@
 id: init-side-effects
-language: Go
+language: go
 severity: hint
 message: "init() with I/O side effects makes testing difficult. Consider explicit initialization."
 rule:
-  kind: function_declaration
+  kind: call_expression
   has:
-    field: name
-    regex: '^init$'
-  has:
-    any:
-      - pattern: http.$METHOD($$$)
-      - pattern: os.Open($$$)
-      - pattern: net.$METHOD($$$)
+    kind: selector_expression
+    regex: '^(http|os|net)\.'
+  inside:
+    kind: function_declaration
+    has:
+      field: name
+      regex: '^init$'
+    stopBy: end

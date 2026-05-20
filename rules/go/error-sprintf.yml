@@ -1,6 +1,17 @@
 id: error-sprintf
-language: Go
+language: go
 severity: hint
 message: "Use fmt.Errorf directly instead of errors.New(fmt.Sprintf(...))"
 rule:
-  pattern: errors.New(fmt.Sprintf($$$ARGS))
+  all:
+    - kind: call_expression
+    - has:
+        kind: selector_expression
+        regex: 'errors\.New'
+    - has:
+        kind: argument_list
+        has:
+          kind: call_expression
+          has:
+            kind: selector_expression
+            regex: 'fmt\.Sprintf'

@@ -1,5 +1,5 @@
 id: bare-error-format
-language: Go
+language: go
 severity: warning
 message: "fmt.Errorf without %w verb loses the error chain. Use %w to wrap errors."
 rule:

@@ -1,5 +1,5 @@
 id: empty-error-check
-language: Go
+language: go
 severity: warning
 message: "Error is checked but silently swallowed. Return or log the error."
 rule:
@@ -7,9 +7,9 @@ rule:
     if $ERR != nil {
       return $$$RETVALS
     }
-  constraints:
-    ERR:
-      regex: '^err'
-    RETVALS:
-      not:
-        regex: 'err'
+constraints:
+  ERR:
+    regex: '^err'
+  RETVALS:
+    not:
+      regex: 'err'

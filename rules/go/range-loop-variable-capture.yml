@@ -1,5 +1,5 @@
 id: range-loop-variable-capture
-language: Go
+language: go
 severity: warning
 message: "Loop variable captured by goroutine closure. In Go <1.22 this causes a data race."
 rule:
