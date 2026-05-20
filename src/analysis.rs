@@ -20,6 +20,7 @@ pub fn analyze_complexity(
         Language::Bash => &[][..],
         Language::Dockerfile => &[][..],
         Language::Terraform => &[][..],
+        Language::Go => &["function_declaration", "method_declaration"][..],
     };
 
     let mut func_nodes = Vec::new();
@@ -170,6 +171,7 @@ fn scan_insecure_nodes(
         Language::Bash => scan_insecure_bash(node, source, findings),
         Language::Dockerfile => scan_insecure_dockerfile(node, source, findings),
         Language::Terraform => scan_insecure_terraform(node, source, findings),
+        Language::Go => {}
     }
 
     for i in 0..node.child_count() {

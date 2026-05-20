@@ -334,6 +334,7 @@ impl QuorumHandler {
                     Language::Bash => "bash",
                     Language::Dockerfile => "dockerfile",
                     Language::Terraform => "terraform",
+                    Language::Go => "go",
                 })
                 .unwrap_or("text");
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
@@ -403,6 +404,7 @@ impl QuorumHandler {
             Language::Bash => "bash",
             Language::Dockerfile => "dockerfile",
             Language::Terraform => "terraform",
+            Language::Go => "go",
         };
 
         let framework_hint = params

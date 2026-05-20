@@ -10,6 +10,7 @@ pub enum Language {
     Bash,
     Dockerfile,
     Terraform,
+    Go,
 }
 
 impl Language {
@@ -23,6 +24,7 @@ impl Language {
             "sh" | "bash" | "zsh" | "bats" => Some(Language::Bash),
             "dockerfile" => Some(Language::Dockerfile),
             "tf" | "tfvars" => Some(Language::Terraform),
+            "go" => Some(Language::Go),
             _ => None,
         }
     }
@@ -58,6 +60,7 @@ impl Language {
                 lang_fn.into()
             }
             Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
+            Language::Go => tree_sitter_go::LANGUAGE.into(),
         }
     }
 
@@ -70,6 +73,7 @@ impl Language {
             Language::Bash => &["function_definition"],
             Language::Dockerfile => &[],
             Language::Terraform => &[],
+            Language::Go => &["function_declaration", "method_declaration"],
         }
     }
 }
@@ -523,5 +527,49 @@ mod tests {
         let tree = parse(source, Language::Terraform).unwrap();
         let fns = extract_functions(&tree, source, Language::Terraform);
         assert!(fns.is_empty());
+    }
+
+    #[test]
+    fn detect_language_go() {
+        assert_eq!(Language::from_extension("go"), Some(Language::Go));
+        assert_eq!(Language::from_extension("GO"), Some(Language::Go));
+    }
+
+    #[test]
+    fn detect_language_go_from_path() {
+        assert_eq!(
+            Language::from_path(std::path::Path::new("main.go")),
+            Some(Language::Go)
+        );
+        assert_eq!(
+            Language::from_path(std::path::Path::new("pkg/server/handler.go")),
+            Some(Language::Go)
+        );
+    }
+
+    #[test]
+    fn parse_valid_go() {
+        let source = "package main\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n";
+        let tree = parse(source, Language::Go).unwrap();
+        assert_eq!(tree.root_node().kind(), "source_file");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn extract_functions_go() {
+        let source = "package main\n\nfunc foo() {}\nfunc bar() {}\n";
+        let tree = parse(source, Language::Go).unwrap();
+        let fns = extract_functions(&tree, source, Language::Go);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn extract_functions_go_methods() {
+        let source = "package main\n\ntype Server struct{}\n\nfunc (s *Server) Serve() {}\nfunc (s *Server) Stop() {}\n";
+        let tree = parse(source, Language::Go).unwrap();
+        let fns = extract_functions(&tree, source, Language::Go);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["Serve", "Stop"]);
     }
 }

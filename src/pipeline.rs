@@ -1465,6 +1465,7 @@ fn lang_name(lang: Language) -> &'static str {
         Language::Bash => "bash",
         Language::Dockerfile => "dockerfile",
         Language::Terraform => "terraform",
+        Language::Go => "go",
     }
 }
 
