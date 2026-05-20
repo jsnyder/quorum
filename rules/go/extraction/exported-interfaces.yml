@@ -1,0 +1,11 @@
+id: go-exported-interface
+language: Go
+rule:
+  kind: type_declaration
+  has:
+    kind: type_spec
+    has:
+      field: name
+      regex: '^[A-Z]'
+    has:
+      kind: interface_type

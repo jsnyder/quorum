@@ -1,0 +1,11 @@
+id: go-exported-struct
+language: Go
+rule:
+  kind: type_declaration
+  has:
+    kind: type_spec
+    has:
+      field: name
+      regex: '^[A-Z]'
+    has:
+      kind: struct_type
