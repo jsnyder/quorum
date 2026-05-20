@@ -1,0 +1,9 @@
+id: waitgroup-add-in-goroutine
+language: Go
+severity: warning
+message: "wg.Add() called inside goroutine. Call wg.Add() before launching the goroutine."
+rule:
+  pattern: $WG.Add($$$)
+  inside:
+    kind: go_statement
+    stopBy: end

@@ -1,0 +1,12 @@
+id: range-loop-variable-capture
+language: Go
+severity: warning
+message: "Loop variable captured by goroutine closure. In Go <1.22 this causes a data race."
+rule:
+  pattern: |
+    go func($$$PARAMS) {
+      $$$BODY
+    }($$$ARGS)
+  inside:
+    kind: for_statement
+    stopBy: end

@@ -1,0 +1,12 @@
+id: mutex-copy
+language: Go
+severity: error
+message: "sync.Mutex must not be copied. Pass by pointer instead."
+rule:
+  kind: parameter_declaration
+  has:
+    kind: qualified_type
+    regex: 'sync\.(Mutex|RWMutex)'
+  not:
+    has:
+      kind: pointer_type

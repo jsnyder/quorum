@@ -1,0 +1,8 @@
+id: bind-all-interfaces
+language: Go
+severity: hint
+message: "Listening on all interfaces (0.0.0.0). Consider binding to a specific interface."
+rule:
+  any:
+    - pattern: net.Listen($$$, "0.0.0.0:$$$")
+    - pattern: http.ListenAndServe(":$PORT", $$$)

@@ -1,0 +1,11 @@
+id: http-body-not-closed
+language: Go
+severity: warning
+message: "HTTP response body should be closed with defer resp.Body.Close()"
+rule:
+  any:
+    - pattern: $RESP, $ERR := http.Get($$$)
+    - pattern: $RESP, $ERR := $CLIENT.Do($$$)
+  not:
+    follows:
+      pattern: defer $RESP.Body.Close()

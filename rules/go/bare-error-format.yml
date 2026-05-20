@@ -1,0 +1,10 @@
+id: bare-error-format
+language: Go
+severity: warning
+message: "fmt.Errorf without %w verb loses the error chain. Use %w to wrap errors."
+rule:
+  pattern: fmt.Errorf($FMT, $$$ARGS)
+constraints:
+  FMT:
+    not:
+      regex: '%w'

@@ -1,0 +1,15 @@
+id: sync-pool-non-pointer
+language: Go
+severity: hint
+message: "sync.Pool with non-pointer type defeats pooling. Store pointer types."
+rule:
+  pattern: |
+    sync.Pool{
+      New: func() $TYPE {
+        $$$BODY
+      },
+    }
+  constraints:
+    TYPE:
+      not:
+        regex: '^\*'

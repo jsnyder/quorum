@@ -1,0 +1,6 @@
+id: errors-new-fmt
+language: Go
+severity: warning
+message: "Use fmt.Errorf(\"prefix: %w\", err) instead of errors.New(\"prefix: \" + err.Error())"
+rule:
+  pattern: errors.New($PREFIX + $ERR.Error())

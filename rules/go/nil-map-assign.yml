@@ -1,0 +1,9 @@
+id: nil-map-assign
+language: Go
+severity: error
+message: "Assignment to nil map causes runtime panic. Initialize with make() first."
+rule:
+  pattern: |
+    var $M map[$K]$V
+    $$$
+    $M[$KEY] = $VAL

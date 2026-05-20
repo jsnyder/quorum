@@ -1,0 +1,6 @@
+id: ignored-error-return
+language: Go
+severity: warning
+message: "Error return value assigned to blank identifier. Handle or propagate the error."
+rule:
+  pattern: $_, _ = $FUNC($$$ARGS)

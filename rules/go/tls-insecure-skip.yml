@@ -1,0 +1,6 @@
+id: tls-insecure-skip
+language: Go
+severity: warning
+message: "InsecureSkipVerify disables TLS certificate verification."
+rule:
+  pattern: 'InsecureSkipVerify: true'

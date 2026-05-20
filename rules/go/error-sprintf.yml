@@ -1,0 +1,6 @@
+id: error-sprintf
+language: Go
+severity: hint
+message: "Use fmt.Errorf directly instead of errors.New(fmt.Sprintf(...))"
+rule:
+  pattern: errors.New(fmt.Sprintf($$$ARGS))

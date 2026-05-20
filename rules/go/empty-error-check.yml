@@ -1,0 +1,15 @@
+id: empty-error-check
+language: Go
+severity: warning
+message: "Error is checked but silently swallowed. Return or log the error."
+rule:
+  pattern: |
+    if $ERR != nil {
+      return $$$RETVALS
+    }
+  constraints:
+    ERR:
+      regex: '^err'
+    RETVALS:
+      not:
+        regex: 'err'
