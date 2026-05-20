@@ -59,7 +59,7 @@ func (s *Server) Start() error {
 "#;
     let results = GoFingerprinter.fingerprint_all_functions(src);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].0, "Start");
+    assert_eq!(results[0].0, "Server.Start");
     assert!(results[0].1.signature.is_method);
 }
 

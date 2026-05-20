@@ -31,16 +31,26 @@ impl GoFingerprinter {
             .collect();
         let mut results = Vec::new();
         for node in &func_nodes {
-            let name = node
+            let base_name = node
                 .children()
                 .find(|c| {
                     c.kind().as_ref() == "identifier" || c.kind().as_ref() == "field_identifier"
                 })
                 .map(|c| c.text().into_owned())
                 .unwrap_or_default();
-            if name.is_empty() {
+            if base_name.is_empty() {
                 continue;
             }
+            let name = if node.kind().as_ref() == "method_declaration" {
+                let receiver = super::astgrep_go::extract_go_receiver_type(node);
+                if receiver.is_empty() {
+                    base_name
+                } else {
+                    format!("{receiver}.{base_name}")
+                }
+            } else {
+                base_name
+            };
             if let Some(fp) = self.fingerprint_node(node, src) {
                 results.push((name, fp));
             }

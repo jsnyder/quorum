@@ -246,6 +246,11 @@ pub fn enrich_for_review(
                 import_matched.push(dep);
             }
         }
+        if let Some(dep) = match_go_import_to_dep(imp, deps)
+            && !import_matched.iter().any(|d| d.name == dep.name)
+        {
+            import_matched.push(dep);
+        }
     }
 
     for dep in import_matched.into_iter().take(ENRICH_K) {
@@ -308,6 +313,11 @@ pub fn enrich_for_review_with_policy(
             {
                 import_matched.push(dep);
             }
+        }
+        if let Some(dep) = match_go_import_to_dep(imp, deps)
+            && !import_matched.iter().any(|d| d.name == dep.name)
+        {
+            import_matched.push(dep);
         }
     }
 

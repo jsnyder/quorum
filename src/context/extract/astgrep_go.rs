@@ -146,7 +146,7 @@ fn extract_go_name<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> 
     String::new()
 }
 
-fn extract_go_receiver_type<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
+pub fn extract_go_receiver_type<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
     node.children()
         .find(|c| c.kind().as_ref() == "parameter_list")
         .and_then(|pl| {
