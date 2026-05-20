@@ -42,15 +42,26 @@ pub fn extract_go(
         for m in root.root().find_all(&rule.matcher) {
             let node = m.get_node();
 
-            let name = if let Some(name_node) = m.get_env().get_match("NAME") {
+            let base_name = if let Some(name_node) = m.get_env().get_match("NAME") {
                 name_node.text().into_owned()
             } else {
                 extract_go_name(node)
             };
 
-            if name.is_empty() {
+            if base_name.is_empty() {
                 continue;
             }
+
+            let name = if node.kind().as_ref() == "method_declaration" {
+                let receiver = extract_go_receiver_type(node);
+                if receiver.is_empty() {
+                    base_name
+                } else {
+                    format!("{receiver}.{base_name}")
+                }
+            } else {
+                base_name
+            };
 
             let byte_start = node.range().start;
             let start_line = (node.start_pos().line() as u32) + 1;
@@ -136,6 +147,28 @@ fn extract_go_name<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> 
     }
 
     String::new()
+}
+
+fn extract_go_receiver_type<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
+    node.children()
+        .find(|c| c.kind().as_ref() == "parameter_list")
+        .and_then(|pl| {
+            pl.children()
+                .find(|c| c.kind().as_ref() == "parameter_declaration")
+        })
+        .and_then(|pd| {
+            pd.children().find(|c| {
+                let k = c.kind();
+                k.as_ref() == "type_identifier"
+                    || k.as_ref() == "pointer_type"
+                    || k.as_ref() == "qualified_type"
+            })
+        })
+        .map(|t| {
+            let text = t.text().into_owned();
+            text.trim_start_matches('*').to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn go_item_signature(item_text: &str) -> String {

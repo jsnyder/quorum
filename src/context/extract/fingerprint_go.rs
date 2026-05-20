@@ -96,16 +96,35 @@ fn extract_go_signature<'a, D: Doc>(node: &'a ast_grep_core::Node<'a, D>) -> Sig
         shape.arity = params
             .children()
             .filter(|c| c.kind().as_ref() == "parameter_declaration")
-            .count();
+            .map(|pd| {
+                let id_count = pd
+                    .children()
+                    .filter(|c| c.kind().as_ref() == "identifier")
+                    .count();
+                id_count.max(1)
+            })
+            .sum();
     }
 
-    // Check for result type (simple single return)
-    if let Some(result) = node
-        .children()
-        .find(|c| c.kind().as_ref() == "type_identifier")
-    {
-        let text = result.text();
-        shape.return_category = Some(TypeCategory::classify_go(text.as_ref()));
+    // Check for result type — look for type nodes that follow the parameter list(s)
+    let last_param_end = param_lists.last().map(|p| p.range().end).unwrap_or(0);
+    if let Some(result_type) = node.children().find(|c| {
+        c.range().start >= last_param_end
+            && matches!(
+                c.kind().as_ref(),
+                "type_identifier"
+                    | "pointer_type"
+                    | "slice_type"
+                    | "map_type"
+                    | "channel_type"
+                    | "qualified_type"
+                    | "parameter_list"
+            )
+            && c.kind().as_ref() != "block"
+    }) {
+        let text = result_type.text();
+        let cleaned = text.as_ref().trim_start_matches('*');
+        shape.return_category = Some(TypeCategory::classify_go(cleaned));
     }
 
     shape
