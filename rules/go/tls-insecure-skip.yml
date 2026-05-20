@@ -1,0 +1,7 @@
+id: tls-insecure-skip
+language: go
+severity: warning
+message: "InsecureSkipVerify disables TLS certificate verification."
+rule:
+  kind: keyed_element
+  regex: 'InsecureSkipVerify:\s*true'

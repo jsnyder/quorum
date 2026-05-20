@@ -1,0 +1,7 @@
+id: go-exported-function
+language: go
+rule:
+  kind: function_declaration
+  has:
+    field: name
+    regex: '^[A-Z]'

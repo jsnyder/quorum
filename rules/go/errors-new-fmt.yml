@@ -1,0 +1,19 @@
+id: errors-new-fmt
+language: go
+severity: warning
+message: "Use fmt.Errorf(\"prefix: %w\", err) instead of errors.New(\"prefix: \" + err.Error())"
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        kind: selector_expression
+        regex: 'errors\.New'
+    - has:
+        kind: argument_list
+        has:
+          kind: binary_expression
+          has:
+            kind: call_expression
+            has:
+              kind: selector_expression
+              regex: '\.Error$'

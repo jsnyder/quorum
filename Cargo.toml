@@ -1,6 +1,6 @@
 [package]
 name = "quorum"
-version = "0.25.2"
+version = "0.26.0"
 edition = "2024"
 # `str::floor_char_boundary` (used in src/agent.rs and src/tools.rs to
 # truncate UTF-8 safely) stabilized in Rust 1.93. Older constraints —
@@ -76,6 +76,7 @@ tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 tree-sitter-bash = "0.25"
+tree-sitter-go = "0.23"
 tree-sitter-hcl = "1.1"
 tree-sitter-language = "0.1"
 
@@ -84,6 +85,7 @@ ast-grep-core = "=0.42.2"
 ast-grep-config = "=0.42.2"
 ast-grep-language = { version = "=0.42.2", default-features = false, features = [
     "tree-sitter-bash",
+    "tree-sitter-go",
     "tree-sitter-hcl",
     "tree-sitter-javascript",
     "tree-sitter-python",

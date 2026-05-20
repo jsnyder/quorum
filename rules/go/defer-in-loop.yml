@@ -1,0 +1,13 @@
+id: defer-in-loop
+language: go
+severity: warning
+message: "defer inside loop body defers until function exit, not loop iteration. Resources accumulate."
+rule:
+  kind: defer_statement
+  not:
+    inside:
+      kind: func_literal
+      stopBy: end
+  inside:
+    kind: for_statement
+    stopBy: end

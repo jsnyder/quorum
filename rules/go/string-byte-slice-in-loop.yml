@@ -1,0 +1,11 @@
+id: string-byte-slice-in-loop
+language: go
+severity: hint
+message: "Repeated []byte/string conversion in loop. Convert once outside the loop."
+rule:
+  any:
+    - pattern: '[]byte($S)'
+    - pattern: string($B)
+  inside:
+    kind: for_statement
+    stopBy: end

@@ -21,6 +21,7 @@ pub enum LinterKind {
     Shellcheck,
     Hadolint,
     Tflint,
+    Golangcilint,
 }
 
 impl LinterKind {
@@ -33,6 +34,7 @@ impl LinterKind {
             LinterKind::Shellcheck => "shellcheck",
             LinterKind::Hadolint => "hadolint",
             LinterKind::Tflint => "tflint",
+            LinterKind::Golangcilint => "golangci-lint",
         }
     }
 }
@@ -210,6 +212,20 @@ pub fn detect_linters(project_dir: &Path) -> Vec<LinterKind> {
         linters.push(LinterKind::Tflint);
     }
 
+    // golangci-lint: .golangci.yml/.yaml/.toml/.json or go.mod
+    let golangci_configs = [
+        ".golangci.yml",
+        ".golangci.yaml",
+        ".golangci.toml",
+        ".golangci.json",
+    ];
+    let has_golangci_config = golangci_configs
+        .iter()
+        .any(|c| project_dir.join(c).exists());
+    if has_golangci_config || project_dir.join("go.mod").exists() {
+        linters.push(LinterKind::Golangcilint);
+    }
+
     linters
 }
 
@@ -236,6 +252,11 @@ pub fn run_linter(
         LinterKind::Tflint => {
             runner.run("tflint", &["--format=json", "--force", &file_str], cwd)?
         }
+        LinterKind::Golangcilint => runner.run(
+            "golangci-lint",
+            &["run", "--out-format=json", &file_str],
+            cwd,
+        )?,
     };
 
     // Linters typically exit 1 when they find issues — that's normal, not an error.
@@ -257,6 +278,7 @@ pub fn run_linter(
         LinterKind::Shellcheck => normalize_shellcheck_output(&output.stdout),
         LinterKind::Hadolint => normalize_hadolint_output(&output.stdout),
         LinterKind::Tflint => normalize_tflint_output(&output.stdout),
+        LinterKind::Golangcilint => normalize_golangcilint_output(&output.stdout),
     }
 }
 
@@ -654,6 +676,81 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 line_start,
                 line_end,
                 evidence: vec![format!("tflint {}", rule_name)],
+                calibrator_action: None,
+                similar_precedent: vec![],
+                canonical_pattern: None,
+                suggested_fix: None,
+                based_on_excerpt: None,
+                reasoning: None,
+                llm_confidence: None,
+                confidence: None,
+                cited_lines: None,
+                grounding_status: None,
+                grounding_confidence: None,
+                model_agreement: None,
+                rule_id: None,
+                judge_verdict: None,
+                judge_confidence: None,
+                precision_tier: None,
+                in_diff: None,
+            });
+        }
+    }
+
+    Ok(findings)
+}
+
+pub fn normalize_golangcilint_output(json_output: &str) -> anyhow::Result<Vec<Finding>> {
+    let wrapper: serde_json::Value = serde_json::from_str(json_output)?;
+    let issues = wrapper
+        .get("Issues")
+        .or_else(|| wrapper.get("issues"))
+        .and_then(|i| i.as_array());
+    let mut findings = Vec::new();
+
+    if let Some(items) = issues {
+        for item in items {
+            let from_linter = item
+                .get("FromLinter")
+                .or_else(|| item.get("from_linter"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let message = item
+                .get("Text")
+                .or_else(|| item.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let severity_str = item
+                .get("Severity")
+                .or_else(|| item.get("severity"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("warning");
+            let pos = item.get("Pos").or_else(|| item.get("pos"));
+            let line = pos
+                .and_then(|p| p.get("Line").or_else(|| p.get("line")))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32;
+            let col = pos
+                .and_then(|p| p.get("Column").or_else(|| p.get("column")))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32;
+
+            let severity = match severity_str.to_ascii_lowercase().as_str() {
+                "error" => Severity::High,
+                "warning" => Severity::Medium,
+                _ => Severity::Low,
+            };
+
+            findings.push(Finding {
+                id: crate::finding::new_finding_ulid(),
+                title: format!("{}: {}", from_linter, message),
+                description: message.to_string(),
+                severity,
+                category: "lint".into(),
+                source: Source::Linter("golangci-lint".into()),
+                line_start: line,
+                line_end: line,
+                evidence: vec![format!("golangci-lint/{} col:{}", from_linter, col)],
                 calibrator_action: None,
                 similar_precedent: vec![],
                 canonical_pattern: None,
@@ -1227,6 +1324,74 @@ mod tests {
         let file = PathBuf::from("main.tf");
         let cwd = PathBuf::from(".");
         let findings = run_linter(&LinterKind::Tflint, &file, &cwd, &runner).unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    // -- golangci-lint --
+
+    #[test]
+    fn detect_golangcilint_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".golangci.yml"),
+            "linters:\n  enable:\n    - errcheck\n",
+        )
+        .unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Golangcilint));
+    }
+
+    #[test]
+    fn detect_golangcilint_from_go_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/app\n\ngo 1.21\n",
+        )
+        .unwrap();
+        let linters = detect_linters(dir.path());
+        assert!(linters.contains(&LinterKind::Golangcilint));
+    }
+
+    #[test]
+    fn normalize_golangcilint_valid_output() {
+        let json = r#"{"Issues":[{"FromLinter":"errcheck","Text":"Error return value not checked","Severity":"warning","SourceLines":["os.Remove(f)"],"Pos":{"Filename":"main.go","Offset":0,"Line":42,"Column":10}}]}"#;
+        let findings = normalize_golangcilint_output(json).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line_start, 42);
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert_eq!(findings[0].source, Source::Linter("golangci-lint".into()));
+        assert!(findings[0].title.contains("errcheck"));
+    }
+
+    #[test]
+    fn normalize_golangcilint_empty_issues() {
+        let json = r#"{"Issues":[]}"#;
+        let findings = normalize_golangcilint_output(json).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn normalize_golangcilint_null_issues() {
+        let json = r#"{"Issues":null}"#;
+        let findings = normalize_golangcilint_output(json).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn normalize_golangcilint_error_severity() {
+        let json = r#"{"Issues":[{"FromLinter":"govet","Text":"unreachable code","Severity":"error","Pos":{"Filename":"main.go","Line":5,"Column":1}}]}"#;
+        let findings = normalize_golangcilint_output(json).unwrap();
+        assert_eq!(findings[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn run_golangcilint_via_runner() {
+        let json = r#"{"Issues":[{"FromLinter":"errcheck","Text":"test","Severity":"warning","Pos":{"Filename":"main.go","Line":1,"Column":1}}]}"#;
+        let runner = FakeCommandRunner::with_exit_code(json, 1);
+        let file = PathBuf::from("main.go");
+        let cwd = PathBuf::from(".");
+        let findings = run_linter(&LinterKind::Golangcilint, &file, &cwd, &runner).unwrap();
         assert_eq!(findings.len(), 1);
     }
 }

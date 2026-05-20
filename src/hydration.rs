@@ -139,6 +139,7 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
+        Language::Go => vec!["function_declaration", "method_declaration"],
     }
 }
 
@@ -155,6 +156,7 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
+        Language::Go => vec!["type_spec"],
     }
 }
 
@@ -167,6 +169,7 @@ fn call_expr_kinds(lang: Language) -> Vec<&'static str> {
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
+        Language::Go => vec!["call_expression"],
     }
 }
 
@@ -179,6 +182,7 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
         Language::Bash => vec![],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
+        Language::Go => vec!["import_declaration"],
     }
 }
 
@@ -316,15 +320,35 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
                 }
             }
         }
-    } else if text.starts_with("import ") {
+    } else if let Some(after_import) = text.strip_prefix("import ") {
+        let has_from = text.contains(" from ");
+        let has_quoted = text.contains('"');
+        if !has_from && has_quoted {
+            let body = after_import;
+            let mut in_quote = false;
+            let mut current = String::new();
+            for ch in body.chars() {
+                if ch == '"' {
+                    if in_quote && !current.is_empty() {
+                        let pkg_name = current.rsplit('/').next().unwrap_or(&current);
+                        names.push(pkg_name.to_string());
+                        current.clear();
+                    }
+                    in_quote = !in_quote;
+                } else if in_quote {
+                    current.push(ch);
+                }
+            }
+            return names;
+        }
         // TypeScript imports always include ` from `; Python `import sys` does not.
         // This lets us route the parse without language plumbing.
-        let is_ts = text.contains(" from ");
+        let is_ts = has_from;
         if is_ts {
             // Strip the trailing ` from "module"` (or `' '`) clause so we only parse
             // the import-clause portion.
             let clause_end = text.rfind(" from ").unwrap_or(text.len());
-            let clause = text["import ".len()..clause_end].trim();
+            let clause = after_import[..clause_end.saturating_sub("import ".len())].trim();
 
             // Split on the first top-level `{` to separate the default/namespace
             // half from the named-import group. Default imports come BEFORE the
@@ -386,7 +410,7 @@ fn extract_imported_names(import_text: &str) -> Vec<String> {
             return names;
         }
         // Python: import sys / import os, sys / import foo.bar as baz
-        let modules = text.trim_start_matches("import ").trim();
+        let modules = after_import.trim();
         for part in modules.split(',') {
             let part = part.trim();
             if part.is_empty() {

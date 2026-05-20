@@ -1,0 +1,27 @@
+id: sql-string-concat
+language: go
+severity: error
+message: "SQL query built with string concatenation. Use parameterized queries."
+rule:
+  any:
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: '\.(Query|Exec|QueryRow)$'
+        - has:
+            kind: argument_list
+            has:
+              kind: binary_expression
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: '\.(Query|Exec|QueryRow)$'
+        - has:
+            kind: argument_list
+            has:
+              kind: call_expression
+              has:
+                kind: selector_expression
+                regex: 'fmt\.Sprintf'

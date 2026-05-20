@@ -1,0 +1,6 @@
+id: sync-pool-non-pointer
+language: go
+severity: info
+message: "Review sync.Pool usage: ensure New returns pointer types for effective pooling."
+rule:
+  pattern: sync.Pool{$$$}

@@ -1,0 +1,24 @@
+id: bind-all-interfaces
+language: go
+severity: hint
+message: "Listening on all interfaces (0.0.0.0). Consider binding to a specific interface."
+rule:
+  any:
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: 'net\.Listen'
+        - has:
+            kind: argument_list
+            regex: '"0\.0\.0\.0:'
+    - all:
+        - kind: call_expression
+        - has:
+            kind: selector_expression
+            regex: 'http\.ListenAndServe'
+        - has:
+            kind: argument_list
+            has:
+              kind: interpreted_string_literal
+              regex: '^":'

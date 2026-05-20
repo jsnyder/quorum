@@ -1,0 +1,7 @@
+id: go-exported-method
+language: go
+rule:
+  kind: method_declaration
+  has:
+    field: name
+    regex: '^[A-Z]'

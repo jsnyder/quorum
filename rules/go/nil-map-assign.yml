@@ -1,0 +1,17 @@
+id: nil-map-assign
+language: go
+severity: error
+message: "Map variable declared without initialization. Use make() or a composite literal to avoid nil map panics."
+rule:
+  kind: var_declaration
+  has:
+    kind: var_spec
+    has:
+      kind: map_type
+  not:
+    has:
+      kind: var_spec
+      has:
+        any:
+          - kind: call_expression
+          - kind: composite_literal

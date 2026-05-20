@@ -216,6 +216,7 @@ dependencies = [
  "serde",
  "tree-sitter",
  "tree-sitter-bash",
+ "tree-sitter-go 0.25.0",
  "tree-sitter-hcl",
  "tree-sitter-javascript",
  "tree-sitter-python",
@@ -2713,7 +2714,7 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quorum"
-version = "0.25.2"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2758,6 +2759,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-bash",
+ "tree-sitter-go 0.23.4",
  "tree-sitter-hcl",
  "tree-sitter-language",
  "tree-sitter-python",
@@ -4040,6 +4042,26 @@ name = "tree-sitter-bash"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5ec769279cc91b561d3df0d8a5deb26b0ad40d183127f409494d6d8fc53062"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-go"
+version = "0.23.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b13d476345220dbe600147dd444165c5791bf85ef53e28acbedd46112ee18431"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-go"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
 dependencies = [
  "cc",
  "tree-sitter-language",

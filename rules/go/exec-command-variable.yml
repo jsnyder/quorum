@@ -1,0 +1,10 @@
+id: exec-command-variable
+language: go
+severity: warning
+message: "exec.Command with variable command name may allow command injection."
+rule:
+  pattern: exec.Command($CMD, $$$ARGS)
+constraints:
+  CMD:
+    not:
+      kind: interpreted_string_literal

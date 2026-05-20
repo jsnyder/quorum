@@ -78,6 +78,9 @@ pub fn normalize_import_to_dep_names(imp: &str) -> Vec<String> {
             // TS forms always carry a quoted source (`from '<pkg>'` or bare
             // `'<pkg>'` for side-effect imports). Python `import X.Y` does not.
             if let Some(pkg) = extract_quoted_source(stmt) {
+                if is_go_module_path(&pkg) {
+                    return vec![pkg];
+                }
                 return normalize_ts_package(&pkg);
             }
             return parse_python_import(stmt);
@@ -168,6 +171,20 @@ fn extract_quoted_source(stmt: &str) -> Option<String> {
     None
 }
 
+fn is_go_module_path(pkg: &str) -> bool {
+    pkg.contains('/') && pkg.split('/').next().is_some_and(|host| host.contains('.'))
+}
+
+fn strip_go_version_suffix(name: &str) -> &str {
+    if let Some(pos) = name.rfind("/v") {
+        let suffix = &name[pos + 2..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &name[..pos];
+        }
+    }
+    name
+}
+
 fn normalize_ts_package(pkg: &str) -> Vec<String> {
     if let Some(stripped) = pkg.strip_prefix('@') {
         let parts: Vec<&str> = stripped.splitn(3, '/').collect();
@@ -220,11 +237,19 @@ pub fn enrich_for_review(
     let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
-            if let Some(dep) = deps.iter().find(|d| d.name == name)
+            if let Some(dep) = deps
+                .iter()
+                .find(|d| d.name == name)
+                .or_else(|| match_go_import_to_dep(&name, deps))
                 && !import_matched.iter().any(|d| d.name == dep.name)
             {
                 import_matched.push(dep);
             }
+        }
+        if let Some(dep) = match_go_import_to_dep(imp, deps)
+            && !import_matched.iter().any(|d| d.name == dep.name)
+        {
+            import_matched.push(dep);
         }
     }
 
@@ -280,11 +305,19 @@ pub fn enrich_for_review_with_policy(
     let mut import_matched: Vec<&crate::dep_manifest::Dependency> = Vec::new();
     for imp in imports {
         for name in normalize_import_to_dep_names(imp) {
-            if let Some(dep) = deps.iter().find(|d| d.name == name)
+            if let Some(dep) = deps
+                .iter()
+                .find(|d| d.name == name)
+                .or_else(|| match_go_import_to_dep(&name, deps))
                 && !import_matched.iter().any(|d| d.name == dep.name)
             {
                 import_matched.push(dep);
             }
+        }
+        if let Some(dep) = match_go_import_to_dep(imp, deps)
+            && !import_matched.iter().any(|d| d.name == dep.name)
+        {
+            import_matched.push(dep);
         }
     }
 
@@ -399,6 +432,17 @@ fn try_fetch_one(
     }
 }
 
+/// Match a Go import path to a module from go.mod using longest-prefix matching.
+pub fn match_go_import_to_dep<'a>(
+    import_path: &str,
+    deps: &'a [crate::dep_manifest::Dependency],
+) -> Option<&'a crate::dep_manifest::Dependency> {
+    deps.iter()
+        .filter(|d| d.language == "go")
+        .filter(|d| import_path == d.name || import_path.starts_with(&format!("{}/", d.name)))
+        .max_by_key(|d| d.name.len())
+}
+
 /// Generic Context7 query baseline for an arbitrary dep, parameterized by language.
 /// Used when the dep name is not in the curated allow-list.
 pub fn generic_query_for_language(lang: &str) -> &'static str {
@@ -406,6 +450,7 @@ pub fn generic_query_for_language(lang: &str) -> &'static str {
         "rust" => "common pitfalls async safety error handling",
         "python" => "common pitfalls security type safety",
         "typescript" | "javascript" => "common pitfalls security type safety async",
+        "go" => "common pitfalls error handling concurrency goroutine safety",
         _ => "common pitfalls security",
     }
 }
@@ -413,6 +458,7 @@ pub fn generic_query_for_language(lang: &str) -> &'static str {
 /// Look up the curated Context7 query for a known framework name.
 /// Returns None for uncurated names — callers should fall back to a generic query.
 pub fn curated_query_for(name: &str) -> Option<String> {
+    let name = strip_go_version_suffix(name);
     let q = match name {
         "react" => "hooks rules component lifecycle common pitfalls",
         "nextjs" | "next" | "next.js" => "server components data fetching security",
@@ -427,6 +473,23 @@ pub fn curated_query_for(name: &str) -> Option<String> {
         }
         "esphome" => "yaml components lambda sensors substitutions",
         "terraform" => "provider resource data module security best practices",
+        "gin" | "github.com/gin-gonic/gin" => "gin HTTP router middleware handlers",
+        "echo" | "github.com/labstack/echo" => "echo HTTP framework middleware context",
+        "fiber" | "github.com/gofiber/fiber" => "fiber HTTP framework middleware",
+        "cobra" | "github.com/spf13/cobra" => "cobra CLI command flags arguments",
+        "viper" | "github.com/spf13/viper" => "viper configuration binding environment",
+        "gorm" | "gorm.io/gorm" => "gorm ORM model associations migrations",
+        "sqlx" | "github.com/jmoiron/sqlx" => "sqlx database query named parameters",
+        "grpc" | "google.golang.org/grpc" => "gRPC server client interceptors streaming",
+        "zap" | "go.uber.org/zap" => "zap structured logging fields",
+        "logrus" | "github.com/sirupsen/logrus" => "logrus structured logging hooks",
+        "testify" | "github.com/stretchr/testify" => "testify assert require mock suite",
+        "chi" | "github.com/go-chi/chi" => "chi router middleware context",
+        "mux" | "github.com/gorilla/mux" => "gorilla mux router variables middleware",
+        "wire" | "github.com/google/wire" => "wire dependency injection providers",
+        "protobuf" | "google.golang.org/protobuf" => {
+            "protobuf generated code message serialization"
+        }
         _ => return None,
     };
     Some(q.into())
