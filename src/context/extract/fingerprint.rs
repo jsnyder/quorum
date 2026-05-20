@@ -69,6 +69,7 @@ impl TypeCategory {
             "int" | "int8" | "int16" | "int32" | "int64" => Self::Prim,
             "uint" | "uint8" | "uint16" | "uint32" | "uint64" => Self::Prim,
             "float32" | "float64" => Self::Prim,
+            "complex64" | "complex128" => Self::Prim,
             "string" => Self::Str,
             "byte" | "rune" => Self::Prim,
             _ => Self::Generic,

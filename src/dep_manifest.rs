@@ -387,7 +387,7 @@ fn parse_go_mod(path: &Path) -> Vec<Dependency> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed == "require (" || trimmed.starts_with("require (") {
+        if trimmed.starts_with("require (") {
             in_require_block = true;
             continue;
         }

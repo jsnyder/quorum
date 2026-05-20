@@ -113,6 +113,8 @@ fn count_decisions(node: &tree_sitter::Node, source: &str, complexity: &mut u32)
 
         // Match/switch arms (each arm is a path)
         "match_arm" | "case_clause" | "default_clause" => *complexity += 1,
+        // Go switch/select cases
+        "expression_case" | "type_case" | "communication_case" => *complexity += 1,
 
         // Exception handling
         "except_clause" | "catch_clause" => *complexity += 1,

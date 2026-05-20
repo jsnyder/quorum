@@ -1,4 +1,4 @@
-id: go-exported-type
+id: go-exported-struct
 language: go
 rule:
   kind: type_declaration
