@@ -45,7 +45,7 @@ pub fn extract_go(
             let name = if let Some(name_node) = m.get_env().get_match("NAME") {
                 name_node.text().into_owned()
             } else {
-                extract_go_name(&node)
+                extract_go_name(node)
             };
 
             if name.is_empty() {
@@ -125,14 +125,14 @@ fn extract_go_name<D: ast_grep_core::Doc>(node: &ast_grep_core::Node<'_, D>) -> 
     }
 
     // For type_declaration, the name is inside type_spec > type_identifier
-    if kind_str == "type_declaration" {
-        if let Some(spec) = node.children().find(|c| c.kind().as_ref() == "type_spec") {
-            return spec
-                .children()
-                .find(|c| c.kind().as_ref() == "type_identifier")
-                .map(|c| c.text().into_owned())
-                .unwrap_or_default();
-        }
+    if kind_str == "type_declaration"
+        && let Some(spec) = node.children().find(|c| c.kind().as_ref() == "type_spec")
+    {
+        return spec
+            .children()
+            .find(|c| c.kind().as_ref() == "type_identifier")
+            .map(|c| c.text().into_owned())
+            .unwrap_or_default();
     }
 
     String::new()
