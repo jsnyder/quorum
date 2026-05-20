@@ -62,6 +62,19 @@ impl TypeCategory {
         }
     }
 
+    pub fn classify_go(name: &str) -> Self {
+        match name {
+            "error" => Self::Res,
+            "bool" => Self::Prim,
+            "int" | "int8" | "int16" | "int32" | "int64" => Self::Prim,
+            "uint" | "uint8" | "uint16" | "uint32" | "uint64" => Self::Prim,
+            "float32" | "float64" => Self::Prim,
+            "string" => Self::Str,
+            "byte" | "rune" => Self::Prim,
+            _ => Self::Generic,
+        }
+    }
+
     fn dim_index(&self) -> usize {
         match self {
             Self::Prim => 0,

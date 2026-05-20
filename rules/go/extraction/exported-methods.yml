@@ -1,5 +1,5 @@
 id: go-exported-method
-language: Go
+language: go
 rule:
   kind: method_declaration
   has:

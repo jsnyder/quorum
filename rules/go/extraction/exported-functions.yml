@@ -1,5 +1,5 @@
 id: go-exported-function
-language: Go
+language: go
 rule:
   kind: function_declaration
   has:

@@ -375,6 +375,63 @@ fn parse_requirements_txt(path: &Path) -> Vec<Dependency> {
     out
 }
 
+fn parse_go_mod(path: &Path) -> Vec<Dependency> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    let mut in_require_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == "require (" || trimmed.starts_with("require (") {
+            in_require_block = true;
+            continue;
+        }
+        if in_require_block && trimmed == ")" {
+            in_require_block = false;
+            continue;
+        }
+
+        if in_require_block {
+            if let Some(dep) = parse_go_require_line(trimmed) {
+                out.push(dep);
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("require ") {
+            let rest = rest.trim();
+            if rest.starts_with('(') {
+                in_require_block = true;
+            } else if let Some(dep) = parse_go_require_line(rest) {
+                out.push(dep);
+            }
+        }
+    }
+    out
+}
+
+fn parse_go_require_line(line: &str) -> Option<Dependency> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("//") {
+        return None;
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let module_path = parts[0];
+        if !module_path.contains('/') && !module_path.contains('.') {
+            return None;
+        }
+        Some(Dependency {
+            name: module_path.to_string(),
+            language: "go".into(),
+        })
+    } else {
+        None
+    }
+}
+
 pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
     let mut out = Vec::new();
     let cargo = project_dir.join("Cargo.toml");
@@ -400,6 +457,10 @@ pub fn parse_dependencies(project_dir: &Path) -> Vec<Dependency> {
                 out.extend(parse_requirements_txt(&req));
             }
         }
+    }
+    let go_mod = project_dir.join("go.mod");
+    if go_mod.exists() {
+        out.extend(parse_go_mod(&go_mod));
     }
     out
 }
@@ -1708,5 +1769,60 @@ django = "*"
             !deps.iter().any(|d| d.name == "real_crate"),
             "must not surface package name: {deps:?}"
         );
+    }
+
+    // -- Go module (go.mod) parsing --
+
+    #[test]
+    fn go_mod_single_require_parsed() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module github.com/example/app\n\ngo 1.21\n\nrequire github.com/gin-gonic/gin v1.9.1\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "github.com/gin-gonic/gin" && d.language == "go"));
+    }
+
+    #[test]
+    fn go_mod_block_require_parsed() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module github.com/example/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgithub.com/stretchr/testify v1.8.4 // indirect\n\tgoogle.golang.org/grpc v1.58.0\n)\n");
+        let deps = parse_dependencies(dir.path());
+        let names: Vec<_> = deps.iter().filter(|d| d.language == "go").map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"github.com/gin-gonic/gin"));
+        assert!(names.contains(&"github.com/stretchr/testify"));
+        assert!(names.contains(&"google.golang.org/grpc"));
+    }
+
+    #[test]
+    fn go_mod_version_suffix_preserved() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module github.com/example/app\n\nrequire github.com/acme/lib/v2 v2.3.0\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "github.com/acme/lib/v2"), "v2 suffix must be preserved: {:?}", deps);
+    }
+
+    #[test]
+    fn go_mod_replace_directive_handled() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module github.com/example/app\n\nrequire github.com/foo/bar v1.0.0\n\nreplace github.com/foo/bar => github.com/my/fork v1.0.1\n");
+        let deps = parse_dependencies(dir.path());
+        assert!(deps.iter().any(|d| d.name == "github.com/foo/bar"));
+    }
+
+    #[test]
+    fn go_mod_indirect_deps_included() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "module example.com/app\n\nrequire (\n\tgithub.com/direct v1.0.0\n\tgithub.com/indirect v2.0.0 // indirect\n)\n");
+        let deps = parse_dependencies(dir.path());
+        let go_deps: Vec<_> = deps.iter().filter(|d| d.language == "go").collect();
+        assert_eq!(go_deps.len(), 2);
+    }
+
+    #[test]
+    fn go_mod_malformed_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "go.mod", "this is not a valid go.mod\n");
+        let deps = parse_dependencies(dir.path());
+        let go_deps: Vec<_> = deps.iter().filter(|d| d.language == "go").collect();
+        assert!(go_deps.is_empty());
     }
 }

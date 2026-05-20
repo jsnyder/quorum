@@ -1892,6 +1892,7 @@ fn linter_kind_is_relevant(
             .any(|e| exts.contains(*e)),
         Hadolint => exts.iter().any(|e| e == "dockerfile") || exts.contains(""),
         Tflint => exts.contains("tf") || exts.contains("tfvars"),
+        Golangcilint => exts.contains("go"),
     }
 }
 

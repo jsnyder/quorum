@@ -1,5 +1,5 @@
 id: go-exported-interface
-language: Go
+language: go
 rule:
   kind: type_declaration
   has:
@@ -7,5 +7,3 @@ rule:
     has:
       field: name
       regex: '^[A-Z]'
-    has:
-      kind: interface_type
