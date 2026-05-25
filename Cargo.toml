@@ -81,9 +81,9 @@ tree-sitter-hcl = "1.1"
 tree-sitter-language = "0.1"
 
 # ast-grep (compiled-in rule engine)
-ast-grep-core = "=0.42.2"
-ast-grep-config = "=0.42.2"
-ast-grep-language = { version = "=0.42.2", default-features = false, features = [
+ast-grep-core = "=0.42.3"
+ast-grep-config = "=0.42.3"
+ast-grep-language = { version = "=0.42.3", default-features = false, features = [
     "tree-sitter-bash",
     "tree-sitter-go",
     "tree-sitter-hcl",
