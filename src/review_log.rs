@@ -34,18 +34,22 @@ impl SeverityCounts {
         let mut s = Self::default();
         for sev in iter {
             match sev {
-                Severity::Critical => s.critical += 1,
-                Severity::High => s.high += 1,
-                Severity::Medium => s.medium += 1,
-                Severity::Low => s.low += 1,
-                Severity::Info => s.info += 1,
+                Severity::Critical => s.critical = s.critical.saturating_add(1),
+                Severity::High => s.high = s.high.saturating_add(1),
+                Severity::Medium => s.medium = s.medium.saturating_add(1),
+                Severity::Low => s.low = s.low.saturating_add(1),
+                Severity::Info => s.info = s.info.saturating_add(1),
             }
         }
         s
     }
 
     pub fn total(&self) -> u32 {
-        self.critical + self.high + self.medium + self.low + self.info
+        self.critical
+            .saturating_add(self.high)
+            .saturating_add(self.medium)
+            .saturating_add(self.low)
+            .saturating_add(self.info)
     }
 }
 
@@ -243,20 +247,20 @@ impl LegCounts {
             if legs.is_empty() {
                 continue;
             }
-            c.total_unique += 1;
+            c.total_unique = c.total_unique.saturating_add(1);
             let has_b = legs.contains(&RetrievalLeg::Bm25);
             let has_v = legs.contains(&RetrievalLeg::Vector);
             let has_s = legs.contains(&RetrievalLeg::Structural);
             if has_b {
-                c.bm25 += 1;
+                c.bm25 = c.bm25.saturating_add(1);
             }
             if has_v {
-                c.vector += 1;
+                c.vector = c.vector.saturating_add(1);
             }
             if has_s {
-                c.structural += 1;
+                c.structural = c.structural.saturating_add(1);
                 if !has_b && !has_v {
-                    c.structural_only += 1;
+                    c.structural_only = c.structural_only.saturating_add(1);
                 }
             }
         }

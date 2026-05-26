@@ -269,7 +269,15 @@ impl QuorumHandler {
                 "Supported languages:\n- Rust (.rs)\n- Python (.py)\n- TypeScript (.ts)\n- TSX (.tsx)\n- Bash (.sh, .bash, .zsh)\n- Dockerfile (Dockerfile*)".to_string()
             }
             "domains" => {
-                let cwd = std::env::current_dir().unwrap_or_default();
+                let cwd = match std::env::current_dir() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Ok(CallToolResult::text_content(vec![format!(
+                            "Error: cannot determine working directory: {e}"
+                        )
+                        .into()]));
+                    }
+                };
                 let info = crate::domain::detect_domain(&cwd);
                 let mut result = String::new();
                 if info.languages.is_empty() && info.frameworks.is_empty() {
