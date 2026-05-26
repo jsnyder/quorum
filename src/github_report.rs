@@ -1,4 +1,5 @@
 use crate::finding::{Finding, Severity, Source};
+use crate::hydration::DiffRanges;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -25,6 +26,37 @@ static RE_HTML_ANCHOR: LazyLock<Regex> =
 
 static RE_BACKTICK_RUN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(`{3,})").unwrap());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostingTarget {
+    Inline,
+    Body,
+}
+
+pub fn classify_posting_target(
+    finding: &Finding,
+    file_path: &str,
+    diff_ranges: &DiffRanges,
+) -> PostingTarget {
+    if finding.in_diff != Some(true) {
+        return PostingTarget::Body;
+    }
+
+    let anchor = finding.anchor_line();
+
+    for (path, ranges) in diff_ranges {
+        if path == file_path {
+            for &(start, end) in ranges {
+                if anchor >= start && anchor <= end {
+                    return PostingTarget::Inline;
+                }
+            }
+            return PostingTarget::Body;
+        }
+    }
+
+    PostingTarget::Body
+}
 
 pub fn sanitize_for_github(s: &str) -> String {
     // 1. Strip control characters (keep \n, \t)
@@ -452,5 +484,72 @@ mod tests {
             sanitize_for_github("see docs.md#section"),
             "see docs.md#section"
         );
+    }
+
+    fn make_finding(id: &str, line: u32, in_diff: bool) -> Finding {
+        Finding {
+            id: id.into(),
+            title: "Test finding".into(),
+            description: "Desc".into(),
+            severity: Severity::Medium,
+            category: Category::Security,
+            source: Source::LocalAst,
+            line_start: line,
+            line_end: line,
+            evidence: vec![],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+            suggested_fix: None,
+            based_on_excerpt: None,
+            reasoning: None,
+            llm_confidence: None,
+            confidence: None,
+            cited_lines: None,
+            grounding_status: None,
+            grounding_confidence: None,
+            model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
+            in_diff: Some(in_diff),
+        }
+    }
+
+    #[test]
+    fn classify_finding_in_diff_and_commentable() {
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,5 +40,7 @@\n context\n+added line\n+another\n context\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let f = make_finding("test", 41, true);
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Inline);
+    }
+
+    #[test]
+    fn classify_finding_in_diff_but_not_commentable() {
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,3 +40,5 @@\n context\n+added\n+added\n context\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let f = make_finding("test", 100, true);
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Body);
+    }
+
+    #[test]
+    fn classify_finding_not_in_diff() {
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,3 +40,5 @@\n context\n+added\n+added\n context\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let f = make_finding("test", 41, false);
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Body);
+    }
+
+    #[test]
+    fn classify_finding_file_not_in_diff() {
+        let diff = "--- a/src/other.rs\n+++ b/src/other.rs\n@@ -1,3 +1,5 @@\n+new\n+new\n old\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let f = make_finding("test", 1, true);
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Body);
     }
 }
