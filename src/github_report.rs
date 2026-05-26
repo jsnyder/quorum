@@ -19,14 +19,12 @@ static RE_ISSUE_REF: LazyLock<Regex> =
 static RE_MD_IMAGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap());
 
-static RE_HTML_IMG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)<img[^>]*>").unwrap());
+static RE_HTML_IMG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<img[^>]*>").unwrap());
 
 static RE_HTML_ANCHOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<a[^>]*>(.*?)</a>").unwrap());
 
-static RE_BACKTICK_RUN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(`{3,})").unwrap());
+static RE_BACKTICK_RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(`{3,})").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostingTarget {
@@ -187,7 +185,11 @@ fn format_summary_counts(inline_count: usize, body_findings: &[Finding]) -> Stri
     let location = if body_findings.is_empty() {
         String::new()
     } else {
-        format!(" | {} inline, {} in summary", inline_count, body_findings.len())
+        format!(
+            " | {} inline, {} in summary",
+            inline_count,
+            body_findings.len()
+        )
     };
 
     format!("{} findings{}{}", total, sev_summary, location)
@@ -250,8 +252,8 @@ pub fn parse_github_repo_url(url: &str) -> Option<(String, String)> {
     }
 
     // SSH: git@host:owner/repo.git
-    if let Some(colon_part) = url.strip_prefix("git@") &&
-        let Some(path) = colon_part.split(':').nth(1)
+    if let Some(colon_part) = url.strip_prefix("git@")
+        && let Some(path) = colon_part.split(':').nth(1)
     {
         return parse_owner_repo_from_path(path);
     }
@@ -320,9 +322,8 @@ pub fn resolve_github_context(
         parse_github_repo_url(r)
             .ok_or_else(|| GitHubContextError::NoRepo(format!("invalid format: {}", r)))?
     } else if let Ok(gh_repo) = std::env::var("GITHUB_REPOSITORY") {
-        parse_github_repo_url(&gh_repo).ok_or_else(|| {
-            GitHubContextError::NoRepo(format!("GITHUB_REPOSITORY={}", gh_repo))
-        })?
+        parse_github_repo_url(&gh_repo)
+            .ok_or_else(|| GitHubContextError::NoRepo(format!("GITHUB_REPOSITORY={}", gh_repo)))?
     } else {
         // Try git remote
         let output = std::process::Command::new("git")
@@ -458,10 +459,7 @@ fn github_client_headers(token: &str) -> reqwest::header::HeaderMap {
         reqwest::header::AUTHORIZATION,
         format!("Bearer {}", token).parse().unwrap(),
     );
-    headers.insert(
-        "X-GitHub-Api-Version",
-        GITHUB_API_VERSION.parse().unwrap(),
-    );
+    headers.insert("X-GitHub-Api-Version", GITHUB_API_VERSION.parse().unwrap());
     headers
 }
 
@@ -623,12 +621,8 @@ pub async fn post_review(
         }
     }
 
-    let review_body = render_review_body(
-        &marker,
-        inline_comments.len(),
-        &body_findings,
-        &req.version,
-    );
+    let review_body =
+        render_review_body(&marker, inline_comments.len(), &body_findings, &req.version);
 
     let create_req = CreateReviewRequest {
         commit_id: req.commit_sha.clone(),
@@ -782,12 +776,7 @@ mod tests {
             precision_tier: None,
             in_diff: None,
         };
-        let body = render_review_body(
-            "<!-- quorum-review-marker:v1 -->",
-            2,
-            &[f],
-            "0.27.0",
-        );
+        let body = render_review_body("<!-- quorum-review-marker:v1 -->", 2, &[f], "0.27.0");
         assert!(body.contains("## Quorum Review"));
         assert!(body.contains("3 findings"));
         assert!(body.contains("2 inline, 1 in summary"));
@@ -826,12 +815,7 @@ mod tests {
                 in_diff: None,
             })
             .collect();
-        let body = render_review_body(
-            "<!-- quorum-review-marker:v1 -->",
-            0,
-            &findings,
-            "0.27.0",
-        );
+        let body = render_review_body("<!-- quorum-review-marker:v1 -->", 0, &findings, "0.27.0");
         assert!(body.len() <= 60_000);
         assert!(body.contains("additional findings omitted"));
     }
@@ -987,8 +971,7 @@ mod tests {
 
     #[test]
     fn parse_repo_https() {
-        let (owner, repo) =
-            parse_github_repo_url("https://github.com/jsnyder/quorum.git").unwrap();
+        let (owner, repo) = parse_github_repo_url("https://github.com/jsnyder/quorum.git").unwrap();
         assert_eq!(owner, "jsnyder");
         assert_eq!(repo, "quorum");
     }
@@ -1002,8 +985,7 @@ mod tests {
 
     #[test]
     fn parse_repo_ssh() {
-        let (owner, repo) =
-            parse_github_repo_url("git@github.com:jsnyder/quorum.git").unwrap();
+        let (owner, repo) = parse_github_repo_url("git@github.com:jsnyder/quorum.git").unwrap();
         assert_eq!(owner, "jsnyder");
         assert_eq!(repo, "quorum");
     }
@@ -1042,7 +1024,8 @@ mod tests {
 
     #[test]
     fn find_marker_in_body() {
-        let body = "Some text\n<!-- quorum-review-marker:v1 run_id=X sha=Y version=0.27.0 -->\nMore text";
+        let body =
+            "Some text\n<!-- quorum-review-marker:v1 run_id=X sha=Y version=0.27.0 -->\nMore text";
         assert!(body_contains_quorum_marker(body));
     }
 
@@ -1083,14 +1066,16 @@ mod integration_tests {
                     let body = "[]";
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
-                        body.len(), body
+                        body.len(),
+                        body
                     );
                     stream.write_all(resp.as_bytes()).unwrap();
                 } else {
                     let body = r#"{"id": 42}"#;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
-                        body.len(), body
+                        body.len(),
+                        body
                     );
                     stream.write_all(resp.as_bytes()).unwrap();
                 }

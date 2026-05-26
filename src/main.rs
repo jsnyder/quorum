@@ -47,12 +47,12 @@ mod dimensions;
 mod enrichment_policy;
 #[allow(dead_code)]
 mod formatting;
+#[allow(dead_code)]
+mod github_report;
 mod glyphs;
 #[allow(dead_code)]
 mod http_server;
 mod judge;
-#[allow(dead_code)]
-mod github_report;
 #[allow(dead_code)]
 mod linter;
 #[allow(dead_code)]
@@ -839,7 +839,11 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
             }
         }
     } else {
-        match github_report::fetch_pr_diff(&client, &ctx.owner, &ctx.repo, opts.pr, &ctx.token, None).await {
+        match github_report::fetch_pr_diff(
+            &client, &ctx.owner, &ctx.repo, opts.pr, &ctx.token, None,
+        )
+        .await
+        {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("Error: failed to fetch PR diff: {}", e);
@@ -850,7 +854,9 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
 
     let commit_sha = match github_report::fetch_pr_head_sha(
         &client, &ctx.owner, &ctx.repo, opts.pr, &ctx.token, None,
-    ).await {
+    )
+    .await
+    {
         Ok(sha) => sha,
         Err(e) => {
             eprintln!("Error: failed to fetch PR head SHA: {}", e);
@@ -874,14 +880,21 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         api_base_url: None,
     };
 
-    eprint!("Posting {} findings to PR #{}...", req.findings.len(), req.pr_number);
+    eprint!(
+        "Posting {} findings to PR #{}...",
+        req.findings.len(),
+        req.pr_number
+    );
 
     match github_report::post_review(&client, &req).await {
         Ok(result) => {
             if let Some(dismissed) = result.dismissed_previous {
                 eprint!(" dismissed review {}...", dismissed);
             }
-            eprintln!(" done ({} inline, {} in summary)", result.inline_count, result.body_count);
+            eprintln!(
+                " done ({} inline, {} in summary)",
+                result.inline_count, result.body_count
+            );
             0
         }
         Err(e) => {
@@ -1988,7 +2001,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         ) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error: GitHub post failed: {} (review exit code preserved: {})", e, review_exit);
+                eprintln!(
+                    "Error: GitHub post failed: {} (review exit code preserved: {})",
+                    e, review_exit
+                );
                 return review_exit;
             }
         };
@@ -2002,9 +2018,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let diff_text = if let Some(ref diff_path) = opts.diff_file {
             std::fs::read_to_string(diff_path).unwrap_or_default()
         } else {
-            github_report::fetch_pr_diff(&client, &ctx.owner, &ctx.repo, pr_number, &ctx.token, None)
-                .await
-                .unwrap_or_default()
+            github_report::fetch_pr_diff(
+                &client, &ctx.owner, &ctx.repo, pr_number, &ctx.token, None,
+            )
+            .await
+            .unwrap_or_default()
         };
 
         let commit_sha = github_report::fetch_pr_head_sha(
@@ -2029,13 +2047,20 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             api_base_url: None,
         };
 
-        eprint!("Posting {} findings to PR #{}...", req.findings.len(), pr_number);
+        eprint!(
+            "Posting {} findings to PR #{}...",
+            req.findings.len(),
+            pr_number
+        );
         match github_report::post_review(&client, &req).await {
             Ok(result) => {
                 if let Some(dismissed) = result.dismissed_previous {
                     eprint!(" dismissed review {}...", dismissed);
                 }
-                eprintln!(" done ({} inline, {} in summary)", result.inline_count, result.body_count);
+                eprintln!(
+                    " done ({} inline, {} in summary)",
+                    result.inline_count, result.body_count
+                );
             }
             Err(e) => {
                 eprintln!(
