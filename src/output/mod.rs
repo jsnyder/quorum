@@ -425,6 +425,7 @@ pub fn should_use_compact(compact_flag: bool) -> bool {
         || is_env_set("GEMINI_CLI")
         || is_env_set("CODEX_CI")
         || is_env_set("AGENT")
+        || is_env_set("GITHUB_ACTIONS")
 }
 
 fn is_env_set(var: &str) -> bool {
@@ -893,6 +894,17 @@ mod tests {
         // this will return true — that's correct behavior
         // We can only reliably test that flag=true always returns true
         assert!(should_use_compact(true));
+    }
+
+    #[test]
+    fn should_use_compact_github_actions() {
+        unsafe {
+            std::env::set_var("GITHUB_ACTIONS", "true");
+        }
+        assert!(should_use_compact(false));
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
     }
 
     #[test]
