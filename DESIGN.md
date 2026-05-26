@@ -23,15 +23,15 @@ Core principles:
 | Mode | When | Format | Audience |
 |------|------|--------|----------|
 | Human | stdout is a TTY, no flags | Styled findings, colored severity, headers | Terminal user |
-| Compact | `--compact` or `CLAUDE_CODE` env set | Token-optimized single-line records | LLM context window |
+| Compact | `--compact` or `CLAUDE_CODE` / `GITHUB_ACTIONS` env set | Token-optimized single-line records | LLM context window, CI logs |
 | JSON | `--json` flag or stdout is piped | Machine-parseable JSON | Scripts, pipes |
 
 Detection logic:
 
 ```
 if --json flag OR !stdout.is_terminal() -> JSON
-else if --compact or CLAUDE_CODE env    -> Compact
-else                                    -> Human
+else if --compact or CLAUDE_CODE or GITHUB_ACTIONS env -> Compact
+else                                                   -> Human
 ```
 
 ### Compact mode design (critical for LLM consumption)
@@ -468,7 +468,55 @@ No file contents, no finding text, no code snippets. Just counts and metadata. T
 
 ---
 
-## 13. Anti-patterns
+## 13. GitHub PR Comments
+
+When posting findings as GitHub PR review comments (`quorum report` or
+`quorum review --github-pr`), output uses GitHub-flavored Markdown
+consistent with the terminal format:
+
+### Inline comment (one per finding, on the diff line)
+
+```
+**!** Finding title — `category`
+
+Description text with suggested fix.
+
+*quorum 0.27.0 | model-name, source*
+```
+
+### Review body
+
+```
+<!-- quorum-review-marker:v1 run_id=... sha=... version=... -->
+
+## Quorum Review
+
+N findings (M critical, K warning, J info) | X inline, Y in summary
+
+### Findings outside changed lines
+
+**~** Title — `category` L42
+
+Description.
+
+*quorum 0.27.0 | source*
+```
+
+### Sanitization
+
+Always-on for PR comment bodies. Strips control characters, neutralizes
+@mentions and #refs (rendered as inline code), removes image/anchor HTML
+tags, escapes backtick runs of 3+, and truncates at 60,000 chars.
+
+### Re-run behavior
+
+Each review includes a `quorum-review-marker` HTML comment. On re-run,
+previous quorum reviews are dismissed (best-effort) before the new review
+is posted.
+
+---
+
+## 14. Anti-patterns
 
 Things this CLI will never do:
 

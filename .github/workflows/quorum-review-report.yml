@@ -1,0 +1,25 @@
+name: Quorum Review (report)
+on:
+  workflow_run:
+    workflows: ["Quorum Review (analyze)"]
+    types: [completed]
+
+jobs:
+  report:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install quorum
+        run: cargo install --path . --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: quorum-findings
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Post review
+        run: |
+          PR_NUMBER=$(gh api repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls --jq '.[0].number')
+          quorum report findings.json --pr "$PR_NUMBER"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
