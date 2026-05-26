@@ -161,6 +161,7 @@ impl Finding {
         self.cited_lines
             .map(|(start, _)| start)
             .unwrap_or(self.line_start)
+            .max(1)
     }
 
     pub fn compute_confidence(&mut self) {

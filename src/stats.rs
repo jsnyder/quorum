@@ -164,11 +164,17 @@ pub fn compute_report(
 
     // Rolling windows: only need last N * ROLLING_WINDOWS records.
     let rolling_needed = ROLLING_N.saturating_mul(ROLLING_WINDOWS);
-    let rolling_records = review_log.load_recent(rolling_needed).unwrap_or_default();
+    let rolling_records = review_log.load_recent(rolling_needed).unwrap_or_else(|e| {
+        tracing::warn!("Failed to load recent review records: {e}");
+        Vec::new()
+    });
     let rolling_windows = dimensions::rolling_window(&rolling_records, ROLLING_N, ROLLING_WINDOWS);
 
     // Linkage: only needs finding_ids, not full records.
-    let finding_ids = review_log.load_all_finding_ids().unwrap_or_default();
+    let finding_ids = review_log.load_all_finding_ids().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load finding IDs for linkage: {e}");
+        std::collections::HashSet::new()
+    });
     let link = analytics::linkage_stats_from_ids(&finding_ids, &feedback);
     let linkage_rate = link.rate();
     let headline_trend_uses_finding_id = linkage_rate >= 0.85;
