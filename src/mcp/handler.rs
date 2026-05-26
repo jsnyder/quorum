@@ -272,6 +272,7 @@ impl QuorumHandler {
                 let cwd = match std::env::current_dir() {
                     Ok(p) => p,
                     Err(e) => {
+                        tracing::warn!("MCP catalog domains: cannot determine working directory: {e}");
                         return Ok(CallToolResult::text_content(vec![format!(
                             "Error: cannot determine working directory: {e}"
                         )
