@@ -237,6 +237,120 @@ pub fn render_review_body(
     out
 }
 
+// --- Task 4: Repo URL parsing and GitHub context resolution ---
+
+pub fn parse_github_repo_url(url: &str) -> Option<(String, String)> {
+    // Direct owner/repo format (e.g. from GITHUB_REPOSITORY)
+    if !url.contains("://") && !url.contains('@') {
+        let parts: Vec<&str> = url.split('/').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    // SSH: git@host:owner/repo.git
+    if let Some(colon_part) = url.strip_prefix("git@") &&
+        let Some(path) = colon_part.split(':').nth(1)
+    {
+        return parse_owner_repo_from_path(path);
+    }
+
+    // HTTPS: https://host/owner/repo.git
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let path = url
+            .split("://")
+            .nth(1)?
+            .split('/')
+            .skip(1) // skip hostname
+            .collect::<Vec<_>>()
+            .join("/");
+        return parse_owner_repo_from_path(&path);
+    }
+
+    None
+}
+
+fn parse_owner_repo_from_path(path: &str) -> Option<(String, String)> {
+    let clean = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<&str> = clean.split('/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GitHubContext {
+    pub owner: String,
+    pub repo: String,
+    pub token: String,
+}
+
+#[derive(Debug)]
+pub enum GitHubContextError {
+    NoToken,
+    NoRepo(String),
+}
+
+impl std::fmt::Display for GitHubContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoToken => write!(
+                f,
+                "No GitHub token found. Set GITHUB_TOKEN or use --github-token"
+            ),
+            Self::NoRepo(detail) => write!(f, "Could not determine repository: {}", detail),
+        }
+    }
+}
+
+pub fn resolve_github_context(
+    token_flag: Option<&str>,
+    repo_flag: Option<&str>,
+) -> Result<GitHubContext, GitHubContextError> {
+    let token = token_flag
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or(GitHubContextError::NoToken)?;
+
+    let (owner, repo) = if let Some(r) = repo_flag {
+        parse_github_repo_url(r)
+            .ok_or_else(|| GitHubContextError::NoRepo(format!("invalid format: {}", r)))?
+    } else if let Ok(gh_repo) = std::env::var("GITHUB_REPOSITORY") {
+        parse_github_repo_url(&gh_repo).ok_or_else(|| {
+            GitHubContextError::NoRepo(format!("GITHUB_REPOSITORY={}", gh_repo))
+        })?
+    } else {
+        // Try git remote
+        let output = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .map_err(|e| GitHubContextError::NoRepo(format!("git remote failed: {}", e)))?;
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        parse_github_repo_url(&url)
+            .ok_or_else(|| GitHubContextError::NoRepo(format!("cannot parse remote: {}", url)))?
+    };
+
+    Ok(GitHubContext { owner, repo, token })
+}
+
+// --- Task 5: Marker protocol and dismiss logic ---
+
+const MARKER_PREFIX: &str = "quorum-review-marker:v1";
+
+pub fn build_review_marker(run_id: &str, sha: &str, version: &str) -> String {
+    format!(
+        "<!-- {} run_id={} sha={} version={} -->",
+        MARKER_PREFIX, run_id, sha, version
+    )
+}
+
+pub fn body_contains_quorum_marker(body: &str) -> bool {
+    body.contains(MARKER_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +665,79 @@ mod tests {
         let f = make_finding("test", 1, true);
         let target = classify_posting_target(&f, "src/auth.rs", &ranges);
         assert_eq!(target, PostingTarget::Body);
+    }
+
+    // --- Task 4 tests: URL parsing ---
+
+    #[test]
+    fn parse_repo_https() {
+        let (owner, repo) =
+            parse_github_repo_url("https://github.com/jsnyder/quorum.git").unwrap();
+        assert_eq!(owner, "jsnyder");
+        assert_eq!(repo, "quorum");
+    }
+
+    #[test]
+    fn parse_repo_https_no_dot_git() {
+        let (owner, repo) = parse_github_repo_url("https://github.com/jsnyder/quorum").unwrap();
+        assert_eq!(owner, "jsnyder");
+        assert_eq!(repo, "quorum");
+    }
+
+    #[test]
+    fn parse_repo_ssh() {
+        let (owner, repo) =
+            parse_github_repo_url("git@github.com:jsnyder/quorum.git").unwrap();
+        assert_eq!(owner, "jsnyder");
+        assert_eq!(repo, "quorum");
+    }
+
+    #[test]
+    fn parse_repo_slash_format() {
+        let (owner, repo) = parse_github_repo_url("jsnyder/quorum").unwrap();
+        assert_eq!(owner, "jsnyder");
+        assert_eq!(repo, "quorum");
+    }
+
+    #[test]
+    fn parse_repo_invalid() {
+        assert!(parse_github_repo_url("not-a-repo").is_none());
+    }
+
+    #[test]
+    fn parse_github_enterprise() {
+        let (owner, repo) =
+            parse_github_repo_url("https://github.example.com/org/repo.git").unwrap();
+        assert_eq!(owner, "org");
+        assert_eq!(repo, "repo");
+    }
+
+    // --- Task 5 tests: marker protocol ---
+
+    #[test]
+    fn build_marker() {
+        let m = build_review_marker("01JTEST", "abc1234", "0.27.0");
+        assert!(m.starts_with("<!-- quorum-review-marker:v1"));
+        assert!(m.contains("run_id=01JTEST"));
+        assert!(m.contains("sha=abc1234"));
+        assert!(m.contains("version=0.27.0"));
+        assert!(m.ends_with("-->"));
+    }
+
+    #[test]
+    fn find_marker_in_body() {
+        let body = "Some text\n<!-- quorum-review-marker:v1 run_id=X sha=Y version=0.27.0 -->\nMore text";
+        assert!(body_contains_quorum_marker(body));
+    }
+
+    #[test]
+    fn no_marker_in_body() {
+        assert!(!body_contains_quorum_marker("Just a regular review body"));
+    }
+
+    #[test]
+    fn find_marker_with_extra_whitespace() {
+        let body = "<!-- quorum-review-marker:v1  run_id=X  sha=Y  version=0.27.0 -->";
+        assert!(body_contains_quorum_marker(body));
     }
 }
