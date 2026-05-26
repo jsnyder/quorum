@@ -75,7 +75,8 @@ pub fn merge_findings(
         for (idx, finding) in merged.iter_mut().enumerate() {
             let agreeing = llm_model_names[idx].len();
             if agreeing > 0 {
-                finding.model_agreement = Some(agreeing as f32 / num_models as f32);
+                finding.model_agreement =
+                    Some((agreeing as f32 / num_models as f32).min(1.0));
             }
         }
     }
