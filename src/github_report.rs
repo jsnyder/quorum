@@ -1057,3 +1057,96 @@ mod tests {
         assert!(body_contains_quorum_marker(body));
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[tokio::test]
+    async fn post_review_creates_review_with_inline_comments() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{}", port);
+
+        // Use a real OS thread so blocking accept() doesn't starve the tokio executor
+        let handle = std::thread::spawn(move || {
+            // Accept and respond to: list reviews (GET), create review (POST)
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                if req_str.starts_with("GET") {
+                    let body = "[]";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    stream.write_all(resp.as_bytes()).unwrap();
+                } else {
+                    let body = r#"{"id": 42}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    stream.write_all(resp.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,3 +40,5 @@\n context\n+added\n+added\n context\n";
+
+        let f = crate::finding::Finding {
+            id: "f1".into(),
+            title: "Test finding".into(),
+            description: "Desc".into(),
+            severity: crate::finding::Severity::Medium,
+            category: crate::category::Category::Security,
+            source: crate::finding::Source::LocalAst,
+            line_start: 41,
+            line_end: 41,
+            evidence: vec!["src/auth.rs".into()],
+            calibrator_action: None,
+            similar_precedent: vec![],
+            canonical_pattern: None,
+            suggested_fix: None,
+            based_on_excerpt: None,
+            reasoning: None,
+            llm_confidence: None,
+            confidence: None,
+            cited_lines: None,
+            grounding_status: None,
+            grounding_confidence: None,
+            model_agreement: None,
+            rule_id: None,
+            judge_verdict: None,
+            judge_confidence: None,
+            precision_tier: None,
+            in_diff: Some(true),
+        };
+
+        let client = reqwest::Client::new();
+        let req = PostReviewRequest {
+            owner: "test".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            token: "fake-token".into(),
+            findings: vec![f],
+            diff_text: diff.into(),
+            version: "0.27.0".into(),
+            run_id: "01TEST".into(),
+            commit_sha: "abc123".into(),
+            api_base_url: Some(base_url),
+        };
+
+        let result = post_review(&client, &req).await.unwrap();
+        assert_eq!(result.review_id, 42);
+        assert_eq!(result.inline_count, 1);
+        assert_eq!(result.body_count, 0);
+
+        let _ = handle.join();
+    }
+}
