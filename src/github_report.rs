@@ -1,6 +1,7 @@
 use crate::finding::{Finding, Severity, Source};
 use crate::hydration::DiffRanges;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 const GITHUB_BODY_LIMIT: usize = 60_000;
@@ -349,6 +350,321 @@ pub fn build_review_marker(run_id: &str, sha: &str, version: &str) -> String {
 
 pub fn body_contains_quorum_marker(body: &str) -> bool {
     body.contains(MARKER_PREFIX)
+}
+
+// --- Task 6: GitHub API client ---
+
+const GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_API_VERSION: &str = "2026-03-10";
+
+#[derive(Debug)]
+pub enum GitHubReportError {
+    Http(reqwest::Error),
+    Api { status: u16, message: String },
+    NoToken,
+    NoRepo(String),
+    InvalidFindings(String),
+}
+
+impl std::fmt::Display for GitHubReportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(e) => write!(f, "HTTP error: {}", e),
+            Self::Api { status, message } => {
+                write!(f, "GitHub API error ({}): {}", status, message)
+            }
+            Self::NoToken => write!(f, "No GitHub token"),
+            Self::NoRepo(d) => write!(f, "Cannot determine repo: {}", d),
+            Self::InvalidFindings(d) => write!(f, "Invalid findings: {}", d),
+        }
+    }
+}
+
+impl From<reqwest::Error> for GitHubReportError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Http(e)
+    }
+}
+
+pub struct PostReviewRequest {
+    pub owner: String,
+    pub repo: String,
+    pub pr_number: u64,
+    pub token: String,
+    pub findings: Vec<Finding>,
+    pub diff_text: String,
+    pub version: String,
+    pub run_id: String,
+    pub commit_sha: String,
+    /// Override API base URL (for testing). Default: https://api.github.com
+    pub api_base_url: Option<String>,
+}
+
+pub struct PostReviewResult {
+    pub review_id: u64,
+    pub inline_count: usize,
+    pub body_count: usize,
+    pub dismissed_previous: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct CreateReviewRequest {
+    commit_id: String,
+    event: String,
+    body: String,
+    comments: Vec<ReviewComment>,
+}
+
+#[derive(Serialize)]
+struct ReviewComment {
+    path: String,
+    body: String,
+    line: u32,
+    side: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_side: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviewResponse {
+    id: u64,
+}
+
+#[derive(Deserialize)]
+struct ListReviewEntry {
+    id: u64,
+    body: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DismissRequest {
+    message: String,
+    event: String,
+}
+
+fn api_base(req: &PostReviewRequest) -> &str {
+    req.api_base_url.as_deref().unwrap_or(GITHUB_API_BASE)
+}
+
+fn github_client_headers(token: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        "application/vnd.github+json".parse().unwrap(),
+    );
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {}", token).parse().unwrap(),
+    );
+    headers.insert(
+        "X-GitHub-Api-Version",
+        GITHUB_API_VERSION.parse().unwrap(),
+    );
+    headers
+}
+
+async fn dismiss_previous_reviews(
+    client: &reqwest::Client,
+    req: &PostReviewRequest,
+) -> Option<u64> {
+    let base = api_base(req);
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}/reviews",
+        base, req.owner, req.repo, req.pr_number
+    );
+    let headers = github_client_headers(&req.token);
+    let resp = match client.get(&url).headers(headers.clone()).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Warning: failed to list reviews for dismiss: {}", e);
+            return None;
+        }
+    };
+    let reviews: Vec<ListReviewEntry> = match resp.json().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Warning: failed to parse review list: {}", e);
+            return None;
+        }
+    };
+
+    let mut dismissed_id = None;
+    for review in &reviews {
+        if let Some(body) = &review.body
+            && body_contains_quorum_marker(body)
+        {
+            let dismiss_url = format!("{}/{}/dismissals", url, review.id);
+            let dismiss_body = DismissRequest {
+                message: "Superseded by updated quorum review".into(),
+                event: "DISMISS".into(),
+            };
+            match client
+                .put(&dismiss_url)
+                .headers(headers.clone())
+                .json(&dismiss_body)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    dismissed_id = Some(review.id);
+                }
+                Ok(r) => {
+                    eprintln!(
+                        "Warning: dismiss review {} returned {}: best-effort, continuing",
+                        review.id,
+                        r.status()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: dismiss review {} failed: {}", review.id, e);
+                }
+            }
+        }
+    }
+    dismissed_id
+}
+
+pub async fn fetch_pr_diff(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    token: &str,
+    api_base_url: Option<&str>,
+) -> Result<String, GitHubReportError> {
+    let base = api_base_url.unwrap_or(GITHUB_API_BASE);
+    let url = format!("{}/repos/{}/{}/pulls/{}", base, owner, repo, pr_number);
+    let mut headers = github_client_headers(token);
+    headers.insert(
+        reqwest::header::ACCEPT,
+        "application/vnd.github.diff".parse().unwrap(),
+    );
+    let resp = client.get(&url).headers(headers).send().await?;
+    if !resp.status().is_success() {
+        return Err(GitHubReportError::Api {
+            status: resp.status().as_u16(),
+            message: resp.text().await.unwrap_or_default(),
+        });
+    }
+    Ok(resp.text().await?)
+}
+
+pub async fn fetch_pr_head_sha(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    token: &str,
+    api_base_url: Option<&str>,
+) -> Result<String, GitHubReportError> {
+    let base = api_base_url.unwrap_or(GITHUB_API_BASE);
+    let url = format!("{}/repos/{}/{}/pulls/{}", base, owner, repo, pr_number);
+    let headers = github_client_headers(token);
+    let resp = client.get(&url).headers(headers).send().await?;
+    if !resp.status().is_success() {
+        return Err(GitHubReportError::Api {
+            status: resp.status().as_u16(),
+            message: resp.text().await.unwrap_or_default(),
+        });
+    }
+    let body: serde_json::Value = resp.json().await?;
+    body["head"]["sha"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| GitHubReportError::Api {
+            status: 200,
+            message: "PR response missing head.sha".into(),
+        })
+}
+
+pub async fn post_review(
+    client: &reqwest::Client,
+    req: &PostReviewRequest,
+) -> Result<PostReviewResult, GitHubReportError> {
+    let diff_ranges = crate::hydration::parse_unified_diff(&req.diff_text);
+    let marker = build_review_marker(&req.run_id, &req.commit_sha, &req.version);
+
+    // Dismiss previous reviews (best-effort)
+    let dismissed_previous = dismiss_previous_reviews(client, req).await;
+
+    // Classify findings
+    let mut inline_comments = Vec::new();
+    let mut body_findings = Vec::new();
+
+    for finding in &req.findings {
+        // Use first evidence entry as file path (populated by the review pipeline)
+        let file_path = finding.evidence.first().map(|s| s.as_str()).unwrap_or("");
+        let target = classify_posting_target(finding, file_path, &diff_ranges);
+        match target {
+            PostingTarget::Inline => {
+                let body = render_inline_comment(finding, &req.version);
+                inline_comments.push(ReviewComment {
+                    path: file_path.to_string(),
+                    body,
+                    line: finding.anchor_line(),
+                    side: "RIGHT".into(),
+                    start_line: if finding.line_start != finding.line_end {
+                        Some(finding.line_start)
+                    } else {
+                        None
+                    },
+                    start_side: if finding.line_start != finding.line_end {
+                        Some("RIGHT".into())
+                    } else {
+                        None
+                    },
+                });
+            }
+            PostingTarget::Body => {
+                body_findings.push(finding.clone());
+            }
+        }
+    }
+
+    let review_body = render_review_body(
+        &marker,
+        inline_comments.len(),
+        &body_findings,
+        &req.version,
+    );
+
+    let create_req = CreateReviewRequest {
+        commit_id: req.commit_sha.clone(),
+        event: "COMMENT".into(),
+        body: review_body,
+        comments: inline_comments,
+    };
+
+    let base = api_base(req);
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}/reviews",
+        base, req.owner, req.repo, req.pr_number
+    );
+    let headers = github_client_headers(&req.token);
+    let resp = client
+        .post(&url)
+        .headers(headers)
+        .json(&create_req)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(GitHubReportError::Api {
+            status: resp.status().as_u16(),
+            message: resp.text().await.unwrap_or_default(),
+        });
+    }
+
+    let review: ReviewResponse = resp.json().await?;
+
+    Ok(PostReviewResult {
+        review_id: review.id,
+        inline_count: create_req.comments.len(),
+        body_count: body_findings.len(),
+        dismissed_previous,
+    })
 }
 
 #[cfg(test)]
