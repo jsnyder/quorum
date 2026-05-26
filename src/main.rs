@@ -52,6 +52,8 @@ mod glyphs;
 mod http_server;
 mod judge;
 #[allow(dead_code)]
+mod github_report;
+#[allow(dead_code)]
 mod linter;
 #[allow(dead_code)]
 mod llm_client;
