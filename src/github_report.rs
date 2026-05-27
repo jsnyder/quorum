@@ -487,6 +487,10 @@ fn github_client_headers(token: &str) -> reqwest::header::HeaderMap {
         reqwest::header::AUTHORIZATION,
         format!("Bearer {}", token).parse().unwrap(),
     );
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        format!("quorum/{}", env!("CARGO_PKG_VERSION")).parse().unwrap(),
+    );
     headers.insert("X-GitHub-Api-Version", GITHUB_API_VERSION.parse().unwrap());
     headers
 }
