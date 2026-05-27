@@ -117,7 +117,7 @@ pub struct SkillPrompts {
 /// Select the prompt text for the given model family, falling back to the
 /// primary prompt when no override exists.
 #[must_use]
-pub fn select_prompt<'a>(prompts: &'a SkillPrompts, family: ModelFamily) -> &'a str {
+pub fn select_prompt(prompts: &SkillPrompts, family: ModelFamily) -> &str {
     let maybe_override = match family {
         ModelFamily::Anthropic => prompts.anthropic.as_ref(),
         ModelFamily::OpenAi => prompts.openai.as_ref(),

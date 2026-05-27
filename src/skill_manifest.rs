@@ -219,10 +219,10 @@ fn validate_manifest(manifest: &SkillManifest, path: &Path) -> anyhow::Result<()
     }
 
     // preferred_model, if set, must be non-empty.
-    if let Some(ref model) = manifest.preferred_model {
-        if model.trim().is_empty() {
-            bail!("field `preferred_model` is set but empty {}", ctx());
-        }
+    if let Some(ref model) = manifest.preferred_model
+        && model.trim().is_empty()
+    {
+        bail!("field `preferred_model` is set but empty {}", ctx());
     }
 
     Ok(())
@@ -355,19 +355,19 @@ fn load_from_dir(
         let ns = manifest.effective_namespace().to_owned();
 
         // Namespace collision: user skill must not claim a bundled namespace.
-        if let Some(bundled_ns) = bundled_namespaces {
-            if let Some(bundled_skill) = bundled_ns.get(&ns) {
-                bail!(
-                    "user skill {:?} (at {}) uses calibration namespace {:?} \
-                     which is already claimed by bundled skill {:?}; \
-                     choose a different `calibration_namespace` to avoid \
-                     polluting bundled calibration data",
-                    manifest.name,
-                    path.display(),
-                    ns,
-                    bundled_skill,
-                );
-            }
+        if let Some(bundled_ns) = bundled_namespaces
+            && let Some(bundled_skill) = bundled_ns.get(&ns)
+        {
+            bail!(
+                "user skill {:?} (at {}) uses calibration namespace {:?} \
+                 which is already claimed by bundled skill {:?}; \
+                 choose a different `calibration_namespace` to avoid \
+                 polluting bundled calibration data",
+                manifest.name,
+                path.display(),
+                ns,
+                bundled_skill,
+            );
         }
 
         let sha = canonical_sha256(&manifest)?;
