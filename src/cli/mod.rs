@@ -147,23 +147,28 @@ pub fn validate_parallel(s: &str) -> Result<usize, String> {
 
 const VALID_KINDS: &[&str] = &[
     "rust",
+    "rs",
     "typescript",
+    "ts",
     "javascript",
+    "js",
     "python",
+    "py",
     "go",
     "terraform",
+    "tf",
     "service",
     "docs",
 ];
 
 /// Validate `--kind` for `quorum context add`.
+/// Accepts canonical names and aliases matching `SourceKind::parse_cli`.
 pub fn validate_kind(s: &str) -> Result<String, String> {
     if VALID_KINDS.contains(&s) {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--kind must be one of: {} (got '{s}')",
-            VALID_KINDS.join(", ")
+            "--kind must be one of: rust, typescript, javascript, python, go, terraform, service, docs (or aliases: rs, ts, js, py, tf) (got '{s}')",
         ))
     }
 }
@@ -230,7 +235,7 @@ pub struct ContextListOpts {
 #[derive(Parser)]
 pub struct ContextIndexOpts {
     /// Index a single named source. Mutually exclusive with --all.
-    #[arg(long, conflicts_with = "all")]
+    #[arg(long, conflicts_with = "all", value_parser = validate_source_name)]
     pub source: Option<String>,
 
     /// Index every registered source.
@@ -2034,5 +2039,38 @@ mod tests {
             ..Default::default()
         };
         assert!(opts.validate().is_ok());
+    }
+
+    // --- Issue #149 addendum: kind aliases match SourceKind::parse_cli --------
+
+    #[test]
+    fn context_add_kind_accepts_aliases() {
+        use clap::Parser;
+        for alias in &["rs", "ts", "js", "py", "tf"] {
+            let r = Args::try_parse_from([
+                "quorum", "context", "add", "--name", "src", "--kind", alias, "--path", "/tmp/x",
+            ]);
+            assert!(r.is_ok(), "alias '{alias}' must be accepted by --kind");
+        }
+    }
+
+    // --- Issue #369 addendum: context index --source also validated -----------
+
+    #[test]
+    fn context_index_source_rejects_path_traversal() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "index", "--source", "../etc",
+        ]);
+        assert!(r.is_err(), "--source '../etc' on index must be rejected");
+    }
+
+    #[test]
+    fn context_index_source_accepts_valid() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "index", "--source", "my-source",
+        ]);
+        assert!(r.is_ok(), "'my-source' is a valid source name for index");
     }
 }
