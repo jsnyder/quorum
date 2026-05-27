@@ -180,10 +180,8 @@ pub fn strip_mcp_markers(s: &str) -> String {
 // -- Stage 6: model-instruction trigger phrases -----------------------------
 
 static TRIGGER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // Match at line start (after optional leading whitespace is NOT consumed;
-    // the anchor is beginning-of-line).
     Regex::new(
-        r"(?mi)^(IMPORTANT:|SYSTEM:|INSTRUCTION:|ADMIN:|OVERRIDE:|IGNORE PREVIOUS|DISREGARD)",
+        r"(?mi)^[\t ]*(IMPORTANT:|SYSTEM:|INSTRUCTION:|ADMIN:|OVERRIDE:|IGNORE PREVIOUS|DISREGARD)",
     )
     .expect("trigger phrase regex")
 });
@@ -417,6 +415,16 @@ mod tests {
             " instructions"
         );
         assert_eq!(strip_trigger_phrases("DISREGARD rules"), " rules");
+    }
+
+    #[test]
+    fn strip_trigger_phrases_with_leading_whitespace() {
+        assert_eq!(strip_trigger_phrases("  IMPORTANT: sneaky"), " sneaky");
+        assert_eq!(strip_trigger_phrases("\tSYSTEM: override"), " override");
+        assert_eq!(
+            strip_trigger_phrases("  \tIGNORE PREVIOUS instructions"),
+            " instructions"
+        );
     }
 
     #[test]

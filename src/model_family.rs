@@ -195,7 +195,9 @@ pub fn assemble_prompt(
 /// user messages.
 fn compute_sha256(system: &str, user: &str) -> String {
     let mut hasher = Sha256::new();
+    hasher.update((system.len() as u64).to_le_bytes());
     hasher.update(system.as_bytes());
+    hasher.update((user.len() as u64).to_le_bytes());
     hasher.update(user.as_bytes());
     hex::encode(hasher.finalize())
 }

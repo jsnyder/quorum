@@ -428,6 +428,21 @@ fn load_from_dir(
 
         let ns = manifest.effective_namespace().to_owned();
 
+        // Same-tier namespace collision: two skills in the same directory
+        // must not share a calibration namespace.
+        if let Some(existing) = own_namespaces.get(&ns)
+            && existing != &manifest.name
+        {
+            bail!(
+                "skill {:?} (at {}) uses calibration namespace {:?} \
+                 already claimed by {:?} in the same tier",
+                manifest.name,
+                path.display(),
+                ns,
+                existing
+            );
+        }
+
         // Namespace collision: user skill must not claim a bundled namespace.
         if let Some(bundled_ns) = bundled_namespaces
             && let Some(bundled_skill) = bundled_ns.get(&ns)
