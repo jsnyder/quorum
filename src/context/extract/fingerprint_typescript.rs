@@ -423,22 +423,37 @@ fn extract_return_type<'a, D: Doc>(
 }
 
 /// Count the nesting depth of generic type arguments within a type annotation.
+///
+/// `Promise<T>` => 1, `Promise<Result<T>>` => 2, `string` => 0.
 fn count_type_nesting<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
     let mut max_depth: u8 = 0;
     for child in node.children() {
         let ck = child.kind();
         let kind = ck.as_ref();
-        if kind == "type_arguments" {
-            let inner_max = child
-                .children()
-                .filter(|c| c.kind().as_ref() == "generic_type")
-                .map(|c| 1 + count_type_nesting(&c))
-                .max()
-                .unwrap_or(1);
-            max_depth = max_depth.max(inner_max);
-        } else if kind == "generic_type" {
+        if kind == "generic_type" {
+            let inner = 1 + count_type_nesting_inner(&child);
+            max_depth = max_depth.max(inner);
+        } else {
             let inner = count_type_nesting(&child);
             max_depth = max_depth.max(inner);
+        }
+    }
+    max_depth
+}
+
+/// Recursive helper: count nesting depth within a `generic_type` node.
+fn count_type_nesting_inner<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
+    let mut max_depth: u8 = 0;
+    for child in node.children() {
+        let ck = child.kind();
+        let kind = ck.as_ref();
+        if kind == "type_arguments" {
+            for arg in child.children() {
+                if arg.kind().as_ref() == "generic_type" {
+                    let inner = 1 + count_type_nesting_inner(&arg);
+                    max_depth = max_depth.max(inner);
+                }
+            }
         }
     }
     max_depth

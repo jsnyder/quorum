@@ -585,3 +585,100 @@ class Validator {
         "class field arrow 'validate' should be classified as a method"
     );
 }
+
+#[test]
+fn type_nesting_promise_is_one() {
+    let src = r#"
+async function fetchData(url: string): Promise<string> {
+    const response = await fetch(url);
+    const text = await response.text();
+    const trimmed = text.trim();
+    const lower = trimmed.toLowerCase();
+    const replaced = lower.replace("-", "_");
+    const result = replaced.slice(0, 100);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 1,
+        "Promise<string> should have nesting=1, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_nested_promise_is_two() {
+    let src = r#"
+async function fetchResult(url: string): Promise<Result<string>> {
+    const response = await fetch(url);
+    const data = await response.json();
+    const validated = validate(data);
+    const wrapped = wrapResult(validated);
+    const checked = checkResult(wrapped);
+    const result = finalizeResult(checked);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 2,
+        "Promise<Result<string>> should have nesting=2, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_plain_string_is_zero() {
+    let src = r#"
+function getName(id: number): string {
+    const raw = lookup(id);
+    const trimmed = raw.trim();
+    const validated = validateName(trimmed);
+    const normalized = normalizeName(validated);
+    const formatted = formatName(normalized);
+    const result = finalizeName(formatted);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 0,
+        "plain string return should have nesting=0, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_map_is_one() {
+    let src = r#"
+function buildMap(items: string[]): Map<string, number> {
+    const result = new Map<string, number>();
+    for (const item of items) {
+        const len = item.length;
+        const upper = item.toUpperCase();
+        const key = upper.slice(0, 5);
+        result.set(key, len);
+        console.log(key, len);
+    }
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 1,
+        "Map<string, number> should have nesting=1, got {}",
+        fp.signature.return_nesting
+    );
+}
