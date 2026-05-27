@@ -108,3 +108,6 @@ pub mod prose_prompts;
 
 // SQLite-backed persistent storage (reviews + telemetry).
 pub mod storage;
+
+// Skill manifest schema and two-tier loader (#404).
+pub mod skill_manifest;
