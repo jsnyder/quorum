@@ -929,7 +929,13 @@ enum StalenessResult {
 fn check_staleness<D: ContextDeps>(entry: &SourceEntry, deps: &D) -> StalenessResult {
     let layout = SourceLayout::for_source(deps.home_dir(), &entry.name);
     let current_head = match source_repo_root(entry) {
-        Some(root) if root.exists() => deps.git().head_sha(root).ok().flatten(),
+        Some(root) if root.exists() => match deps.git().head_sha(root) {
+            Ok(sha) => sha,
+            Err(e) => {
+                tracing::warn!("Failed to read HEAD sha for {}: {e}", root.display());
+                None
+            }
+        },
         _ => None,
     };
     let current_model = deps.embedder().model_hash();

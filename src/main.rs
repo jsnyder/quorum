@@ -1874,7 +1874,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 .map(|r| r.judge_metrics.latency_ms)
                 .sum(),
         };
-        let _ = telem_store.record(&telem_entry);
+        if let Err(e) = telem_store.record(&telem_entry) {
+            tracing::warn!("Failed to record telemetry: {e}");
+        }
 
         // Per-review record for dimensional stats (by-repo, by-caller, rolling).
         let review_log = review_log::ReviewLog::with_storage(storage_handle.clone());
@@ -2417,8 +2419,10 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             confidence: opts.confidence,
             in_diff: opts.in_diff,
         };
-        if let Some(parent) = feedback_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = feedback_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("Failed to create feedback directory: {e}");
         }
         let store = feedback::FeedbackStore::new(feedback_path);
         match store.record_external(input) {
@@ -2470,8 +2474,10 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             }
         }
     } else {
-        if let Some(parent) = feedback_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = feedback_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("Failed to create feedback directory: {e}");
         }
         // Derive fp_kind from CLI flags. Errors only when verdict=fp and
         // a kind was specified that requires associated data (e.g.

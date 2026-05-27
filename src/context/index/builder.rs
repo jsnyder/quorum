@@ -511,7 +511,9 @@ impl<'a, C: Clock, E: Embedder> IndexBuilder<'a, C, E> {
                 Ok(())
             }
             Err(e) => {
-                let _ = conn.execute("ROLLBACK", []);
+                if let Err(rb_err) = conn.execute("ROLLBACK", []) {
+                    tracing::warn!("ROLLBACK failed after index error: {rb_err}");
+                }
                 Err(e)
             }
         }

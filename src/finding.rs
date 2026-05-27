@@ -161,6 +161,7 @@ impl Finding {
         self.cited_lines
             .map(|(start, _)| start)
             .unwrap_or(self.line_start)
+            .max(1)
     }
 
     pub fn compute_confidence(&mut self) {
@@ -175,7 +176,13 @@ impl Finding {
                 .grounding_confidence
                 .filter(|c| c.is_finite())
                 .map(|c| c.clamp(0.0, 1.0))
-                .unwrap_or(0.5),
+                .unwrap_or_else(|| match self.grounding_status {
+                    Some(GroundingStatus::Verified) => 0.90,
+                    Some(GroundingStatus::VerifiedElsewhere) => 0.75,
+                    Some(GroundingStatus::LineOutOfRange) => 0.30,
+                    Some(GroundingStatus::SymbolNotFound) => 0.20,
+                    Some(GroundingStatus::NotChecked) | None => 0.50,
+                }),
         };
         let base = self
             .judge_confidence

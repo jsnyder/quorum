@@ -97,12 +97,20 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 fn extract_json_array(response: &str) -> Option<&str> {
     let trimmed = response.trim();
-    let start = trimmed.find('[')?;
     let end = trimmed.rfind(']')?;
-    if start > end {
-        return None;
+    let mut search_from = 0;
+    while let Some(rel) = trimmed[search_from..].find('[') {
+        let abs_start = search_from + rel;
+        if abs_start > end {
+            return None;
+        }
+        let candidate = &trimmed[abs_start..=end];
+        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+            return Some(candidate);
+        }
+        search_from = abs_start + 1;
     }
-    Some(&trimmed[start..=end])
+    None
 }
 
 /// Map wire-format verdict strings to the `JudgeVerdict` enum.

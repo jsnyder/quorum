@@ -76,7 +76,10 @@ pub fn compute_report(
     telemetry_store: &TelemetryStore,
     review_log: &ReviewLog,
 ) -> anyhow::Result<StatsReport> {
-    let feedback = feedback_store.load_all().unwrap_or_default();
+    let feedback = feedback_store.load_all().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load feedback data: {e}");
+        Vec::new()
+    });
     let feedback_count = feedback.len();
     let tier_summary = analytics::compute_tier_stats(&feedback);
 
@@ -99,7 +102,10 @@ pub fn compute_report(
 
     // Telemetry: last 7 days
     let since_7d = chrono::Utc::now() - chrono::Duration::days(7);
-    let recent = telemetry_store.load_since(since_7d).unwrap_or_default();
+    let recent = telemetry_store.load_since(since_7d).unwrap_or_else(|e| {
+        tracing::warn!("Failed to load telemetry data: {e}");
+        Vec::new()
+    });
     let reviews_7d = recent.len();
     let tokens_in_7d: u64 = recent.iter().map(|e| e.tokens_in).sum();
     let tokens_out_7d: u64 = recent.iter().map(|e| e.tokens_out).sum();
@@ -146,7 +152,10 @@ pub fn compute_report(
     // Dimensional highlights: load all for repo/caller bucketing.
     // Best-effort: missing reviews.jsonl yields empty vectors, which
     // the renderer treats as "no data" and hides.
-    let review_records = review_log.load_all().unwrap_or_default();
+    let review_records = review_log.load_all().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load review log: {e}");
+        Vec::new()
+    });
     let top_repos = take_top(dimensions::group_by_repo(&review_records), HIGHLIGHT_TOP_N);
     let top_callers = take_top(
         dimensions::group_by_caller(&review_records),
@@ -155,11 +164,17 @@ pub fn compute_report(
 
     // Rolling windows: only need last N * ROLLING_WINDOWS records.
     let rolling_needed = ROLLING_N.saturating_mul(ROLLING_WINDOWS);
-    let rolling_records = review_log.load_recent(rolling_needed).unwrap_or_default();
+    let rolling_records = review_log.load_recent(rolling_needed).unwrap_or_else(|e| {
+        tracing::warn!("Failed to load recent review records: {e}");
+        Vec::new()
+    });
     let rolling_windows = dimensions::rolling_window(&rolling_records, ROLLING_N, ROLLING_WINDOWS);
 
     // Linkage: only needs finding_ids, not full records.
-    let finding_ids = review_log.load_all_finding_ids().unwrap_or_default();
+    let finding_ids = review_log.load_all_finding_ids().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load finding IDs for linkage: {e}");
+        std::collections::HashSet::new()
+    });
     let link = analytics::linkage_stats_from_ids(&finding_ids, &feedback);
     let linkage_rate = link.rate();
     let headline_trend_uses_finding_id = linkage_rate >= 0.85;
