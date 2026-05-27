@@ -307,6 +307,12 @@ pub struct ReviewRecord {
     /// review for per-finding precision deduplication.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finding_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills_used: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_findings: Option<HashMap<String, u32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrator_findings_out: Option<u32>,
 }
 
 impl ReviewRecord {
@@ -416,6 +422,9 @@ impl RawReviewRow {
             mode: self.mode,
             context,
             finding_ids,
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         };
         Ok(record)
     }
@@ -1065,6 +1074,9 @@ mod tests {
             mode: None,
             context: ContextTelemetry::default(),
             finding_ids: Vec::new(),
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         }
     }
 
@@ -1650,6 +1662,9 @@ mod tests {
             mode: None,
             context: ContextTelemetry::default(),
             finding_ids: vec![],
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         }
     }
 
@@ -1702,6 +1717,9 @@ mod tests {
             mode: Some("plan".to_string()),
             context: populated_context_telemetry(),
             finding_ids: vec!["fid-AAA".into(), "fid-BBB".into()],
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         };
 
         log.record(&rec).unwrap();
@@ -1944,6 +1962,9 @@ mod tests {
             mode: None,
             context: ContextTelemetry::default(),
             finding_ids: vec![],
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         }
     }
 
@@ -2089,5 +2110,58 @@ mod tests {
 
         log.record(&test_record()).unwrap();
         assert_eq!(log.count().unwrap(), 2);
+    }
+
+    // -- Per-skill identity fields (#405) --
+
+    #[test]
+    fn legacy_review_record_deserializes_with_empty_skills() {
+        let legacy = r#"{"run_id":"01ABC","timestamp":"2026-01-01T00:00:00Z","quorum_version":"0.1","repo":null,"invoked_from":"tty","model":"gpt","files_reviewed":1,"lines_added":null,"lines_removed":null,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0},"tokens_in":0,"tokens_out":0,"duration_ms":0}"#;
+        let rec: ReviewRecord = serde_json::from_str(legacy).expect("legacy load");
+        assert!(rec.skills_used.is_empty());
+        assert_eq!(rec.skill_findings, None);
+        assert_eq!(rec.integrator_findings_out, None);
+    }
+
+    #[test]
+    fn record_with_skills_used_roundtrips() {
+        let mut rec = sample_record();
+        rec.skills_used = vec!["security-reviewer".into(), "perf-analyzer".into()];
+        rec.skill_findings = Some({
+            let mut m = HashMap::new();
+            m.insert("security-reviewer".into(), 3);
+            m.insert("perf-analyzer".into(), 1);
+            m
+        });
+        rec.integrator_findings_out = Some(4);
+
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains("\"skills_used\""));
+        assert!(json.contains("\"skill_findings\""));
+        assert!(json.contains("\"integrator_findings_out\":4"));
+
+        let back: ReviewRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.skills_used, rec.skills_used);
+        assert_eq!(back.skill_findings, rec.skill_findings);
+        assert_eq!(back.integrator_findings_out, rec.integrator_findings_out);
+    }
+
+    #[test]
+    fn record_omits_skills_keys_when_empty() {
+        let rec = sample_record();
+        assert!(rec.skills_used.is_empty());
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(
+            !json.contains("skills_used"),
+            "empty skills_used must not write the key: {json}"
+        );
+        assert!(
+            !json.contains("skill_findings"),
+            "None skill_findings must not write the key: {json}"
+        );
+        assert!(
+            !json.contains("integrator_findings_out"),
+            "None integrator_findings_out must not write the key: {json}"
+        );
     }
 }

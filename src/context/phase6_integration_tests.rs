@@ -380,6 +380,9 @@ async fn end_to_end_review_with_context_injection_logs_telemetry() {
         mode: None,
         context: tele.clone(),
         finding_ids: Vec::new(),
+        skills_used: Vec::new(),
+        skill_findings: None,
+        integrator_findings_out: None,
     };
     log.record(&record).unwrap();
 

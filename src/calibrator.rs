@@ -1610,6 +1610,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -1952,6 +1955,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let halluc_120d = FeedbackEntry {
             timestamp: now - chrono::Duration::days(120),
@@ -2010,6 +2016,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^-1 ≈ 0.36788 — tight tolerance kills 120→119 mutant.
@@ -2034,6 +2043,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, now);
         assert!(
@@ -2062,6 +2074,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let trust_entry = FeedbackEntry {
             fp_kind: Some(crate::feedback::FpKind::TrustModelAssumption),
@@ -2110,6 +2125,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, now);
         // 1.0 (Human) * e^(-40/120) ≈ 0.7165 — uses 120d default branch.
@@ -2142,6 +2160,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let feedback = vec![make_oos(1), make_oos(2), make_oos(3)];
         let findings = vec![
@@ -2179,6 +2200,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let feedback = vec![make_halluc(1), make_halluc(2), make_halluc(3)];
         let findings = vec![
@@ -2225,6 +2249,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let entries = vec![make_oos(1), make_oos(2), make_oos(3)];
         for e in &entries {
@@ -2565,6 +2592,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb];
         let config = CalibratorConfig {
@@ -2599,6 +2629,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -2655,6 +2688,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let auto_fp = FeedbackEntry {
             file_path: "test.py".into(),
@@ -2669,6 +2705,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         // Human (1.0) + auto (0.5) = 1.5 >= threshold -> suppress
@@ -2710,6 +2749,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let recent_fp = FeedbackEntry {
             file_path: "test.rs".into(),
@@ -2724,6 +2766,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2762,6 +2807,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2788,6 +2836,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let weight = verdict_weight(&old_entry, Utc::now());
         assert!(
@@ -2819,6 +2870,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         let config = CalibratorConfig::default();
@@ -2853,6 +2907,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let feedback = vec![auto_fb.clone(), auto_fb.clone(), auto_fb.clone(), auto_fb];
         let config = CalibratorConfig::default();
@@ -2885,6 +2942,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let human_fb = FeedbackEntry {
             provenance: crate::feedback::Provenance::Human,
@@ -3098,6 +3158,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         let config = CalibratorConfig::default();
@@ -3705,6 +3768,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -3817,6 +3883,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.7).abs() < 0.01, "expected ~0.7, got {w}");
@@ -3844,6 +3913,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let cases: &[(&str, Option<f32>)] = &[
             ("None", None),
@@ -3879,6 +3951,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, Utc::now());
         assert!((w - 0.3).abs() < 0.01, "Unknown must stay at 0.3, got {w}");
@@ -3905,6 +3980,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -4014,6 +4092,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -4729,6 +4810,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -5370,6 +5454,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, chrono::Utc::now());
         assert!((w - 1.0).abs() < 0.01);
@@ -5390,6 +5477,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: Some(true),
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, chrono::Utc::now());
         assert!((w - 1.0).abs() < 0.01);
@@ -5410,6 +5500,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: Some(false),
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, chrono::Utc::now());
         assert!((w - 0.7).abs() < 0.01);
@@ -5434,6 +5527,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: Some(false),
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let w = verdict_weight(&entry, chrono::Utc::now());
         assert!((w - 0.49).abs() < 0.02);
