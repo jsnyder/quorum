@@ -330,6 +330,11 @@ pub fn resolve_github_context(
             .args(["remote", "get-url", "origin"])
             .output()
             .map_err(|e| GitHubContextError::NoRepo(format!("git remote failed: {}", e)))?;
+        if !output.status.success() {
+            return Err(GitHubContextError::NoRepo(
+                "git remote get-url origin exited with non-zero status".into(),
+            ));
+        }
         let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
         parse_github_repo_url(&url)
             .ok_or_else(|| GitHubContextError::NoRepo(format!("cannot parse remote: {}", url)))?
@@ -480,6 +485,13 @@ async fn dismiss_previous_reviews(
             return None;
         }
     };
+    if !resp.status().is_success() {
+        eprintln!(
+            "Warning: list reviews returned {}: skipping dismiss",
+            resp.status()
+        );
+        return None;
+    }
     let reviews: Vec<ListReviewEntry> = match resp.json().await {
         Ok(r) => r,
         Err(e) => {
