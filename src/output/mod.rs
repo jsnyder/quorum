@@ -1151,7 +1151,14 @@ mod tests {
 
     #[test]
     fn pipe_without_flags_produces_json() {
-        assert_eq!(resolve_output_mode(false, false, false), OutputMode::Json,);
+        // Clear env vars that trigger compact mode (e.g. GITHUB_ACTIONS in CI)
+        let saved = std::env::var("GITHUB_ACTIONS").ok();
+        unsafe { std::env::remove_var("GITHUB_ACTIONS") };
+        let result = resolve_output_mode(false, false, false);
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("GITHUB_ACTIONS", v) };
+        }
+        assert_eq!(result, OutputMode::Json);
     }
 
     #[test]
