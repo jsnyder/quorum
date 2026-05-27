@@ -18,6 +18,7 @@ const FUNCTION_KINDS: &[&str] = &[
     "method_definition",
     "arrow_function",
     "function",
+    "function_expression",
 ];
 
 /// Stateless fingerprinter for TypeScript source code.
@@ -49,7 +50,7 @@ impl TypeScriptFingerprinter {
             .collect();
         let mut results = Vec::new();
         for node in &func_nodes {
-            let name = node
+            let mut name = node
                 .children()
                 .find(|c| {
                     let k = c.kind();
@@ -57,6 +58,9 @@ impl TypeScriptFingerprinter {
                 })
                 .map(|c| c.text().into_owned())
                 .unwrap_or_default();
+            if name.is_empty() {
+                name = walk_up_to_variable_name(node);
+            }
             if name.is_empty() {
                 continue;
             }
@@ -110,6 +114,24 @@ fn find_first_function<'a, D: Doc>(
 ) -> Option<ast_grep_core::Node<'a, D>> {
     root.dfs()
         .find(|n| FUNCTION_KINDS.contains(&n.kind().as_ref()))
+}
+
+/// When an arrow_function or function expression has no name child, check if
+/// it's assigned to a variable via `variable_declarator` and extract the
+/// variable name.
+fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let pk = parent.kind();
+    let parent_kind = pk.as_ref();
+    if parent_kind == "variable_declarator" {
+        if let Some(name_node) = parent.children().find(|c| c.kind().as_ref() == "identifier") {
+            return name_node.text().into_owned();
+        }
+    }
+    String::new()
 }
 
 /// Extract signature shape from a function/method node.

@@ -420,3 +420,99 @@ class Config {
         "static method does not have this"
     );
 }
+
+#[test]
+fn arrow_function_variable_name_extracted() {
+    let src = r#"
+const processData = (input: string): string => {
+    const trimmed = input.trim();
+    const lower = trimmed.toLowerCase();
+    const replaced = lower.replace("-", "_");
+    const padded = replaced.padStart(10, "0");
+    const sliced = padded.slice(0, 8);
+    const result = sliced + "_done";
+    console.log(result);
+    return result;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"processData"),
+        "should extract 'processData' from variable declarator; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn async_arrow_variable_name_extracted() {
+    let src = r#"
+const fetchItems = async (url: string): Promise<string[]> => {
+    const response = await fetch(url);
+    const data = await response.json();
+    const items = data.items;
+    const filtered = items.filter((x: string) => x.length > 0);
+    const sorted = filtered.sort();
+    const sliced = sorted.slice(0, 10);
+    console.log(sliced);
+    return sliced;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"fetchItems"),
+        "should extract 'fetchItems' from async arrow; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn function_expression_variable_name_extracted() {
+    let src = r#"
+let compute = function(a: number, b: number): number {
+    const sum = a + b;
+    const diff = a - b;
+    const product = sum * diff;
+    const adjusted = product + 1;
+    const clamped = Math.max(0, adjusted);
+    const result = Math.min(100, clamped);
+    console.log(result);
+    return result;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"compute"),
+        "should extract 'compute' from function expression; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn export_const_arrow_name_extracted() {
+    let src = r#"
+export const handler = (req: Request): Response => {
+    const body = req.body;
+    const parsed = JSON.parse(body);
+    const validated = validate(parsed);
+    const processed = process(validated);
+    const serialized = JSON.stringify(processed);
+    const response = new Response(serialized);
+    console.log(response);
+    return response;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"handler"),
+        "should extract 'handler' from export const arrow; got {:?}",
+        names
+    );
+}
