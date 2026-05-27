@@ -103,6 +103,9 @@ pub mod calibrate;
 // Review mode enum: Code (default), Plan, Docs.
 pub mod review_mode;
 
+// Model-family detection and per-family prompt variant selection.
+pub mod model_family;
+
 // Prose-specific prompt templates for Plan and Docs review modes.
 pub mod prose_prompts;
 
