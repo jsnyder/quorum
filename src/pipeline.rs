@@ -890,6 +890,9 @@ pub async fn review_file(
                         }
                         match review::parse_llm_response(&resp.content, model) {
                             Ok(mut findings) => {
+                                for f in &mut findings {
+                                    f.normalize_line_range();
+                                }
                                 let n_findings = findings.len();
                                 if let Some(notice) = &file_ctx.truncation_notice {
                                     for f in &mut findings {
