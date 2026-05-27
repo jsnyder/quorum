@@ -72,8 +72,12 @@ pub fn detect_family(model_name: &str) -> ModelFamily {
         return ModelFamily::OpenAi;
     }
 
-    // OpenAI: substring matches for legacy model names
-    if lower.contains("davinci") || lower.contains("turbo") {
+    // OpenAI: substring matches for legacy model names.
+    // "turbo" is restricted to known OpenAI model shapes (gpt-*-turbo,
+    // gpt-3.5-turbo) to avoid misclassifying e.g. "llama-turbo" or
+    // "mistral-turbo-v3".
+    if lower.contains("davinci") || lower.contains("gpt-4-turbo") || lower.contains("gpt-3.5-turbo")
+    {
         return ModelFamily::OpenAi;
     }
 
@@ -234,6 +238,14 @@ mod tests {
         assert_eq!(detect_family("llama-3"), ModelFamily::Other);
         assert_eq!(detect_family("mistral-large"), ModelFamily::Other);
         assert_eq!(detect_family("deepseek-v3"), ModelFamily::Other);
+    }
+
+    #[test]
+    fn turbo_does_not_match_non_openai_models() {
+        // "turbo" alone must not trigger OpenAI — only known OpenAI shapes.
+        assert_eq!(detect_family("llama-turbo"), ModelFamily::Other);
+        assert_eq!(detect_family("mistral-turbo-v3"), ModelFamily::Other);
+        assert_eq!(detect_family("deepseek-turbo"), ModelFamily::Other);
     }
 
     #[test]

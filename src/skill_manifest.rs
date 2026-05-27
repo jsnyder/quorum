@@ -286,6 +286,68 @@ pub fn load_skills(bundled_dir: &Path, user_dir: &Path) -> anyhow::Result<Vec<Lo
     Ok(skills)
 }
 
+/// Maximum skill manifest file size in bytes (256 KiB). Defends against
+/// accidental or malicious multi-megabyte files in user-writable dirs.
+const MAX_MANIFEST_FILE_BYTES: u64 = 256 * 1024;
+
+/// Read a skill manifest file with symlink and size guards.
+///
+/// Mirrors the `read_rule_file` pattern from `ast_grep.rs` (#120):
+/// on Unix, opens with `O_NOFOLLOW | O_NONBLOCK` so symlinks and FIFOs
+/// are rejected atomically at open time (no TOCTOU). On non-Unix
+/// platforms, falls back to `symlink_metadata` pre-check.
+fn read_manifest_file(path: &Path) -> std::io::Result<String> {
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Fallback: pre-check with symlink_metadata (has a TOCTOU window,
+        // but acceptable on platforms that lack O_NOFOLLOW).
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "skill manifest path is a symlink",
+            ));
+        }
+    }
+
+    let file = opts.open(path)?;
+
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "skill manifest path is not a regular file",
+        ));
+    }
+    if meta.len() > MAX_MANIFEST_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "skill manifest size {} exceeds cap {}",
+                meta.len(),
+                MAX_MANIFEST_FILE_BYTES
+            ),
+        ));
+    }
+
+    let mut content = String::new();
+    file.take(MAX_MANIFEST_FILE_BYTES + 1)
+        .read_to_string(&mut content)?;
+    Ok(content)
+}
+
 /// Scan a single directory for `*.toml` skill manifests.
 fn load_from_dir(
     base_dir: &Path,
@@ -294,12 +356,24 @@ fn load_from_dir(
     own_namespaces: &mut HashMap<String, String>,
     bundled_namespaces: Option<&HashMap<String, String>>,
 ) -> anyhow::Result<()> {
-    let dir = if base_dir.join("skills").is_dir() {
-        base_dir.join("skills")
-    } else {
-        // Directory does not exist — not an error, just no skills from this tier.
-        return Ok(());
+    let dir = base_dir.join("skills");
+
+    // Symlink guard on the skills directory itself — mirrors ast-grep #120.
+    // `symlink_metadata` does NOT follow symlinks, unlike `is_dir()`.
+    let dir_meta = match std::fs::symlink_metadata(&dir) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // not present is fine
     };
+    if dir_meta.file_type().is_symlink() {
+        tracing::warn!(
+            path = %dir.display(),
+            "skill_manifest: skipping symlinked skills directory"
+        );
+        return Ok(());
+    }
+    if !dir_meta.file_type().is_dir() {
+        return Ok(());
+    }
 
     let mut entries: Vec<PathBuf> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
@@ -319,7 +393,7 @@ fn load_from_dir(
     entries.sort();
 
     for path in entries {
-        let toml_str = match std::fs::read_to_string(&path) {
+        let toml_str = match read_manifest_file(&path) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
