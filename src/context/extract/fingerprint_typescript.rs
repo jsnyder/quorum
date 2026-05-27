@@ -126,21 +126,17 @@ fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String
     };
     let pk = parent.kind();
     let parent_kind = pk.as_ref();
-    if parent_kind == "variable_declarator" {
-        if let Some(name_node) = parent.children().find(|c| c.kind().as_ref() == "identifier") {
-            return name_node.text().into_owned();
-        }
+    if parent_kind == "variable_declarator"
+        && let Some(name_node) = parent.children().find(|c| c.kind().as_ref() == "identifier")
+    {
+        return name_node.text().into_owned();
     }
-    // Class field arrow: `validate = (input) => { ... }` has parent
-    // `public_field_definition` (or `field_definition`) with a
-    // `property_identifier` child carrying the name.
-    if parent_kind == "public_field_definition" || parent_kind == "field_definition" {
-        if let Some(name_node) = parent
+    if (parent_kind == "public_field_definition" || parent_kind == "field_definition")
+        && let Some(name_node) = parent
             .children()
             .find(|c| c.kind().as_ref() == "property_identifier")
-        {
-            return name_node.text().into_owned();
-        }
+    {
+        return name_node.text().into_owned();
     }
     String::new()
 }
@@ -217,10 +213,10 @@ fn is_direct_class_member<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> bool {
     if parent_kind == "class_body" {
         return true;
     }
-    if parent_kind == "public_field_definition" || parent_kind == "field_definition" {
-        if let Some(grandparent) = parent.parent() {
-            return grandparent.kind().as_ref() == "class_body";
-        }
+    if (parent_kind == "public_field_definition" || parent_kind == "field_definition")
+        && let Some(grandparent) = parent.parent()
+    {
+        return grandparent.kind().as_ref() == "class_body";
     }
     false
 }
