@@ -22,11 +22,7 @@ jobs:
         env:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}
           QUORUM_API_KEY: ${{ secrets.QUORUM_API_KEY }}
-      - name: Copy quorum binary for report stage
-        run: cp $(which quorum) quorum-bin
       - uses: actions/upload-artifact@v4
         with:
           name: quorum-findings
-          path: |
-            findings.json
-            quorum-bin
+          path: findings.json

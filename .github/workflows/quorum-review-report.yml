@@ -13,13 +13,17 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: main
+      - name: Install quorum from trusted main branch
+        run: cargo install --path . --locked
       - uses: actions/download-artifact@v4
         with:
           name: quorum-findings
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Make binary executable
-        run: chmod +x quorum-bin
       - name: Validate head_sha format
         run: |
           HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
@@ -31,6 +35,6 @@ jobs:
         run: |
           HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
           PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" --jq '.[0].number')
-          ./quorum-bin report findings.json --pr "$PR_NUMBER"
+          quorum report findings.json --pr "$PR_NUMBER"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
