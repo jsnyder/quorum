@@ -134,6 +134,17 @@ pub fn validate_k(s: &str) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Validate `--parallel` for `quorum review`. Range: 1..=64.
+pub fn validate_parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e| format!("--parallel must be a positive integer: {e}"))?;
+    if !(1..=64).contains(&n) {
+        return Err(format!("--parallel must be in 1..=64 (got {n})"));
+    }
+    Ok(n)
+}
+
 #[derive(Parser)]
 pub struct ContextAddOpts {
     /// Short unique name for the source (used as a directory key).
@@ -477,8 +488,8 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub live_registry: bool,
 
-    /// Max concurrent LLM calls (default: 4, 0 = unlimited, 1 = sequential)
-    #[arg(long, default_value = "4")]
+    /// Max concurrent LLM calls (default: 4, range: 1..=64)
+    #[arg(long, default_value = "4", value_parser = validate_parallel)]
     pub parallel: usize,
 
     /// Enable structured tracing to ~/.quorum/trace.jsonl (also: QUORUM_TRACE=1)
@@ -1730,5 +1741,45 @@ mod tests {
     fn parse_provenance_rejects_unknown() {
         assert!(parse_provenance("external").is_err());
         assert!(parse_provenance("auto_calibrate").is_err());
+    }
+
+    // --- Issue #150: --parallel rejects 0 and caps at 64 ----------------------
+
+    #[test]
+    fn parallel_rejects_zero() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "0"]);
+        assert!(r.is_err(), "--parallel 0 must be rejected");
+    }
+
+    #[test]
+    fn parallel_rejects_above_64() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "65"]);
+        assert!(r.is_err(), "--parallel 65 must be rejected (above 64 cap)");
+    }
+
+    #[test]
+    fn parallel_accepts_one() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "1"]);
+        assert!(r.is_ok(), "--parallel 1 must parse (lower bound)");
+    }
+
+    #[test]
+    fn parallel_accepts_64() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "64"]);
+        assert!(r.is_ok(), "--parallel 64 must parse (upper bound)");
+    }
+
+    #[test]
+    fn parallel_default_is_4() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "review", "/tmp/x.rs"]);
+        match args.command {
+            Command::Review(opts) => assert_eq!(opts.parallel, 4),
+            _ => panic!("Expected Review command"),
+        }
     }
 }
