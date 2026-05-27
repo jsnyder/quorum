@@ -807,10 +807,34 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
 
     let findings: Vec<finding::Finding> = match serde_json::from_str(&json_str) {
         Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: failed to parse findings JSON: {}", e);
-            return 3;
-        }
+        Err(_) => match serde_json::from_str::<serde_json::Value>(&json_str) {
+            Ok(v) => {
+                let mut merged = Vec::new();
+                if let Some(files) = v.get("files").and_then(|x| x.as_array()) {
+                    for file_entry in files {
+                        if let Some(findings_val) = file_entry.get("findings") {
+                            match serde_json::from_value::<Vec<finding::Finding>>(
+                                findings_val.clone(),
+                            ) {
+                                Ok(mut ff) => merged.append(&mut ff),
+                                Err(e) => {
+                                    eprintln!("Error: invalid grouped findings payload: {}", e);
+                                    return 3;
+                                }
+                            }
+                        }
+                    }
+                    merged
+                } else {
+                    eprintln!("Error: unsupported findings JSON format");
+                    return 3;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: failed to parse findings JSON: {}", e);
+                return 3;
+            }
+        },
     };
 
     let ctx = match github_report::resolve_github_context(
@@ -824,11 +848,17 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         }
     };
 
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .unwrap();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: failed to initialize HTTP client: {}", e);
+            return 3;
+        }
+    };
 
     let diff_text = if let Some(ref diff_path) = opts.diff_file {
         match std::fs::read_to_string(diff_path) {
@@ -2009,27 +2039,63 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         };
 
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .unwrap();
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "Error: GitHub post failed: cannot initialize HTTP client: {} (review exit code preserved: {})",
+                    e, review_exit
+                );
+                return review_exit;
+            }
+        };
 
         let diff_text = if let Some(ref diff_path) = opts.diff_file {
-            std::fs::read_to_string(diff_path).unwrap_or_default()
+            match std::fs::read_to_string(diff_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!(
+                        "Error: GitHub post failed: cannot read diff file: {} (review exit code preserved: {})",
+                        e, review_exit
+                    );
+                    return review_exit;
+                }
+            }
         } else {
-            github_report::fetch_pr_diff(
+            match github_report::fetch_pr_diff(
                 &client, &ctx.owner, &ctx.repo, pr_number, &ctx.token, None,
             )
             .await
-            .unwrap_or_default()
+            {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!(
+                        "Error: GitHub post failed: cannot fetch PR diff: {} (review exit code preserved: {})",
+                        e, review_exit
+                    );
+                    return review_exit;
+                }
+            }
         };
 
-        let commit_sha = github_report::fetch_pr_head_sha(
+        let commit_sha = match github_report::fetch_pr_head_sha(
             &client, &ctx.owner, &ctx.repo, pr_number, &ctx.token, None,
         )
         .await
-        .unwrap_or_else(|_| "unknown".into());
+        {
+            Ok(sha) => sha,
+            Err(e) => {
+                eprintln!(
+                    "Error: GitHub post failed: cannot fetch PR head SHA: {} (review exit code preserved: {})",
+                    e, review_exit
+                );
+                return review_exit;
+            }
+        };
 
         let run_id = ulid::Ulid::new().to_string();
         let version = env!("CARGO_PKG_VERSION").to_string();

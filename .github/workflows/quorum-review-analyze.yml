@@ -1,11 +1,16 @@
 name: Quorum Review (analyze)
 on: [pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install quorum
         run: cargo install --path . --locked
       - name: Generate PR diff
@@ -13,11 +18,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Run review
-        run: quorum review --json --diff-file pr.diff $(git diff --name-only origin/main...HEAD) > findings.json
+        run: quorum review --json --diff-file pr.diff $(git diff --name-only origin/${{ github.base_ref }}...HEAD) > findings.json
         env:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}
           QUORUM_API_KEY: ${{ secrets.QUORUM_API_KEY }}
+      - name: Copy quorum binary for report stage
+        run: cp $(which quorum) quorum-bin
       - uses: actions/upload-artifact@v4
         with:
           name: quorum-findings
-          path: findings.json
+          path: |
+            findings.json
+            quorum-bin

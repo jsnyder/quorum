@@ -7,6 +7,17 @@ use std::sync::LazyLock;
 const GITHUB_BODY_LIMIT: usize = 60_000;
 const REVIEW_BODY_LIMIT: usize = 55_000;
 
+fn truncate_utf8_safe(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+}
+
 // Matches @mention not preceded by a word char (e.g. not user@example.com).
 // Uses a capturing group with an optional non-word boundary prefix character.
 static RE_MENTION: LazyLock<Regex> =
@@ -32,6 +43,17 @@ pub enum PostingTarget {
     Body,
 }
 
+fn is_line_in_diff_ranges(file_path: &str, line: u32, diff_ranges: &DiffRanges) -> bool {
+    for (path, ranges) in diff_ranges {
+        if path == file_path {
+            return ranges
+                .iter()
+                .any(|&(start, end)| line >= start && line <= end);
+        }
+    }
+    false
+}
+
 pub fn classify_posting_target(
     finding: &Finding,
     file_path: &str,
@@ -42,19 +64,18 @@ pub fn classify_posting_target(
     }
 
     let anchor = finding.anchor_line();
-
-    for (path, ranges) in diff_ranges {
-        if path == file_path {
-            for &(start, end) in ranges {
-                if anchor >= start && anchor <= end {
-                    return PostingTarget::Inline;
-                }
-            }
-            return PostingTarget::Body;
-        }
+    if !is_line_in_diff_ranges(file_path, anchor, diff_ranges) {
+        return PostingTarget::Body;
     }
 
-    PostingTarget::Body
+    // For multiline comments, both ends must be in commentable ranges
+    if finding.line_start != finding.line_end
+        && !is_line_in_diff_ranges(file_path, finding.line_start, diff_ranges)
+    {
+        return PostingTarget::Body;
+    }
+
+    PostingTarget::Inline
 }
 
 pub fn sanitize_for_github(s: &str) -> String {
@@ -90,12 +111,7 @@ pub fn sanitize_for_github(s: &str) -> String {
     out = RE_ISSUE_REF.replace_all(&out, "${1}`#$2`").into_owned();
 
     // 7. Truncate
-    if out.len() > GITHUB_BODY_LIMIT {
-        out.truncate(GITHUB_BODY_LIMIT);
-        while !out.is_char_boundary(out.len()) {
-            out.pop();
-        }
-    }
+    truncate_utf8_safe(&mut out, GITHUB_BODY_LIMIT);
 
     out
 }
@@ -125,12 +141,7 @@ pub fn render_inline_comment(finding: &Finding, version: &str) -> String {
         version,
         source,
     );
-    if out.len() > GITHUB_BODY_LIMIT {
-        out.truncate(GITHUB_BODY_LIMIT);
-        while !out.is_char_boundary(out.len()) {
-            out.pop();
-        }
-    }
+    truncate_utf8_safe(&mut out, GITHUB_BODY_LIMIT);
     out
 }
 
@@ -256,6 +267,18 @@ pub fn parse_github_repo_url(url: &str) -> Option<(String, String)> {
         && let Some(path) = colon_part.split(':').nth(1)
     {
         return parse_owner_repo_from_path(path);
+    }
+
+    // SSH URL form: ssh://git@host/owner/repo.git
+    if url.starts_with("ssh://") {
+        let path = url
+            .split("://")
+            .nth(1)?
+            .split('/')
+            .skip(1) // skip user@hostname
+            .collect::<Vec<_>>()
+            .join("/");
+        return parse_owner_repo_from_path(&path);
     }
 
     // HTTPS: https://host/owner/repo.git
@@ -897,6 +920,15 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_truncates_multibyte_safely() {
+        // 3-byte UTF-8 chars repeated to exceed limit, should not panic
+        let long = "\u{2603}".repeat(25_000); // snowman = 3 bytes each = 75K bytes
+        let result = sanitize_for_github(&long);
+        assert!(result.len() <= 60_000);
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
     fn sanitize_no_false_positive_on_email() {
         assert_eq!(
             sanitize_for_github("email user@example.com here"),
@@ -979,6 +1011,26 @@ mod tests {
         assert_eq!(target, PostingTarget::Body);
     }
 
+    #[test]
+    fn classify_multiline_both_ends_in_diff() {
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,5 +40,7 @@\n context\n+added line\n+another\n+third\n context\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let mut f = make_finding("test", 41, true);
+        f.line_end = 43;
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Inline);
+    }
+
+    #[test]
+    fn classify_multiline_start_outside_diff() {
+        let diff = "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -40,3 +40,5 @@\n context\n+added\n+added\n context\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let mut f = make_finding("test", 42, true);
+        f.line_start = 30; // outside diff hunk
+        let target = classify_posting_target(&f, "src/auth.rs", &ranges);
+        assert_eq!(target, PostingTarget::Body);
+    }
+
     // --- Task 4 tests: URL parsing ---
 
     #[test]
@@ -1005,6 +1057,14 @@ mod tests {
     #[test]
     fn parse_repo_slash_format() {
         let (owner, repo) = parse_github_repo_url("jsnyder/quorum").unwrap();
+        assert_eq!(owner, "jsnyder");
+        assert_eq!(repo, "quorum");
+    }
+
+    #[test]
+    fn parse_repo_ssh_url() {
+        let (owner, repo) =
+            parse_github_repo_url("ssh://git@github.com/jsnyder/quorum.git").unwrap();
         assert_eq!(owner, "jsnyder");
         assert_eq!(repo, "quorum");
     }
