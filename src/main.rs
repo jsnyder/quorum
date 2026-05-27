@@ -24,6 +24,7 @@ pub use quorum::prompt_sanitize;
 pub use quorum::prose_prompts;
 pub use quorum::redact;
 pub use quorum::review_mode;
+pub use quorum::skill_prompt_defense;
 pub use quorum::storage;
 
 #[allow(dead_code)]
