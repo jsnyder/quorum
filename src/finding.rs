@@ -150,6 +150,18 @@ pub struct Finding {
     pub precision_tier: Option<PrecisionTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_diff: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub originating_skill: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clamped_from_severity: Option<Severity>,
 }
 
 impl Finding {
@@ -266,6 +278,12 @@ impl FindingBuilder {
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             },
         }
     }
@@ -393,6 +411,36 @@ impl FindingBuilder {
         self
     }
 
+    pub fn originating_skill(mut self, s: &str) -> Self {
+        self.inner.originating_skill = Some(s.into());
+        self
+    }
+
+    pub fn skill_version(mut self, v: &str) -> Self {
+        self.inner.skill_version = Some(v.into());
+        self
+    }
+
+    pub fn manifest_sha256(mut self, h: &str) -> Self {
+        self.inner.manifest_sha256 = Some(h.into());
+        self
+    }
+
+    pub fn prompt_family(mut self, f: &str) -> Self {
+        self.inner.prompt_family = Some(f.into());
+        self
+    }
+
+    pub fn skill_run_id(mut self, id: &str) -> Self {
+        self.inner.skill_run_id = Some(id.into());
+        self
+    }
+
+    pub fn clamped_from_severity(mut self, s: Severity) -> Self {
+        self.inner.clamped_from_severity = Some(s);
+        self
+    }
+
     pub fn build(self) -> Finding {
         self.inner
     }
@@ -483,6 +531,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert_eq!(json["title"], "Unvalidated input");
@@ -525,6 +579,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let json_str = serde_json::to_string(&original).unwrap();
         let deserialized: Finding = serde_json::from_str(&json_str).unwrap();
@@ -560,6 +620,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let json = serde_json::to_value(&f).unwrap();
         assert!(json["calibrator_action"].is_null());
@@ -597,6 +663,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         assert!(f.is_valid());
     }
@@ -630,6 +702,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         assert!(f.is_valid());
     }
@@ -663,6 +741,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         assert!(!f.is_valid());
     }
@@ -696,6 +780,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         assert!(!f.is_valid());
     }
@@ -1237,5 +1327,92 @@ mod tests {
         let f = FindingBuilder::new().build();
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("in_diff"));
+    }
+
+    // -- Per-skill identity fields (#405) --
+
+    #[test]
+    fn legacy_finding_json_without_skill_fields_deserializes_cleanly() {
+        let legacy = r#"{"title":"t","description":"d","severity":"info","category":"maintainability","source":"local-ast","line_start":1,"line_end":1,"evidence":[],"calibrator_action":null,"similar_precedent":[]}"#;
+        let f: Finding = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(f.originating_skill, None);
+        assert_eq!(f.skill_version, None);
+        assert_eq!(f.manifest_sha256, None);
+        assert_eq!(f.prompt_family, None);
+        assert_eq!(f.skill_run_id, None);
+        assert_eq!(f.clamped_from_severity, None);
+    }
+
+    #[test]
+    fn finding_with_skill_identity_roundtrips() {
+        let f = FindingBuilder::new()
+            .originating_skill("security-reviewer")
+            .skill_version("1.2.0")
+            .manifest_sha256("abcdef1234567890")
+            .prompt_family("security-v2")
+            .skill_run_id("01HXYZ")
+            .clamped_from_severity(Severity::Critical)
+            .build();
+
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"originating_skill\":\"security-reviewer\""));
+        assert!(json.contains("\"skill_version\":\"1.2.0\""));
+        assert!(json.contains("\"manifest_sha256\":\"abcdef1234567890\""));
+        assert!(json.contains("\"prompt_family\":\"security-v2\""));
+        assert!(json.contains("\"skill_run_id\":\"01HXYZ\""));
+        assert!(json.contains("\"clamped_from_severity\":\"critical\""));
+
+        let back: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.originating_skill.as_deref(), Some("security-reviewer"));
+        assert_eq!(back.skill_version.as_deref(), Some("1.2.0"));
+        assert_eq!(back.manifest_sha256.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(back.prompt_family.as_deref(), Some("security-v2"));
+        assert_eq!(back.skill_run_id.as_deref(), Some("01HXYZ"));
+        assert_eq!(back.clamped_from_severity, Some(Severity::Critical));
+
+        // Re-serialize and verify deterministic output
+        let json2 = serde_json::to_string(&back).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn finding_skill_fields_omitted_when_none() {
+        let f = FindingBuilder::new().build();
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(!json.contains("originating_skill"));
+        assert!(!json.contains("skill_version"));
+        assert!(!json.contains("manifest_sha256"));
+        assert!(!json.contains("prompt_family"));
+        assert!(!json.contains("skill_run_id"));
+        assert!(!json.contains("clamped_from_severity"));
+    }
+
+    #[test]
+    fn builder_skill_fields_default_to_none() {
+        let f = FindingBuilder::new().build();
+        assert_eq!(f.originating_skill, None);
+        assert_eq!(f.skill_version, None);
+        assert_eq!(f.manifest_sha256, None);
+        assert_eq!(f.prompt_family, None);
+        assert_eq!(f.skill_run_id, None);
+        assert_eq!(f.clamped_from_severity, None);
+    }
+
+    #[test]
+    fn builder_with_skill_fields_builds_correctly() {
+        let f = FindingBuilder::new()
+            .originating_skill("lint-skill")
+            .skill_version("0.1.0")
+            .manifest_sha256("deadbeef")
+            .prompt_family("lint-v1")
+            .skill_run_id("run-42")
+            .clamped_from_severity(Severity::High)
+            .build();
+        assert_eq!(f.originating_skill.as_deref(), Some("lint-skill"));
+        assert_eq!(f.skill_version.as_deref(), Some("0.1.0"));
+        assert_eq!(f.manifest_sha256.as_deref(), Some("deadbeef"));
+        assert_eq!(f.prompt_family.as_deref(), Some("lint-v1"));
+        assert_eq!(f.skill_run_id.as_deref(), Some("run-42"));
+        assert_eq!(f.clamped_from_severity, Some(Severity::High));
     }
 }

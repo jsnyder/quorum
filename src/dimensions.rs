@@ -615,6 +615,9 @@ mod tests {
             mode: None,
             context: Default::default(),
             finding_ids: Vec::new(),
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         }
     }
 
@@ -1147,6 +1150,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -1274,6 +1280,9 @@ mod tests {
             finding_id: None,
             rule_id: rule_id.map(String::from),
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 

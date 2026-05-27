@@ -1842,6 +1842,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             },
             context: context_telem,
             finding_ids: quorum::finding::collect_finding_ids(&all_findings),
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         };
         if let Err(e) = review_log.record(&record) {
             eprintln!("Warning: failed to write review log: {}", e);
@@ -2077,6 +2080,9 @@ fn run_feedback_inner(
         finding_id: None,
         rule_id: None,
         in_diff,
+        skill_name: None,
+        skill_version: None,
+        manifest_sha256: None,
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());

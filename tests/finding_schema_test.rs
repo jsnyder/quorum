@@ -30,6 +30,12 @@ fn finding_with_new_fields_roundtrips() {
         judge_confidence: None,
         precision_tier: None,
         in_diff: None,
+        originating_skill: None,
+        skill_version: None,
+        manifest_sha256: None,
+        prompt_family: None,
+        skill_run_id: None,
+        clamped_from_severity: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -89,6 +95,12 @@ fn new_fields_omitted_from_json_when_none() {
         judge_confidence: None,
         precision_tier: None,
         in_diff: None,
+        originating_skill: None,
+        skill_version: None,
+        manifest_sha256: None,
+        prompt_family: None,
+        skill_run_id: None,
+        clamped_from_severity: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();
@@ -132,6 +144,12 @@ fn category_serializes_as_kebab_case_in_finding() {
         judge_confidence: None,
         precision_tier: None,
         in_diff: None,
+        originating_skill: None,
+        skill_version: None,
+        manifest_sha256: None,
+        prompt_family: None,
+        skill_run_id: None,
+        clamped_from_severity: None,
     };
 
     let json = serde_json::to_string(&finding).unwrap();

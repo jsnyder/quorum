@@ -1089,6 +1089,9 @@ mod tests {
             mode: None,
             context: Default::default(),
             finding_ids: Vec::new(),
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         }
     }
 
@@ -1301,6 +1304,9 @@ mod tests {
                 finding_id: Some(format!("FID-{i}")),
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             })
             .unwrap();
         }
@@ -1318,6 +1324,9 @@ mod tests {
                 finding_id: None,
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             })
             .unwrap();
         }
@@ -1845,6 +1854,9 @@ mod tests {
             mode: None,
             context: Default::default(),
             finding_ids: vec!["fid-old".into()],
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
         };
         log.record(&old).unwrap();
 

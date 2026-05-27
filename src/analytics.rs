@@ -567,6 +567,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -584,6 +587,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -912,6 +918,9 @@ mod tests {
             flags: crate::review_log::Flags::default(),
             context: crate::review_log::ContextTelemetry::default(),
             finding_ids: ids.iter().map(|s| s.to_string()).collect(),
+            skills_used: Vec::new(),
+            skill_findings: None,
+            integrator_findings_out: None,
             mode: None,
         }
     }
@@ -1337,6 +1346,9 @@ mod tests {
                 finding_id: Some("fid-1".into()),
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             },
             FeedbackEntry {
                 file_path: "b.rs".into(),
@@ -1351,6 +1363,9 @@ mod tests {
                 finding_id: Some("fid-missing".into()),
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             },
         ];
 

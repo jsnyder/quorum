@@ -322,6 +322,12 @@ pub fn normalize_ruff_output(json_output: &str) -> anyhow::Result<Vec<Finding>> 
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         });
     }
 
@@ -390,6 +396,12 @@ pub fn normalize_clippy_output(json_output: &str) -> anyhow::Result<Vec<Finding>
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         });
     }
 
@@ -446,6 +458,12 @@ pub fn normalize_eslint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             });
         }
     }
@@ -516,6 +534,12 @@ pub fn normalize_yamllint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         });
     }
     Ok(findings)
@@ -569,6 +593,12 @@ pub fn normalize_shellcheck_output(json_output: &str) -> anyhow::Result<Vec<Find
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             });
         }
     }
@@ -639,6 +669,12 @@ pub fn normalize_hadolint_output(output: &str) -> anyhow::Result<Vec<Finding>> {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         });
     }
     Ok(findings)
@@ -693,6 +729,12 @@ pub fn normalize_tflint_output(json_output: &str) -> anyhow::Result<Vec<Finding>
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             });
         }
     }
@@ -768,6 +810,12 @@ pub fn normalize_golangcilint_output(json_output: &str) -> anyhow::Result<Vec<Fi
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             });
         }
     }
