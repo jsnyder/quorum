@@ -516,3 +516,72 @@ export const handler = (req: Request): Response => {
         names
     );
 }
+
+#[test]
+fn nested_arrow_inside_method_not_classified_as_method() {
+    let src = r#"
+class DataService {
+    process(items: string[]): string[] {
+        const result: string[] = [];
+        const helper = (item: string): string => {
+            const trimmed = item.trim();
+            const upper = trimmed.toUpperCase();
+            const prefixed = "PRE_" + upper;
+            const suffixed = prefixed + "_SUF";
+            const final_val = suffixed.slice(0, 20);
+            console.log(final_val);
+            return final_val;
+        };
+        for (const item of items) {
+            result.push(helper(item));
+        }
+        const joined = result.join(",");
+        const wrapped = "[" + joined + "]";
+        console.log(wrapped);
+        return result;
+    }
+}
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+
+    let (_, helper_fp) = results.iter().find(|(name, _)| name == "helper")
+        .expect("'helper' must be fingerprinted");
+    assert!(
+        !helper_fp.signature.is_method,
+        "nested arrow 'helper' inside a method body must NOT be classified as a method"
+    );
+
+    let (_, process_fp) = results.iter().find(|(name, _)| name == "process")
+        .expect("'process' must be fingerprinted");
+    assert!(
+        process_fp.signature.is_method,
+        "'process' is a direct class method and must be is_method=true"
+    );
+}
+
+#[test]
+fn class_field_arrow_is_method() {
+    let src = r#"
+class Validator {
+    validate = (input: string): boolean => {
+        const trimmed = input.trim();
+        const hasLength = trimmed.length > 0;
+        const hasAlpha = /[a-z]/.test(trimmed);
+        const hasNum = /[0-9]/.test(trimmed);
+        const isValid = hasLength && hasAlpha && hasNum;
+        const logged = console.log(isValid);
+        return isValid;
+    };
+}
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+
+    let (_, validate_fp) = results.iter().find(|(name, _)| name == "validate")
+        .expect("'validate' must be fingerprinted");
+    assert!(
+        validate_fp.signature.is_method,
+        "class field arrow 'validate' should be classified as a method"
+    );
+}

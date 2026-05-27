@@ -117,8 +117,8 @@ fn find_first_function<'a, D: Doc>(
 }
 
 /// When an arrow_function or function expression has no name child, check if
-/// it's assigned to a variable via `variable_declarator` and extract the
-/// variable name.
+/// it's assigned to a variable via `variable_declarator` or a class field via
+/// `public_field_definition` / `field_definition`, and extract the name.
 fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
     let parent = match node.parent() {
         Some(p) => p,
@@ -128,6 +128,17 @@ fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String
     let parent_kind = pk.as_ref();
     if parent_kind == "variable_declarator" {
         if let Some(name_node) = parent.children().find(|c| c.kind().as_ref() == "identifier") {
+            return name_node.text().into_owned();
+        }
+    }
+    // Class field arrow: `validate = (input) => { ... }` has parent
+    // `public_field_definition` (or `field_definition`) with a
+    // `property_identifier` child carrying the name.
+    if parent_kind == "public_field_definition" || parent_kind == "field_definition" {
+        if let Some(name_node) = parent
+            .children()
+            .find(|c| c.kind().as_ref() == "property_identifier")
+        {
             return name_node.text().into_owned();
         }
     }
@@ -145,7 +156,7 @@ fn extract_signature<'a, D: Doc>(
     let kind_str = kind.as_ref();
 
     // Detect if this is a method inside a class.
-    let in_class = is_inside_class(node);
+    let in_class = is_direct_class_member(node);
 
     // Find the formal_parameters node.
     if let Some(params) = node
@@ -191,13 +202,27 @@ fn extract_signature<'a, D: Doc>(
     shape
 }
 
-/// Check if a node is inside a class body.
-fn is_inside_class<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> bool {
-    node.ancestors().any(|a| {
-        let ak = a.kind();
-        let kind = ak.as_ref();
-        kind == "class_declaration" || kind == "class"
-    })
+/// Check if a function node is a direct member of a class body.
+///
+/// For `method_definition`: direct parent is `class_body`.
+/// For `arrow_function`/`function` as class fields: parent chain is
+/// `arrow_function -> public_field_definition -> class_body`.
+fn is_direct_class_member<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let pk = parent.kind();
+    let parent_kind = pk.as_ref();
+    if parent_kind == "class_body" {
+        return true;
+    }
+    if parent_kind == "public_field_definition" || parent_kind == "field_definition" {
+        if let Some(grandparent) = parent.parent() {
+            return grandparent.kind().as_ref() == "class_body";
+        }
+    }
+    false
 }
 
 /// Check if a method_definition has a `static` modifier.
