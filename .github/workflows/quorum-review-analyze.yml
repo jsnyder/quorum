@@ -11,6 +11,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Install quorum
         run: cargo install --path . --locked
       - name: Generate PR diff
@@ -18,7 +19,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Run review
-        run: quorum review --json --diff-file pr.diff $(git diff --name-only origin/${{ github.base_ref }}...HEAD) > findings.json
+        run: quorum review --json --diff-file pr.diff $(git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD) > findings.json
         env:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}
           QUORUM_API_KEY: ${{ secrets.QUORUM_API_KEY }}
