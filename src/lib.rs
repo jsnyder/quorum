@@ -82,6 +82,9 @@ pub mod patterns;
 // Prompt sanitization helpers (sandbox tags, fence picking).
 pub mod prompt_sanitize;
 
+// Prompt injection defenses (delimiter assembly + output sanitizer).
+pub mod skill_prompt_defense;
+
 // AST grounding: identifier extraction from LLM findings.
 pub mod grounding;
 
