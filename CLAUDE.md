@@ -30,6 +30,8 @@ cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
 cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"
+cargo run -- report findings.json --pr 42     # post findings to GitHub PR
+cargo run -- review src/*.rs --github-pr 42   # review + post to PR in one step
 cargo run -- serve                           # MCP server (stdio)
 cargo run -- daemon --watch-dir .            # persistent daemon
 ```
@@ -42,6 +44,7 @@ QUORUM_API_KEY=sk-...                          # enables LLM review
 QUORUM_MODEL=gpt-5.4                           # default model
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)
+GITHUB_TOKEN=ghp_...                           # GitHub API token for PR comments
 
 # HTTP timeouts (#117, v0.18.0+)
 QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
