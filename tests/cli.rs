@@ -7,6 +7,10 @@ fn quorum() -> Command {
     cmd.env("HOME", "/tmp/quorum-test-home");
     // Isolate from developer shell so tests don't invoke real LLM (see issue #23)
     cmd.env_remove("QUORUM_API_KEY");
+    // Isolate from CI compact-mode triggers so piped output remains JSON
+    cmd.env_remove("GITHUB_ACTIONS");
+    cmd.env_remove("CLAUDE_CODE");
+    cmd.env_remove("CODEX_CI");
     cmd
 }
 

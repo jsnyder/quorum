@@ -24,6 +24,8 @@ pub enum Command {
     Context(ContextOpts),
     /// Compute calibrator thresholds from feedback corpus
     Calibrate(CalibrateOpts),
+    /// Post review findings as GitHub PR comments
+    Report(ReportOpts),
     /// Print version
     Version,
 }
@@ -294,6 +296,28 @@ pub struct CalibrateOpts {
 }
 
 #[derive(Parser)]
+pub struct ReportOpts {
+    /// JSON findings file path, or "-" for stdin
+    pub findings_file: String,
+
+    /// Pull request number
+    #[arg(long)]
+    pub pr: u64,
+
+    /// GitHub personal access token (default: GITHUB_TOKEN env)
+    #[arg(long)]
+    pub github_token: Option<String>,
+
+    /// Repository in owner/repo format (default: auto-detect)
+    #[arg(long)]
+    pub github_repo: Option<String>,
+
+    /// Local diff file (default: fetch from PR API)
+    #[arg(long)]
+    pub diff_file: Option<PathBuf>,
+}
+
+#[derive(Parser)]
 pub struct StatsOpts {
     /// Output as JSON
     #[arg(long)]
@@ -505,6 +529,18 @@ pub struct ReviewOpts {
     /// Model for judge calls (default: gpt-5-nano, also: QUORUM_JUDGE_MODEL)
     #[arg(long)]
     pub judge_model: Option<String>,
+
+    /// Post findings as GitHub PR review comments
+    #[arg(long)]
+    pub github_pr: Option<u64>,
+
+    /// GitHub personal access token (default: GITHUB_TOKEN env)
+    #[arg(long)]
+    pub github_token: Option<String>,
+
+    /// Repository in owner/repo format (default: auto-detect)
+    #[arg(long)]
+    pub github_repo: Option<String>,
 }
 
 /// CLI surface for `--fp-kind` (#123 Layer 1). Variants map onto

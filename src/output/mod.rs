@@ -425,6 +425,7 @@ pub fn should_use_compact(compact_flag: bool) -> bool {
         || is_env_set("GEMINI_CLI")
         || is_env_set("CODEX_CI")
         || is_env_set("AGENT")
+        || is_env_set("GITHUB_ACTIONS")
 }
 
 fn is_env_set(var: &str) -> bool {
@@ -896,6 +897,17 @@ mod tests {
     }
 
     #[test]
+    fn should_use_compact_github_actions() {
+        unsafe {
+            std::env::set_var("GITHUB_ACTIONS", "true");
+        }
+        assert!(should_use_compact(false));
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+    }
+
+    #[test]
     fn format_finding_includes_suggested_fix() {
         let f = FindingBuilder::new()
             .title("SQL injection")
@@ -1139,7 +1151,14 @@ mod tests {
 
     #[test]
     fn pipe_without_flags_produces_json() {
-        assert_eq!(resolve_output_mode(false, false, false), OutputMode::Json,);
+        // Clear env vars that trigger compact mode (e.g. GITHUB_ACTIONS in CI)
+        let saved = std::env::var("GITHUB_ACTIONS").ok();
+        unsafe { std::env::remove_var("GITHUB_ACTIONS") };
+        let result = resolve_output_mode(false, false, false);
+        if let Some(v) = saved {
+            unsafe { std::env::set_var("GITHUB_ACTIONS", v) };
+        }
+        assert_eq!(result, OutputMode::Json);
     }
 
     #[test]
