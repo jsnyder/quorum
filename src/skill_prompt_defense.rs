@@ -105,7 +105,8 @@ static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
     // - Two-byte sequences: ESC followed by a single char in [@-_]
     Regex::new(
         r"(?x)
-          \x1b \[ [0-9;?]* [A-Za-z]          # CSI sequences
+          # CSI: ESC [ , params 0x30-0x3F, intermediates 0x20-0x2F, final 0x40-0x7E (ECMA-48)
+          \x1b \[ [\x30-\x3f]* [\x20-\x2f]* [\x40-\x7e]
         | \x1b \] [^\x07\x1b]* (?: \x07 | \x1b\\ )  # OSC sequences
         | \x1b [[@A-Z\[\\\]^_]]               # two-byte escapes
         ",
@@ -160,10 +161,20 @@ static MARKDOWN_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("markdown link regex")
 });
 
-/// Replace `[text](javascript:...)` and `[text](data:...)` with just `text`.
+// Angle-bracket autolinks `<javascript:...>` / `<data:...>` (case-insensitive).
+// These render as active links in Markdown just like `[text](url)` and must be
+// neutralized too. We keep the inner text but drop the angle brackets so the
+// dangerous scheme survives only as inert plain text.
+static AUTOLINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<((?:javascript|data):[^>]*)>").expect("autolink regex"));
+
+/// Replace `[text](javascript:...)` and `[text](data:...)` with just `text`,
+/// and neutralize angle-bracket autolinks `<javascript:...>` / `<data:...>` by
+/// stripping the brackets (leaving inert plain text).
 /// Safe links (`https:`, `http:`, etc.) pass through unchanged.
 pub fn defang_markdown_autolinks(s: &str) -> String {
-    MARKDOWN_LINK_RE.replace_all(s, "$1").into_owned()
+    let stripped = MARKDOWN_LINK_RE.replace_all(s, "$1");
+    AUTOLINK_RE.replace_all(&stripped, "$1").into_owned()
 }
 
 // -- Stage 5: MCP tool-use markers ------------------------------------------
@@ -364,6 +375,19 @@ mod tests {
     }
 
     #[test]
+    fn strip_ansi_escapes_csi_non_letter_final_byte() {
+        // Final byte `@` (0x40, insert-character) is a valid CSI terminator but
+        // outside [A-Za-z]; it must still be stripped.
+        assert_eq!(strip_ansi_escapes("\x1b[1@done"), "done");
+    }
+
+    #[test]
+    fn strip_ansi_escapes_csi_colon_separated_params() {
+        // Colon-separated SGR params (e.g. 24-bit color) use 0x3A, also valid.
+        assert_eq!(strip_ansi_escapes("\x1b[38:2:0:0:0mhi"), "hi");
+    }
+
+    #[test]
     fn strip_control_chars_keeps_whitespace() {
         let input = "hello\tworld\nfoo\rbar";
         assert_eq!(strip_control_chars(input), "hello\tworld\nfoo\rbar");
@@ -394,6 +418,30 @@ mod tests {
     #[test]
     fn defang_markdown_autolinks_safe_unchanged() {
         let safe = "[safe](https://example.com)";
+        assert_eq!(defang_markdown_autolinks(safe), safe);
+    }
+
+    #[test]
+    fn defang_angle_bracket_autolink_javascript() {
+        // `<javascript:...>` autolinks render as active links and must be
+        // neutralized to inert plain text (brackets stripped).
+        assert_eq!(
+            defang_markdown_autolinks("see <javascript:alert(1)> now"),
+            "see javascript:alert(1) now"
+        );
+    }
+
+    #[test]
+    fn defang_angle_bracket_autolink_data() {
+        assert_eq!(
+            defang_markdown_autolinks("<DATA:text/html,evil>"),
+            "DATA:text/html,evil"
+        );
+    }
+
+    #[test]
+    fn defang_angle_bracket_autolink_safe_unchanged() {
+        let safe = "ping <https://example.com> ok";
         assert_eq!(defang_markdown_autolinks(safe), safe);
     }
 

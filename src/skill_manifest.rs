@@ -208,6 +208,19 @@ fn validate_manifest(manifest: &SkillManifest, path: &Path) -> anyhow::Result<()
         bail!("missing required field `prompts.primary` {}", ctx());
     }
 
+    // An explicit but empty `calibration_namespace` is almost certainly a
+    // mistake: `effective_namespace()` would return "" (not the `name`
+    // fallback), silently pooling this skill's calibration data with every
+    // other empty-namespace skill. Reject it so the author picks a real value.
+    if let Some(ns) = manifest.calibration_namespace.as_deref()
+        && ns.trim().is_empty()
+    {
+        bail!(
+            "field `calibration_namespace`, if set, must not be empty {}",
+            ctx()
+        );
+    }
+
     // Capability mode: only `pure` is supported in v1.
     if manifest.capability.mode != CapabilityMode::Pure {
         bail!(
@@ -392,6 +405,11 @@ fn load_from_dir(
     };
     entries.sort();
 
+    // Two manifests in the same directory sharing a `name` would otherwise
+    // silently overwrite each other in `skills` (last file wins). Track names
+    // seen in this tier and surface the collision instead.
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for path in entries {
         let toml_str = match read_manifest_file(&path) {
             Ok(s) => s,
@@ -424,6 +442,17 @@ fn load_from_dir(
                 "skill_manifest: validation failed; skipping"
             );
             continue;
+        }
+
+        // Same-tier duplicate skill name: would silently overwrite on insert.
+        if !seen_names.insert(manifest.name.clone()) {
+            bail!(
+                "duplicate skill name {:?} (at {}) in {}; \
+                 skill names must be unique within a tier",
+                manifest.name,
+                path.display(),
+                dir.display(),
+            );
         }
 
         let ns = manifest.effective_namespace().to_owned();
@@ -578,6 +607,84 @@ primary = "User prompt."
         assert_eq!(skills[0].manifest.display_name, "User Security");
         assert_eq!(skills[0].manifest.version, "2.0.0");
         assert_eq!(skills[0].trust_tier, TrustTier::User);
+    }
+
+    // ── Empty explicit calibration_namespace is rejected (skipped) ──
+
+    #[test]
+    fn empty_calibration_namespace_skipped() {
+        let bundled = tempdir().unwrap();
+        let user = tempdir().unwrap();
+
+        let toml = r#"
+name = "test"
+version = "1.0.0"
+display_name = "Test"
+description = "Desc."
+axis = "security"
+max_severity = "high"
+calibration_namespace = ""
+
+[capability]
+mode = "pure"
+
+[prompts]
+primary = "prompt"
+"#;
+        write_skill(bundled.path(), "bad.toml", toml);
+        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        assert!(
+            skills.is_empty(),
+            "skill with empty calibration_namespace must be skipped"
+        );
+    }
+
+    // ── Duplicate skill name in the same directory is a hard error ──
+
+    #[test]
+    fn duplicate_skill_name_same_dir_errors() {
+        let bundled = tempdir().unwrap();
+        let user = tempdir().unwrap();
+
+        // Two distinct files, same `name`, distinct namespaces to bypass the
+        // namespace-collision guard and reach the duplicate-name guard.
+        let a = r#"
+name = "dup"
+version = "1.0.0"
+display_name = "A"
+description = "First."
+axis = "security"
+max_severity = "high"
+calibration_namespace = "ns-a"
+
+[capability]
+mode = "pure"
+
+[prompts]
+primary = "prompt a"
+"#;
+        let b = r#"
+name = "dup"
+version = "1.0.0"
+display_name = "B"
+description = "Second."
+axis = "security"
+max_severity = "high"
+calibration_namespace = "ns-b"
+
+[capability]
+mode = "pure"
+
+[prompts]
+primary = "prompt b"
+"#;
+        write_skill(bundled.path(), "a.toml", a);
+        write_skill(bundled.path(), "b.toml", b);
+        let result = load_skills(bundled.path(), user.path());
+        assert!(
+            result.is_err(),
+            "duplicate skill name in same dir must be a hard error, not a silent overwrite"
+        );
     }
 
     // ── Missing required field fails with actionable error ──
