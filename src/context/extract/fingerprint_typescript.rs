@@ -127,7 +127,9 @@ fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String
     let pk = parent.kind();
     let parent_kind = pk.as_ref();
     if parent_kind == "variable_declarator"
-        && let Some(name_node) = parent.children().find(|c| c.kind().as_ref() == "identifier")
+        && let Some(name_node) = parent
+            .children()
+            .find(|c| c.kind().as_ref() == "identifier")
     {
         return name_node.text().into_owned();
     }

@@ -1868,16 +1868,27 @@ mod tests {
     fn reasoning_effort_rejects_unknown() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "review", "/tmp/x.rs", "--reasoning-effort", "turbo",
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "turbo",
         ]);
-        assert!(r.is_err(), "unknown reasoning effort 'turbo' must be rejected");
+        assert!(
+            r.is_err(),
+            "unknown reasoning effort 'turbo' must be rejected"
+        );
     }
 
     #[test]
     fn reasoning_effort_rejects_case_mismatch() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "review", "/tmp/x.rs", "--reasoning-effort", "HIGH",
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "HIGH",
         ]);
         assert!(r.is_err(), "case-sensitive: 'HIGH' must be rejected");
     }
@@ -1886,7 +1897,11 @@ mod tests {
     fn reasoning_effort_accepts_high() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "review", "/tmp/x.rs", "--reasoning-effort", "high",
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "high",
         ]);
         assert!(r.is_ok(), "'high' is a valid reasoning effort");
     }
@@ -1895,7 +1910,11 @@ mod tests {
     fn reasoning_effort_accepts_none() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "review", "/tmp/x.rs", "--reasoning-effort", "none",
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "none",
         ]);
         assert!(r.is_ok(), "'none' is a valid reasoning effort");
     }
@@ -1904,9 +1923,8 @@ mod tests {
     fn reasoning_effort_accepts_all_known() {
         use clap::Parser;
         for val in &["none", "minimal", "low", "medium", "high", "xhigh"] {
-            let r = Args::try_parse_from([
-                "quorum", "review", "/tmp/x.rs", "--reasoning-effort", val,
-            ]);
+            let r =
+                Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--reasoning-effort", val]);
             assert!(r.is_ok(), "'{val}' must be accepted");
         }
     }
@@ -1935,7 +1953,14 @@ mod tests {
     fn context_add_kind_accepts_all_known() {
         use clap::Parser;
         for kind in &[
-            "rust", "typescript", "javascript", "python", "go", "terraform", "service", "docs",
+            "rust",
+            "typescript",
+            "javascript",
+            "python",
+            "go",
+            "terraform",
+            "service",
+            "docs",
         ] {
             let r = Args::try_parse_from([
                 "quorum", "context", "add", "--name", "src", "--kind", kind, "--path", "/tmp/x",
@@ -1949,18 +1974,14 @@ mod tests {
     #[test]
     fn context_query_source_rejects_path_traversal() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--source", "../etc",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", "../etc"]);
         assert!(r.is_err(), "--source '../etc' must be rejected");
     }
 
     #[test]
     fn context_query_source_rejects_empty() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--source", "",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", ""]);
         assert!(r.is_err(), "--source '' must be rejected");
     }
 
@@ -1968,9 +1989,7 @@ mod tests {
     fn context_query_source_rejects_overlong() {
         use clap::Parser;
         let long = "a".repeat(65);
-        let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--source", &long,
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", &long]);
         assert!(r.is_err(), "--source with 65 chars must be rejected");
     }
 
@@ -1978,7 +1997,12 @@ mod tests {
     fn context_query_source_accepts_valid() {
         use clap::Parser;
         let r = Args::try_parse_from([
-            "quorum", "context", "query", "hello", "--source", "my-source",
+            "quorum",
+            "context",
+            "query",
+            "hello",
+            "--source",
+            "my-source",
         ]);
         assert!(r.is_ok(), "'my-source' is a valid source name");
     }
@@ -2059,18 +2083,14 @@ mod tests {
     #[test]
     fn context_index_source_rejects_path_traversal() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "index", "--source", "../etc",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "index", "--source", "../etc"]);
         assert!(r.is_err(), "--source '../etc' on index must be rejected");
     }
 
     #[test]
     fn context_index_source_accepts_valid() {
         use clap::Parser;
-        let r = Args::try_parse_from([
-            "quorum", "context", "index", "--source", "my-source",
-        ]);
+        let r = Args::try_parse_from(["quorum", "context", "index", "--source", "my-source"]);
         assert!(r.is_ok(), "'my-source' is a valid source name for index");
     }
 }

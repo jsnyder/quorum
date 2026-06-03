@@ -545,14 +545,18 @@ class DataService {
     let fprinter = TypeScriptFingerprinter;
     let results = fprinter.fingerprint_all_functions(src);
 
-    let (_, helper_fp) = results.iter().find(|(name, _)| name == "helper")
+    let (_, helper_fp) = results
+        .iter()
+        .find(|(name, _)| name == "helper")
         .expect("'helper' must be fingerprinted");
     assert!(
         !helper_fp.signature.is_method,
         "nested arrow 'helper' inside a method body must NOT be classified as a method"
     );
 
-    let (_, process_fp) = results.iter().find(|(name, _)| name == "process")
+    let (_, process_fp) = results
+        .iter()
+        .find(|(name, _)| name == "process")
         .expect("'process' must be fingerprinted");
     assert!(
         process_fp.signature.is_method,
@@ -578,7 +582,9 @@ class Validator {
     let fprinter = TypeScriptFingerprinter;
     let results = fprinter.fingerprint_all_functions(src);
 
-    let (_, validate_fp) = results.iter().find(|(name, _)| name == "validate")
+    let (_, validate_fp) = results
+        .iter()
+        .find(|(name, _)| name == "validate")
         .expect("'validate' must be fingerprinted");
     assert!(
         validate_fp.signature.is_method,
