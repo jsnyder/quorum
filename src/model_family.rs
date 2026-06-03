@@ -152,8 +152,8 @@ pub struct AssembledPrompt {
     pub system_message: String,
     /// Content for the user message slot.
     pub user_message: String,
-    /// SHA-256 hex digest of (system_message || user_message), deterministic
-    /// for identical content across runs.
+    /// SHA-256 hex digest of the length-prefixed system and user messages,
+    /// deterministic for identical content across runs.
     pub prompt_sha256: String,
 }
 
@@ -191,8 +191,9 @@ pub fn assemble_prompt(
     }
 }
 
-/// Compute a deterministic SHA-256 hex digest over the concatenated system and
-/// user messages.
+/// Compute a deterministic SHA-256 hex digest over the system and user
+/// messages. Each field is length-prefixed (8-byte LE u64) to prevent
+/// pair-aliasing collisions where `("ab","cd") == ("a","bcd")`.
 fn compute_sha256(system: &str, user: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update((system.len() as u64).to_le_bytes());

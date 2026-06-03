@@ -251,7 +251,7 @@ fn is_valid_semver(s: &str) -> bool {
     }
     parts
         .iter()
-        .all(|p| !p.is_empty() && p.parse::<u64>().is_ok())
+        .all(|p| !p.is_empty() && p.parse::<u64>().is_ok() && (p == &"0" || !p.starts_with('0')))
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +358,16 @@ fn read_manifest_file(path: &Path) -> std::io::Result<String> {
     let mut content = String::new();
     file.take(MAX_MANIFEST_FILE_BYTES + 1)
         .read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_MANIFEST_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "skill manifest read {} bytes, exceeds cap {}",
+                content.len(),
+                MAX_MANIFEST_FILE_BYTES
+            ),
+        ));
+    }
     Ok(content)
 }
 
@@ -390,8 +400,17 @@ fn load_from_dir(
 
     let mut entries: Vec<PathBuf> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
-            .flatten()
-            .map(|e| e.path())
+            .filter_map(|entry| match entry {
+                Ok(e) => Some(e.path()),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %dir.display(),
+                        error = %e,
+                        "skill_manifest: failed to read directory entry; skipping"
+                    );
+                    None
+                }
+            })
             .filter(|p| p.extension().and_then(|e| e.to_str()).map(|e| e == "toml") == Some(true))
             .collect(),
         Err(e) => {
@@ -1114,6 +1133,9 @@ primary = "prompt"
         assert!(!is_valid_semver(""));
         assert!(!is_valid_semver("1..0"));
         assert!(!is_valid_semver(".1.0"));
+        assert!(!is_valid_semver("01.0.0"), "leading zeros rejected");
+        assert!(!is_valid_semver("1.00.0"), "leading zeros rejected");
+        assert!(!is_valid_semver("1.0.00"), "leading zeros rejected");
     }
 
     // ── Deterministic ordering ──

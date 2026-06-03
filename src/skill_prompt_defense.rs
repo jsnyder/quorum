@@ -108,7 +108,7 @@ static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
           # CSI: ESC [ , params 0x30-0x3F, intermediates 0x20-0x2F, final 0x40-0x7E (ECMA-48)
           \x1b \[ [\x30-\x3f]* [\x20-\x2f]* [\x40-\x7e]
         | \x1b \] [^\x07\x1b]* (?: \x07 | \x1b\\ )  # OSC sequences
-        | \x1b [[@A-Z\[\\\]^_]]               # two-byte escapes
+        | \x1b [\x40-\x5f]                    # two-byte Fe escapes (ECMA-48)
         ",
     )
     .expect("ANSI regex is valid")
@@ -153,12 +153,10 @@ pub fn normalize_nfkc(s: &str) -> String {
 // -- Stage 4: dangerous markdown autolinks ----------------------------------
 
 static MARKDOWN_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // [text](url) where url starts with javascript: or data: (case-insensitive).
-    // The URL portion uses a balanced-paren aware pattern: we allow one level of
-    // nested `(...)` inside the URL so that payloads like `javascript:alert(1)`
-    // don't cause a premature match termination.
-    Regex::new(r"(?i)\[([^\]]*)\]\((?:javascript|data):[^()]*(?:\([^()]*\)[^()]*)*\)")
-        .expect("markdown link regex")
+    // Phase 1: match `[text](javascript:...` or `[text](data:...` up to the
+    // scheme prefix. The actual closing `)` is found by `defang_markdown_autolinks`
+    // using paren-depth tracking so arbitrary nesting is handled correctly.
+    Regex::new(r"(?i)\[([^\]]*)\]\((?:javascript|data):").expect("markdown link regex")
 });
 
 // Angle-bracket autolinks `<javascript:...>` / `<data:...>` (case-insensitive).
@@ -172,9 +170,50 @@ static AUTOLINK_RE: LazyLock<Regex> =
 /// and neutralize angle-bracket autolinks `<javascript:...>` / `<data:...>` by
 /// stripping the brackets (leaving inert plain text).
 /// Safe links (`https:`, `http:`, etc.) pass through unchanged.
+///
+/// Uses paren-depth tracking to find the true closing `)` so payloads with
+/// arbitrary nesting (e.g. `javascript:a(b(c))`) are fully stripped.
 pub fn defang_markdown_autolinks(s: &str) -> String {
-    let stripped = MARKDOWN_LINK_RE.replace_all(s, "$1");
-    AUTOLINK_RE.replace_all(&stripped, "$1").into_owned()
+    let mut result = String::with_capacity(s.len());
+    let mut remaining = s;
+
+    while let Some(m) = MARKDOWN_LINK_RE.find(remaining) {
+        let cap = MARKDOWN_LINK_RE.captures(&remaining[m.start()..]).unwrap();
+        let link_text = cap.get(1).unwrap().as_str();
+
+        result.push_str(&remaining[..m.start()]);
+
+        let after_scheme = &remaining[m.end()..];
+        if let Some(close) = find_balanced_close_paren(after_scheme) {
+            result.push_str(link_text);
+            remaining = &after_scheme[close + 1..];
+        } else {
+            result.push_str(m.as_str());
+            remaining = &remaining[m.end()..];
+        }
+    }
+    result.push_str(remaining);
+
+    AUTOLINK_RE.replace_all(&result, "$1").into_owned()
+}
+
+/// Find the index of the closing `)` that balances the outer `(` from the
+/// markdown link syntax, handling arbitrary paren nesting within the URL.
+fn find_balanced_close_paren(s: &str) -> Option<usize> {
+    let mut depth: u32 = 1;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // -- Stage 5: MCP tool-use markers ------------------------------------------
@@ -419,6 +458,12 @@ mod tests {
     fn defang_markdown_autolinks_safe_unchanged() {
         let safe = "[safe](https://example.com)";
         assert_eq!(defang_markdown_autolinks(safe), safe);
+    }
+
+    #[test]
+    fn defang_markdown_autolinks_nested_parens() {
+        assert_eq!(defang_markdown_autolinks("[x](javascript:a(b(c)))"), "x");
+        assert_eq!(defang_markdown_autolinks("[x](javascript:a(b(c(d))))"), "x");
     }
 
     #[test]
