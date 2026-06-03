@@ -688,3 +688,51 @@ function buildMap(items: string[]): Map<string, number> {
         fp.signature.return_nesting
     );
 }
+
+#[test]
+fn named_function_expression_uses_binding_name() {
+    let src = r#"
+const handler = function internal(req: Request): Response {
+    const body = req.body;
+    const parsed = JSON.parse(body);
+    const validated = validate(parsed);
+    const processed = process(validated);
+    const serialized = JSON.stringify(processed);
+    const response = new Response(serialized);
+    console.log(response);
+    return response;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"handler"),
+        "should use binding name 'handler' not inner name 'internal'; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn type_nesting_union_wrapped_generic_is_two() {
+    let src = r#"
+async function fetchOrNull(url: string): Promise<Result<string> | null> {
+    const response = await fetch(url);
+    const data = await response.json();
+    const validated = validate(data);
+    const wrapped = wrapResult(validated);
+    const checked = checkResult(wrapped);
+    const result = finalizeResult(checked);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 2,
+        "Promise<Result<string> | null> should have nesting=2, got {}",
+        fp.signature.return_nesting
+    );
+}

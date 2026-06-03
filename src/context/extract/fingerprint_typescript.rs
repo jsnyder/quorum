@@ -50,14 +50,21 @@ impl TypeScriptFingerprinter {
             .collect();
         let mut results = Vec::new();
         for node in &func_nodes {
-            let mut name = node
-                .children()
-                .find(|c| {
-                    let k = c.kind();
-                    k.as_ref() == "identifier" || k.as_ref() == "property_identifier"
-                })
-                .map(|c| c.text().into_owned())
-                .unwrap_or_default();
+            let mut name = if node.kind().as_ref() == "function_expression" {
+                walk_up_to_variable_name(node)
+            } else {
+                String::new()
+            };
+            if name.is_empty() {
+                name = node
+                    .children()
+                    .find(|c| {
+                        let k = c.kind();
+                        k.as_ref() == "identifier" || k.as_ref() == "property_identifier"
+                    })
+                    .map(|c| c.text().into_owned())
+                    .unwrap_or_default();
+            }
             if name.is_empty() {
                 name = walk_up_to_variable_name(node);
             }
@@ -447,10 +454,12 @@ fn count_type_nesting_inner<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
         let kind = ck.as_ref();
         if kind == "type_arguments" {
             for arg in child.children() {
-                if arg.kind().as_ref() == "generic_type" {
-                    let inner = 1 + count_type_nesting_inner(&arg);
-                    max_depth = max_depth.max(inner);
-                }
+                let inner = if arg.kind().as_ref() == "generic_type" {
+                    1 + count_type_nesting_inner(&arg)
+                } else {
+                    count_type_nesting(&arg)
+                };
+                max_depth = max_depth.max(inner);
             }
         }
     }

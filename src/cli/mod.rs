@@ -164,6 +164,7 @@ const VALID_KINDS: &[&str] = &[
 /// Validate `--kind` for `quorum context add`.
 /// Accepts canonical names and aliases matching `SourceKind::parse_cli`.
 pub fn validate_kind(s: &str) -> Result<String, String> {
+    let s = s.trim();
     if VALID_KINDS.contains(&s) {
         Ok(s.to_string())
     } else {
