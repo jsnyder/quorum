@@ -156,7 +156,7 @@ static MARKDOWN_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Phase 1: match `[text](javascript:...` or `[text](data:...` up to the
     // scheme prefix. The actual closing `)` is found by `defang_markdown_autolinks`
     // using paren-depth tracking so arbitrary nesting is handled correctly.
-    Regex::new(r"(?i)\[([^\]]*)\]\((?:javascript|data):").expect("markdown link regex")
+    Regex::new(r"(?i)\[([^\]]*)\]\(<?(?:javascript|data):").expect("markdown link regex")
 });
 
 // Angle-bracket autolinks `<javascript:...>` / `<data:...>` (case-insensitive).
@@ -464,6 +464,12 @@ mod tests {
     fn defang_markdown_autolinks_nested_parens() {
         assert_eq!(defang_markdown_autolinks("[x](javascript:a(b(c)))"), "x");
         assert_eq!(defang_markdown_autolinks("[x](javascript:a(b(c(d))))"), "x");
+    }
+
+    #[test]
+    fn defang_markdown_autolinks_bracketed_destination() {
+        assert_eq!(defang_markdown_autolinks("[x](<javascript:alert(1)>)"), "x");
+        assert_eq!(defang_markdown_autolinks("[x](<data:text/html,evil>)"), "x");
     }
 
     #[test]
