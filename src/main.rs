@@ -2551,10 +2551,8 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
 
 /// CLI entry point for `quorum calibrate`.
 fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
-    if !(0.0..=1.0).contains(&opts.suppress_precision)
-        || !(0.0..=1.0).contains(&opts.boost_precision)
-    {
-        eprintln!("error: precision values must be between 0.0 and 1.0");
+    if let Err(e) = opts.validate() {
+        eprintln!("error: {e}");
         return 3;
     }
 

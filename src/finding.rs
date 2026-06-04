@@ -157,6 +157,14 @@ impl Finding {
         self.line_start >= 1 && self.line_start <= self.line_end
     }
 
+    pub fn normalize_line_range(&mut self) {
+        self.line_start = self.line_start.max(1);
+        self.line_end = self.line_end.max(1);
+        if self.line_start > self.line_end {
+            std::mem::swap(&mut self.line_start, &mut self.line_end);
+        }
+    }
+
     pub fn anchor_line(&self) -> u32 {
         self.cited_lines
             .map(|(start, _)| start)
@@ -1237,5 +1245,63 @@ mod tests {
         let f = FindingBuilder::new().build();
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("in_diff"));
+    }
+
+    // -- normalize_line_range --
+
+    #[test]
+    fn normalize_clamps_zero_start() {
+        let mut f = FindingBuilder::new().lines(0, 10).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 1);
+        assert_eq!(f.line_end, 10);
+    }
+
+    #[test]
+    fn normalize_swaps_inverted_range() {
+        let mut f = FindingBuilder::new().lines(10, 5).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 5);
+        assert_eq!(f.line_end, 10);
+    }
+
+    #[test]
+    fn normalize_clamps_and_swaps() {
+        let mut f = FindingBuilder::new().lines(0, 0).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 1);
+        assert_eq!(f.line_end, 1);
+    }
+
+    #[test]
+    fn normalize_noop_on_valid() {
+        let mut f = FindingBuilder::new().lines(5, 10).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 5);
+        assert_eq!(f.line_end, 10);
+    }
+
+    #[test]
+    fn normalize_single_line() {
+        let mut f = FindingBuilder::new().lines(7, 7).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 7);
+        assert_eq!(f.line_end, 7);
+    }
+
+    #[test]
+    fn normalize_clamps_zero_end_then_swaps() {
+        let mut f = FindingBuilder::new().lines(5, 0).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, 1);
+        assert_eq!(f.line_end, 5);
+    }
+
+    #[test]
+    fn normalize_max_u32() {
+        let mut f = FindingBuilder::new().lines(u32::MAX, u32::MAX).build();
+        f.normalize_line_range();
+        assert_eq!(f.line_start, u32::MAX);
+        assert_eq!(f.line_end, u32::MAX);
     }
 }
