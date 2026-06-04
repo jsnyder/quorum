@@ -731,6 +731,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: Some(true),
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let result = render_inline_comment(&f, "0.27.0");
         assert!(result.contains("**!** SQL injection"));
@@ -768,6 +774,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let result = render_body_finding(&f, "0.27.0");
         assert!(result.contains("**~** Token not rotated"));
@@ -810,6 +822,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: None,
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
         let body = render_review_body("<!-- quorum-review-marker:v1 -->", 2, &[f], "0.27.0");
         assert!(body.contains("## Quorum Review"));
@@ -848,6 +866,12 @@ mod tests {
                 judge_confidence: None,
                 precision_tier: None,
                 in_diff: None,
+                originating_skill: None,
+                skill_version: None,
+                manifest_sha256: None,
+                prompt_family: None,
+                skill_run_id: None,
+                clamped_from_severity: None,
             })
             .collect();
         let body = render_review_body("<!-- quorum-review-marker:v1 -->", 0, &findings, "0.27.0");
@@ -972,6 +996,12 @@ mod tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: Some(in_diff),
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         }
     }
 
@@ -1183,6 +1213,12 @@ mod integration_tests {
             judge_confidence: None,
             precision_tier: None,
             in_diff: Some(true),
+            originating_skill: None,
+            skill_version: None,
+            manifest_sha256: None,
+            prompt_family: None,
+            skill_run_id: None,
+            clamped_from_severity: None,
         };
 
         let client = reqwest::Client::new();

@@ -1532,6 +1532,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -1634,6 +1637,9 @@ mod tests {
                 finding_id: None,
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             },
             similarity,
         }
@@ -1659,6 +1665,9 @@ mod tests {
                 finding_id: None,
                 rule_id: None,
                 in_diff: None,
+                skill_name: None,
+                skill_version: None,
+                manifest_sha256: None,
             },
             similarity,
         }
@@ -2901,6 +2910,9 @@ mod tests {
                     finding_id: None,
                     rule_id: None,
                     in_diff: None,
+                    skill_name: None,
+                    skill_version: None,
+                    manifest_sha256: None,
                 },
                 similarity: 0.90,
             },
@@ -2918,6 +2930,9 @@ mod tests {
                     finding_id: None,
                     rule_id: None,
                     in_diff: None,
+                    skill_name: None,
+                    skill_version: None,
+                    manifest_sha256: None,
                 },
                 similarity: 0.90,
             },

@@ -68,6 +68,9 @@ fn human_fb(title: &str, category: &str, verdict: Verdict) -> FeedbackEntry {
         finding_id: None,
         rule_id: None,
         in_diff: None,
+        skill_name: None,
+        skill_version: None,
+        manifest_sha256: None,
     }
 }
 

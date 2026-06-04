@@ -46,6 +46,12 @@ fn lib_exports_are_reachable_from_integration_tests() {
         judge_confidence: None,
         precision_tier: None,
         in_diff: None,
+        originating_skill: None,
+        skill_version: None,
+        manifest_sha256: None,
+        prompt_family: None,
+        skill_run_id: None,
+        clamped_from_severity: None,
     };
 
     // calibrate(...) must be callable with no precedents — exercises the

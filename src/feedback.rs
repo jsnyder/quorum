@@ -122,6 +122,16 @@ pub struct FeedbackEntry {
     /// with pre-#310 entries and when no diff context is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_diff: Option<bool>,
+
+    /// Skill that produced the finding this verdict refers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_name: Option<String>,
+    /// Version of the skill manifest at review time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_version: Option<String>,
+    /// SHA-256 of the skill manifest at review time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_sha256: Option<String>,
 }
 
 /// Input for recording a verdict from an external review agent.
@@ -821,6 +831,9 @@ impl FeedbackStore {
             finding_id: None,
             rule_id: None,
             in_diff: input.in_diff,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         self.record(&entry)
     }
@@ -849,6 +862,9 @@ impl FeedbackStore {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         self.record(&entry)
     }
@@ -947,6 +963,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -1099,6 +1118,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         }
     }
 
@@ -1175,6 +1197,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         assert_eq!(entry.provenance, Provenance::Human);
     }
@@ -1350,6 +1375,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         store.record(&entry).unwrap();
         let all = store.load_all().unwrap();
@@ -2374,6 +2402,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(
@@ -2401,6 +2432,9 @@ mod tests {
             finding_id: Some("01HXYZ1234567890ABCDEFGHJK".into()),
             rule_id: Some("python/eval-non-literal".into()),
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         let back: FeedbackEntry = serde_json::from_str(&json).expect("deserialize");
@@ -2428,6 +2462,9 @@ mod tests {
             finding_id: None,
             rule_id: Some("python/md5-usage".into()),
             in_diff: None,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         assert!(
@@ -2491,6 +2528,9 @@ mod tests {
             finding_id: None,
             rule_id: None,
             in_diff: Some(true),
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -2517,6 +2557,58 @@ mod tests {
             !resaved.contains("\"in_diff\""),
             "None in_diff must be omitted from JSON, got: {resaved}"
         );
+    }
+
+    // -- Per-skill identity fields (#405) --
+
+    #[test]
+    fn legacy_feedback_entry_without_skill_fields_deserializes_cleanly() {
+        let legacy = r#"{"file_path":"x.rs","finding_title":"t","finding_category":"security","verdict":"tp","reason":"r","model":null,"timestamp":"2026-01-01T00:00:00Z"}"#;
+        let entry: FeedbackEntry = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(entry.skill_name, None);
+        assert_eq!(entry.skill_version, None);
+        assert_eq!(entry.manifest_sha256, None);
+    }
+
+    #[test]
+    fn feedback_entry_with_skill_identity_roundtrips() {
+        let entry = FeedbackEntry {
+            file_path: "src/main.rs".into(),
+            finding_title: "Unsafe block".into(),
+            finding_category: "security".into(),
+            verdict: Verdict::Tp,
+            reason: "confirmed".into(),
+            model: Some("gpt-5.4".into()),
+            timestamp: Utc::now(),
+            provenance: Provenance::Human,
+            fp_kind: None,
+            finding_id: None,
+            rule_id: None,
+            in_diff: None,
+            skill_name: Some("security-reviewer".into()),
+            skill_version: Some("1.0.0".into()),
+            manifest_sha256: Some("abc123".into()),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"skill_name\":\"security-reviewer\""));
+        assert!(json.contains("\"skill_version\":\"1.0.0\""));
+        assert!(json.contains("\"manifest_sha256\":\"abc123\""));
+
+        let back: FeedbackEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.skill_name.as_deref(), Some("security-reviewer"));
+        assert_eq!(back.skill_version.as_deref(), Some("1.0.0"));
+        assert_eq!(back.manifest_sha256.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn feedback_skill_fields_omitted_when_none() {
+        let entry = make_entry(Verdict::Tp, None);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("skill_name"));
+        assert!(!json.contains("skill_version"));
+        // manifest_sha256 appears as a substring in other fields; check exact key
+        assert!(!json.contains("\"manifest_sha256\""));
     }
 }
 

@@ -82,6 +82,9 @@ pub mod patterns;
 // Prompt sanitization helpers (sandbox tags, fence picking).
 pub mod prompt_sanitize;
 
+// Prompt injection defenses (delimiter assembly + output sanitizer).
+pub mod skill_prompt_defense;
+
 // AST grounding: identifier extraction from LLM findings.
 pub mod grounding;
 
@@ -103,8 +106,14 @@ pub mod calibrate;
 // Review mode enum: Code (default), Plan, Docs.
 pub mod review_mode;
 
+// Model-family detection and per-family prompt variant selection.
+pub mod model_family;
+
 // Prose-specific prompt templates for Plan and Docs review modes.
 pub mod prose_prompts;
 
 // SQLite-backed persistent storage (reviews + telemetry).
 pub mod storage;
+
+// Skill manifest schema and two-tier loader (#404).
+pub mod skill_manifest;

@@ -245,6 +245,9 @@ impl QuorumHandler {
             finding_id: None,
             rule_id: None,
             in_diff: params.in_diff,
+            skill_name: None,
+            skill_version: None,
+            manifest_sha256: None,
         };
 
         self.feedback_store

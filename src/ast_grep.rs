@@ -368,6 +368,12 @@ pub fn scan_file(
                     judge_confidence: None,
                     precision_tier: Some(meta.precision.clone()),
                     in_diff: None,
+                    originating_skill: None,
+                    skill_version: None,
+                    manifest_sha256: None,
+                    prompt_family: None,
+                    skill_run_id: None,
+                    clamped_from_severity: None,
                 });
             }
         }

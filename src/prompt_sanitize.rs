@@ -19,6 +19,8 @@ pub const SANDBOX_TAGS: &[&str] = &[
     "retrieved_reference",
     "untrusted_code",
     "tool_output",
+    "skill_instructions",
+    "code_to_review",
 ];
 
 /// Replace each closing tag for a known sandbox tag with a defanged form
