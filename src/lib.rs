@@ -117,3 +117,6 @@ pub mod storage;
 
 // Skill manifest schema and two-tier loader (#404).
 pub mod skill_manifest;
+
+pub mod skill_audit;
+pub mod skill_output;
