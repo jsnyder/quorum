@@ -138,10 +138,10 @@ const RAW_SNIPPET_MAX_LEN: usize = 200;
 /// Truncate a string to at most `RAW_SNIPPET_MAX_LEN` chars, appending
 /// "..." if truncated.
 fn snippet(raw: &str) -> String {
-    if raw.len() <= RAW_SNIPPET_MAX_LEN {
+    let char_count = raw.chars().count();
+    if char_count <= RAW_SNIPPET_MAX_LEN {
         raw.to_owned()
     } else {
-        // Truncate at a char boundary.
         let end = raw
             .char_indices()
             .nth(RAW_SNIPPET_MAX_LEN)

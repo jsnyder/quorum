@@ -485,7 +485,8 @@ impl SkillsLock {
         }
     }
 
-    /// Save the lock file to disk. Creates parent directories if needed.
+    /// Save the lock file to disk atomically (write-to-temp, then rename).
+    /// Creates parent directories if needed.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -497,8 +498,20 @@ impl SkillsLock {
         }
         let content =
             toml::to_string_pretty(self).context("Failed to serialize skills lock to TOML")?;
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write skills lock file: {}", path.display()))?;
+
+        let tmp_path = path.with_extension("toml.tmp");
+        std::fs::write(&tmp_path, &content).with_context(|| {
+            format!(
+                "Failed to write temporary lock file: {}",
+                tmp_path.display()
+            )
+        })?;
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "Failed to rename temporary lock file to: {}",
+                path.display()
+            )
+        })?;
         Ok(())
     }
 
