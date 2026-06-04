@@ -33,7 +33,7 @@ fn parallel_1_sequential() {
 }
 
 #[test]
-fn parallel_0_unlimited() {
+fn parallel_0_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.rs");
     std::fs::write(&path, "fn main() {}\n").unwrap();
@@ -45,7 +45,8 @@ fn parallel_0_unlimited() {
         .arg("0")
         .arg(&path)
         .assert()
-        .success();
+        .failure()
+        .code(2);
 }
 
 #[test]

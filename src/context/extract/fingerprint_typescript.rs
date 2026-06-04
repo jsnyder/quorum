@@ -18,6 +18,7 @@ const FUNCTION_KINDS: &[&str] = &[
     "method_definition",
     "arrow_function",
     "function",
+    "function_expression",
 ];
 
 /// Stateless fingerprinter for TypeScript source code.
@@ -49,14 +50,24 @@ impl TypeScriptFingerprinter {
             .collect();
         let mut results = Vec::new();
         for node in &func_nodes {
-            let name = node
-                .children()
-                .find(|c| {
-                    let k = c.kind();
-                    k.as_ref() == "identifier" || k.as_ref() == "property_identifier"
-                })
-                .map(|c| c.text().into_owned())
-                .unwrap_or_default();
+            let mut name = if node.kind().as_ref() == "function_expression" {
+                walk_up_to_variable_name(node)
+            } else {
+                String::new()
+            };
+            if name.is_empty() {
+                name = node
+                    .children()
+                    .find(|c| {
+                        let k = c.kind();
+                        k.as_ref() == "identifier" || k.as_ref() == "property_identifier"
+                    })
+                    .map(|c| c.text().into_owned())
+                    .unwrap_or_default();
+            }
+            if name.is_empty() {
+                name = walk_up_to_variable_name(node);
+            }
             if name.is_empty() {
                 continue;
             }
@@ -112,6 +123,33 @@ fn find_first_function<'a, D: Doc>(
         .find(|n| FUNCTION_KINDS.contains(&n.kind().as_ref()))
 }
 
+/// When an arrow_function or function expression has no name child, check if
+/// it's assigned to a variable via `variable_declarator` or a class field via
+/// `public_field_definition` / `field_definition`, and extract the name.
+fn walk_up_to_variable_name<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> String {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let pk = parent.kind();
+    let parent_kind = pk.as_ref();
+    if parent_kind == "variable_declarator"
+        && let Some(name_node) = parent
+            .children()
+            .find(|c| c.kind().as_ref() == "identifier")
+    {
+        return name_node.text().into_owned();
+    }
+    if (parent_kind == "public_field_definition" || parent_kind == "field_definition")
+        && let Some(name_node) = parent
+            .children()
+            .find(|c| c.kind().as_ref() == "property_identifier")
+    {
+        return name_node.text().into_owned();
+    }
+    String::new()
+}
+
 /// Extract signature shape from a function/method node.
 fn extract_signature<'a, D: Doc>(
     node: &'a ast_grep_core::Node<'a, D>,
@@ -123,7 +161,7 @@ fn extract_signature<'a, D: Doc>(
     let kind_str = kind.as_ref();
 
     // Detect if this is a method inside a class.
-    let in_class = is_inside_class(node);
+    let in_class = is_direct_class_member(node);
 
     // Find the formal_parameters node.
     if let Some(params) = node
@@ -169,13 +207,27 @@ fn extract_signature<'a, D: Doc>(
     shape
 }
 
-/// Check if a node is inside a class body.
-fn is_inside_class<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> bool {
-    node.ancestors().any(|a| {
-        let ak = a.kind();
-        let kind = ak.as_ref();
-        kind == "class_declaration" || kind == "class"
-    })
+/// Check if a function node is a direct member of a class body.
+///
+/// For `method_definition`: direct parent is `class_body`.
+/// For `arrow_function`/`function` as class fields: parent chain is
+/// `arrow_function -> public_field_definition -> class_body`.
+fn is_direct_class_member<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> bool {
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let pk = parent.kind();
+    let parent_kind = pk.as_ref();
+    if parent_kind == "class_body" {
+        return true;
+    }
+    if (parent_kind == "public_field_definition" || parent_kind == "field_definition")
+        && let Some(grandparent) = parent.parent()
+    {
+        return grandparent.kind().as_ref() == "class_body";
+    }
+    false
 }
 
 /// Check if a method_definition has a `static` modifier.
@@ -376,22 +428,39 @@ fn extract_return_type<'a, D: Doc>(
 }
 
 /// Count the nesting depth of generic type arguments within a type annotation.
+///
+/// `Promise<T>` => 1, `Promise<Result<T>>` => 2, `string` => 0.
 fn count_type_nesting<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
     let mut max_depth: u8 = 0;
     for child in node.children() {
         let ck = child.kind();
         let kind = ck.as_ref();
-        if kind == "type_arguments" {
-            let inner_max = child
-                .children()
-                .filter(|c| c.kind().as_ref() == "generic_type")
-                .map(|c| 1 + count_type_nesting(&c))
-                .max()
-                .unwrap_or(1);
-            max_depth = max_depth.max(inner_max);
-        } else if kind == "generic_type" {
+        if kind == "generic_type" {
+            let inner = 1 + count_type_nesting_inner(&child);
+            max_depth = max_depth.max(inner);
+        } else {
             let inner = count_type_nesting(&child);
             max_depth = max_depth.max(inner);
+        }
+    }
+    max_depth
+}
+
+/// Recursive helper: count nesting depth within a `generic_type` node.
+fn count_type_nesting_inner<D: Doc>(node: &ast_grep_core::Node<'_, D>) -> u8 {
+    let mut max_depth: u8 = 0;
+    for child in node.children() {
+        let ck = child.kind();
+        let kind = ck.as_ref();
+        if kind == "type_arguments" {
+            for arg in child.children() {
+                let inner = if arg.kind().as_ref() == "generic_type" {
+                    1 + count_type_nesting_inner(&arg)
+                } else {
+                    count_type_nesting(&arg)
+                };
+                max_depth = max_depth.max(inner);
+            }
         }
     }
     max_depth

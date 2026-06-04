@@ -420,3 +420,319 @@ class Config {
         "static method does not have this"
     );
 }
+
+#[test]
+fn arrow_function_variable_name_extracted() {
+    let src = r#"
+const processData = (input: string): string => {
+    const trimmed = input.trim();
+    const lower = trimmed.toLowerCase();
+    const replaced = lower.replace("-", "_");
+    const padded = replaced.padStart(10, "0");
+    const sliced = padded.slice(0, 8);
+    const result = sliced + "_done";
+    console.log(result);
+    return result;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"processData"),
+        "should extract 'processData' from variable declarator; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn async_arrow_variable_name_extracted() {
+    let src = r#"
+const fetchItems = async (url: string): Promise<string[]> => {
+    const response = await fetch(url);
+    const data = await response.json();
+    const items = data.items;
+    const filtered = items.filter((x: string) => x.length > 0);
+    const sorted = filtered.sort();
+    const sliced = sorted.slice(0, 10);
+    console.log(sliced);
+    return sliced;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"fetchItems"),
+        "should extract 'fetchItems' from async arrow; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn function_expression_variable_name_extracted() {
+    let src = r#"
+let compute = function(a: number, b: number): number {
+    const sum = a + b;
+    const diff = a - b;
+    const product = sum * diff;
+    const adjusted = product + 1;
+    const clamped = Math.max(0, adjusted);
+    const result = Math.min(100, clamped);
+    console.log(result);
+    return result;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"compute"),
+        "should extract 'compute' from function expression; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn export_const_arrow_name_extracted() {
+    let src = r#"
+export const handler = (req: Request): Response => {
+    const body = req.body;
+    const parsed = JSON.parse(body);
+    const validated = validate(parsed);
+    const processed = process(validated);
+    const serialized = JSON.stringify(processed);
+    const response = new Response(serialized);
+    console.log(response);
+    return response;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"handler"),
+        "should extract 'handler' from export const arrow; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn nested_arrow_inside_method_not_classified_as_method() {
+    let src = r#"
+class DataService {
+    process(items: string[]): string[] {
+        const result: string[] = [];
+        const helper = (item: string): string => {
+            const trimmed = item.trim();
+            const upper = trimmed.toUpperCase();
+            const prefixed = "PRE_" + upper;
+            const suffixed = prefixed + "_SUF";
+            const final_val = suffixed.slice(0, 20);
+            console.log(final_val);
+            return final_val;
+        };
+        for (const item of items) {
+            result.push(helper(item));
+        }
+        const joined = result.join(",");
+        const wrapped = "[" + joined + "]";
+        console.log(wrapped);
+        return result;
+    }
+}
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+
+    let (_, helper_fp) = results
+        .iter()
+        .find(|(name, _)| name == "helper")
+        .expect("'helper' must be fingerprinted");
+    assert!(
+        !helper_fp.signature.is_method,
+        "nested arrow 'helper' inside a method body must NOT be classified as a method"
+    );
+
+    let (_, process_fp) = results
+        .iter()
+        .find(|(name, _)| name == "process")
+        .expect("'process' must be fingerprinted");
+    assert!(
+        process_fp.signature.is_method,
+        "'process' is a direct class method and must be is_method=true"
+    );
+}
+
+#[test]
+fn class_field_arrow_is_method() {
+    let src = r#"
+class Validator {
+    validate = (input: string): boolean => {
+        const trimmed = input.trim();
+        const hasLength = trimmed.length > 0;
+        const hasAlpha = /[a-z]/.test(trimmed);
+        const hasNum = /[0-9]/.test(trimmed);
+        const isValid = hasLength && hasAlpha && hasNum;
+        const logged = console.log(isValid);
+        return isValid;
+    };
+}
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+
+    let (_, validate_fp) = results
+        .iter()
+        .find(|(name, _)| name == "validate")
+        .expect("'validate' must be fingerprinted");
+    assert!(
+        validate_fp.signature.is_method,
+        "class field arrow 'validate' should be classified as a method"
+    );
+}
+
+#[test]
+fn type_nesting_promise_is_one() {
+    let src = r#"
+async function fetchData(url: string): Promise<string> {
+    const response = await fetch(url);
+    const text = await response.text();
+    const trimmed = text.trim();
+    const lower = trimmed.toLowerCase();
+    const replaced = lower.replace("-", "_");
+    const result = replaced.slice(0, 100);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 1,
+        "Promise<string> should have nesting=1, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_nested_promise_is_two() {
+    let src = r#"
+async function fetchResult(url: string): Promise<Result<string>> {
+    const response = await fetch(url);
+    const data = await response.json();
+    const validated = validate(data);
+    const wrapped = wrapResult(validated);
+    const checked = checkResult(wrapped);
+    const result = finalizeResult(checked);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 2,
+        "Promise<Result<string>> should have nesting=2, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_plain_string_is_zero() {
+    let src = r#"
+function getName(id: number): string {
+    const raw = lookup(id);
+    const trimmed = raw.trim();
+    const validated = validateName(trimmed);
+    const normalized = normalizeName(validated);
+    const formatted = formatName(normalized);
+    const result = finalizeName(formatted);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 0,
+        "plain string return should have nesting=0, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn type_nesting_map_is_one() {
+    let src = r#"
+function buildMap(items: string[]): Map<string, number> {
+    const result = new Map<string, number>();
+    for (const item of items) {
+        const len = item.length;
+        const upper = item.toUpperCase();
+        const key = upper.slice(0, 5);
+        result.set(key, len);
+        console.log(key, len);
+    }
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 1,
+        "Map<string, number> should have nesting=1, got {}",
+        fp.signature.return_nesting
+    );
+}
+
+#[test]
+fn named_function_expression_uses_binding_name() {
+    let src = r#"
+const handler = function internal(req: Request): Response {
+    const body = req.body;
+    const parsed = JSON.parse(body);
+    const validated = validate(parsed);
+    const processed = process(validated);
+    const serialized = JSON.stringify(processed);
+    const response = new Response(serialized);
+    console.log(response);
+    return response;
+};
+"#;
+    let fprinter = TypeScriptFingerprinter;
+    let results = fprinter.fingerprint_all_functions(src);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.contains(&"handler"),
+        "should use binding name 'handler' not inner name 'internal'; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn type_nesting_union_wrapped_generic_is_two() {
+    let src = r#"
+async function fetchOrNull(url: string): Promise<Result<string> | null> {
+    const response = await fetch(url);
+    const data = await response.json();
+    const validated = validate(data);
+    const wrapped = wrapResult(validated);
+    const checked = checkResult(wrapped);
+    const result = finalizeResult(checked);
+    console.log(result);
+    return result;
+}
+"#;
+    let fp = TypeScriptFingerprinter
+        .fingerprint_source(src)
+        .expect("should fingerprint");
+    assert_eq!(
+        fp.signature.return_nesting, 2,
+        "Promise<Result<string> | null> should have nesting=2, got {}",
+        fp.signature.return_nesting
+    );
+}

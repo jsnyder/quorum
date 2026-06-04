@@ -136,6 +136,60 @@ pub fn validate_k(s: &str) -> Result<usize, String> {
     Ok(n)
 }
 
+/// Validate `--parallel` for `quorum review`. Range: 1..=64.
+pub fn validate_parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e| format!("--parallel must be a positive integer: {e}"))?;
+    if !(1..=64).contains(&n) {
+        return Err(format!("--parallel must be in 1..=64 (got {n})"));
+    }
+    Ok(n)
+}
+
+const VALID_KINDS: &[&str] = &[
+    "rust",
+    "rs",
+    "typescript",
+    "ts",
+    "javascript",
+    "js",
+    "python",
+    "py",
+    "go",
+    "terraform",
+    "tf",
+    "service",
+    "docs",
+];
+
+/// Validate `--kind` for `quorum context add`.
+/// Accepts canonical names and aliases matching `SourceKind::parse_cli`.
+pub fn validate_kind(s: &str) -> Result<String, String> {
+    let s = s.trim();
+    if VALID_KINDS.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "--kind must be one of: rust, typescript, javascript, python, go, terraform, service, docs (or aliases: rs, ts, js, py, tf) (got '{s}')",
+        ))
+    }
+}
+
+/// Validate `--reasoning-effort` for `quorum review`.
+/// Accepts the OpenAI-compatible set: none, minimal, low, medium, high, xhigh.
+pub fn validate_reasoning_effort(s: &str) -> Result<String, String> {
+    const VALID: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
+    if VALID.contains(&s) {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "--reasoning-effort must be one of: {} (got '{s}')",
+            VALID.join(", ")
+        ))
+    }
+}
+
 #[derive(Parser)]
 pub struct ContextAddOpts {
     /// Short unique name for the source (used as a directory key).
@@ -144,7 +198,7 @@ pub struct ContextAddOpts {
     pub name: String,
 
     /// Source kind: rust, typescript, javascript, python, go, terraform, service, docs.
-    #[arg(long)]
+    #[arg(long, value_parser = validate_kind)]
     pub kind: String,
 
     /// Local filesystem path to the source. Mutually exclusive with --git.
@@ -184,7 +238,7 @@ pub struct ContextListOpts {
 #[derive(Parser)]
 pub struct ContextIndexOpts {
     /// Index a single named source. Mutually exclusive with --all.
-    #[arg(long, conflicts_with = "all")]
+    #[arg(long, conflicts_with = "all", value_parser = validate_source_name)]
     pub source: Option<String>,
 
     /// Index every registered source.
@@ -202,7 +256,7 @@ pub struct ContextQueryOpts {
     pub text: String,
 
     /// Restrict results to a single source.
-    #[arg(long)]
+    #[arg(long, value_parser = validate_source_name)]
     pub source: Option<String>,
 
     /// Return up to this many chunks. Range: 1..=100.
@@ -293,6 +347,43 @@ pub struct CalibrateOpts {
     /// Show per-feature univariate AP diagnostics
     #[arg(long)]
     pub feature_importance: bool,
+}
+
+impl Default for CalibrateOpts {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            suppress_precision: 0.95,
+            boost_precision: 0.85,
+            trace_version: None,
+            clean_only: false,
+            trace_repo: None,
+            trace_commit: None,
+            trace_run_id: None,
+            disable_fuzzy: false,
+            backfill_paths: false,
+            learn_weights: false,
+            feature_importance: false,
+        }
+    }
+}
+
+impl CalibrateOpts {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.suppress_precision) {
+            anyhow::bail!(
+                "--suppress-precision must be in 0.0..=1.0 (got {})",
+                self.suppress_precision
+            );
+        }
+        if !(0.0..=1.0).contains(&self.boost_precision) {
+            anyhow::bail!(
+                "--boost-precision must be in 0.0..=1.0 (got {})",
+                self.boost_precision
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Parser)]
@@ -453,7 +544,7 @@ pub struct ReviewOpts {
     pub ensemble: bool,
 
     /// Reasoning effort: none, minimal, low, medium, high, xhigh
-    #[arg(long)]
+    #[arg(long, value_parser = validate_reasoning_effort)]
     pub reasoning_effort: Option<String>,
 
     /// Disable color output
@@ -501,8 +592,8 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub live_registry: bool,
 
-    /// Max concurrent LLM calls (default: 4, 0 = unlimited, 1 = sequential)
-    #[arg(long, default_value = "4")]
+    /// Max concurrent LLM calls (default: 4, range: 1..=64)
+    #[arg(long, default_value = "4", value_parser = validate_parallel)]
     pub parallel: usize,
 
     /// Enable structured tracing to ~/.quorum/trace.jsonl (also: QUORUM_TRACE=1)
@@ -1766,5 +1857,277 @@ mod tests {
     fn parse_provenance_rejects_unknown() {
         assert!(parse_provenance("external").is_err());
         assert!(parse_provenance("auto_calibrate").is_err());
+    }
+
+    // --- Issue #150: --parallel rejects 0 and caps at 64 ----------------------
+
+    #[test]
+    fn parallel_rejects_zero() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "0"]);
+        assert!(r.is_err(), "--parallel 0 must be rejected");
+    }
+
+    #[test]
+    fn parallel_rejects_above_64() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "65"]);
+        assert!(r.is_err(), "--parallel 65 must be rejected (above 64 cap)");
+    }
+
+    #[test]
+    fn parallel_accepts_one() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "1"]);
+        assert!(r.is_ok(), "--parallel 1 must parse (lower bound)");
+    }
+
+    #[test]
+    fn parallel_accepts_64() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--parallel", "64"]);
+        assert!(r.is_ok(), "--parallel 64 must parse (upper bound)");
+    }
+
+    #[test]
+    fn parallel_default_is_4() {
+        use clap::Parser;
+        let args = Args::parse_from(["quorum", "review", "/tmp/x.rs"]);
+        match args.command {
+            Command::Review(opts) => assert_eq!(opts.parallel, 4),
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    // --- Issue #234: --reasoning-effort constrained to known values -----------
+
+    #[test]
+    fn reasoning_effort_rejects_unknown() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "turbo",
+        ]);
+        assert!(
+            r.is_err(),
+            "unknown reasoning effort 'turbo' must be rejected"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_case_mismatch() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "HIGH",
+        ]);
+        assert!(r.is_err(), "case-sensitive: 'HIGH' must be rejected");
+    }
+
+    #[test]
+    fn reasoning_effort_accepts_high() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "high",
+        ]);
+        assert!(r.is_ok(), "'high' is a valid reasoning effort");
+    }
+
+    #[test]
+    fn reasoning_effort_accepts_none() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum",
+            "review",
+            "/tmp/x.rs",
+            "--reasoning-effort",
+            "none",
+        ]);
+        assert!(r.is_ok(), "'none' is a valid reasoning effort");
+    }
+
+    #[test]
+    fn reasoning_effort_accepts_all_known() {
+        use clap::Parser;
+        for val in &["none", "minimal", "low", "medium", "high", "xhigh"] {
+            let r =
+                Args::try_parse_from(["quorum", "review", "/tmp/x.rs", "--reasoning-effort", val]);
+            assert!(r.is_ok(), "'{val}' must be accepted");
+        }
+    }
+
+    // --- Issue #149: --kind constrained to known source kinds -----------------
+
+    #[test]
+    fn context_add_kind_rejects_unknown() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add", "--name", "src", "--kind", "haskell", "--path", "/tmp/x",
+        ]);
+        assert!(r.is_err(), "unknown kind 'haskell' must be rejected");
+    }
+
+    #[test]
+    fn context_add_kind_accepts_rust() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum", "context", "add", "--name", "src", "--kind", "rust", "--path", "/tmp/x",
+        ]);
+        assert!(r.is_ok(), "'rust' is a valid kind");
+    }
+
+    #[test]
+    fn context_add_kind_accepts_all_known() {
+        use clap::Parser;
+        for kind in &[
+            "rust",
+            "typescript",
+            "javascript",
+            "python",
+            "go",
+            "terraform",
+            "service",
+            "docs",
+        ] {
+            let r = Args::try_parse_from([
+                "quorum", "context", "add", "--name", "src", "--kind", kind, "--path", "/tmp/x",
+            ]);
+            assert!(r.is_ok(), "kind '{kind}' must be accepted");
+        }
+    }
+
+    // --- Issue #369: context query --source validated like --name -------------
+
+    #[test]
+    fn context_query_source_rejects_path_traversal() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", "../etc"]);
+        assert!(r.is_err(), "--source '../etc' must be rejected");
+    }
+
+    #[test]
+    fn context_query_source_rejects_empty() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", ""]);
+        assert!(r.is_err(), "--source '' must be rejected");
+    }
+
+    #[test]
+    fn context_query_source_rejects_overlong() {
+        use clap::Parser;
+        let long = "a".repeat(65);
+        let r = Args::try_parse_from(["quorum", "context", "query", "hello", "--source", &long]);
+        assert!(r.is_err(), "--source with 65 chars must be rejected");
+    }
+
+    #[test]
+    fn context_query_source_accepts_valid() {
+        use clap::Parser;
+        let r = Args::try_parse_from([
+            "quorum",
+            "context",
+            "query",
+            "hello",
+            "--source",
+            "my-source",
+        ]);
+        assert!(r.is_ok(), "'my-source' is a valid source name");
+    }
+
+    // --- Issue #368: CalibrateOpts precision range validation -----------------
+
+    #[test]
+    fn calibrate_opts_validate_rejects_negative_suppress() {
+        let opts = CalibrateOpts {
+            suppress_precision: -0.1,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_err());
+    }
+
+    #[test]
+    fn calibrate_opts_validate_rejects_above_one_boost() {
+        let opts = CalibrateOpts {
+            boost_precision: 1.1,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_err());
+    }
+
+    #[test]
+    fn calibrate_opts_validate_rejects_nan() {
+        let opts = CalibrateOpts {
+            suppress_precision: f64::NAN,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_err(), "NaN must be rejected");
+    }
+
+    #[test]
+    fn calibrate_opts_validate_rejects_infinity() {
+        let opts = CalibrateOpts {
+            boost_precision: f64::INFINITY,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_err(), "infinity must be rejected");
+    }
+
+    #[test]
+    fn calibrate_opts_validate_accepts_valid() {
+        let opts = CalibrateOpts {
+            suppress_precision: 0.95,
+            boost_precision: 0.85,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_ok());
+    }
+
+    #[test]
+    fn calibrate_opts_validate_accepts_boundary() {
+        let opts = CalibrateOpts {
+            suppress_precision: 0.0,
+            boost_precision: 1.0,
+            ..Default::default()
+        };
+        assert!(opts.validate().is_ok());
+    }
+
+    // --- Issue #149 addendum: kind aliases match SourceKind::parse_cli --------
+
+    #[test]
+    fn context_add_kind_accepts_aliases() {
+        use clap::Parser;
+        for alias in &["rs", "ts", "js", "py", "tf"] {
+            let r = Args::try_parse_from([
+                "quorum", "context", "add", "--name", "src", "--kind", alias, "--path", "/tmp/x",
+            ]);
+            assert!(r.is_ok(), "alias '{alias}' must be accepted by --kind");
+        }
+    }
+
+    // --- Issue #369 addendum: context index --source also validated -----------
+
+    #[test]
+    fn context_index_source_rejects_path_traversal() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "context", "index", "--source", "../etc"]);
+        assert!(r.is_err(), "--source '../etc' on index must be rejected");
+    }
+
+    #[test]
+    fn context_index_source_accepts_valid() {
+        use clap::Parser;
+        let r = Args::try_parse_from(["quorum", "context", "index", "--source", "my-source"]);
+        assert!(r.is_ok(), "'my-source' is a valid source name for index");
     }
 }
