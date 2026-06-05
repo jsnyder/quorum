@@ -273,7 +273,7 @@ pub(crate) fn execute_cell(
     );
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let (raw_content, usage) = match review_result {
+    let (raw_content, mut usage) = match review_result {
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
         Err(_) => {
             return CellResult {
@@ -300,48 +300,62 @@ pub(crate) fn execute_cell(
     // Step 9: classify response
     let outcome = classify_response(&raw_content, None);
 
-    // Handle Retry: one retry with continuation prompt
-    let (mut findings, parse_error_class, findings_dropped_invalid_json, exit_status) =
-        match outcome {
-            SkillResponseOutcome::Ok {
-                findings,
-                parse_warnings: _,
-            } => (findings, None, 0_u32, ExitStatus::Ok),
-            SkillResponseOutcome::ParseError { class, .. } => {
-                (vec![], Some(class), 0, ExitStatus::Error)
-            }
-            SkillResponseOutcome::Retry {
-                class: _,
-                continuation_prompt,
-            } => {
-                let retry_prompt = format!("{}\n{}", assembled.user_message, continuation_prompt);
-                let retry_result =
-                    reviewer.review(&retry_prompt, &cell.model, &assembled.system_message);
-                match retry_result {
-                    Ok(LlmResponse {
-                        content,
-                        usage: retry_usage,
-                    }) => {
-                        if let Some(ru) = retry_usage {
-                            budget.record_tokens(ru.total());
+    // Handle Retry: one retry with continuation prompt.
+    // The tuple tracks (findings, parse_error_class, findings_dropped, exit_status, failure_reason).
+    let (
+        mut findings,
+        parse_error_class,
+        findings_dropped_invalid_json,
+        exit_status,
+        failure_reason,
+    ) = match outcome {
+        SkillResponseOutcome::Ok {
+            findings,
+            parse_warnings: _,
+        } => (findings, None, 0_u32, ExitStatus::Ok, None),
+        SkillResponseOutcome::ParseError { class, .. } => {
+            (vec![], Some(class), 0, ExitStatus::Error, None)
+        }
+        SkillResponseOutcome::Retry {
+            class: _,
+            continuation_prompt,
+        } => {
+            let retry_prompt = format!("{}\n{}", assembled.user_message, continuation_prompt);
+            let retry_result =
+                reviewer.review(&retry_prompt, &cell.model, &assembled.system_message);
+            match retry_result {
+                Ok(LlmResponse {
+                    content,
+                    usage: retry_usage,
+                }) => {
+                    let ru = retry_usage.unwrap_or_default();
+                    budget.record_tokens(ru.total());
+                    usage.prompt_tokens += ru.prompt_tokens;
+                    usage.completion_tokens += ru.completion_tokens;
+                    usage.cached_tokens += ru.cached_tokens;
+                    match classify_response(&content, None) {
+                        SkillResponseOutcome::Ok {
+                            findings,
+                            parse_warnings: _,
+                        } => (findings, None, 0, ExitStatus::Ok, None),
+                        SkillResponseOutcome::ParseError { class, .. } => {
+                            (vec![], Some(class), 0, ExitStatus::Error, None)
                         }
-                        match classify_response(&content, None) {
-                            SkillResponseOutcome::Ok {
-                                findings,
-                                parse_warnings: _,
-                            } => (findings, None, 0, ExitStatus::Ok),
-                            SkillResponseOutcome::ParseError { class, .. } => {
-                                (vec![], Some(class), 0, ExitStatus::Error)
-                            }
-                            SkillResponseOutcome::Retry { class, .. } => {
-                                (vec![], Some(class), 0, ExitStatus::Error)
-                            }
+                        SkillResponseOutcome::Retry { class, .. } => {
+                            (vec![], Some(class), 0, ExitStatus::Error, None)
                         }
                     }
-                    Err(_) => (vec![], Some(ParseErrorClass::NotJson), 0, ExitStatus::Error),
                 }
+                Err(_) => (
+                    vec![],
+                    None,
+                    0,
+                    ExitStatus::Error,
+                    Some(FailureReason::NetworkError),
+                ),
             }
-        };
+        }
+    };
 
     // Step 11: sanitize finding fields
     sanitize_finding_fields(&mut findings);
@@ -360,7 +374,7 @@ pub(crate) fn execute_cell(
         model_was_fallback: false,
         actual_model: cell.model.clone(),
         exit_status,
-        failure_reason: None,
+        failure_reason,
         parse_error_class,
         findings_clamped,
         findings_dropped_invalid_json,
