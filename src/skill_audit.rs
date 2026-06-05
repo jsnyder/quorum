@@ -24,6 +24,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::skill_manifest::LoadedSkill;
+use crate::skill_output::ParseErrorClass;
 
 // ---------------------------------------------------------------------------
 // Default file paths (relative to ~/.quorum/)
@@ -110,6 +111,14 @@ impl<T: Serialize> AuditWriter<T> {
             .with_context(|| format!("Failed to lock audit log file: {}", self.path.display()))?;
 
         let mut buf = serde_json::to_string(record)?;
+        if buf.len() > MAX_JSONL_LINE_BYTES {
+            anyhow::bail!(
+                "serialized record ({} bytes) exceeds MAX_JSONL_LINE_BYTES ({}) — \
+                 the reader would silently drop this line",
+                buf.len(),
+                MAX_JSONL_LINE_BYTES
+            );
+        }
         buf.push('\n');
         let write_result = file.write_all(buf.as_bytes());
 
@@ -380,9 +389,8 @@ pub struct SkillInvocationRecord {
     pub findings_clamped: u32,
     #[serde(default)]
     pub findings_dropped_invalid_json: u32,
-    /// From #407's `ParseErrorClass`, if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parse_error_class: Option<String>,
+    pub parse_error_class: Option<ParseErrorClass>,
     pub exit_status: ExitStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<FailureReason>,
@@ -853,7 +861,7 @@ mod tests {
         let mut record = sample_invocation_record();
         record.exit_status = ExitStatus::Error;
         record.failure_reason = Some(FailureReason::ModelTimeout);
-        record.parse_error_class = Some("truncated_json".into());
+        record.parse_error_class = Some(ParseErrorClass::Truncated);
 
         let json = serde_json::to_string(&record).unwrap();
         let deserialized: SkillInvocationRecord = serde_json::from_str(&json).unwrap();
@@ -863,8 +871,8 @@ mod tests {
             Some(FailureReason::ModelTimeout)
         );
         assert_eq!(
-            deserialized.parse_error_class.as_deref(),
-            Some("truncated_json")
+            deserialized.parse_error_class,
+            Some(ParseErrorClass::Truncated)
         );
     }
 

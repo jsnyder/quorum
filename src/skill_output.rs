@@ -86,17 +86,14 @@ pub fn capabilities_for(family: ModelFamily) -> ModelCapabilities {
 /// for models that support JSON mode, or `None` if the family does not
 /// support structured output.
 ///
-/// The caller (issue #410 wiring) is responsible for merging this into the
-/// request body when `Some`.
+/// Currently returns `None` for all families: `json_object` forces a
+/// top-level object, which conflicts with the `Vec<Finding>` array
+/// contract. Foundation C (#410) will implement `json_schema` with an
+/// explicit schema for providers that support it.
 #[must_use]
-pub fn build_json_mode_params(family: ModelFamily) -> Option<serde_json::Value> {
-    if capabilities_for(family).supports_json_mode {
-        Some(serde_json::json!({
-            "type": "json_object"
-        }))
-    } else {
-        None
-    }
+pub fn build_json_mode_params(_family: ModelFamily) -> Option<serde_json::Value> {
+    // Deferred: json_schema with explicit Finding[] schema (#410).
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -195,18 +192,11 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
     //    d) Sanitize invalid JSON escapes and retry both shapes
 
     let stripped = strip_control_chars(raw);
-    let extracted = extract_json_block(&stripped);
-
-    // Try bare array.
-    if let Some(findings) = try_parse_findings(&extracted) {
-        return SkillResponseOutcome::Ok {
-            findings,
-            parse_warnings: vec![],
-        };
-    }
-
-    // Try envelope shape on the full (fence-stripped) payload.
     let defenced = strip_markdown_fence(&stripped);
+
+    // Try envelope first — if the response is `{"findings": [...]}`, bare
+    // array extraction would grab the first `[...]` it finds (which could
+    // be a different field like `"warnings": []`).
     if let Some(findings) = try_parse_envelope(&defenced) {
         return SkillResponseOutcome::Ok {
             findings,
@@ -214,17 +204,26 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
         };
     }
 
-    // Sanitize invalid JSON escapes and retry.
-    let sanitized_extracted = sanitize_json_escapes(&extracted);
-    if let Some(findings) = try_parse_findings(&sanitized_extracted) {
+    // Try bare array via bracket-depth extraction.
+    let extracted = extract_json_block(&stripped);
+    if let Some(findings) = try_parse_findings(&extracted) {
+        return SkillResponseOutcome::Ok {
+            findings,
+            parse_warnings: vec![],
+        };
+    }
+
+    // Sanitize invalid JSON escapes and retry both shapes.
+    let sanitized_defenced = sanitize_json_escapes(&defenced);
+    if let Some(findings) = try_parse_envelope(&sanitized_defenced) {
         return SkillResponseOutcome::Ok {
             findings,
             parse_warnings: vec!["sanitized invalid JSON escapes".to_owned()],
         };
     }
 
-    let sanitized_defenced = sanitize_json_escapes(&defenced);
-    if let Some(findings) = try_parse_envelope(&sanitized_defenced) {
+    let sanitized_extracted = sanitize_json_escapes(&extracted);
+    if let Some(findings) = try_parse_findings(&sanitized_extracted) {
         return SkillResponseOutcome::Ok {
             findings,
             parse_warnings: vec!["sanitized invalid JSON escapes".to_owned()],
@@ -495,29 +494,19 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn json_mode_params_openai_returns_some() {
-        let params = build_json_mode_params(ModelFamily::OpenAi);
-        assert!(params.is_some());
-        let val = params.unwrap();
-        assert_eq!(val["type"], "json_object");
-    }
-
-    #[test]
-    fn json_mode_params_google_returns_some() {
-        let params = build_json_mode_params(ModelFamily::Google);
-        assert!(params.is_some());
-        let val = params.unwrap();
-        assert_eq!(val["type"], "json_object");
-    }
-
-    #[test]
-    fn json_mode_params_anthropic_returns_none() {
-        assert!(build_json_mode_params(ModelFamily::Anthropic).is_none());
-    }
-
-    #[test]
-    fn json_mode_params_other_returns_none() {
-        assert!(build_json_mode_params(ModelFamily::Other).is_none());
+    fn json_mode_params_returns_none_for_all_families() {
+        for family in [
+            ModelFamily::Anthropic,
+            ModelFamily::OpenAi,
+            ModelFamily::Google,
+            ModelFamily::Other,
+        ] {
+            assert!(
+                build_json_mode_params(family).is_none(),
+                "build_json_mode_params should return None for {family} \
+                 (json_schema deferred to #410)"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
