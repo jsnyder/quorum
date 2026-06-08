@@ -110,7 +110,11 @@ pub(crate) fn finding_kind(finding: &Finding) -> String {
     {
         return rule_id.clone();
     }
-    normalize_title_slug(&finding.title)
+    let slug = normalize_title_slug(&finding.title);
+    if slug.is_empty() {
+        return finding.title.to_lowercase();
+    }
+    slug
 }
 
 /// Produce a deterministic slug from a finding title.
@@ -697,6 +701,14 @@ mod tests {
     fn kind_empty_title() {
         let f = FindingBuilder::new().title("").build();
         assert_eq!(finding_kind(&f), "");
+    }
+
+    #[test]
+    fn kind_vendor_only_title_falls_back_to_lowercase() {
+        let f = FindingBuilder::new()
+            .title("Potential Vulnerability")
+            .build();
+        assert_eq!(finding_kind(&f), "potential vulnerability");
     }
 
     // =========================================================================
