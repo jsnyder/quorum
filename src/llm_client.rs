@@ -274,6 +274,25 @@ const RESPONSES_API_MODELS: &[&str] = &[
     "gpt-5-codex",
 ];
 
+/// Returns `false` for reasoning models that reject the `temperature` parameter.
+/// OpenAI o-series and gpt-5.x models return HTTP 400 when temperature is included.
+fn supports_temperature(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    if m.starts_with("gpt-5") {
+        return false;
+    }
+    // o1, o3, o4 prefixes — but not "ollama", "openai", "openrouter", etc.
+    for prefix in &["o1", "o3", "o4"] {
+        if m.starts_with(prefix) {
+            let rest = &m[prefix.len()..];
+            if rest.is_empty() || rest.starts_with('-') || rest.starts_with('.') {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub struct OpenAiClient {
     http: reqwest::Client,
     base_url: String,
@@ -782,15 +801,17 @@ impl OpenAiClient {
         }
         let safe_prompt = crate::redact::redact_secrets(prompt);
         let safe_system = crate::redact::redact_secrets(system_prompt);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [
                 {"role": "system", "content": safe_system},
                 {"role": "user", "content": safe_prompt}
             ],
-            "temperature": 0,
             "max_tokens": 2048
         });
+        if supports_temperature(model) {
+            body["temperature"] = serde_json::json!(0);
+        }
 
         let url = format!("{}/chat/completions", self.base_url);
         let req = self
@@ -951,9 +972,11 @@ impl OpenAiClient {
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.3
+            ]
         });
+        if supports_temperature(model) {
+            body["temperature"] = serde_json::json!(0.3);
+        }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
         }
@@ -1023,8 +1046,7 @@ impl OpenAiClient {
         if self.bypass_proxy_cache {
             body["cache"] = serde_json::json!({ "no-cache": true });
         }
-        // Codex models don't support temperature; only add for non-codex responses API models
-        if !model.contains("codex") {
+        if supports_temperature(model) {
             body["temperature"] = serde_json::json!(0.3);
         }
         if let Some(effort) = &self.reasoning_effort {
@@ -1096,9 +1118,11 @@ impl OpenAiClient {
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "temperature": 0.3,
             "tools": tools
         });
+        if supports_temperature(model) {
+            body["temperature"] = serde_json::json!(0.3);
+        }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
         }
@@ -3089,5 +3113,49 @@ mod tests {
             .await
             .unwrap();
         assert!(resp.content.contains("\"verdict\":\"tp\""));
+    }
+
+    #[test]
+    fn supports_temperature_gpt4o() {
+        assert!(super::supports_temperature("gpt-4o"));
+        assert!(super::supports_temperature("gpt-4o-mini"));
+        assert!(super::supports_temperature("gpt-4-turbo"));
+    }
+
+    #[test]
+    fn supports_temperature_rejects_reasoning_models() {
+        assert!(!super::supports_temperature("gpt-5.4"));
+        assert!(!super::supports_temperature("gpt-5.5"));
+        assert!(!super::supports_temperature("gpt-5"));
+        assert!(!super::supports_temperature("gpt-5-mini"));
+        assert!(!super::supports_temperature("gpt-5-nano"));
+        assert!(!super::supports_temperature("gpt-5.1"));
+        assert!(!super::supports_temperature("gpt-5.3-codex"));
+        assert!(!super::supports_temperature("o1"));
+        assert!(!super::supports_temperature("o1-mini"));
+        assert!(!super::supports_temperature("o3"));
+        assert!(!super::supports_temperature("o3-mini"));
+        assert!(!super::supports_temperature("o4-mini"));
+    }
+
+    #[test]
+    fn supports_temperature_case_insensitive() {
+        assert!(!super::supports_temperature("GPT-5.4"));
+        assert!(!super::supports_temperature("O3-mini"));
+        assert!(super::supports_temperature("GPT-4o"));
+    }
+
+    #[test]
+    fn supports_temperature_non_openai_models() {
+        assert!(super::supports_temperature("claude-sonnet-4-5-20250514"));
+        assert!(super::supports_temperature("gemini-2.5-pro"));
+        assert!(super::supports_temperature("deepseek-r1"));
+    }
+
+    #[test]
+    fn supports_temperature_does_not_match_similar_prefixes() {
+        assert!(super::supports_temperature("ollama-llama3"));
+        assert!(super::supports_temperature("openai/gpt-4"));
+        assert!(super::supports_temperature("openrouter/auto"));
     }
 }
