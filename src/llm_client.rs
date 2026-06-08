@@ -283,11 +283,10 @@ fn supports_temperature(model: &str) -> bool {
     }
     // o1, o3, o4 prefixes — but not "ollama", "openai", "openrouter", etc.
     for prefix in &["o1", "o3", "o4"] {
-        if m.starts_with(prefix) {
-            let rest = &m[prefix.len()..];
-            if rest.is_empty() || rest.starts_with('-') || rest.starts_with('.') {
-                return false;
-            }
+        if let Some(rest) = m.strip_prefix(prefix)
+            && (rest.is_empty() || rest.starts_with('-') || rest.starts_with('.'))
+        {
+            return false;
         }
     }
     true
