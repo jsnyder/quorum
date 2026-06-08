@@ -365,10 +365,10 @@ pub fn integrate(
                 cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| {
-                // Stable tie-break: line_start asc, then id asc.
                 a.line_start
                     .cmp(&b.line_start)
-                    .then_with(|| a.id.cmp(&b.id))
+                    .then_with(|| a.line_end.cmp(&b.line_end))
+                    .then_with(|| a.title.cmp(&b.title))
             })
     });
 
@@ -477,16 +477,20 @@ fn process_cluster(
         })
         .unwrap(); // cluster is non-empty
 
-    // Compute originating_skills union, ordered by confidence desc.
-    let mut skill_confs: Vec<(String, f64)> = Vec::new();
+    // Compute originating_skills union, ordered by max confidence desc.
+    let mut skill_max: BTreeMap<String, f64> = BTreeMap::new();
     for tf in cluster {
         if let Some(ref skill) = tf.finding.originating_skill
             && !skill.is_empty()
-            && !skill_confs.iter().any(|(s, _)| s == skill)
         {
-            skill_confs.push((skill.clone(), confidence_of(&tf.finding)));
+            let conf = confidence_of(&tf.finding);
+            let entry = skill_max.entry(skill.clone()).or_insert(0.0);
+            if conf > *entry {
+                *entry = conf;
+            }
         }
     }
+    let mut skill_confs: Vec<(String, f64)> = skill_max.into_iter().collect();
     skill_confs.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
