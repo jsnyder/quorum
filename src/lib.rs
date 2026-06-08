@@ -119,4 +119,5 @@ pub mod storage;
 pub mod skill_manifest;
 
 pub mod skill_audit;
+pub mod skill_executor;
 pub mod skill_output;
