@@ -435,7 +435,7 @@ pub fn execute_matrix(
     for cell in &cells {
         if budget.tokens_exceeded() {
             let skill_run_id = ulid::Ulid::new().to_string();
-            results.push(CellResult {
+            let budget_result = CellResult {
                 skill_run_id,
                 findings: vec![],
                 usage: TokenUsage::default(),
@@ -449,7 +449,18 @@ pub fn execute_matrix(
                 findings_dropped_invalid_json: 0,
                 prompt_sha256: String::new(),
                 prompt_family: String::new(),
-            });
+            };
+            if let Some(ref writer) = config.audit_writer {
+                let record = build_invocation_record(cell, &budget_result, config);
+                if let Err(e) = writer.write(&record) {
+                    tracing::warn!(
+                        target: "quorum::skill_executor",
+                        error = %e,
+                        "failed to write budget-capped audit record"
+                    );
+                }
+            }
+            results.push(budget_result);
             continue;
         }
 
