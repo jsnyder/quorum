@@ -42,7 +42,18 @@ impl LocalEmbedder {
     }
 
     pub fn embed_batch(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        self.model.embed(texts, None)
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let results = self.model.embed(texts, None)?;
+        if results.len() != texts.len() {
+            anyhow::bail!(
+                "embedding batch size mismatch: got {} vectors for {} inputs",
+                results.len(),
+                texts.len()
+            );
+        }
+        Ok(results)
     }
 }
 
@@ -146,6 +157,20 @@ mod tests {
             ac,
             ab,
         );
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn embed_batch_empty_input_returns_empty() {
+        let mut embedder = match LocalEmbedder::new() {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("skipping: embedding model unavailable: {err}");
+                return;
+            }
+        };
+        let result = embedder.embed_batch(&[]).unwrap();
+        assert!(result.is_empty(), "empty input should produce empty output");
     }
 
     #[cfg(feature = "embeddings")]
