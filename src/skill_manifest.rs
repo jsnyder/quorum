@@ -1325,6 +1325,62 @@ primary = "prompt"
         );
     }
 
+    // ── Bundled skill TOML files parse correctly ──
+
+    #[test]
+    fn bundled_correctness_skill_loads() {
+        let content = include_str!("../skills/correctness.toml");
+        let manifest: SkillManifest = toml::from_str(content).unwrap();
+        assert_eq!(manifest.name, "correctness");
+        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.display_name, "Correctness");
+        assert_eq!(manifest.axis, Axis::Correctness);
+        assert_eq!(manifest.max_severity, Severity::Critical);
+        assert_eq!(manifest.target_findings, Some(10));
+        assert_eq!(manifest.capability.mode, CapabilityMode::Pure);
+        assert!(manifest.preferred_model.is_none());
+        assert!(manifest.prompts.anthropic.is_some());
+        assert!(manifest.prompts.openai.is_some());
+        assert!(manifest.prompts.google.is_some());
+        validate_manifest(&manifest, Path::new("skills/correctness.toml")).unwrap();
+    }
+
+    #[test]
+    fn bundled_security_skill_loads() {
+        let content = include_str!("../skills/security.toml");
+        let manifest: SkillManifest = toml::from_str(content).unwrap();
+        assert_eq!(manifest.name, "security");
+        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.display_name, "Security");
+        assert_eq!(manifest.axis, Axis::Security);
+        assert_eq!(manifest.max_severity, Severity::Critical);
+        assert_eq!(manifest.target_findings, Some(10));
+        assert_eq!(manifest.capability.mode, CapabilityMode::Pure);
+        assert!(manifest.preferred_model.is_none());
+        assert!(manifest.prompts.anthropic.is_some());
+        assert!(manifest.prompts.openai.is_some());
+        assert!(manifest.prompts.google.is_some());
+        validate_manifest(&manifest, Path::new("skills/security.toml")).unwrap();
+    }
+
+    #[test]
+    fn bundled_testing_antipatterns_skill_loads() {
+        let content = include_str!("../skills/testing-antipatterns.toml");
+        let manifest: SkillManifest = toml::from_str(content).unwrap();
+        assert_eq!(manifest.name, "testing-antipatterns");
+        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.display_name, "Testing Antipatterns");
+        assert_eq!(manifest.axis, Axis::Testing);
+        assert_eq!(manifest.max_severity, Severity::High);
+        assert_eq!(manifest.target_findings, Some(8));
+        assert_eq!(manifest.capability.mode, CapabilityMode::Pure);
+        assert!(manifest.preferred_model.is_none());
+        assert!(manifest.prompts.anthropic.is_some());
+        assert!(manifest.prompts.openai.is_some());
+        assert!(manifest.prompts.google.is_some());
+        validate_manifest(&manifest, Path::new("skills/testing-antipatterns.toml")).unwrap();
+    }
+
     // ── Source path is recorded ──
 
     #[test]
