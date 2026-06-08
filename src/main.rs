@@ -592,6 +592,10 @@ fn run_context(opts: cli::ContextOpts) -> i32 {
         cli::ContextCommand::Init => ContextCmd::Init,
         cli::ContextCommand::Add(a) => {
             let location = match (a.path, a.git) {
+                (Some(_), None) if a.rev.is_some() => {
+                    eprintln!("error: --rev may only be used with --git, not --path");
+                    return 1;
+                }
                 (Some(p), None) => AddLocation::Path(p),
                 (None, Some(url)) => AddLocation::Git { url, rev: a.rev },
                 (Some(_), Some(_)) => {

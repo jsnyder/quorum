@@ -80,3 +80,31 @@ fn context_add_without_path_or_git_is_rejected() {
         .failure()
         .stderr(predicate::str::contains("required"));
 }
+
+#[test]
+fn context_add_path_with_rev_is_rejected() {
+    // --rev only makes sense with --git.  Using it alongside --path must fail
+    // with a diagnostic that mentions "--rev".  Guards against #289.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    // Seed sources.toml so the handler doesn't bail on a missing config.
+    quorum(home).args(["context", "init"]).assert().success();
+
+    quorum(home)
+        .args([
+            "context",
+            "add",
+            "--name",
+            "core",
+            "--kind",
+            "rust",
+            "--path",
+            "/some/path",
+            "--rev",
+            "main",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--rev"));
+}
