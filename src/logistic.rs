@@ -74,7 +74,7 @@ pub struct LogisticFit {
 impl LogisticFit {
     /// Predict P(positive) for a single raw (unstandardized) sample.
     pub fn predict_one(&self, x: &[f64]) -> f64 {
-        debug_assert_eq!(
+        assert_eq!(
             x.len(),
             self.coefficients.len(),
             "input dimension must match model"
@@ -136,8 +136,9 @@ pub fn fit(x: &[Vec<f64>], y: &[bool], lambda: f64, max_iter: usize) -> Logistic
         y.len(),
         "feature matrix rows must match label count"
     );
+    assert!(lambda >= 0.0, "lambda must be non-negative");
     let p = x[0].len();
-    debug_assert!(
+    assert!(
         x.iter().all(|row| row.len() == p),
         "feature matrix must be rectangular"
     );
@@ -315,6 +316,35 @@ mod tests {
             correct >= 170,
             "Expected >=85% accuracy on 2-feature, got {correct}/200"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "input dimension must match model")]
+    fn predict_one_wrong_dimension_panics() {
+        let model = LogisticFit {
+            coefficients: vec![0.5, -0.3],
+            intercept: 0.0,
+            feature_means: vec![0.0, 0.0],
+            feature_stddevs: vec![1.0, 1.0],
+        };
+        // 3 features into a 2-coefficient model
+        model.predict_one(&[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "feature matrix must be rectangular")]
+    fn fit_ragged_matrix_panics() {
+        let x = vec![vec![1.0, 2.0], vec![3.0]];
+        let y = vec![true, false];
+        fit(&x, &y, 0.1, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "lambda must be non-negative")]
+    fn fit_negative_lambda_panics() {
+        let x = vec![vec![1.0], vec![2.0]];
+        let y = vec![true, false];
+        fit(&x, &y, -0.1, 100);
     }
 
     #[test]
