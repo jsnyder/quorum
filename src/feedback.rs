@@ -1488,6 +1488,7 @@ mod tests {
             agent_model: Some("gemini-3-pro-preview".into()),
             confidence: Some(0.85),
             in_diff: None,
+            finding_id: None,
         };
         store.record_external(input).unwrap();
         let all = store.load_all().unwrap();
@@ -1524,6 +1525,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1547,6 +1549,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("empty agent must be rejected");
         assert!(
@@ -1569,6 +1572,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1589,6 +1593,7 @@ mod tests {
                 agent_model: None,
                 confidence: Some(1.5),
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1619,6 +1624,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("ContextMisleading must be rejected for External provenance");
         assert!(
@@ -1695,6 +1701,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("Wontfix must be rejected for External provenance");
         assert!(
