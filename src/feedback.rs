@@ -150,6 +150,7 @@ pub struct ExternalVerdictInput {
     pub agent_model: Option<String>,
     pub confidence: Option<f32>,
     pub in_diff: Option<bool>,
+    pub finding_id: Option<String>,
 }
 
 /// #123 Layer 1 (Task 10): adoption telemetry for the FpKind taxonomy.
@@ -268,6 +269,7 @@ impl From<ExternalVerdictInputWire> for ExternalVerdictInput {
             agent_model: w.agent_model,
             confidence: w.confidence,
             in_diff: None,
+            finding_id: None,
         }
     }
 }
@@ -828,7 +830,7 @@ impl FeedbackStore {
                 confidence,
             },
             fp_kind: None,
-            finding_id: None,
+            finding_id: input.finding_id,
             rule_id: None,
             in_diff: input.in_diff,
             skill_name: None,

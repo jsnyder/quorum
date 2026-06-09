@@ -217,6 +217,7 @@ impl QuorumHandler {
                 agent_model: params.agent_model,
                 confidence: params.confidence,
                 in_diff: params.in_diff,
+                finding_id: None, // Task 5 will wire MCP finding_id
             };
             self.feedback_store
                 .record_external(input)
