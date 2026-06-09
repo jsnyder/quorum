@@ -1972,6 +1972,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             context_telem = review_log::ContextTelemetry::default();
         }
 
+        let finding_meta: Vec<review_log::FindingMeta> = file_results
+            .iter()
+            .flat_map(|fr| {
+                fr.findings.iter().map(|f| review_log::FindingMeta {
+                    id: f.id.clone(),
+                    title: f.title.clone(),
+                    file_path: fr.file_path.clone(),
+                })
+            })
+            .collect();
+
         let record = review_log::ReviewRecord {
             run_id: run_id.clone(),
             timestamp: chrono::Utc::now(),
@@ -2004,7 +2015,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             skill_findings: None,
             integrator_findings_out: None,
         };
-        if let Err(e) = review_log.record(&record) {
+        if let Err(e) = review_log.record_with_meta(&record, &finding_meta) {
             eprintln!("Warning: failed to write review log: {}", e);
         }
     }
