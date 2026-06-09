@@ -96,6 +96,10 @@ pub struct FeedbackTool {
     /// unknown (omitted). Flows through both Human and External paths.
     #[serde(default, rename = "inDiff", skip_serializing_if = "Option::is_none")]
     pub in_diff: Option<bool>,
+    /// Explicit finding ID (ULID) to link this feedback to a specific review finding.
+    /// Bypasses auto-link resolution when provided.
+    #[serde(default, rename = "findingId", skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
 }
 
 #[mcp_tool(
@@ -351,7 +355,8 @@ mod tests {
             "agentModel":"gemini",
             "confidence":0.9,
             "category":"security",
-            "fpKind":"hallucination"
+            "fpKind":"hallucination",
+            "findingId":"01HXYZ1234567890ABCDEFGHJK"
         }"#;
         let tool: FeedbackTool =
             serde_json::from_str(json).expect("all declared fields must parse");

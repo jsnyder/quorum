@@ -739,6 +739,11 @@ pub struct FeedbackOpts {
     #[arg(long, requires = "fp_kind")]
     pub fp_tracked_in: Option<String>,
 
+    /// Explicit finding ID (ULID) to link this feedback entry to a specific
+    /// review finding. Bypasses auto-link resolution.
+    #[arg(long, value_parser = parse_finding_id)]
+    pub finding_id: Option<String>,
+
     /// Whether the finding was inside the diff (true), outside (false), or
     /// unknown (omitted). Flows through both Human and External paths.
     #[arg(long)]
@@ -815,6 +820,15 @@ pub fn parse_provenance(s: &str) -> Result<crate::feedback::Provenance, String> 
             "unknown provenance '{other}': expected post_fix or human"
         )),
     }
+}
+
+/// Validate and normalize a ULID string for `--finding-id`. Rejects
+/// non-ULID input with a clear error; round-trips through `ulid::Ulid`
+/// so the stored value is always canonical uppercase.
+pub fn parse_finding_id(s: &str) -> Result<String, String> {
+    ulid::Ulid::from_string(s)
+        .map(|u| u.to_string())
+        .map_err(|e| format!("invalid ULID: {e}"))
 }
 
 pub fn parse_confidence(s: &str) -> Result<f32, String> {
@@ -2129,5 +2143,89 @@ mod tests {
         use clap::Parser;
         let r = Args::try_parse_from(["quorum", "context", "index", "--source", "my-source"]);
         assert!(r.is_ok(), "'my-source' is a valid source name for index");
+    }
+
+    // --- Task 5: --finding-id ULID validation --------------------------------
+
+    #[test]
+    fn finding_id_valid_ulid_accepted() {
+        let valid = "01HXYZ1234567890ABCDEFGHJK";
+        assert!(parse_finding_id(valid).is_ok());
+    }
+
+    #[test]
+    fn finding_id_invalid_rejected() {
+        assert!(parse_finding_id("not-a-ulid").is_err());
+        assert!(parse_finding_id("").is_err());
+        assert!(parse_finding_id("too-short").is_err());
+    }
+
+    #[test]
+    fn finding_id_flag_parses_in_feedback() {
+        use clap::Parser;
+        let ulid = "01HXYZ1234567890ABCDEFGHJK";
+        let args = Args::parse_from([
+            "quorum",
+            "feedback",
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+            "--finding-id",
+            ulid,
+        ]);
+        match args.command {
+            Command::Feedback(opts) => {
+                assert_eq!(opts.finding_id.as_deref(), Some(ulid));
+            }
+            _ => panic!("Expected Feedback command"),
+        }
+    }
+
+    #[test]
+    fn finding_id_flag_is_optional() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "quorum",
+            "feedback",
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+        ]);
+        match args.command {
+            Command::Feedback(opts) => {
+                assert!(opts.finding_id.is_none());
+            }
+            _ => panic!("Expected Feedback command"),
+        }
+    }
+
+    #[test]
+    fn finding_id_invalid_ulid_rejected_at_parse_time() {
+        use clap::Parser;
+        let res = Args::try_parse_from([
+            "quorum",
+            "feedback",
+            "--file",
+            "f.rs",
+            "--finding",
+            "x",
+            "--verdict",
+            "tp",
+            "--reason",
+            "r",
+            "--finding-id",
+            "not-a-ulid",
+        ]);
+        assert!(res.is_err(), "invalid ULID must be rejected at parse time");
     }
 }

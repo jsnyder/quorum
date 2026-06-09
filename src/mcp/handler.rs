@@ -217,7 +217,7 @@ impl QuorumHandler {
                 agent_model: params.agent_model,
                 confidence: params.confidence,
                 in_diff: params.in_diff,
-                finding_id: None, // Task 5 will wire MCP finding_id
+                finding_id: params.finding_id.clone(),
             };
             self.feedback_store
                 .record_external(input)
@@ -243,7 +243,7 @@ impl QuorumHandler {
             timestamp: chrono::Utc::now(),
             provenance: crate::feedback::Provenance::Human,
             fp_kind,
-            finding_id: None,
+            finding_id: params.finding_id.clone(),
             rule_id: None,
             in_diff: params.in_diff,
             skill_name: None,
@@ -639,6 +639,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -682,6 +683,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
 
         let result = handler.handle_feedback(params).unwrap();
@@ -730,6 +732,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
 
         let err = handler.handle_feedback(params).expect_err("must reject");
@@ -770,6 +773,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -818,6 +822,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -1496,6 +1501,7 @@ mod tests {
                 category: None,
                 fp_kind: Some(kind.clone()),
                 in_diff: None,
+                finding_id: None,
             };
             handler.handle_feedback(params).unwrap();
 
@@ -1565,6 +1571,7 @@ mod tests {
             category: None,
             fp_kind: Some(FpKind::Hallucination),
             in_diff: None,
+            finding_id: None,
         };
         handler.handle_feedback(params).unwrap();
 
@@ -1722,6 +1729,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
         let err = handler
             .handle_feedback(params)
@@ -1766,6 +1774,7 @@ mod tests {
             category: None,
             fp_kind: None,
             in_diff: None,
+            finding_id: None,
         };
         handler
             .handle_feedback(params)

@@ -2439,15 +2439,14 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                 return 3;
             }
         };
-        // Auto-resolve finding_id from the review log for the external path.
-        let finding_id = {
-            let quorum_home = quorum_dir();
-            quorum_home.and_then(|home| {
-                let handle = crate::storage::initialize(&home).ok()?;
-                let log = review_log::ReviewLog::with_storage(handle);
-                log.resolve_finding_id(&opts.file, &opts.finding)
-            })
-        };
+        // Explicit --finding-id bypasses auto-resolve; otherwise fall back
+        // to auto-resolution from the review log.
+        let finding_id = opts.finding_id.clone().or_else(|| {
+            let quorum_home = quorum_dir()?;
+            let handle = crate::storage::initialize(&quorum_home).ok()?;
+            let log = review_log::ReviewLog::with_storage(handle);
+            log.resolve_finding_id(&opts.file, &opts.finding)
+        });
         let input = feedback::ExternalVerdictInput {
             file_path: opts.file.clone(),
             finding_title: opts.finding.clone(),
@@ -2551,7 +2550,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.provenance,
             opts.json,
             &feedback_path,
-            None, // finding_id_override: auto-resolved inside run_feedback_inner
+            opts.finding_id.clone(),
         );
         if exit_code != 0 {
             eprintln!("{}", output);
