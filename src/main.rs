@@ -1468,6 +1468,145 @@ mod axes_tests {
     }
 }
 
+#[cfg(test)]
+mod skill_integration_tests {
+    use crate::skill_audit;
+    use quorum::skill_executor;
+    use quorum::skill_integrator;
+    use quorum::skill_manifest;
+
+    fn mock_loaded_skill(name: &str) -> skill_manifest::LoadedSkill {
+        skill_manifest::LoadedSkill {
+            manifest: skill_manifest::SkillManifest {
+                name: name.to_string(),
+                version: "1.0.0".into(),
+                display_name: name.into(),
+                description: format!("{name} skill"),
+                preferred_model: None,
+                fallback_models: None,
+                calibration_namespace: None,
+                axis: skill_manifest::Axis::Correctness,
+                max_severity: quorum::finding::Severity::Critical,
+                target_findings: None,
+                capability: skill_manifest::Capability {
+                    mode: skill_manifest::CapabilityMode::Pure,
+                },
+                prompts: skill_manifest::Prompts {
+                    primary: "Review for {name}".into(),
+                    anthropic: None,
+                    openai: None,
+                    google: None,
+                },
+                checklist: vec![],
+                ast_rules: vec![],
+            },
+            trust_tier: skill_manifest::TrustTier::Bundled,
+            source_path: std::path::PathBuf::from(format!("skills/{name}.toml")),
+            manifest_sha256: "test-sha".into(),
+        }
+    }
+
+    fn make_finding_json(title: &str) -> String {
+        let f = quorum::finding::FindingBuilder::new()
+            .title(title)
+            .severity(quorum::finding::Severity::Medium)
+            .category(quorum::category::Category::Correctness)
+            .source(quorum::finding::Source::Llm("test-model".into()))
+            .lines(1, 5)
+            .build();
+        serde_json::to_string(&f).unwrap()
+    }
+
+    struct MockReviewer;
+    impl skill_executor::LlmReviewer for MockReviewer {
+        fn review(
+            &self,
+            _prompt: &str,
+            _model: &str,
+            _system_prompt: &str,
+        ) -> anyhow::Result<skill_executor::LlmResponse> {
+            let json = format!("[{}]", make_finding_json("Test bug"));
+            Ok(skill_executor::LlmResponse {
+                content: json,
+                usage: Some(skill_executor::TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 50,
+                    cached_tokens: 0,
+                }),
+            })
+        }
+    }
+
+    #[test]
+    fn full_pipeline_resolve_execute_integrate() {
+        let skills = vec![
+            mock_loaded_skill("correctness"),
+            mock_loaded_skill("security"),
+        ];
+
+        let resolved = super::resolve_axes(
+            &["correctness".into(), "security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false,
+            false,
+            false,
+            &skills,
+        )
+        .expect("resolve_axes should succeed")
+        .expect("should return Some for explicit axes");
+
+        assert_eq!(resolved.skills.len(), 2);
+        assert_eq!(resolved.source, skill_audit::AxisSelectionSource::ExplicitAxes);
+
+        let exec_cfg = skill_executor::SkillExecutorConfig {
+            run_id: "test-integration".into(),
+            axis_selection_source: resolved.source.clone(),
+            global_models: vec!["test-model".into()],
+            ensemble_pool: vec![],
+            ensemble: false,
+            max_tokens_per_review: 100_000,
+            max_calls_per_review: 10,
+            audit_writer: None,
+        };
+        let files = vec![("test.rs".into(), "abc123".into(), "fn main() {}".into())];
+        let results =
+            skill_executor::execute_matrix(&resolved.skills, &files, &MockReviewer, &exec_cfg);
+
+        assert_eq!(results.len(), 2, "one CellResult per skill");
+        for r in &results {
+            assert!(!r.findings.is_empty(), "each skill should produce findings");
+            for f in &r.findings {
+                assert!(
+                    f.originating_skill.is_some(),
+                    "findings must carry originating_skill"
+                );
+            }
+        }
+
+        let tagged: Vec<_> = results
+            .iter()
+            .flat_map(|cr| {
+                cr.findings
+                    .iter()
+                    .map(|f| skill_integrator::TaggedFinding {
+                        file_path: "test.rs".into(),
+                        finding: f.clone(),
+                    })
+            })
+            .collect();
+        let int_cfg = skill_integrator::IntegratorConfig::default();
+        let output = skill_integrator::integrate(tagged, &int_cfg);
+        assert!(!output.findings.is_empty(), "integrator should emit findings");
+        assert!(
+            output.findings.len() < 4,
+            "integrator should merge overlapping findings from 2 skills"
+        );
+
+        let total_prompt: u64 = results.iter().map(|r| r.usage.prompt_tokens).sum();
+        assert!(total_prompt > 0, "token usage should be tracked");
+    }
+}
+
 async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // The empty-files case is now rejected at the clap layer via
     // `#[arg(required = true, num_args = 1..)]` on `ReviewOpts.files`
