@@ -318,6 +318,7 @@ pub enum AxisSelectionSource {
     ModeMacro,
     Default,
     AutoDiscovery,
+    Legacy,
 }
 
 /// Terminal exit status for a skill invocation.
@@ -935,6 +936,7 @@ mod tests {
             AxisSelectionSource::ModeMacro,
             AxisSelectionSource::Default,
             AxisSelectionSource::AutoDiscovery,
+            AxisSelectionSource::Legacy,
         ];
         for variant in variants {
             let json = serde_json::to_string(&variant).unwrap();
