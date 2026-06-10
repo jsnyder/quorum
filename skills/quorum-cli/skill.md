@@ -203,11 +203,23 @@ Work through these in order. The first match wins. If a finding describes a real
 - For pre-existing findings you won't file an issue for, skip them — recording feedback on code you can't act on adds noise.
 - Always choose `tp` or `fp` — `wontfix` is inert. `partial` is inert metadata for severity disagreements only.
 
+### Finding ID linkage (v0.28.0+)
+
+Feedback entries are automatically linked to their source review findings via `finding_id`. This happens transparently — no flags needed:
+
+- **Auto-link**: When recording feedback, quorum fuzzy-matches the `file_path` + `finding_title` against recent reviews and populates `finding_id` automatically.
+- **Auto-backfill**: On every `review`, `stats`, and `feedback` invocation, quorum re-runs the resolver on unlinked legacy entries. Linkage improves silently over time as reviews accumulate metadata.
+- **Explicit override**: `--finding-id <ULID>` bypasses auto-link when you know the exact finding ID (available in `--json` review output).
+- **Manual backfill**: `quorum backfill-linkage` re-links all unlinked entries on demand.
+
+The `finding_id` linkage feeds per-finding precision tracking in `quorum stats --join-health`.
+
 ### Useful feedback flags
 
 | Flag | Purpose |
 |------|---------|
 | `--in-diff true/false` | Explicitly mark whether the finding was inside the diff scope |
+| `--finding-id <ULID>` | Explicit finding ID linkage (bypasses auto-link) |
 | `--blamed-chunks id1,id2` | Chunk IDs that caused misleading context (with `context_misleading` verdict) |
 | `--category <cat>` | Finding category (e.g. "security", "correctness") |
 

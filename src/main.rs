@@ -101,6 +101,19 @@ fn quorum_dir() -> Option<std::path::PathBuf> {
         .map(|h| std::path::PathBuf::from(h).join(".quorum"))
 }
 
+/// Opportunistically re-link feedback entries that have `finding_id: None`
+/// against review metadata. Runs silently — no output, swallows errors.
+/// Called alongside `drain_agent_inbox` so linkage improves automatically.
+fn backfill_linkage_opportunistic() {
+    let Some(home) = quorum_dir() else {
+        return;
+    };
+    let (linked, _) = backfill_linkage_inner(&home);
+    if linked > 0 {
+        tracing::info!(linked, "auto-backfilled feedback finding_id linkage");
+    }
+}
+
 /// Drain agent-contributed verdicts from `<quorum_dir>/inbox/` into the
 /// feedback store before the caller loads feedback. Called at the top of the
 /// `Review` and `Stats` command arms. Pipeline + stats modules stay IO-pure;
@@ -157,11 +170,13 @@ async fn main() -> anyhow::Result<()> {
     match args.command {
         cli::Command::Review(opts) => {
             drain_agent_inbox();
+            backfill_linkage_opportunistic();
             let exit_code = run_review(opts).await;
             std::process::exit(exit_code);
         }
         cli::Command::Stats(opts) => {
             drain_agent_inbox();
+            backfill_linkage_opportunistic();
             // Resolve the quorum state dir honoring QUORUM_HOME (used by
             // hermetic tests and alternate installs). Falls back to
             // `$HOME/.quorum`, then to `./.quorum` as a last resort.
@@ -450,7 +465,10 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Daemon(opts) => {
             run_daemon(opts).await?;
         }
-        cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
+        cli::Command::Feedback(opts) => {
+            backfill_linkage_opportunistic();
+            std::process::exit(run_feedback(opts))
+        }
         cli::Command::Context(opts) => std::process::exit(run_context(opts)),
         cli::Command::Calibrate(opts) => std::process::exit(run_calibrate(opts)),
         cli::Command::BackfillLinkage(opts) => std::process::exit(run_backfill_linkage(opts)),
