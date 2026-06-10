@@ -613,6 +613,11 @@ pub struct ReviewOpts {
     #[arg(long, default_value = "code")]
     pub mode: crate::review_mode::ReviewMode,
 
+    /// Comma-separated skill axes to run (e.g. correctness,security).
+    /// Overrides the default mode-based axis resolution.
+    #[arg(long, value_delimiter = ',')]
+    pub axes: Vec<String>,
+
     /// Enable LLM micro-judge for speculative AST rules (also: QUORUM_JUDGE=1)
     #[arg(long)]
     pub judge: bool,
