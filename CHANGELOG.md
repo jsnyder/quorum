@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-06-10
+
+### Multi-axis review skills framework
+
+The largest feature since the logistic calibrator: a complete multi-axis review orchestration system that fans out specialized review skills in parallel and merges their findings deterministically.
+
+- **`--axes` flag (#417).** `quorum review file.rs --axes correctness,security,testing-antipatterns` runs three specialist reviews in parallel and dedupes/merges findings via the integrator. When no `--axes` are given, code-mode reviews auto-select the bundled skill set (code-mode macro). Graceful fallback to legacy single-prompt review when skill manifests are not installed.
+
+- **Skill manifest system (#404, #405, #406, #408).** TOML skill manifests with two-tier loading (bundled + user `~/.quorum/skills/`), symlink guards, size caps, namespace collision detection, and SHA-256 content hashing. Three bundled skills: correctness, security, testing-antipatterns.
+
+- **JSON output contract (#407, #409).** Strict `ParseErrorClass` taxonomy (Empty, NotJson, Truncated, InvalidStructure, PartialParse) with retry-on-truncation. `ModelCapabilities` detection for provider-specific features. Six-stage output sanitizer with NFKC Unicode normalization.
+
+- **Skill matrix executor (#410).** Skills x models x files expansion with `BudgetTracker` (token + call caps), fallback chain (preferred model -> global models -> fallback models), and per-cell audit logging via `SkillInvocationRecord` (26 fields, fs2-locked JSONL).
+
+- **Deterministic integrator (#411).** Clustering by `(file_path, finding_kind)` with noisy-or confidence fusion. Configurable confidence floor (default 0.30). `IntegratorDecisionRecord` audit trail with cluster details and suppression reasons.
+
+- **Model-family detection (#404).** Identifies Anthropic/OpenAI/Google/Mistral/Meta families from model strings for per-family prompt variant selection.
+
+### Finding ID linkage
+
+End-to-end finding identity tracking across reviews and feedback, enabling precise join between what quorum found and what the user decided about it.
+
+- **Finding metadata at review time (#436).** Schema v3 adds `title` and `file_path` columns to `review_finding_ids`. Metadata stored per finding for downstream resolution.
+
+- **Auto-link at feedback time (#436, #437).** Jaccard tokenization with markdown normalization (strips backticks, bold, underscores) auto-resolves `finding_id` when recording feedback. Explicit `--finding-id <ULID>` override available.
+
+- **Auto-backfill on every invocation (#439).** `review`, `stats`, and `feedback` commands silently re-link legacy entries that pre-date the linkage schema. New `quorum backfill-linkage` command for one-off manual runs.
+
+### GitHub integration
+
+- **Native PR comments (#313).** `quorum report findings.json --pr 42` and `quorum review src/*.rs --github-pr 42` post findings as GitHub PR review comments. Dismiss-and-replace protocol avoids stale comment accumulation. Diff-line validation, fork-safe two-stage CI workflow, multi-format repo URL parsing. Requires `GITHUB_TOKEN`.
+
+### Language support
+
+- **Full Go support (#398).** Language detection, tree-sitter-go parsing, 18 ast-grep rules (bare-error-format, bind-all-interfaces, defer-in-loop, empty-error-check, error-sprintf, errors-new-fmt, exec-command-variable, http-body-not-closed, ignored-error-return, init-side-effects, mutex-copy, nil-map-assign, range-loop-variable-capture, sql-string-concat, string-byte-slice-in-loop, sync-pool-non-pointer, tls-insecure-skip, waitgroup-add-in-goroutine), go.mod manifest parsing, golangci-lint integration, structural fingerprinting, 15 curated Context7 queries.
+
+### Calibrator
+
+- **7 structural features (#377).** `is_test_file`, `source_is_ast`, `finding_count_same_file`, `file_fp_rate`, `finding_span_lines`, `is_mock_or_fixture`, `is_generated_or_vendor`. Out-of-fold AP improved +71%.
+
+- **Review-time feature alignment (#379).** Fixed semantic drift between training-time and review-time feature computation for the 7 structural features.
+
+### AST rules
+
+- **3 new rules (#380, #381, #382).** Additional ast-grep rules with test fixtures and validation.
+
+### Bug fixes
+
+- **Diff-scope anchor-line matching (#383, #396).** Replaced span-overlap with anchor-line matching for diff-scoped reviews. Eliminates false positives where unchanged code adjacent to a diff hunk was incorrectly marked as in-scope.
+
+- **Reliability rollup (#374, #353, #289, #432).** Logistic module debug assertions hardened to runtime assertions for release safety. Embedding `embed_batch` result count validation. Incompatible `--rev` + `--path` flag combination now errors instead of silently ignoring. Temperature parameter conditionally omitted for reasoning models that reject it.
+
+- **Correctness rollup (#402).** Batch of correctness fixes across multiple subsystems.
+
+- **Input validation fixes (#428).** `--parallel` range validation, line range normalization, TypeScript fingerprinter fixes for arrow functions/methods/generics, CLI enum validators.
+
+- **High-priority safety batch.** Unsafe transmute elimination, NaN guards in calibrator math, JSONL concurrent write locking via fs2.
+
 ## [0.21.0] - 2026-05-10
 
 ### Review quality

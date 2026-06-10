@@ -10,13 +10,14 @@ git config core.hooksPath .githooks    # enable pre-commit hooks (fmt, clippy, c
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (1363 tests)
+cargo test --bin quorum        # run unit tests (1720 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review src/*.rs --ensemble      # cross-model ensemble review
+cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review
 cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
 cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
 cargo run -- review file.rs --live-registry  # enable download-count popularity lookups
