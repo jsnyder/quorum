@@ -292,7 +292,13 @@ fn system_prompt_for_mode(mode: crate::review_mode::ReviewMode) -> &'static str 
     match mode {
         crate::review_mode::ReviewMode::Plan => crate::prose_prompts::plan_system_prompt(),
         crate::review_mode::ReviewMode::Docs => crate::prose_prompts::docs_system_prompt(),
-        crate::review_mode::ReviewMode::Code => crate::llm_client::OpenAiClient::system_prompt(),
+        // Reserved modes fall back to the default code review prompt until
+        // their dedicated prompt templates are implemented.
+        crate::review_mode::ReviewMode::Code
+        | crate::review_mode::ReviewMode::Tests
+        | crate::review_mode::ReviewMode::Release => {
+            crate::llm_client::OpenAiClient::system_prompt()
+        }
     }
 }
 
