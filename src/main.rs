@@ -451,6 +451,7 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
         cli::Command::Context(opts) => std::process::exit(run_context(opts)),
         cli::Command::Calibrate(opts) => std::process::exit(run_calibrate(opts)),
+        cli::Command::BackfillLinkage(opts) => std::process::exit(run_backfill_linkage(opts)),
         cli::Command::Report(opts) => {
             let exit_code = run_report(opts).await;
             std::process::exit(exit_code);
@@ -2590,6 +2591,124 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
     Ok(entries)
 }
 
+// ── backfill-linkage ──────────────────────────────────────────────────
+
+/// Re-run `resolve_finding_id` on every unlinked feedback entry and
+/// atomically rewrite `feedback.jsonl`. Returns `(newly_linked, candidates)`
+/// where `candidates = total - already_linked`.
+fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
+    let feedback_path = quorum_home.join("feedback.jsonl");
+    let store = feedback::FeedbackStore::new(feedback_path.clone());
+    let mut entries = match store.load_all() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot read feedback: {e}");
+            return (0, 0);
+        }
+    };
+
+    let conn = match quorum::storage::initialize(quorum_home) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("error: cannot open review storage: {e}");
+            return (0, 0);
+        }
+    };
+    let log = review_log::ReviewLog::with_storage(conn);
+
+    let already_linked = entries.iter().filter(|e| e.finding_id.is_some()).count();
+    let candidates = entries.len() - already_linked;
+    let mut newly_linked = 0usize;
+
+    for entry in &mut entries {
+        if entry.finding_id.is_some() {
+            continue;
+        }
+        if let Some(fid) = log.resolve_finding_id(&entry.file_path, &entry.finding_title) {
+            entry.finding_id = Some(fid);
+            newly_linked += 1;
+        }
+    }
+
+    // Atomic rewrite: serialize to .tmp, then rename over the original.
+    if newly_linked > 0 {
+        let tmp_path = feedback_path.with_extension("jsonl.tmp");
+        let mut buf = String::new();
+        for entry in &entries {
+            match serde_json::to_string(entry) {
+                Ok(line) => {
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
+                Err(e) => {
+                    eprintln!("error: failed to serialize feedback entry: {e}");
+                    return (0, candidates);
+                }
+            }
+        }
+        if let Err(e) = std::fs::write(&tmp_path, &buf) {
+            eprintln!("error: failed to write {}: {e}", tmp_path.display());
+            return (0, candidates);
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &feedback_path) {
+            eprintln!("error: failed to rename tmp to feedback.jsonl: {e}");
+            return (0, candidates);
+        }
+    }
+
+    (newly_linked, candidates)
+}
+
+/// CLI entry point for `quorum backfill-linkage`.
+fn run_backfill_linkage(opts: cli::BackfillLinkageOpts) -> i32 {
+    let quorum_home = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+
+    // Pre-load counts for the summary.
+    let feedback_path = quorum_home.join("feedback.jsonl");
+    let store = feedback::FeedbackStore::new(feedback_path);
+    let all_entries = match store.load_all() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot read feedback: {e}");
+            return 3;
+        }
+    };
+    let total = all_entries.len();
+    let already_linked = all_entries
+        .iter()
+        .filter(|e| e.finding_id.is_some())
+        .count();
+    drop(all_entries);
+
+    let (newly_linked, candidates) = backfill_linkage_inner(&quorum_home);
+
+    let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let use_compact = output::should_use_compact(false);
+    let use_json = opts.json || (is_pipe && !use_compact);
+
+    if use_json {
+        let payload = serde_json::json!({
+            "total": total,
+            "already_linked": already_linked,
+            "candidates": candidates,
+            "newly_linked": newly_linked,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    } else if use_compact {
+        println!(
+            "backfill total={} already_linked={} candidates={} newly_linked={}",
+            total, already_linked, candidates, newly_linked
+        );
+    } else {
+        println!("Backfill linkage");
+        println!("  Total feedback entries: {}", total);
+        println!("  Already linked:         {}", already_linked);
+        println!("  Candidates (unlinked):  {}", candidates);
+        println!("  Newly linked:           {}", newly_linked);
+    }
+    0
+}
+
 /// CLI entry point for `quorum calibrate`.
 fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     if let Err(e) = opts.validate() {
@@ -3582,5 +3701,97 @@ mod join_health_tests {
             out.contains("per-finding precision math active"),
             "got:\n{out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod backfill_linkage_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a test environment with a SQLite DB containing a review record
+    /// with finding metadata, and a feedback.jsonl with an unlinked entry.
+    fn setup_backfill_env() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let qhome = dir.path().to_path_buf();
+
+        // Initialize SQLite storage and record a review with finding metadata.
+        let conn = quorum::storage::initialize(&qhome).unwrap();
+        let log = review_log::ReviewLog::with_storage(conn);
+        let record = review_log::ReviewRecord {
+            run_id: review_log::ReviewRecord::new_ulid(),
+            timestamp: chrono::Utc::now(),
+            quorum_version: "0.1".into(),
+            repo: None,
+            invoked_from: "test".into(),
+            model: "test".into(),
+            files_reviewed: 1,
+            lines_added: None,
+            lines_removed: None,
+            findings_by_severity: review_log::SeverityCounts::default(),
+            suppressed_by_rule: std::collections::HashMap::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            tokens_cache_read: 0,
+            duration_ms: 0,
+            flags: review_log::Flags {
+                deep: false,
+                parallel_n: 1,
+                ensemble: false,
+            },
+            mode: None,
+            context: review_log::ContextTelemetry::default(),
+            finding_ids: vec!["FIND1".into()],
+            skills_used: vec![],
+            skill_findings: None,
+            integrator_findings_out: None,
+        };
+        let meta = vec![review_log::FindingMeta {
+            id: "FIND1".into(),
+            title: "SQL injection risk".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+
+        // Write a feedback.jsonl with one unlinked entry that should match.
+        let fb_path = qhome.join("feedback.jsonl");
+        let fb_line = r#"{"file_path":"src/auth.rs","finding_title":"SQL injection risk","finding_category":"security","verdict":"tp","reason":"fixed","model":null,"timestamp":"2026-01-01T00:00:00Z","provenance":"human"}"#;
+        std::fs::write(&fb_path, format!("{fb_line}\n")).unwrap();
+
+        (dir, qhome)
+    }
+
+    #[test]
+    fn backfill_linkage_links_matching_entries() {
+        let (_dir, qhome) = setup_backfill_env();
+
+        let (newly_linked, candidates) = backfill_linkage_inner(&qhome);
+        assert_eq!(candidates, 1, "one unlinked entry");
+        assert_eq!(newly_linked, 1, "should link the matching entry");
+
+        // Verify the rewritten feedback.jsonl has finding_id populated.
+        let store = feedback::FeedbackStore::new(qhome.join("feedback.jsonl"));
+        let entries = store.load_all().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].finding_id.as_deref(),
+            Some("FIND1"),
+            "finding_id must be populated after backfill"
+        );
+    }
+
+    #[test]
+    fn backfill_linkage_is_idempotent() {
+        let (_dir, qhome) = setup_backfill_env();
+
+        // First run: links the entry.
+        let (linked1, cand1) = backfill_linkage_inner(&qhome);
+        assert_eq!(linked1, 1);
+        assert_eq!(cand1, 1);
+
+        // Second run: entry already linked, 0 newly linked.
+        let (linked2, cand2) = backfill_linkage_inner(&qhome);
+        assert_eq!(linked2, 0, "second run must link 0 — already done");
+        assert_eq!(cand2, 0, "no unlinked candidates remain");
     }
 }

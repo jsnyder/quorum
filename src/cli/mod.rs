@@ -26,6 +26,8 @@ pub enum Command {
     Calibrate(CalibrateOpts),
     /// Post review findings as GitHub PR comments
     Report(ReportOpts),
+    /// Re-link legacy feedback entries to review findings
+    BackfillLinkage(BackfillLinkageOpts),
     /// Print version
     Version,
 }
@@ -406,6 +408,13 @@ pub struct ReportOpts {
     /// Local diff file (default: fetch from PR API)
     #[arg(long)]
     pub diff_file: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+pub struct BackfillLinkageOpts {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser)]

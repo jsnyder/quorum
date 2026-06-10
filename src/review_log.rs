@@ -608,6 +608,15 @@ impl ReviewLog {
         }
     }
 
+    // ── Helpers ────────────────────────────────────────────────────────
+
+    /// Strip Markdown inline formatting (`backticks`, **bold**, _italic_)
+    /// and lowercase so that titles differing only in formatting match
+    /// during Jaccard comparison.
+    fn normalize_title(s: &str) -> String {
+        s.replace(['`', '*', '_'], "").to_lowercase()
+    }
+
     // ── Finding-ID resolution ──────────────────────────────────────────
 
     /// Attempt to match a `(file_path, finding_title)` pair against the
@@ -643,14 +652,14 @@ impl ReviewLog {
             .filter_map(|r| r.ok())
             .collect();
 
-        let query_lower = finding_title.to_lowercase();
+        let query_lower = Self::normalize_title(finding_title);
         let query_words: std::collections::HashSet<&str> = query_lower.split_whitespace().collect();
 
         let mut best_id: Option<String> = None;
         let mut best_score: f64 = 0.0;
 
         for (fid, title) in &candidates {
-            let title_lower = title.to_lowercase();
+            let title_lower = Self::normalize_title(title);
             let title_words: std::collections::HashSet<&str> =
                 title_lower.split_whitespace().collect();
 
@@ -2512,5 +2521,38 @@ mod tests {
         log.record(&record).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_finding_id_matches_despite_backticks() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "`predict_one` trusts inconsistent public `LogisticFit` field lengths".into(),
+            file_path: "src/logistic.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id(
+            "src/logistic.rs",
+            "predict_one trusts inconsistent public LogisticFit field lengths",
+        );
+        assert_eq!(result, Some("F1".to_string()));
+    }
+
+    #[test]
+    fn normalize_title_strips_markdown() {
+        assert_eq!(
+            ReviewLog::normalize_title("`predict_one` is **bad**"),
+            "predictone is bad"
+        );
+        assert_eq!(
+            ReviewLog::normalize_title("no_formatting_here"),
+            "noformattinghere"
+        );
+        assert_eq!(ReviewLog::normalize_title(""), "");
+        assert_eq!(ReviewLog::normalize_title("plain text"), "plain text");
     }
 }
