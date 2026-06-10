@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(rtk git:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit -m ':*)",
+      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+      "WebSearch"
     ]
   }
 }

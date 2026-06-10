@@ -15,6 +15,16 @@ use ulid::Ulid;
 use crate::finding::Severity;
 use crate::storage::StorageHandle;
 
+/// Lightweight per-finding metadata written alongside `ReviewRecord` to the
+/// `review_finding_ids` table. Carries the finding's title and originating
+/// file path so downstream analytics (stats, feedback joins) can display
+/// context without re-parsing the full review output.
+pub struct FindingMeta {
+    pub id: String,
+    pub title: String,
+    pub file_path: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SeverityCounts {
     #[serde(default)]
@@ -582,6 +592,109 @@ impl ReviewLog {
         }
     }
 
+    /// Append one record with enriched per-finding metadata (title, file_path).
+    ///
+    /// The JSONL backend ignores `meta` (finding metadata is embedded in the
+    /// serialized record's `finding_ids`). The SQLite backend writes the
+    /// `title` and `file_path` columns into `review_finding_ids`.
+    pub fn record_with_meta(
+        &self,
+        entry: &ReviewRecord,
+        meta: &[FindingMeta],
+    ) -> anyhow::Result<()> {
+        match &self.backend {
+            Backend::Jsonl(path) => Self::record_jsonl(path, entry),
+            Backend::Sqlite(handle) => Self::record_sqlite_with_meta(handle, entry, meta),
+        }
+    }
+
+    // ── Finding-ID resolution ──────────────────────────────────────────
+
+    /// Attempt to match a `(file_path, finding_title)` pair against the
+    /// `review_finding_ids` table using word-level Jaccard similarity with
+    /// a substring bonus. Returns the best-matching `finding_id` when the
+    /// combined score meets or exceeds the 0.6 threshold, or `None`
+    /// otherwise.
+    ///
+    /// Only the SQLite backend is supported; the JSONL backend always
+    /// returns `None`. Legacy rows with empty titles are filtered at the
+    /// SQL level (`title <> ''`).
+    pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
+        let Backend::Sqlite(handle) = &self.backend else {
+            return None;
+        };
+        let conn = handle.lock().ok()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT rfi.finding_id, rfi.title
+                 FROM review_finding_ids rfi
+                 JOIN reviews r ON r.run_id = rfi.run_id
+                 WHERE rfi.file_path = ?1
+                   AND rfi.title <> ''
+                 ORDER BY r.timestamp DESC
+                 LIMIT 50",
+            )
+            .ok()?;
+        let candidates: Vec<(String, String)> = stmt
+            .query_map(rusqlite::params![file_path], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .ok()?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let query_lower = finding_title.to_lowercase();
+        let query_words: std::collections::HashSet<&str> = query_lower.split_whitespace().collect();
+
+        let mut best_id: Option<String> = None;
+        let mut best_score: f64 = 0.0;
+
+        for (fid, title) in &candidates {
+            let title_lower = title.to_lowercase();
+            let title_words: std::collections::HashSet<&str> =
+                title_lower.split_whitespace().collect();
+
+            let intersection = query_words.intersection(&title_words).count();
+            let union = query_words.union(&title_words).count();
+            let jaccard = if union > 0 {
+                intersection as f64 / union as f64
+            } else {
+                0.0
+            };
+
+            let substring_bonus =
+                if title_lower.contains(&query_lower) || query_lower.contains(&title_lower) {
+                    0.3
+                } else {
+                    0.0
+                };
+
+            let score = (jaccard + substring_bonus).min(1.0);
+            if score > best_score {
+                best_score = score;
+                best_id = Some(fid.clone());
+            }
+        }
+
+        if best_score >= 0.6 {
+            tracing::debug!(
+                finding_id = best_id.as_deref().unwrap_or(""),
+                score = best_score,
+                file = file_path,
+                "auto-linked feedback to finding"
+            );
+            best_id
+        } else {
+            tracing::info!(
+                file = file_path,
+                title = finding_title,
+                best_score = best_score,
+                "no auto-link match found for feedback"
+            );
+            None
+        }
+    }
+
     // ── JSONL backend ──────────────────────────────────────────────────
 
     fn record_jsonl(path: &Path, entry: &ReviewRecord) -> anyhow::Result<()> {
@@ -671,6 +784,83 @@ impl ReviewLog {
             tx.execute(
                 "INSERT INTO review_finding_ids (run_id, finding_id) VALUES (?1, ?2)",
                 params![entry.run_id, fid],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Like `record_sqlite` but writes enriched finding metadata (title,
+    /// file_path) into the `review_finding_ids` child table instead of
+    /// bare finding_ids from the entry.
+    fn record_sqlite_with_meta(
+        handle: &StorageHandle,
+        entry: &ReviewRecord,
+        meta: &[FindingMeta],
+    ) -> anyhow::Result<()> {
+        use rusqlite::params;
+
+        let conn = handle
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let tx = conn.unchecked_transaction()?;
+
+        let context_json = serde_json::to_string(&entry.context)?;
+        let suppressed_json = serde_json::to_string(&entry.suppressed_by_rule)?;
+        let ts = entry.timestamp.to_rfc3339();
+
+        #[allow(clippy::cast_possible_wrap)]
+        tx.execute(
+            "INSERT INTO reviews (
+                run_id, timestamp, quorum_version, repo, invoked_from, model,
+                files_reviewed, lines_added, lines_removed,
+                critical, high, medium, low, info,
+                suppressed_by_rule,
+                tokens_in, tokens_out, tokens_cache_read, duration_ms,
+                flag_deep, flag_parallel_n, flag_ensemble,
+                mode, context
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13, ?14,
+                ?15,
+                ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22,
+                ?23, ?24
+            )",
+            params![
+                entry.run_id,
+                ts,
+                entry.quorum_version,
+                entry.repo,
+                entry.invoked_from,
+                entry.model,
+                entry.files_reviewed,
+                entry.lines_added.map(i64::from),
+                entry.lines_removed.map(i64::from),
+                i64::from(entry.findings_by_severity.critical),
+                i64::from(entry.findings_by_severity.high),
+                i64::from(entry.findings_by_severity.medium),
+                i64::from(entry.findings_by_severity.low),
+                i64::from(entry.findings_by_severity.info),
+                suppressed_json,
+                entry.tokens_in as i64,
+                entry.tokens_out as i64,
+                entry.tokens_cache_read as i64,
+                entry.duration_ms as i64,
+                i32::from(entry.flags.deep),
+                i64::from(entry.flags.parallel_n),
+                i32::from(entry.flags.ensemble),
+                entry.mode,
+                context_json,
+            ],
+        )?;
+
+        for fm in meta {
+            tx.execute(
+                "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path) VALUES (?1, ?2, ?3, ?4)",
+                params![entry.run_id, fm.id, fm.title, fm.file_path],
             )?;
         }
 
@@ -2163,5 +2353,164 @@ mod tests {
             !json.contains("integrator_findings_out"),
             "None integrator_findings_out must not write the key: {json}"
         );
+    }
+
+    // ── FindingMeta / record_with_meta tests ───────────────────────────
+
+    #[test]
+    fn sqlite_finding_meta_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = test_review_record("01TEST_META_ROUNDTRIP001");
+        record.finding_ids = vec!["F1".into(), "F2".into()];
+        let meta = vec![
+            FindingMeta {
+                id: "F1".into(),
+                title: "SQL injection".into(),
+                file_path: "src/auth.rs".into(),
+            },
+            FindingMeta {
+                id: "F2".into(),
+                title: "XSS risk".into(),
+                file_path: "src/web.rs".into(),
+            },
+        ];
+        log.record_with_meta(&record, &meta).unwrap();
+
+        let conn = match &log.backend {
+            Backend::Sqlite(h) => h.lock().unwrap(),
+            _ => panic!("expected sqlite"),
+        };
+        let mut stmt = conn
+            .prepare(
+                "SELECT finding_id, title, file_path FROM review_finding_ids WHERE run_id = ?1 ORDER BY rowid",
+            )
+            .unwrap();
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map(rusqlite::params![record.run_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            ("F1".into(), "SQL injection".into(), "src/auth.rs".into())
+        );
+        assert_eq!(
+            rows[1],
+            ("F2".into(), "XSS risk".into(), "src/web.rs".into())
+        );
+    }
+
+    #[test]
+    fn sqlite_finding_meta_empty_vec_writes_no_child_rows() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let record = test_review_record("01TEST_META_EMPTY0000001");
+        log.record_with_meta(&record, &[]).unwrap();
+
+        let loaded = log.load_all().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].finding_ids.is_empty());
+    }
+
+    #[test]
+    fn sqlite_finding_meta_review_record_still_loads_via_load_all() {
+        // Verify the reviews INSERT is compatible with load_all's JOIN
+        // path even when we write via record_with_meta.
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = test_review_record("01TEST_META_LOADALL0001");
+        record.finding_ids = vec!["FA".into()];
+        let meta = vec![FindingMeta {
+            id: "FA".into(),
+            title: "Buffer overflow".into(),
+            file_path: "src/lib.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+
+        let loaded = log.load_all().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].finding_ids, vec!["FA"]);
+    }
+
+    // ── resolve_finding_id tests ─────────────────────────────────────
+
+    #[test]
+    fn resolve_finding_id_exact_match() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection risk".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("src/auth.rs", "SQL injection risk");
+        assert_eq!(result, Some("F1".to_string()));
+    }
+
+    #[test]
+    fn resolve_finding_id_partial_match() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection vulnerability in auth module".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
+        assert_eq!(result, Some("F1".to_string()));
+    }
+
+    #[test]
+    fn resolve_finding_id_no_match_wrong_file() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("src/other.rs", "SQL injection");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_finding_id_no_match_below_threshold() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection vulnerability".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result =
+            log.resolve_finding_id("src/auth.rs", "completely unrelated finding title xyz");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_finding_id_skips_legacy_empty_title() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["LEGACY".into()];
+        log.record(&record).unwrap();
+        let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
+        assert_eq!(result, None);
     }
 }

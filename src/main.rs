@@ -1972,6 +1972,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             context_telem = review_log::ContextTelemetry::default();
         }
 
+        let finding_meta: Vec<review_log::FindingMeta> = file_results
+            .iter()
+            .flat_map(|fr| {
+                fr.findings.iter().map(|f| review_log::FindingMeta {
+                    id: f.id.clone(),
+                    title: f.title.clone(),
+                    file_path: fr.file_path.clone(),
+                })
+            })
+            .collect();
+
         let record = review_log::ReviewRecord {
             run_id: run_id.clone(),
             timestamp: chrono::Utc::now(),
@@ -2004,7 +2015,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             skill_findings: None,
             integrator_findings_out: None,
         };
-        if let Err(e) = review_log.record(&record) {
+        if let Err(e) = review_log.record_with_meta(&record, &finding_meta) {
             eprintln!("Warning: failed to write review log: {}", e);
         }
     }
@@ -2314,6 +2325,7 @@ fn run_feedback_inner(
     provenance: Option<feedback::Provenance>,
     json: bool,
     feedback_path: &std::path::Path,
+    finding_id_override: Option<String>,
 ) -> (i32, String) {
     let mut verdict = match cli::parse_verdict(verdict_str) {
         Ok(v) => v,
@@ -2335,6 +2347,14 @@ fn run_feedback_inner(
         *blamed_chunk_ids = parsed_chunks;
     }
 
+    // Auto-resolve finding_id from the review log when not explicitly provided.
+    let finding_id = finding_id_override.or_else(|| {
+        let quorum_home = quorum_dir()?;
+        let handle = crate::storage::initialize(&quorum_home).ok()?;
+        let log = review_log::ReviewLog::with_storage(handle);
+        log.resolve_finding_id(file, finding)
+    });
+
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
         finding_title: finding.to_string(),
@@ -2351,7 +2371,7 @@ fn run_feedback_inner(
         timestamp: chrono::Utc::now(),
         provenance: provenance.unwrap_or(feedback::Provenance::Human),
         fp_kind,
-        finding_id: None,
+        finding_id,
         rule_id: None,
         in_diff,
         skill_name: None,
@@ -2419,6 +2439,14 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                 return 3;
             }
         };
+        // Explicit --finding-id bypasses auto-resolve; otherwise fall back
+        // to auto-resolution from the review log.
+        let finding_id = opts.finding_id.clone().or_else(|| {
+            let quorum_home = quorum_dir()?;
+            let handle = crate::storage::initialize(&quorum_home).ok()?;
+            let log = review_log::ReviewLog::with_storage(handle);
+            log.resolve_finding_id(&opts.file, &opts.finding)
+        });
         let input = feedback::ExternalVerdictInput {
             file_path: opts.file.clone(),
             finding_title: opts.finding.clone(),
@@ -2429,6 +2457,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             agent_model: opts.agent_model.clone(),
             confidence: opts.confidence,
             in_diff: opts.in_diff,
+            finding_id,
         };
         if let Some(parent) = feedback_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
@@ -2521,6 +2550,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.provenance,
             opts.json,
             &feedback_path,
+            opts.finding_id.clone(),
         );
         if exit_code != 0 {
             eprintln!("{}", output);
@@ -3099,6 +3129,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3124,6 +3155,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -3146,6 +3178,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3169,6 +3202,7 @@ mod feedback_tests {
             Some(feedback::Provenance::PostFix),
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3192,6 +3226,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3215,6 +3250,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -3238,6 +3274,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -3267,6 +3304,7 @@ mod feedback_tests {
             None,
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3290,6 +3328,7 @@ mod feedback_tests {
             None, // provenance
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -3342,6 +3381,7 @@ mod feedback_tests {
             None, // provenance
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
         assert!(
@@ -3370,6 +3410,7 @@ mod feedback_tests {
             None, // provenance
             false,
             &path,
+            None, // finding_id_override
         );
         assert_eq!(
             exit_code, 0,

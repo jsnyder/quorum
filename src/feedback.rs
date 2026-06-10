@@ -150,6 +150,7 @@ pub struct ExternalVerdictInput {
     pub agent_model: Option<String>,
     pub confidence: Option<f32>,
     pub in_diff: Option<bool>,
+    pub finding_id: Option<String>,
 }
 
 /// #123 Layer 1 (Task 10): adoption telemetry for the FpKind taxonomy.
@@ -268,6 +269,7 @@ impl From<ExternalVerdictInputWire> for ExternalVerdictInput {
             agent_model: w.agent_model,
             confidence: w.confidence,
             in_diff: None,
+            finding_id: None,
         }
     }
 }
@@ -828,7 +830,7 @@ impl FeedbackStore {
                 confidence,
             },
             fp_kind: None,
-            finding_id: None,
+            finding_id: input.finding_id,
             rule_id: None,
             in_diff: input.in_diff,
             skill_name: None,
@@ -1486,6 +1488,7 @@ mod tests {
             agent_model: Some("gemini-3-pro-preview".into()),
             confidence: Some(0.85),
             in_diff: None,
+            finding_id: None,
         };
         store.record_external(input).unwrap();
         let all = store.load_all().unwrap();
@@ -1522,6 +1525,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1545,6 +1549,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("empty agent must be rejected");
         assert!(
@@ -1567,6 +1572,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1587,6 +1593,7 @@ mod tests {
                 agent_model: None,
                 confidence: Some(1.5),
                 in_diff: None,
+                finding_id: None,
             })
             .unwrap();
         let all = store.load_all().unwrap();
@@ -1617,6 +1624,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("ContextMisleading must be rejected for External provenance");
         assert!(
@@ -1693,6 +1701,7 @@ mod tests {
                 agent_model: None,
                 confidence: None,
                 in_diff: None,
+                finding_id: None,
             })
             .expect_err("Wontfix must be rejected for External provenance");
         assert!(

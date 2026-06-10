@@ -825,6 +825,24 @@ mod tests {
         assert!(out.contains("injection"), "title content missing: {out}");
     }
 
+    // -- JSON finding id verification --
+
+    #[test]
+    fn json_output_includes_finding_id() {
+        let f = FindingBuilder::new()
+            .title("SQL injection")
+            .severity(Severity::High)
+            .category("security".into())
+            .lines(42, 42)
+            .build();
+        assert!(!f.id.is_empty(), "Finding should have a ULID id");
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(
+            json.contains(&format!("\"id\":\"{}\"", f.id)),
+            "JSON should include the finding id field: {json}"
+        );
+    }
+
     // -- format_compact_review --
 
     #[test]
