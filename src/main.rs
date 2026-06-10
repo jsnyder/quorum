@@ -948,7 +948,6 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
 
 /// The resolved set of skill axes for a review invocation.
 #[derive(Debug)]
-#[allow(dead_code)] // wired in Task 5
 struct ResolvedAxes {
     skills: Vec<crate::skill_manifest::LoadedSkill>,
     source: crate::skill_audit::AxisSelectionSource,
@@ -956,12 +955,10 @@ struct ResolvedAxes {
 
 /// The default code-mode macro axes, applied when no `--axes` flag is given
 /// and the mode is `Code` with no legacy flags active.
-#[allow(dead_code)] // wired in Task 5
 const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
 
 /// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
 /// to the lib-side `skill_executor::LlmReviewer` trait.
-#[allow(dead_code)] // wired in Task 6
 struct SkillLlmAdapter(std::sync::Arc<llm_client::OpenAiClient>);
 
 impl quorum::skill_executor::LlmReviewer for SkillLlmAdapter {
@@ -990,7 +987,6 @@ impl quorum::skill_executor::LlmReviewer for SkillLlmAdapter {
 /// - `Ok(Some(ResolvedAxes))` — a concrete skill set to execute.
 /// - `Ok(None)`               — fall back to the legacy single-prompt pipeline.
 /// - `Err(String)`            — user-facing error message (reserved mode, conflict, unknown axis).
-#[allow(dead_code)] // wired in Task 5
 fn resolve_axes(
     axes: &[String],
     mode: crate::review_mode::ReviewMode,
@@ -1576,6 +1572,69 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         };
     let llm_reviewer: Option<&dyn LlmReviewer> = llm_client.as_deref().map(|c| c as _);
 
+    // -----------------------------------------------------------------------
+    // Skill axis resolution: load manifests, resolve --axes, build executor
+    // infrastructure.
+    // -----------------------------------------------------------------------
+    let quorum_home_for_skills = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let bundled_skills_dir = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        exe_dir.join("skills")
+    };
+    let user_skills_dir = quorum_home_for_skills.join("skills");
+
+    let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load skill manifests; skills disabled");
+            vec![]
+        }
+    };
+
+    let resolved_axes = match resolve_axes(
+        &opts.axes,
+        opts.mode,
+        opts.deep,
+        opts.daemon,
+        opts.ensemble,
+        &available_skills,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 3;
+        }
+    };
+
+    // Warn if --axes given but no LLM client.
+    if resolved_axes.is_some() && llm_client.is_none() && !opts.axes.is_empty() {
+        eprintln!("warning: --axes requires an LLM client; running AST-only review");
+    }
+
+    // Log axis resolution.
+    if let Some(ref ra) = resolved_axes {
+        let names: Vec<&str> = ra.skills.iter().map(|s| s.manifest.name.as_str()).collect();
+        tracing::info!(axes = ?names, source = ?ra.source, "skill axes resolved");
+    }
+
+    // Build skill executor infrastructure when axes are resolved AND LLM is available.
+    let skill_adapter: Option<SkillLlmAdapter> = llm_client.as_ref().map(|c| SkillLlmAdapter(c.clone()));
+    let skill_audit_writer: Option<std::sync::Arc<skill_audit::AuditWriter<skill_audit::SkillInvocationRecord>>> =
+        resolved_axes.as_ref().map(|_| {
+            std::sync::Arc::new(skill_audit::AuditWriter::new(
+                quorum_home_for_skills.join(skill_audit::SKILL_INVOCATIONS_FILE),
+            ))
+        });
+    let integrator_audit_writer: Option<std::sync::Arc<skill_audit::AuditWriter<skill_audit::IntegratorDecisionRecord>>> =
+        resolved_axes.as_ref().map(|_| {
+            std::sync::Arc::new(skill_audit::AuditWriter::new(
+                quorum_home_for_skills.join(skill_audit::INTEGRATOR_DECISIONS_FILE),
+            ))
+        });
+
     // Build pipeline config
     let models = if opts.ensemble {
         // Ensemble: use QUORUM_ENSEMBLE_MODELS or default set
@@ -2073,26 +2132,112 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 }
             }
 
-            // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others
+            // Run pipeline: full (AST + LLM) for supported languages, LLM-only for others.
+            // When skills are active, suppress the single-prompt LLM in the pipeline
+            // (AST-only), then run the skill matrix executor + integrator after.
+            let use_skills = resolved_axes.is_some() && skill_adapter.is_some();
+            let llm_for_pipeline: Option<&dyn LlmReviewer> = if use_skills {
+                None
+            } else {
+                llm_reviewer
+            };
+
             let review_result = if let Some(l) = lang {
                 pipeline::review_source(
                     file_path,
                     &source,
                     l,
-                    llm_reviewer,
+                    llm_for_pipeline,
                     &pipeline_cfg,
                     Some(&parse_cache),
                 )
                 .await
             } else {
-                eprintln!(
-                    "Note: No AST support for {}, using LLM-only review",
-                    file_path.display()
-                );
-                pipeline::review_file(file_path, &source, None, llm_reviewer, &pipeline_cfg).await
+                if !use_skills {
+                    eprintln!(
+                        "Note: No AST support for {}, using LLM-only review",
+                        file_path.display()
+                    );
+                }
+                pipeline::review_file(file_path, &source, None, llm_for_pipeline, &pipeline_cfg).await
             };
             match review_result {
                 Ok(mut result) => {
+                    // If skills active, run executor + integrator.
+                    if use_skills
+                        && let (Some(ra), Some(adapter)) = (&resolved_axes, &skill_adapter)
+                    {
+                            let file_str = file_path.to_string_lossy().to_string();
+                            let file_sha = {
+                                use sha2::{Sha256, Digest};
+                                let mut h = Sha256::new();
+                                h.update(source.as_bytes());
+                                hex::encode(h.finalize())
+                            };
+
+                            let _exec_span = tracing::info_span!(
+                                "phase.skill_executor",
+                                skills = ra.skills.len(),
+                                file = %file_str,
+                            ).entered();
+
+                            let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
+                                run_id: run_id.clone(),
+                                axis_selection_source: ra.source.clone(),
+                                global_models: pipeline_cfg.models.clone(),
+                                ensemble_pool: vec![],
+                                ensemble: false,
+                                max_tokens_per_review: 500_000,
+                                max_calls_per_review: 50,
+                                audit_writer: skill_audit_writer.clone(),
+                            };
+                            let files_input = vec![(file_str.clone(), file_sha, source.clone())];
+                            let cell_results = quorum::skill_executor::execute_matrix(
+                                &ra.skills, &files_input, adapter, &exec_cfg,
+                            );
+
+                            drop(_exec_span);
+
+                            let _int_span = tracing::info_span!(
+                                "phase.integrator",
+                                input_findings = cell_results.iter().map(|c| c.findings.len()).sum::<usize>(),
+                                file = %file_str,
+                            ).entered();
+
+                            let tagged: Vec<quorum::skill_integrator::TaggedFinding> = cell_results
+                                .iter()
+                                .flat_map(|cr| {
+                                    cr.findings.iter().map(|f| quorum::skill_integrator::TaggedFinding {
+                                        file_path: file_str.clone(),
+                                        finding: f.clone(),
+                                    })
+                                })
+                                .collect();
+
+                            let int_cfg = quorum::skill_integrator::IntegratorConfig {
+                                run_id: run_id.clone(),
+                                confidence_floor: 0.30,
+                                audit_writer: integrator_audit_writer.clone(),
+                            };
+                            let int_output = quorum::skill_integrator::integrate(tagged, &int_cfg);
+
+                            tracing::info!(
+                                findings = int_output.findings.len(),
+                                suppressed = int_output.suppressed.len(),
+                                "integrator complete"
+                            );
+
+                            // Accumulate token usage from all skill cells.
+                            for cr in &cell_results {
+                                result.usage.prompt_tokens += cr.usage.prompt_tokens;
+                                result.usage.completion_tokens += cr.usage.completion_tokens;
+                                result.usage.cached_tokens += cr.usage.cached_tokens;
+                            }
+
+                            result.findings.extend(int_output.findings);
+                            result.suppressed += int_output.suppressed.len();
+                    }
+
                     // Apply project-level suppressions
                     let file_display = result.file_path.clone();
                     let sup_result = suppress::apply_suppressions(
@@ -2136,6 +2281,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let rt = tokio::runtime::Handle::current();
         let mut handles = Vec::new();
 
+        // Arc-wrap skill infrastructure for cross-thread sharing.
+        let resolved_axes_arc: Option<std::sync::Arc<ResolvedAxes>> =
+            resolved_axes.map(std::sync::Arc::new);
+        let skill_audit_writer_arc = skill_audit_writer;
+        let integrator_audit_writer_arc = integrator_audit_writer;
+
         for (idx, file_path) in opts.files.iter().enumerate() {
             let file_path = file_path.clone();
             let pipeline_cfg = pipeline_cfg.clone();
@@ -2143,6 +2294,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let _show_suppressed = opts.show_suppressed;
             let deep = opts.deep;
             let llm_client = llm_client.clone();
+            let resolved_axes = resolved_axes_arc.clone();
+            let skill_audit_writer = skill_audit_writer_arc.clone();
+            let integrator_audit_writer = integrator_audit_writer_arc.clone();
+            let run_id = run_id.clone();
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
@@ -2212,9 +2367,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     }
                 }
 
-                // Standard review path
-                let llm_reviewer: Option<&dyn pipeline::LlmReviewer> =
-                    llm_client.as_deref().map(|c| c as _);
+                // Standard review path. When skills are active, suppress single-prompt LLM.
+                let use_skills = resolved_axes.is_some() && llm_client.is_some();
+                let llm_reviewer: Option<&dyn pipeline::LlmReviewer> = if use_skills {
+                    None
+                } else {
+                    llm_client.as_deref().map(|c| c as _)
+                };
                 let parse_cache = cache::ParseCache::new(128);
                 // `spawn_blocking` runs on Tokio's blocking pool (separate from
                 // runtime workers), so `Handle::block_on` here is sound per
@@ -2247,13 +2406,89 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
                 match review_result {
                     Ok(mut result) => {
+                        // If skills active, run executor + integrator.
+                        if use_skills
+                            && let (Some(ra), Some(client)) = (&resolved_axes, &llm_client)
+                        {
+                                let file_str = file_path.to_string_lossy().to_string();
+                                let file_sha = {
+                                    use sha2::{Sha256, Digest};
+                                    let mut h = Sha256::new();
+                                    h.update(source.as_bytes());
+                                    hex::encode(h.finalize())
+                                };
+
+                                let _exec_span = tracing::info_span!(
+                                    "phase.skill_executor",
+                                    skills = ra.skills.len(),
+                                    file = %file_str,
+                                ).entered();
+
+                                let adapter = SkillLlmAdapter(client.clone());
+                                let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
+                                    run_id: run_id.clone(),
+                                    axis_selection_source: ra.source.clone(),
+                                    global_models: pipeline_cfg.models.clone(),
+                                    ensemble_pool: vec![],
+                                    ensemble: false,
+                                    max_tokens_per_review: 500_000,
+                                    max_calls_per_review: 50,
+                                    audit_writer: skill_audit_writer.clone(),
+                                };
+                                let files_input = vec![(file_str.clone(), file_sha, source.clone())];
+                                let cell_results = quorum::skill_executor::execute_matrix(
+                                    &ra.skills, &files_input, &adapter, &exec_cfg,
+                                );
+
+                                drop(_exec_span);
+
+                                let _int_span = tracing::info_span!(
+                                    "phase.integrator",
+                                    input_findings = cell_results.iter().map(|c| c.findings.len()).sum::<usize>(),
+                                    file = %file_str,
+                                ).entered();
+
+                                let tagged: Vec<quorum::skill_integrator::TaggedFinding> = cell_results
+                                    .iter()
+                                    .flat_map(|cr| {
+                                        cr.findings.iter().map(|f| quorum::skill_integrator::TaggedFinding {
+                                            file_path: file_str.clone(),
+                                            finding: f.clone(),
+                                        })
+                                    })
+                                    .collect();
+
+                                let int_cfg = quorum::skill_integrator::IntegratorConfig {
+                                    run_id: run_id.clone(),
+                                    confidence_floor: 0.30,
+                                    audit_writer: integrator_audit_writer.clone(),
+                                };
+                                let int_output = quorum::skill_integrator::integrate(tagged, &int_cfg);
+
+                                tracing::info!(
+                                    findings = int_output.findings.len(),
+                                    suppressed = int_output.suppressed.len(),
+                                    "integrator complete"
+                                );
+
+                                // Accumulate token usage from all skill cells.
+                                for cr in &cell_results {
+                                    result.usage.prompt_tokens += cr.usage.prompt_tokens;
+                                    result.usage.completion_tokens += cr.usage.completion_tokens;
+                                    result.usage.cached_tokens += cr.usage.cached_tokens;
+                                }
+
+                                result.findings.extend(int_output.findings);
+                                result.suppressed += int_output.suppressed.len();
+                        }
+
                         let sup_result = suppress::apply_suppressions(
                             result.findings,
                             &suppress_rules,
                             &file_display,
                         );
                         result.findings = sup_result.kept;
-                        result.suppressed = sup_result.suppressed.len();
+                        result.suppressed += sup_result.suppressed.len();
                         (idx, Ok((result, sup_result.suppressed)))
                     }
                     Err(e) => (idx, Err(e)),
