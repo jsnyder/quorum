@@ -119,7 +119,10 @@ mod tests {
         assert_eq!("Plan".parse::<ReviewMode>().unwrap(), ReviewMode::Plan);
         assert_eq!("DOCS".parse::<ReviewMode>().unwrap(), ReviewMode::Docs);
         assert_eq!("TESTS".parse::<ReviewMode>().unwrap(), ReviewMode::Tests);
-        assert_eq!("Release".parse::<ReviewMode>().unwrap(), ReviewMode::Release);
+        assert_eq!(
+            "Release".parse::<ReviewMode>().unwrap(),
+            ReviewMode::Release
+        );
     }
 
     #[test]
@@ -163,10 +166,7 @@ mod tests {
 
     #[test]
     fn reserved_modes_parse() {
-        assert_eq!(
-            "tests".parse::<ReviewMode>().unwrap(),
-            ReviewMode::Tests
-        );
+        assert_eq!("tests".parse::<ReviewMode>().unwrap(), ReviewMode::Tests);
         assert_eq!(
             "release".parse::<ReviewMode>().unwrap(),
             ReviewMode::Release

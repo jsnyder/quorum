@@ -1166,7 +1166,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1185,7 +1187,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["correctness".into(), "security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1205,7 +1209,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1214,7 +1220,11 @@ mod axes_tests {
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
         );
-        let names: Vec<&str> = resolved.skills.iter().map(|s| s.manifest.name.as_str()).collect();
+        let names: Vec<&str> = resolved
+            .skills
+            .iter()
+            .map(|s| s.manifest.name.as_str())
+            .collect();
         assert_eq!(names, &["correctness", "security", "testing-antipatterns"]);
     }
 
@@ -1225,7 +1235,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
-            true, false, false,
+            true,
+            false,
+            false,
             &skills,
         );
         assert!(result.unwrap().is_none());
@@ -1238,7 +1250,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
-            false, true, false,
+            false,
+            true,
+            false,
             &skills,
         );
         assert!(result.unwrap().is_none());
@@ -1251,7 +1265,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
-            false, false, true,
+            false,
+            false,
+            true,
             &skills,
         );
         assert!(result.unwrap().is_none());
@@ -1264,7 +1280,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into()],
             crate::review_mode::ReviewMode::Code,
-            true, false, false,
+            true,
+            false,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
@@ -1278,11 +1296,17 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, true,
+            false,
+            false,
+            true,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("--ensemble"), "expected --ensemble in error: {}", err);
+        assert!(
+            err.contains("--ensemble"),
+            "expected --ensemble in error: {}",
+            err
+        );
     }
 
     // A9: explicit_axes_with_daemon_errors
@@ -1292,11 +1316,17 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, true, false,
+            false,
+            true,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("--daemon"), "expected --daemon in error: {}", err);
+        assert!(
+            err.contains("--daemon"),
+            "expected --daemon in error: {}",
+            err
+        );
     }
 
     // A10: reserved_mode_tests_errors
@@ -1306,12 +1336,22 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Tests,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("test-coverage"), "expected test-coverage in error: {}", err);
-        assert!(err.contains("mode 'tests'"), "expected mode name in error: {}", err);
+        assert!(
+            err.contains("test-coverage"),
+            "expected test-coverage in error: {}",
+            err
+        );
+        assert!(
+            err.contains("mode 'tests'"),
+            "expected mode name in error: {}",
+            err
+        );
     }
 
     // A11: reserved_mode_release_errors
@@ -1321,12 +1361,22 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Release,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("release-readiness"), "expected release-readiness in error: {}", err);
-        assert!(err.contains("mode 'release'"), "expected mode name in error: {}", err);
+        assert!(
+            err.contains("release-readiness"),
+            "expected release-readiness in error: {}",
+            err
+        );
+        assert!(
+            err.contains("mode 'release'"),
+            "expected mode name in error: {}",
+            err
+        );
     }
 
     // A12: unknown_axis_errors
@@ -1336,12 +1386,22 @@ mod axes_tests {
         let result = resolve_axes(
             &["nonexistent".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("unknown skill axis 'nonexistent'"), "expected unknown axis in error: {}", err);
-        assert!(err.contains("available:"), "expected available list in error: {}", err);
+        assert!(
+            err.contains("unknown skill axis 'nonexistent'"),
+            "expected unknown axis in error: {}",
+            err
+        );
+        assert!(
+            err.contains("available:"),
+            "expected available list in error: {}",
+            err
+        );
     }
 
     // A13: prose_plan_uses_legacy
@@ -1351,7 +1411,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Plan,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         assert!(result.unwrap().is_none());
@@ -1364,7 +1426,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Docs,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         assert!(result.unwrap().is_none());
@@ -1377,7 +1441,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["SECURITY".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1392,7 +1458,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["".into(), "security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1408,7 +1476,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["".into(), "  ".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1427,7 +1497,9 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into(), "security".into()],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &skills,
         );
         let resolved = result.unwrap().unwrap();
@@ -1441,7 +1513,9 @@ mod axes_tests {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
-            false, false, false,
+            false,
+            false,
+            false,
             &[], // no skills available
         );
         let err = result.unwrap_err();
@@ -1460,11 +1534,17 @@ mod axes_tests {
         let result = resolve_axes(
             &["security".into()],
             crate::review_mode::ReviewMode::Code,
-            true, true, false,
+            true,
+            true,
+            false,
             &skills,
         );
         let err = result.unwrap_err();
-        assert!(err.contains("--deep"), "expected --deep (first) in error: {}", err);
+        assert!(
+            err.contains("--deep"),
+            "expected --deep (first) in error: {}",
+            err
+        );
     }
 }
 
@@ -1556,7 +1636,10 @@ mod skill_integration_tests {
         .expect("should return Some for explicit axes");
 
         assert_eq!(resolved.skills.len(), 2);
-        assert_eq!(resolved.source, skill_audit::AxisSelectionSource::ExplicitAxes);
+        assert_eq!(
+            resolved.source,
+            skill_audit::AxisSelectionSource::ExplicitAxes
+        );
 
         let exec_cfg = skill_executor::SkillExecutorConfig {
             run_id: "test-integration".into(),
@@ -1586,17 +1669,18 @@ mod skill_integration_tests {
         let tagged: Vec<_> = results
             .iter()
             .flat_map(|cr| {
-                cr.findings
-                    .iter()
-                    .map(|f| skill_integrator::TaggedFinding {
-                        file_path: "test.rs".into(),
-                        finding: f.clone(),
-                    })
+                cr.findings.iter().map(|f| skill_integrator::TaggedFinding {
+                    file_path: "test.rs".into(),
+                    finding: f.clone(),
+                })
             })
             .collect();
         let int_cfg = skill_integrator::IntegratorConfig::default();
         let output = skill_integrator::integrate(tagged, &int_cfg);
-        assert!(!output.findings.is_empty(), "integrator should emit findings");
+        assert!(
+            !output.findings.is_empty(),
+            "integrator should emit findings"
+        );
         assert!(
             output.findings.len() < 4,
             "integrator should merge overlapping findings from 2 skills"
@@ -1730,14 +1814,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Skill axis resolution: load manifests, resolve --axes, build executor
     // infrastructure.
     // -----------------------------------------------------------------------
-    let quorum_home_for_skills = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
+    let quorum_home_for_skills =
+        quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
     let bundled_skills_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let user_skills_dir = quorum_home_for_skills.clone();
 
-    let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir) {
+    let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir)
+    {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load skill manifests; skills disabled");
@@ -1772,19 +1858,22 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     // Build skill executor infrastructure when axes are resolved AND LLM is available.
-    let skill_adapter: Option<SkillLlmAdapter> = llm_client.as_ref().map(|c| SkillLlmAdapter(c.clone()));
-    let skill_audit_writer: Option<std::sync::Arc<skill_audit::AuditWriter<skill_audit::SkillInvocationRecord>>> =
-        resolved_axes.as_ref().map(|_| {
-            std::sync::Arc::new(skill_audit::AuditWriter::new(
-                quorum_home_for_skills.join(skill_audit::SKILL_INVOCATIONS_FILE),
-            ))
-        });
-    let integrator_audit_writer: Option<std::sync::Arc<skill_audit::AuditWriter<skill_audit::IntegratorDecisionRecord>>> =
-        resolved_axes.as_ref().map(|_| {
-            std::sync::Arc::new(skill_audit::AuditWriter::new(
-                quorum_home_for_skills.join(skill_audit::INTEGRATOR_DECISIONS_FILE),
-            ))
-        });
+    let skill_adapter: Option<SkillLlmAdapter> =
+        llm_client.as_ref().map(|c| SkillLlmAdapter(c.clone()));
+    let skill_audit_writer: Option<
+        std::sync::Arc<skill_audit::AuditWriter<skill_audit::SkillInvocationRecord>>,
+    > = resolved_axes.as_ref().map(|_| {
+        std::sync::Arc::new(skill_audit::AuditWriter::new(
+            quorum_home_for_skills.join(skill_audit::SKILL_INVOCATIONS_FILE),
+        ))
+    });
+    let integrator_audit_writer: Option<
+        std::sync::Arc<skill_audit::AuditWriter<skill_audit::IntegratorDecisionRecord>>,
+    > = resolved_axes.as_ref().map(|_| {
+        std::sync::Arc::new(skill_audit::AuditWriter::new(
+            quorum_home_for_skills.join(skill_audit::INTEGRATOR_DECISIONS_FILE),
+        ))
+    });
 
     // Build pipeline config
     let models = if opts.ensemble {
@@ -2287,11 +2376,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             // When skills are active, suppress the single-prompt LLM in the pipeline
             // (AST-only), then run the skill matrix executor + integrator after.
             let use_skills = resolved_axes.is_some() && skill_adapter.is_some();
-            let llm_for_pipeline: Option<&dyn LlmReviewer> = if use_skills {
-                None
-            } else {
-                llm_reviewer
-            };
+            let llm_for_pipeline: Option<&dyn LlmReviewer> =
+                if use_skills { None } else { llm_reviewer };
 
             let review_result = if let Some(l) = lang {
                 pipeline::review_source(
@@ -2310,7 +2396,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         file_path.display()
                     );
                 }
-                pipeline::review_file(file_path, &source, None, llm_for_pipeline, &pipeline_cfg).await
+                pipeline::review_file(file_path, &source, None, llm_for_pipeline, &pipeline_cfg)
+                    .await
             };
             match review_result {
                 Ok(mut result) => {
@@ -2318,75 +2405,81 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     if use_skills
                         && let (Some(ra), Some(adapter)) = (&resolved_axes, &skill_adapter)
                     {
-                            let file_str = file_path.to_string_lossy().to_string();
-                            let file_sha = {
-                                use sha2::{Sha256, Digest};
-                                let mut h = Sha256::new();
-                                h.update(source.as_bytes());
-                                hex::encode(h.finalize())
-                            };
+                        let file_str = file_path.to_string_lossy().to_string();
+                        let file_sha = {
+                            use sha2::{Digest, Sha256};
+                            let mut h = Sha256::new();
+                            h.update(source.as_bytes());
+                            hex::encode(h.finalize())
+                        };
 
-                            let _exec_span = tracing::info_span!(
-                                "phase.skill_executor",
-                                skills = ra.skills.len(),
-                                file = %file_str,
-                            ).entered();
+                        let _exec_span = tracing::info_span!(
+                            "phase.skill_executor",
+                            skills = ra.skills.len(),
+                            file = %file_str,
+                        )
+                        .entered();
 
-                            let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
-                                run_id: run_id.clone(),
-                                axis_selection_source: ra.source.clone(),
-                                global_models: pipeline_cfg.models.clone(),
-                                ensemble_pool: vec![],
-                                ensemble: false,
-                                max_tokens_per_review: 500_000,
-                                max_calls_per_review: 50,
-                                audit_writer: skill_audit_writer.clone(),
-                            };
-                            let files_input = vec![(file_str.clone(), file_sha, source.clone())];
-                            let cell_results = quorum::skill_executor::execute_matrix(
-                                &ra.skills, &files_input, adapter, &exec_cfg,
-                            );
+                        let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
+                            run_id: run_id.clone(),
+                            axis_selection_source: ra.source.clone(),
+                            global_models: pipeline_cfg.models.clone(),
+                            ensemble_pool: vec![],
+                            ensemble: false,
+                            max_tokens_per_review: 500_000,
+                            max_calls_per_review: 50,
+                            audit_writer: skill_audit_writer.clone(),
+                        };
+                        let files_input = vec![(file_str.clone(), file_sha, source.clone())];
+                        let cell_results = quorum::skill_executor::execute_matrix(
+                            &ra.skills,
+                            &files_input,
+                            adapter,
+                            &exec_cfg,
+                        );
 
-                            drop(_exec_span);
+                        drop(_exec_span);
 
-                            let _int_span = tracing::info_span!(
+                        let _int_span = tracing::info_span!(
                                 "phase.integrator",
                                 input_findings = cell_results.iter().map(|c| c.findings.len()).sum::<usize>(),
                                 file = %file_str,
                             ).entered();
 
-                            let tagged: Vec<quorum::skill_integrator::TaggedFinding> = cell_results
-                                .iter()
-                                .flat_map(|cr| {
-                                    cr.findings.iter().map(|f| quorum::skill_integrator::TaggedFinding {
+                        let tagged: Vec<quorum::skill_integrator::TaggedFinding> = cell_results
+                            .iter()
+                            .flat_map(|cr| {
+                                cr.findings.iter().map(|f| {
+                                    quorum::skill_integrator::TaggedFinding {
                                         file_path: file_str.clone(),
                                         finding: f.clone(),
-                                    })
+                                    }
                                 })
-                                .collect();
+                            })
+                            .collect();
 
-                            let int_cfg = quorum::skill_integrator::IntegratorConfig {
-                                run_id: run_id.clone(),
-                                confidence_floor: 0.30,
-                                audit_writer: integrator_audit_writer.clone(),
-                            };
-                            let int_output = quorum::skill_integrator::integrate(tagged, &int_cfg);
+                        let int_cfg = quorum::skill_integrator::IntegratorConfig {
+                            run_id: run_id.clone(),
+                            confidence_floor: 0.30,
+                            audit_writer: integrator_audit_writer.clone(),
+                        };
+                        let int_output = quorum::skill_integrator::integrate(tagged, &int_cfg);
 
-                            tracing::info!(
-                                findings = int_output.findings.len(),
-                                suppressed = int_output.suppressed.len(),
-                                "integrator complete"
-                            );
+                        tracing::info!(
+                            findings = int_output.findings.len(),
+                            suppressed = int_output.suppressed.len(),
+                            "integrator complete"
+                        );
 
-                            // Accumulate token usage from all skill cells.
-                            for cr in &cell_results {
-                                result.usage.prompt_tokens += cr.usage.prompt_tokens;
-                                result.usage.completion_tokens += cr.usage.completion_tokens;
-                                result.usage.cached_tokens += cr.usage.cached_tokens;
-                            }
+                        // Accumulate token usage from all skill cells.
+                        for cr in &cell_results {
+                            result.usage.prompt_tokens += cr.usage.prompt_tokens;
+                            result.usage.completion_tokens += cr.usage.completion_tokens;
+                            result.usage.cached_tokens += cr.usage.cached_tokens;
+                        }
 
-                            result.findings.extend(int_output.findings);
-                            result.suppressed += int_output.suppressed.len();
+                        result.findings.extend(int_output.findings);
+                        result.suppressed += int_output.suppressed.len();
                     }
 
                     // Apply project-level suppressions
