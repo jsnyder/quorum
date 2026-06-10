@@ -1,9 +1,10 @@
-//! Review mode enum: Code (default), Plan, Docs.
+//! Review mode enum: Code (default), Plan, Docs, Tests, Release.
 //!
 //! Determines which prompt template and evaluation rubric the LLM pipeline
 //! uses. `Code` is the traditional source-code review; `Plan` and `Docs` are
 //! prose-oriented modes that swap in prose-specific system prompts and
-//! severity scales.
+//! severity scales. `Tests` and `Release` are reserved for future axes and
+//! cannot be selected via `--mode` today.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -21,6 +22,10 @@ pub enum ReviewMode {
     Plan,
     /// Review prose documentation for accuracy, clarity, and completeness.
     Docs,
+    /// Reserved: test-suite quality review axis (not yet implemented).
+    Tests,
+    /// Reserved: release-readiness review axis (not yet implemented).
+    Release,
 }
 
 impl ReviewMode {
@@ -28,6 +33,12 @@ impl ReviewMode {
     #[must_use]
     pub fn is_prose(self) -> bool {
         matches!(self, Self::Plan | Self::Docs)
+    }
+
+    /// Returns `true` for reserved modes that are not yet implemented.
+    #[must_use]
+    pub fn is_reserved(self) -> bool {
+        matches!(self, Self::Tests | Self::Release)
     }
 
     /// Stable lowercase string form suitable for CLI flags, serde, and
@@ -38,6 +49,8 @@ impl ReviewMode {
             Self::Code => "code",
             Self::Plan => "plan",
             Self::Docs => "docs",
+            Self::Tests => "tests",
+            Self::Release => "release",
         }
     }
 }
@@ -56,8 +69,10 @@ impl FromStr for ReviewMode {
             "code" => Ok(Self::Code),
             "plan" => Ok(Self::Plan),
             "docs" => Ok(Self::Docs),
+            "tests" => Ok(Self::Tests),
+            "release" => Ok(Self::Release),
             other => Err(format!(
-                "unknown review mode '{other}'; expected one of: code, plan, docs"
+                "unknown review mode '{other}'; expected one of: code, plan, docs, tests, release"
             )),
         }
     }
@@ -85,7 +100,13 @@ mod tests {
 
     #[test]
     fn roundtrip_from_str() {
-        for mode in [ReviewMode::Code, ReviewMode::Plan, ReviewMode::Docs] {
+        for mode in [
+            ReviewMode::Code,
+            ReviewMode::Plan,
+            ReviewMode::Docs,
+            ReviewMode::Tests,
+            ReviewMode::Release,
+        ] {
             let s = mode.as_str();
             let parsed: ReviewMode = s.parse().unwrap();
             assert_eq!(parsed, mode, "roundtrip failed for {s}");
@@ -97,6 +118,8 @@ mod tests {
         assert_eq!("CODE".parse::<ReviewMode>().unwrap(), ReviewMode::Code);
         assert_eq!("Plan".parse::<ReviewMode>().unwrap(), ReviewMode::Plan);
         assert_eq!("DOCS".parse::<ReviewMode>().unwrap(), ReviewMode::Docs);
+        assert_eq!("TESTS".parse::<ReviewMode>().unwrap(), ReviewMode::Tests);
+        assert_eq!("Release".parse::<ReviewMode>().unwrap(), ReviewMode::Release);
     }
 
     #[test]
@@ -110,19 +133,56 @@ mod tests {
 
     #[test]
     fn as_str_roundtrip() {
-        for mode in [ReviewMode::Code, ReviewMode::Plan, ReviewMode::Docs] {
+        for mode in [
+            ReviewMode::Code,
+            ReviewMode::Plan,
+            ReviewMode::Docs,
+            ReviewMode::Tests,
+            ReviewMode::Release,
+        ] {
             assert_eq!(mode.to_string(), mode.as_str());
         }
     }
 
     #[test]
     fn serde_roundtrip() {
-        for mode in [ReviewMode::Code, ReviewMode::Plan, ReviewMode::Docs] {
+        for mode in [
+            ReviewMode::Code,
+            ReviewMode::Plan,
+            ReviewMode::Docs,
+            ReviewMode::Tests,
+            ReviewMode::Release,
+        ] {
             let json = serde_json::to_string(&mode).unwrap();
             let back: ReviewMode = serde_json::from_str(&json).unwrap();
             assert_eq!(back, mode, "serde roundtrip failed for {mode}");
             // Verify lowercase serialization.
             assert_eq!(json, format!("\"{}\"", mode.as_str()));
         }
+    }
+
+    #[test]
+    fn reserved_modes_parse() {
+        assert_eq!(
+            "tests".parse::<ReviewMode>().unwrap(),
+            ReviewMode::Tests
+        );
+        assert_eq!(
+            "release".parse::<ReviewMode>().unwrap(),
+            ReviewMode::Release
+        );
+    }
+
+    #[test]
+    fn reserved_modes_are_reserved() {
+        assert!(ReviewMode::Tests.is_reserved());
+        assert!(ReviewMode::Release.is_reserved());
+    }
+
+    #[test]
+    fn non_reserved_modes_are_not_reserved() {
+        assert!(!ReviewMode::Code.is_reserved());
+        assert!(!ReviewMode::Plan.is_reserved());
+        assert!(!ReviewMode::Docs.is_reserved());
     }
 }
