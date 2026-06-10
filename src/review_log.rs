@@ -644,8 +644,7 @@ impl ReviewLog {
             .collect();
 
         let query_lower = finding_title.to_lowercase();
-        let query_words: std::collections::HashSet<&str> =
-            query_lower.split_whitespace().collect();
+        let query_words: std::collections::HashSet<&str> = query_lower.split_whitespace().collect();
 
         let mut best_id: Option<String> = None;
         let mut best_score: f64 = 0.0;
@@ -663,13 +662,12 @@ impl ReviewLog {
                 0.0
             };
 
-            let substring_bonus = if title_lower.contains(&query_lower)
-                || query_lower.contains(&title_lower)
-            {
-                0.3
-            } else {
-                0.0
-            };
+            let substring_bonus =
+                if title_lower.contains(&query_lower) || query_lower.contains(&title_lower) {
+                    0.3
+                } else {
+                    0.0
+                };
 
             let score = (jaccard + substring_bonus).min(1.0);
             if score > best_score {
@@ -2500,7 +2498,8 @@ mod tests {
             file_path: "src/auth.rs".into(),
         }];
         log.record_with_meta(&record, &meta).unwrap();
-        let result = log.resolve_finding_id("src/auth.rs", "completely unrelated finding title xyz");
+        let result =
+            log.resolve_finding_id("src/auth.rs", "completely unrelated finding title xyz");
         assert_eq!(result, None);
     }
 
