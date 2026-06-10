@@ -451,9 +451,7 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Feedback(opts) => std::process::exit(run_feedback(opts)),
         cli::Command::Context(opts) => std::process::exit(run_context(opts)),
         cli::Command::Calibrate(opts) => std::process::exit(run_calibrate(opts)),
-        cli::Command::BackfillLinkage(opts) => {
-            std::process::exit(run_backfill_linkage(opts))
-        }
+        cli::Command::BackfillLinkage(opts) => std::process::exit(run_backfill_linkage(opts)),
         cli::Command::Report(opts) => {
             let exit_code = run_report(opts).await;
             std::process::exit(exit_code);
@@ -2676,7 +2674,10 @@ fn run_backfill_linkage(opts: cli::BackfillLinkageOpts) -> i32 {
         }
     };
     let total = all_entries.len();
-    let already_linked = all_entries.iter().filter(|e| e.finding_id.is_some()).count();
+    let already_linked = all_entries
+        .iter()
+        .filter(|e| e.finding_id.is_some())
+        .count();
     drop(all_entries);
 
     let (newly_linked, candidates) = backfill_linkage_inner(&quorum_home);
