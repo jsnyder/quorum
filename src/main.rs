@@ -959,6 +959,31 @@ struct ResolvedAxes {
 #[allow(dead_code)] // wired in Task 5
 const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
 
+/// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
+/// to the lib-side `skill_executor::LlmReviewer` trait.
+#[allow(dead_code)] // wired in Task 6
+struct SkillLlmAdapter(std::sync::Arc<llm_client::OpenAiClient>);
+
+impl quorum::skill_executor::LlmReviewer for SkillLlmAdapter {
+    fn review(
+        &self,
+        prompt: &str,
+        model: &str,
+        system_prompt: &str,
+    ) -> anyhow::Result<quorum::skill_executor::LlmResponse> {
+        let resp = pipeline::LlmReviewer::review(&*self.0, prompt, model, system_prompt)?;
+        let usage = resp.usage.map(|u| quorum::skill_executor::TokenUsage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            cached_tokens: u.cached_tokens,
+        });
+        Ok(quorum::skill_executor::LlmResponse {
+            content: resp.content,
+            usage,
+        })
+    }
+}
+
 /// Resolve the review axis set from CLI flags and available skills.
 ///
 /// Returns:
