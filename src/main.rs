@@ -24,6 +24,8 @@ pub use quorum::prompt_sanitize;
 pub use quorum::prose_prompts;
 pub use quorum::redact;
 pub use quorum::review_mode;
+pub use quorum::skill_audit;
+pub use quorum::skill_manifest;
 pub use quorum::skill_prompt_defense;
 pub use quorum::storage;
 
@@ -936,6 +938,512 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
             eprintln!("\nError: GitHub post failed: {}", e);
             3
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Axis resolution: maps (--axes, --mode, --deep/--daemon/--ensemble) to a
+// skill set or legacy fallback. Pure logic, no I/O.
+// ---------------------------------------------------------------------------
+
+/// The resolved set of skill axes for a review invocation.
+#[derive(Debug)]
+#[allow(dead_code)] // wired in Task 5
+struct ResolvedAxes {
+    skills: Vec<crate::skill_manifest::LoadedSkill>,
+    source: crate::skill_audit::AxisSelectionSource,
+}
+
+/// The default code-mode macro axes, applied when no `--axes` flag is given
+/// and the mode is `Code` with no legacy flags active.
+#[allow(dead_code)] // wired in Task 5
+const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
+
+/// Resolve the review axis set from CLI flags and available skills.
+///
+/// Returns:
+/// - `Ok(Some(ResolvedAxes))` — a concrete skill set to execute.
+/// - `Ok(None)`               — fall back to the legacy single-prompt pipeline.
+/// - `Err(String)`            — user-facing error message (reserved mode, conflict, unknown axis).
+#[allow(dead_code)] // wired in Task 5
+fn resolve_axes(
+    axes: &[String],
+    mode: crate::review_mode::ReviewMode,
+    deep: bool,
+    daemon: bool,
+    ensemble: bool,
+    available_skills: &[crate::skill_manifest::LoadedSkill],
+) -> Result<Option<ResolvedAxes>, String> {
+    // -----------------------------------------------------------------------
+    // (a) Reserved mode — hard error with placeholder skill names
+    // -----------------------------------------------------------------------
+    if mode.is_reserved() {
+        let placeholder = match mode {
+            crate::review_mode::ReviewMode::Tests => "test-coverage, test-quality",
+            crate::review_mode::ReviewMode::Release => "release-readiness",
+            _ => unreachable!(),
+        };
+        return Err(format!(
+            "mode '{}' requires axes not installed in this version: [{}]",
+            mode, placeholder,
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Normalize --axes: filter empties, lowercase, deduplicate (preserving
+    // first-occurrence order).
+    // -----------------------------------------------------------------------
+    let normalized: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        axes.iter()
+            .map(|a| a.trim().to_ascii_lowercase())
+            .filter(|a| !a.is_empty())
+            .filter(|a| seen.insert(a.clone()))
+            .collect()
+    };
+
+    let has_explicit_axes = !normalized.is_empty();
+
+    // -----------------------------------------------------------------------
+    // (b) Explicit --axes + legacy flag → hard error
+    // -----------------------------------------------------------------------
+    if has_explicit_axes {
+        let legacy_flag = if deep {
+            Some("--deep")
+        } else if daemon {
+            Some("--daemon")
+        } else if ensemble {
+            Some("--ensemble")
+        } else {
+            None
+        };
+        if let Some(flag) = legacy_flag {
+            return Err(format!(
+                "multi-axis review is not supported with {} yet",
+                flag,
+            ));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // (c) Explicit --axes → validate against available skills
+    // -----------------------------------------------------------------------
+    if has_explicit_axes {
+        let available_names: Vec<String> = available_skills
+            .iter()
+            .map(|s| s.manifest.name.to_ascii_lowercase())
+            .collect();
+
+        let mut matched = Vec::new();
+        for axis in &normalized {
+            let idx = available_names
+                .iter()
+                .position(|n| n == axis)
+                .ok_or_else(|| {
+                    format!(
+                        "unknown skill axis '{}'; available: [{}]",
+                        axis,
+                        available_names.join(", "),
+                    )
+                })?;
+            matched.push(available_skills[idx].clone());
+        }
+        return Ok(Some(ResolvedAxes {
+            skills: matched,
+            source: crate::skill_audit::AxisSelectionSource::ExplicitAxes,
+        }));
+    }
+
+    // -----------------------------------------------------------------------
+    // (d) Legacy flag without explicit --axes → legacy fallback
+    // -----------------------------------------------------------------------
+    if deep || daemon || ensemble {
+        return Ok(None);
+    }
+
+    // -----------------------------------------------------------------------
+    // (e) Default code mode → ModeMacro with bundled axes
+    // -----------------------------------------------------------------------
+    if mode == crate::review_mode::ReviewMode::Code {
+        let mut skills = Vec::new();
+        for &axis_name in CODE_MODE_MACRO_AXES {
+            let skill = available_skills
+                .iter()
+                .find(|s| s.manifest.name.eq_ignore_ascii_case(axis_name))
+                .ok_or_else(|| {
+                    format!(
+                        "bundled skill '{}' not found; installation may be corrupt",
+                        axis_name,
+                    )
+                })?
+                .clone();
+            skills.push(skill);
+        }
+        return Ok(Some(ResolvedAxes {
+            skills,
+            source: crate::skill_audit::AxisSelectionSource::ModeMacro,
+        }));
+    }
+
+    // -----------------------------------------------------------------------
+    // (f) Prose modes (plan, docs) without --axes → legacy fallback
+    // -----------------------------------------------------------------------
+    Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// Tests for resolve_axes
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod axes_tests {
+    use super::*;
+
+    fn mock_skill(name: &str) -> crate::skill_manifest::LoadedSkill {
+        crate::skill_manifest::LoadedSkill {
+            manifest: crate::skill_manifest::SkillManifest {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                display_name: name.to_string(),
+                description: String::new(),
+                axis: crate::skill_manifest::Axis::Correctness,
+                max_severity: crate::finding::Severity::Critical,
+                target_findings: None,
+                capability: crate::skill_manifest::Capability {
+                    mode: crate::skill_manifest::CapabilityMode::Pure,
+                },
+                preferred_model: None,
+                fallback_models: None,
+                calibration_namespace: None,
+                prompts: crate::skill_manifest::Prompts {
+                    primary: "test prompt".into(),
+                    anthropic: None,
+                    openai: None,
+                    google: None,
+                },
+                checklist: vec![],
+                ast_rules: vec![],
+            },
+            source_path: std::path::PathBuf::from(format!("skills/{}.toml", name)),
+            manifest_sha256: "abc123".to_string(),
+            trust_tier: crate::skill_manifest::TrustTier::Bundled,
+        }
+    }
+
+    fn bundled_skills() -> Vec<crate::skill_manifest::LoadedSkill> {
+        vec![
+            mock_skill("correctness"),
+            mock_skill("security"),
+            mock_skill("testing-antipatterns"),
+        ]
+    }
+
+    // A1: explicit_axes_resolves
+    #[test]
+    fn explicit_axes_resolves() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 1);
+        assert_eq!(resolved.skills[0].manifest.name, "security");
+        assert_eq!(
+            resolved.source,
+            crate::skill_audit::AxisSelectionSource::ExplicitAxes,
+        );
+    }
+
+    // A2: explicit_multiple_axes
+    #[test]
+    fn explicit_multiple_axes() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["correctness".into(), "security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 2);
+        assert_eq!(resolved.skills[0].manifest.name, "correctness");
+        assert_eq!(resolved.skills[1].manifest.name, "security");
+        assert_eq!(
+            resolved.source,
+            crate::skill_audit::AxisSelectionSource::ExplicitAxes,
+        );
+    }
+
+    // A3: default_code_mode_resolves_to_bundled
+    #[test]
+    fn default_code_mode_resolves_to_bundled() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 3);
+        assert_eq!(
+            resolved.source,
+            crate::skill_audit::AxisSelectionSource::ModeMacro,
+        );
+        let names: Vec<&str> = resolved.skills.iter().map(|s| s.manifest.name.as_str()).collect();
+        assert_eq!(names, &["correctness", "security", "testing-antipatterns"]);
+    }
+
+    // A4: deep_suppresses_default_axes
+    #[test]
+    fn deep_suppresses_default_axes() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Code,
+            true, false, false,
+            &skills,
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    // A5: daemon_suppresses_default_axes
+    #[test]
+    fn daemon_suppresses_default_axes() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Code,
+            false, true, false,
+            &skills,
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    // A6: ensemble_suppresses_default_axes
+    #[test]
+    fn ensemble_suppresses_default_axes() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Code,
+            false, false, true,
+            &skills,
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    // A7: explicit_axes_with_deep_errors
+    #[test]
+    fn explicit_axes_with_deep_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["security".into()],
+            crate::review_mode::ReviewMode::Code,
+            true, false, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("--deep"), "expected --deep in error: {}", err);
+    }
+
+    // A8: explicit_axes_with_ensemble_errors
+    #[test]
+    fn explicit_axes_with_ensemble_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, true,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("--ensemble"), "expected --ensemble in error: {}", err);
+    }
+
+    // A9: explicit_axes_with_daemon_errors
+    #[test]
+    fn explicit_axes_with_daemon_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, true, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("--daemon"), "expected --daemon in error: {}", err);
+    }
+
+    // A10: reserved_mode_tests_errors
+    #[test]
+    fn reserved_mode_tests_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Tests,
+            false, false, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("test-coverage"), "expected test-coverage in error: {}", err);
+        assert!(err.contains("mode 'tests'"), "expected mode name in error: {}", err);
+    }
+
+    // A11: reserved_mode_release_errors
+    #[test]
+    fn reserved_mode_release_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Release,
+            false, false, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("release-readiness"), "expected release-readiness in error: {}", err);
+        assert!(err.contains("mode 'release'"), "expected mode name in error: {}", err);
+    }
+
+    // A12: unknown_axis_errors
+    #[test]
+    fn unknown_axis_errors() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["nonexistent".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("unknown skill axis 'nonexistent'"), "expected unknown axis in error: {}", err);
+        assert!(err.contains("available:"), "expected available list in error: {}", err);
+    }
+
+    // A13: prose_plan_uses_legacy
+    #[test]
+    fn prose_plan_uses_legacy() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Plan,
+            false, false, false,
+            &skills,
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    // A14: prose_docs_uses_legacy
+    #[test]
+    fn prose_docs_uses_legacy() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Docs,
+            false, false, false,
+            &skills,
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    // A15: case_insensitive_axis_match
+    #[test]
+    fn case_insensitive_axis_match() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["SECURITY".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 1);
+        assert_eq!(resolved.skills[0].manifest.name, "security");
+    }
+
+    // A16: empty_axis_strings_filtered
+    #[test]
+    fn empty_axis_strings_filtered_with_valid() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["".into(), "security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 1);
+        assert_eq!(resolved.skills[0].manifest.name, "security");
+    }
+
+    #[test]
+    fn empty_axis_strings_filtered_all_empty() {
+        let skills = bundled_skills();
+        // All empty strings → normalized is empty → falls through to default
+        // code mode which resolves bundled axes.
+        let result = resolve_axes(
+            &["".into(), "  ".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        // Falls through to code-mode macro since no explicit axes remain
+        assert_eq!(resolved.skills.len(), 3);
+        assert_eq!(
+            resolved.source,
+            crate::skill_audit::AxisSelectionSource::ModeMacro,
+        );
+    }
+
+    // A17: duplicate_axes_deduplicated
+    #[test]
+    fn duplicate_axes_deduplicated() {
+        let skills = bundled_skills();
+        let result = resolve_axes(
+            &["security".into(), "security".into()],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &skills,
+        );
+        let resolved = result.unwrap().unwrap();
+        assert_eq!(resolved.skills.len(), 1);
+        assert_eq!(resolved.skills[0].manifest.name, "security");
+    }
+
+    // A18: empty_available_skills_errors
+    #[test]
+    fn empty_available_skills_errors() {
+        let result = resolve_axes(
+            &[],
+            crate::review_mode::ReviewMode::Code,
+            false, false, false,
+            &[], // no skills available
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("bundled skill") && err.contains("not found"),
+            "expected bundled skill not found in error: {}",
+            err,
+        );
+    }
+
+    // A19: multi_legacy_flags_reports_first
+    #[test]
+    fn multi_legacy_flags_reports_first() {
+        let skills = bundled_skills();
+        // deep + daemon both set; deep should be reported first
+        let result = resolve_axes(
+            &["security".into()],
+            crate::review_mode::ReviewMode::Code,
+            true, true, false,
+            &skills,
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("--deep"), "expected --deep (first) in error: {}", err);
     }
 }
 
