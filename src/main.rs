@@ -1497,6 +1497,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         return 3;
     }
 
+    // Reserved modes are not yet implemented.
+    if opts.mode.is_reserved() {
+        eprintln!(
+            "error: --mode {} is reserved and not yet implemented",
+            opts.mode,
+        );
+        return 3;
+    }
+
+    // --axes is not supported with --daemon (daemon has its own review path).
+    if opts.daemon && !opts.axes.is_empty() {
+        eprintln!("error: --axes is not supported with --daemon");
+        return 3;
+    }
+
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {
         return run_review_via_daemon(&opts);
@@ -1577,14 +1592,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // infrastructure.
     // -----------------------------------------------------------------------
     let quorum_home_for_skills = quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
-    let bundled_skills_dir = {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        exe_dir.join("skills")
-    };
-    let user_skills_dir = quorum_home_for_skills.join("skills");
+    let bundled_skills_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let user_skills_dir = quorum_home_for_skills.clone();
 
     let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir) {
         Ok(s) => s,
