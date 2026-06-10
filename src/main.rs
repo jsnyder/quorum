@@ -1085,25 +1085,30 @@ fn resolve_axes(
     // -----------------------------------------------------------------------
     // (e) Default code mode → ModeMacro with bundled axes
     // -----------------------------------------------------------------------
-    if mode == crate::review_mode::ReviewMode::Code {
+    if mode == crate::review_mode::ReviewMode::Code && !available_skills.is_empty() {
         let mut skills = Vec::new();
+        let mut all_found = true;
         for &axis_name in CODE_MODE_MACRO_AXES {
-            let skill = available_skills
+            if let Some(skill) = available_skills
                 .iter()
                 .find(|s| s.manifest.name.eq_ignore_ascii_case(axis_name))
-                .ok_or_else(|| {
-                    format!(
-                        "bundled skill '{}' not found; installation may be corrupt",
-                        axis_name,
-                    )
-                })?
-                .clone();
-            skills.push(skill);
+            {
+                skills.push(skill.clone());
+            } else {
+                tracing::warn!(
+                    skill = axis_name,
+                    "bundled skill not found; falling back to legacy review"
+                );
+                all_found = false;
+                break;
+            }
         }
-        return Ok(Some(ResolvedAxes {
-            skills,
-            source: crate::skill_audit::AxisSelectionSource::ModeMacro,
-        }));
+        if all_found {
+            return Ok(Some(ResolvedAxes {
+                skills,
+                source: crate::skill_audit::AxisSelectionSource::ModeMacro,
+            }));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1509,7 +1514,7 @@ mod axes_tests {
 
     // A18: empty_available_skills_errors
     #[test]
-    fn empty_available_skills_errors() {
+    fn empty_available_skills_falls_back_to_legacy() {
         let result = resolve_axes(
             &[],
             crate::review_mode::ReviewMode::Code,
@@ -1518,11 +1523,9 @@ mod axes_tests {
             false,
             &[], // no skills available
         );
-        let err = result.unwrap_err();
         assert!(
-            err.contains("bundled skill") && err.contains("not found"),
-            "expected bundled skill not found in error: {}",
-            err,
+            result.unwrap().is_none(),
+            "should fall back to legacy when no skills are installed"
         );
     }
 
