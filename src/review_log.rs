@@ -610,58 +610,71 @@ impl ReviewLog {
 
     // ── Helpers ────────────────────────────────────────────────────────
 
-    /// Strip Markdown inline formatting (`backticks`, **bold**, _italic_)
-    /// and lowercase so that titles differing only in formatting match
-    /// during Jaccard comparison.
     fn normalize_title(s: &str) -> String {
-        s.replace(['`', '*', '_'], "").to_lowercase()
+        s.replace(['`', '*'], "").replace('_', " ").to_lowercase()
     }
+
+    fn normalize_path(s: &str) -> String {
+        s.strip_prefix("./").unwrap_or(s).to_string()
+    }
+
+    const STOP_WORDS: &'static [&'static str] = &[
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could", "for", "from",
+        "has", "have", "in", "is", "it", "its", "may", "might", "not", "of", "on", "or", "should",
+        "that", "the", "this", "to", "was", "were", "will", "with", "would",
+    ];
 
     // ── Finding-ID resolution ──────────────────────────────────────────
 
-    /// Attempt to match a `(file_path, finding_title)` pair against the
-    /// `review_finding_ids` table using word-level Jaccard similarity with
-    /// a substring bonus. Returns the best-matching `finding_id` when the
-    /// combined score meets or exceeds the 0.6 threshold, or `None`
-    /// otherwise.
-    ///
-    /// Only the SQLite backend is supported; the JSONL backend always
-    /// returns `None`. Legacy rows with empty titles are filtered at the
-    /// SQL level (`title <> ''`).
     pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
         let Backend::Sqlite(handle) = &self.backend else {
             return None;
         };
         let conn = handle.lock().ok()?;
+
+        let norm_path = Self::normalize_path(file_path);
+        let path_variant = format!("./{norm_path}");
+
         let mut stmt = conn
             .prepare(
                 "SELECT rfi.finding_id, rfi.title
                  FROM review_finding_ids rfi
                  JOIN reviews r ON r.run_id = rfi.run_id
-                 WHERE rfi.file_path = ?1
+                 WHERE (rfi.file_path = ?1 OR rfi.file_path = ?2)
                    AND rfi.title <> ''
                  ORDER BY r.timestamp DESC
-                 LIMIT 50",
+                 LIMIT 200",
             )
             .ok()?;
         let candidates: Vec<(String, String)> = stmt
-            .query_map(rusqlite::params![file_path], |row| {
+            .query_map(rusqlite::params![norm_path, path_variant], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .ok()?
             .filter_map(|r| r.ok())
             .collect();
 
-        let query_lower = Self::normalize_title(finding_title);
-        let query_words: std::collections::HashSet<&str> = query_lower.split_whitespace().collect();
+        let stop: std::collections::HashSet<&str> = Self::STOP_WORDS.iter().copied().collect();
+
+        let query_norm = Self::normalize_title(finding_title);
+        let query_words: std::collections::HashSet<&str> = query_norm
+            .split_whitespace()
+            .filter(|w| !stop.contains(w))
+            .collect();
+
+        if query_words.is_empty() {
+            return None;
+        }
 
         let mut best_id: Option<String> = None;
         let mut best_score: f64 = 0.0;
 
         for (fid, title) in &candidates {
-            let title_lower = Self::normalize_title(title);
-            let title_words: std::collections::HashSet<&str> =
-                title_lower.split_whitespace().collect();
+            let title_norm = Self::normalize_title(title);
+            let title_words: std::collections::HashSet<&str> = title_norm
+                .split_whitespace()
+                .filter(|w| !stop.contains(w))
+                .collect();
 
             let intersection = query_words.intersection(&title_words).count();
             let union = query_words.union(&title_words).count();
@@ -671,21 +684,28 @@ impl ReviewLog {
                 0.0
             };
 
+            let min_size = query_words.len().min(title_words.len());
+            let containment = if min_size > 0 {
+                intersection as f64 / min_size as f64
+            } else {
+                0.0
+            };
+
             let substring_bonus =
-                if title_lower.contains(&query_lower) || query_lower.contains(&title_lower) {
+                if title_norm.contains(&query_norm) || query_norm.contains(&title_norm) {
                     0.3
                 } else {
                     0.0
                 };
 
-            let score = (jaccard + substring_bonus).min(1.0);
+            let score = (0.4 * jaccard + 0.6 * containment + substring_bonus).min(1.0);
             if score > best_score {
                 best_score = score;
                 best_id = Some(fid.clone());
             }
         }
 
-        if best_score >= 0.6 {
+        if best_score >= 0.4 {
             tracing::debug!(
                 finding_id = best_id.as_deref().unwrap_or(""),
                 score = best_score,
@@ -2546,13 +2566,81 @@ mod tests {
     fn normalize_title_strips_markdown() {
         assert_eq!(
             ReviewLog::normalize_title("`predict_one` is **bad**"),
-            "predictone is bad"
+            "predict one is bad"
         );
         assert_eq!(
             ReviewLog::normalize_title("no_formatting_here"),
-            "noformattinghere"
+            "no formatting here"
         );
         assert_eq!(ReviewLog::normalize_title(""), "");
         assert_eq!(ReviewLog::normalize_title("plain text"), "plain text");
+    }
+
+    #[test]
+    fn resolve_finding_id_short_query_via_containment() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection vulnerability in authentication module via unsanitized input"
+                .into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
+        assert_eq!(result, Some("F1".to_string()));
+    }
+
+    #[test]
+    fn resolve_finding_id_path_normalization() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "SQL injection risk".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("./src/auth.rs", "SQL injection risk");
+        assert_eq!(result, Some("F1".to_string()));
+    }
+
+    #[test]
+    fn resolve_finding_id_rejects_unrelated_same_file() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "Function main has cyclomatic complexity 60".into(),
+            file_path: "src/main.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id(
+            "src/main.rs",
+            "error-reporting path panics because it calls unwrap()",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_finding_id_stop_words_dont_inflate_score() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into()];
+        let meta = vec![FindingMeta {
+            id: "F1".into(),
+            title: "The missing validation of the input is a risk to the system".into(),
+            file_path: "src/auth.rs".into(),
+        }];
+        log.record_with_meta(&record, &meta).unwrap();
+        let result = log.resolve_finding_id("src/auth.rs", "missing input validation");
+        assert_eq!(result, Some("F1".to_string()));
     }
 }
