@@ -3433,24 +3433,42 @@ fn run_feedback_inner(
     let use_compact = output::should_use_compact(false);
     let use_json = json || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
+    let linked = entry.finding_id.as_deref();
     let output = if use_json {
-        let json_obj = serde_json::json!({
+        let mut json_obj = serde_json::json!({
             "verdict": verdict_label,
             "file_path": entry.file_path,
             "finding_title": entry.finding_title,
             "total": total,
         });
+        if let Some(fid) = linked {
+            json_obj["linked"] = serde_json::json!(fid);
+        }
         serde_json::to_string(&json_obj).unwrap_or_default()
     } else if use_compact {
-        format!(
-            "feedback:{}|{}|{}",
-            verdict_label, entry.file_path, entry.finding_title
-        )
+        if let Some(fid) = linked {
+            format!(
+                "feedback:{}|{}|{}|linked:{}",
+                verdict_label, entry.file_path, entry.finding_title, fid
+            )
+        } else {
+            format!(
+                "feedback:{}|{}|{}",
+                verdict_label, entry.file_path, entry.finding_title
+            )
+        }
     } else {
-        format!(
-            "Recorded: {} for \"{}\" in {} ({} entries)",
-            verdict_label, entry.finding_title, entry.file_path, total,
-        )
+        if let Some(fid) = linked {
+            format!(
+                "Recorded: {} for \"{}\" in {} ({} entries, linked: {})",
+                verdict_label, entry.finding_title, entry.file_path, total, fid,
+            )
+        } else {
+            format!(
+                "Recorded: {} for \"{}\" in {} ({} entries)",
+                verdict_label, entry.finding_title, entry.file_path, total,
+            )
+        }
     };
 
     (0, output)
@@ -3491,7 +3509,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             agent_model: opts.agent_model.clone(),
             confidence: opts.confidence,
             in_diff: opts.in_diff,
-            finding_id,
+            finding_id: finding_id.clone(),
         };
         if let Some(parent) = feedback_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
@@ -3520,7 +3538,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                     _ => verdict_lower.as_str(),
                 };
                 if use_json {
-                    let json_obj = serde_json::json!({
+                    let mut json_obj = serde_json::json!({
                         "verdict": verdict_label,
                         "file_path": opts.file,
                         "finding_title": opts.finding,
@@ -3528,17 +3546,34 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                         "provenance": "external",
                         "total": total,
                     });
+                    if let Some(ref fid) = finding_id {
+                        json_obj["linked"] = serde_json::json!(fid);
+                    }
                     println!("{}", serde_json::to_string(&json_obj).unwrap_or_default());
                 } else if use_compact {
-                    println!(
-                        "feedback:{}|{}|{}|external:{}",
-                        verdict_label, opts.file, opts.finding, agent
-                    );
+                    if let Some(ref fid) = finding_id {
+                        println!(
+                            "feedback:{}|{}|{}|external:{}|linked:{}",
+                            verdict_label, opts.file, opts.finding, agent, fid
+                        );
+                    } else {
+                        println!(
+                            "feedback:{}|{}|{}|external:{}",
+                            verdict_label, opts.file, opts.finding, agent
+                        );
+                    }
                 } else {
-                    println!(
-                        "Recorded external verdict from agent {} ({} entries).",
-                        agent, total
-                    );
+                    if let Some(ref fid) = finding_id {
+                        println!(
+                            "Recorded external verdict from agent {} ({} entries, linked: {}).",
+                            agent, total, fid
+                        );
+                    } else {
+                        println!(
+                            "Recorded external verdict from agent {} ({} entries).",
+                            agent, total
+                        );
+                    }
                 }
                 0
             }
