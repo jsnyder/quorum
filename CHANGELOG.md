@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-06-18
+
+### Simplicity axis
+
+- **Simplicity skill axis.** Fourth bundled review axis inspired by [ponytail](https://github.com/DietrichGebert/ponytail) (MIT). Catches YAGNI, hand-rolled stdlib equivalents, unnecessary abstractions, dead code, and shrinkable patterns. Tags: `yagni:`, `stdlib:`, `native:`, `shrink:`, `delete:`. Max severity capped at medium. Added to `CODE_MODE_MACRO_AXES` — runs by default on every code-mode review.
+
+### Embedded skills
+
+- **Compile-time skill embedding.** Bundled skill manifests (`include_str!`) baked into the binary. Three-phase load: embedded -> filesystem bundled -> user overrides. `cargo install` now ships working skill axes with zero post-install setup.
+
+### Improvements
+
+- **Linkage output.** Feedback commands show `linked: <ULID>` in JSON/compact/human output when finding_id auto-link succeeds.
+- **Resolver improvements (#444).** Containment metric for short-query matching, stop-word filtering via `LazyLock`, path normalization for `./` prefix mismatches, threshold lowered to 0.4.
+- **Ponytail cleanup.** Deleted unbounded parent-directory walk for dev-mode skill discovery (-19 lines), shrunk linked-output branching (-42 lines), `expect()` on embedded skill parse.
+
 ## [0.28.0] - 2026-06-10
 
 ### Multi-axis review skills framework
