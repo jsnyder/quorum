@@ -258,11 +258,56 @@ fn is_valid_semver(s: &str) -> bool {
 // Two-tier loader
 // ---------------------------------------------------------------------------
 
-/// Load skill manifests from bundled and user directories.
+// ---------------------------------------------------------------------------
+// Embedded (compile-time) skill manifests
+// ---------------------------------------------------------------------------
+
+const EMBEDDED_SKILLS: &[(&str, &str)] = &[
+    ("correctness.toml", include_str!("../skills/correctness.toml")),
+    ("security.toml", include_str!("../skills/security.toml")),
+    (
+        "testing-antipatterns.toml",
+        include_str!("../skills/testing-antipatterns.toml"),
+    ),
+];
+
+fn load_embedded_skills(
+    skills_by_name: &mut HashMap<String, LoadedSkill>,
+    bundled_namespaces: &mut HashMap<String, String>,
+) {
+    for (filename, content) in EMBEDDED_SKILLS {
+        let manifest: SkillManifest = match toml::from_str(content) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(file = filename, error = %e, "failed to parse embedded skill");
+                continue;
+            }
+        };
+        let sha = match canonical_sha256(&manifest) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let name = manifest.name.clone();
+        if let Some(ns) = manifest.calibration_namespace.clone() {
+            bundled_namespaces.insert(ns, name.clone());
+        }
+        skills_by_name.insert(
+            name,
+            LoadedSkill {
+                manifest,
+                trust_tier: TrustTier::Bundled,
+                source_path: PathBuf::from(format!("<embedded>/{filename}")),
+                manifest_sha256: sha,
+            },
+        );
+    }
+}
+
+/// Load skill manifests from embedded defaults, bundled directory, and user directory.
 ///
-/// Scans `bundled_dir/skills/*.toml` then `user_dir/skills/*.toml`. On name
-/// collision the user manifest wins (the bundled entry is replaced). This
-/// mirrors the ast-grep two-tier loader pattern.
+/// Phase 0: embedded skills compiled into the binary (always available).
+/// Phase 1: filesystem `bundled_dir/skills/*.toml` (overrides embedded on name collision).
+/// Phase 2: `user_dir/skills/*.toml` (overrides bundled on name collision).
 ///
 /// Calibration namespace collisions across tiers are a hard error: if a user
 /// skill claims a namespace already owned by a bundled skill, the load fails
@@ -272,17 +317,18 @@ fn is_valid_semver(s: &str) -> bool {
 /// aborting the entire load.
 pub fn load_skills(bundled_dir: &Path, user_dir: &Path) -> anyhow::Result<Vec<LoadedSkill>> {
     let mut skills_by_name: HashMap<String, LoadedSkill> = HashMap::new();
-    // Track which calibration namespaces are claimed by bundled skills so we
-    // can reject user-tier collisions.
-    let mut bundled_namespaces: HashMap<String, String> = HashMap::new(); // ns -> skill name
+    let mut bundled_namespaces: HashMap<String, String> = HashMap::new();
 
-    // Phase 1: bundled skills.
+    // Phase 0: embedded skills (compiled into the binary).
+    load_embedded_skills(&mut skills_by_name, &mut bundled_namespaces);
+
+    // Phase 1: filesystem bundled skills (override embedded on name collision).
     load_from_dir(
         bundled_dir,
         TrustTier::Bundled,
         &mut skills_by_name,
         &mut bundled_namespaces,
-        None, // no collision check against self
+        None,
     )?;
 
     // Phase 2: user skills. Check namespace collisions against bundled.
@@ -290,7 +336,7 @@ pub fn load_skills(bundled_dir: &Path, user_dir: &Path) -> anyhow::Result<Vec<Lo
         user_dir,
         TrustTier::User,
         &mut skills_by_name,
-        &mut HashMap::new(), // user namespaces tracked separately
+        &mut HashMap::new(),
         Some(&bundled_namespaces),
     )?;
 
