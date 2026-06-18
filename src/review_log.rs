@@ -614,25 +614,26 @@ impl ReviewLog {
         s.replace(['`', '*'], "").replace('_', " ").to_lowercase()
     }
 
-    fn normalize_path(s: &str) -> String {
-        s.strip_prefix("./").unwrap_or(s).to_string()
-    }
-
-    const STOP_WORDS: &'static [&'static str] = &[
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could", "for", "from",
-        "has", "have", "in", "is", "it", "its", "may", "might", "not", "of", "on", "or", "should",
-        "that", "the", "this", "to", "was", "were", "will", "with", "would",
-    ];
-
     // ── Finding-ID resolution ──────────────────────────────────────────
 
     pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
+        use std::sync::LazyLock;
+        static STOP_WORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| {
+            [
+                "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could", "for",
+                "from", "has", "have", "in", "is", "it", "its", "may", "might", "not", "of", "on",
+                "or", "should", "that", "the", "this", "to", "was", "were", "will", "with", "would",
+            ]
+            .into_iter()
+            .collect()
+        });
+
         let Backend::Sqlite(handle) = &self.backend else {
             return None;
         };
         let conn = handle.lock().ok()?;
 
-        let norm_path = Self::normalize_path(file_path);
+        let norm_path = file_path.strip_prefix("./").unwrap_or(file_path);
         let path_variant = format!("./{norm_path}");
 
         let mut stmt = conn
@@ -654,12 +655,10 @@ impl ReviewLog {
             .filter_map(|r| r.ok())
             .collect();
 
-        let stop: std::collections::HashSet<&str> = Self::STOP_WORDS.iter().copied().collect();
-
         let query_norm = Self::normalize_title(finding_title);
         let query_words: std::collections::HashSet<&str> = query_norm
             .split_whitespace()
-            .filter(|w| !stop.contains(w))
+            .filter(|w| !STOP_WORDS.contains(w))
             .collect();
 
         if query_words.is_empty() {
@@ -673,7 +672,7 @@ impl ReviewLog {
             let title_norm = Self::normalize_title(title);
             let title_words: std::collections::HashSet<&str> = title_norm
                 .split_whitespace()
-                .filter(|w| !stop.contains(w))
+                .filter(|w| !STOP_WORDS.contains(w))
                 .collect();
 
             let intersection = query_words.intersection(&title_words).count();

@@ -1838,29 +1838,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // -----------------------------------------------------------------------
     let quorum_home_for_skills =
         quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
-    let bundled_skills_dir = {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        if exe_dir.join("skills").is_dir() {
-            exe_dir
-        } else {
-            // Dev mode: binary is in target/debug/ but skills are at the repo root.
-            // Walk up from the exe to find a parent with a skills/ directory.
-            let mut candidate = exe_dir.as_path();
-            loop {
-                if let Some(parent) = candidate.parent() {
-                    if parent.join("skills").is_dir() {
-                        break parent.to_path_buf();
-                    }
-                    candidate = parent;
-                } else {
-                    break exe_dir.clone();
-                }
-            }
-        }
-    };
+    let bundled_skills_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
     let user_skills_dir = quorum_home_for_skills.clone();
 
     let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir)
@@ -3453,6 +3434,7 @@ fn run_feedback_inner(
     let use_json = json || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
     let linked = entry.finding_id.as_deref();
+    let linked_suffix = linked.map(|fid| format!("|linked:{fid}")).unwrap_or_default();
     let output = if use_json {
         let mut json_obj = serde_json::json!({
             "verdict": verdict_label,
@@ -3465,29 +3447,16 @@ fn run_feedback_inner(
         }
         serde_json::to_string(&json_obj).unwrap_or_default()
     } else if use_compact {
-        if let Some(fid) = linked {
-            format!(
-                "feedback:{}|{}|{}|linked:{}",
-                verdict_label, entry.file_path, entry.finding_title, fid
-            )
-        } else {
-            format!(
-                "feedback:{}|{}|{}",
-                verdict_label, entry.file_path, entry.finding_title
-            )
-        }
+        format!(
+            "feedback:{}|{}|{}{}",
+            verdict_label, entry.file_path, entry.finding_title, linked_suffix
+        )
     } else {
-        if let Some(fid) = linked {
-            format!(
-                "Recorded: {} for \"{}\" in {} ({} entries, linked: {})",
-                verdict_label, entry.finding_title, entry.file_path, total, fid,
-            )
-        } else {
-            format!(
-                "Recorded: {} for \"{}\" in {} ({} entries)",
-                verdict_label, entry.finding_title, entry.file_path, total,
-            )
-        }
+        let link_info = linked.map(|fid| format!(", linked: {fid}")).unwrap_or_default();
+        format!(
+            "Recorded: {} for \"{}\" in {} ({} entries{})",
+            verdict_label, entry.finding_title, entry.file_path, total, link_info,
+        )
     };
 
     (0, output)
@@ -3570,29 +3539,23 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
                     }
                     println!("{}", serde_json::to_string(&json_obj).unwrap_or_default());
                 } else if use_compact {
-                    if let Some(ref fid) = finding_id {
-                        println!(
-                            "feedback:{}|{}|{}|external:{}|linked:{}",
-                            verdict_label, opts.file, opts.finding, agent, fid
-                        );
-                    } else {
-                        println!(
-                            "feedback:{}|{}|{}|external:{}",
-                            verdict_label, opts.file, opts.finding, agent
-                        );
-                    }
+                    let linked_suffix = finding_id
+                        .as_ref()
+                        .map(|fid| format!("|linked:{fid}"))
+                        .unwrap_or_default();
+                    println!(
+                        "feedback:{}|{}|{}|external:{}{}",
+                        verdict_label, opts.file, opts.finding, agent, linked_suffix
+                    );
                 } else {
-                    if let Some(ref fid) = finding_id {
-                        println!(
-                            "Recorded external verdict from agent {} ({} entries, linked: {}).",
-                            agent, total, fid
-                        );
-                    } else {
-                        println!(
-                            "Recorded external verdict from agent {} ({} entries).",
-                            agent, total
-                        );
-                    }
+                    let link_info = finding_id
+                        .as_ref()
+                        .map(|fid| format!(", linked: {fid}"))
+                        .unwrap_or_default();
+                    println!(
+                        "Recorded external verdict from agent {} ({} entries{}).",
+                        agent, total, link_info
+                    );
                 }
                 0
             }

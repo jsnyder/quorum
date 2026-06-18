@@ -276,17 +276,9 @@ fn load_embedded_skills(
     bundled_namespaces: &mut HashMap<String, String>,
 ) {
     for (filename, content) in EMBEDDED_SKILLS {
-        let manifest: SkillManifest = match toml::from_str(content) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(file = filename, error = %e, "failed to parse embedded skill");
-                continue;
-            }
-        };
-        let sha = match canonical_sha256(&manifest) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
+        let manifest: SkillManifest =
+            toml::from_str(content).expect("embedded skill must parse");
+        let sha = canonical_sha256(&manifest).expect("embedded skill must hash");
         let name = manifest.name.clone();
         if let Some(ns) = manifest.calibration_namespace.clone() {
             bundled_namespaces.insert(ns, name.clone());
