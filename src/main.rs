@@ -974,7 +974,8 @@ struct ResolvedAxes {
 
 /// The default code-mode macro axes, applied when no `--axes` flag is given
 /// and the mode is `Code` with no legacy flags active.
-const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
+const CODE_MODE_MACRO_AXES: &[&str] =
+    &["correctness", "security", "testing-antipatterns", "simplicity"];
 
 /// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
 /// to the lib-side `skill_executor::LlmReviewer` trait.
@@ -1179,6 +1180,7 @@ mod axes_tests {
         vec![
             mock_skill("correctness"),
             mock_skill("security"),
+            mock_skill("simplicity"),
             mock_skill("testing-antipatterns"),
         ]
     }
@@ -1239,7 +1241,7 @@ mod axes_tests {
             &skills,
         );
         let resolved = result.unwrap().unwrap();
-        assert_eq!(resolved.skills.len(), 3);
+        assert_eq!(resolved.skills.len(), 4);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -1249,7 +1251,10 @@ mod axes_tests {
             .iter()
             .map(|s| s.manifest.name.as_str())
             .collect();
-        assert_eq!(names, &["correctness", "security", "testing-antipatterns"]);
+        assert_eq!(
+            names,
+            &["correctness", "security", "testing-antipatterns", "simplicity"]
+        );
     }
 
     // A4: deep_suppresses_default_axes
@@ -1507,7 +1512,7 @@ mod axes_tests {
         );
         let resolved = result.unwrap().unwrap();
         // Falls through to code-mode macro since no explicit axes remain
-        assert_eq!(resolved.skills.len(), 3);
+        assert_eq!(resolved.skills.len(), 4);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
