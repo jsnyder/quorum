@@ -1838,10 +1838,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // -----------------------------------------------------------------------
     let quorum_home_for_skills =
         quorum_dir().unwrap_or_else(|| std::path::PathBuf::from(".quorum"));
-    let bundled_skills_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let bundled_skills_dir = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        if exe_dir.join("skills").is_dir() {
+            exe_dir
+        } else {
+            // Dev mode: binary is in target/debug/ but skills are at the repo root.
+            // Walk up from the exe to find a parent with a skills/ directory.
+            let mut candidate = exe_dir.as_path();
+            loop {
+                if let Some(parent) = candidate.parent() {
+                    if parent.join("skills").is_dir() {
+                        break parent.to_path_buf();
+                    }
+                    candidate = parent;
+                } else {
+                    break exe_dir.clone();
+                }
+            }
+        }
+    };
     let user_skills_dir = quorum_home_for_skills.clone();
 
     let available_skills = match skill_manifest::load_skills(&bundled_skills_dir, &user_skills_dir)
