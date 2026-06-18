@@ -39,6 +39,7 @@ pub enum Axis {
     Docs,
     MlOps,
     Scalability,
+    Simplicity,
     Custom,
 }
 
