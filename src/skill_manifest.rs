@@ -271,6 +271,11 @@ const EMBEDDED_SKILLS: &[(&str, &str)] = &[
         include_str!("../skills/testing-antipatterns.toml"),
     ),
     ("simplicity.toml", include_str!("../skills/simplicity.toml")),
+    ("performance.toml", include_str!("../skills/performance.toml")),
+    (
+        "architecture.toml",
+        include_str!("../skills/architecture.toml"),
+    ),
 ];
 
 fn load_embedded_skills(

@@ -974,8 +974,14 @@ struct ResolvedAxes {
 
 /// The default code-mode macro axes, applied when no `--axes` flag is given
 /// and the mode is `Code` with no legacy flags active.
-const CODE_MODE_MACRO_AXES: &[&str] =
-    &["correctness", "security", "testing-antipatterns", "simplicity"];
+const CODE_MODE_MACRO_AXES: &[&str] = &[
+    "correctness",
+    "security",
+    "testing-antipatterns",
+    "simplicity",
+    "performance",
+    "architecture",
+];
 
 /// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
 /// to the lib-side `skill_executor::LlmReviewer` trait.
@@ -1178,7 +1184,9 @@ mod axes_tests {
 
     fn bundled_skills() -> Vec<crate::skill_manifest::LoadedSkill> {
         vec![
+            mock_skill("architecture"),
             mock_skill("correctness"),
+            mock_skill("performance"),
             mock_skill("security"),
             mock_skill("simplicity"),
             mock_skill("testing-antipatterns"),
@@ -1241,7 +1249,7 @@ mod axes_tests {
             &skills,
         );
         let resolved = result.unwrap().unwrap();
-        assert_eq!(resolved.skills.len(), 4);
+        assert_eq!(resolved.skills.len(), 6);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -1253,7 +1261,14 @@ mod axes_tests {
             .collect();
         assert_eq!(
             names,
-            &["correctness", "security", "testing-antipatterns", "simplicity"]
+            &[
+                "correctness",
+                "security",
+                "testing-antipatterns",
+                "simplicity",
+                "performance",
+                "architecture",
+            ]
         );
     }
 
@@ -1512,7 +1527,7 @@ mod axes_tests {
         );
         let resolved = result.unwrap().unwrap();
         // Falls through to code-mode macro since no explicit axes remain
-        assert_eq!(resolved.skills.len(), 4);
+        assert_eq!(resolved.skills.len(), 6);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -3652,15 +3667,9 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
 /// atomically rewrite `feedback.jsonl`. Returns `(newly_linked, candidates)`
 /// where `candidates = total - already_linked`.
 fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
+    use fs2::FileExt;
+
     let feedback_path = quorum_home.join("feedback.jsonl");
-    let store = feedback::FeedbackStore::new(feedback_path.clone());
-    let mut entries = match store.load_all() {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("error: cannot read feedback: {e}");
-            return (0, 0);
-        }
-    };
 
     let conn = match quorum::storage::initialize(quorum_home) {
         Ok(h) => h,
@@ -3670,6 +3679,36 @@ fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
         }
     };
     let log = review_log::ReviewLog::with_storage(conn);
+
+    // Hold an exclusive lock for the entire read-resolve-write cycle so
+    // concurrent `FeedbackStore::record()` appends cannot be lost (#452).
+    // Use try_lock to keep this opportunistic — skip if another process holds it.
+    let mut lock_file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&feedback_path)
+    {
+        Ok(f) => f,
+        Err(_) => return (0, 0),
+    };
+    if lock_file.try_lock_exclusive().is_err() {
+        return (0, 0);
+    }
+
+    // Read directly under our lock — FeedbackStore::load_all() would try to
+    // acquire its own shared lock on the same file, deadlocking on macOS (#452).
+    let mut content = String::new();
+    if std::io::Read::read_to_string(&mut lock_file, &mut content).is_err() {
+        let _ = lock_file.unlock();
+        return (0, 0);
+    }
+    let mut entries: Vec<feedback::FeedbackEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
 
     let already_linked = entries.iter().filter(|e| e.finding_id.is_some()).count();
     let candidates = entries.len() - already_linked;
@@ -3685,7 +3724,6 @@ fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
         }
     }
 
-    // Atomic rewrite: serialize to .tmp, then rename over the original.
     if newly_linked > 0 {
         let tmp_path = feedback_path.with_extension("jsonl.tmp");
         let mut buf = String::new();
@@ -3697,20 +3735,24 @@ fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
                 }
                 Err(e) => {
                     eprintln!("error: failed to serialize feedback entry: {e}");
+                    let _ = lock_file.unlock();
                     return (0, candidates);
                 }
             }
         }
         if let Err(e) = std::fs::write(&tmp_path, &buf) {
             eprintln!("error: failed to write {}: {e}", tmp_path.display());
+            let _ = lock_file.unlock();
             return (0, candidates);
         }
         if let Err(e) = std::fs::rename(&tmp_path, &feedback_path) {
             eprintln!("error: failed to rename tmp to feedback.jsonl: {e}");
+            let _ = lock_file.unlock();
             return (0, candidates);
         }
     }
 
+    let _ = lock_file.unlock();
     (newly_linked, candidates)
 }
 
