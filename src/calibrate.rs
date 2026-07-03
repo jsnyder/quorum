@@ -2324,7 +2324,7 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
     // the caller's input ordering. This makes learned thresholds deterministic.
     let mut samples = samples.to_vec();
     samples.sort_by(canonical_key_cmp);
-    let samples = &samples[..];
+    let samples = samples.as_slice();
 
     let n = samples.len();
 
