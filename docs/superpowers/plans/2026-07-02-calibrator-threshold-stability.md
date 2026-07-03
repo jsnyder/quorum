@@ -34,20 +34,29 @@
 
 **Files:** Modify `src/calibrate.rs` (sort `Vec<JoinedSample>` deterministically at the top of `learn_logistic`, or in `run_calibrate` before the call); Test: `calibrate.rs` tests.
 
-- [ ] **Step 1: Failing test** — build a `Vec<JoinedSample>`, train, capture thresholds; shuffle the input vec, train again; assert identical suppress/boost.
+- [ ] **Step 1: Failing test** — build a corpus LARGE ENOUGH that reordering actually reassigns first-appearance folds (antipattern review: on a small/symmetric corpus `reverse()` may not change fold membership and the test passes pre-fix). Use TWO distinct permutations (reverse + a seeded shuffle) so it can't pass trivially. Assert identical suppress/boost across all three orderings.
 
 ```rust
 #[test]
 fn thresholds_are_order_invariant() {
-    let a = build_sample_corpus();           // existing test builder
-    let mut b = a.clone();
-    b.reverse();
+    let a = build_sample_corpus_large(); // >= enough distinct families to span all folds
+    let mut rev = a.clone();
+    rev.reverse();
+    let mut shuf = a.clone();
+    // deterministic shuffle (mirror deterministic_permutation) so the test is reproducible
+    let perm = deterministic_permutation(shuf.len());
+    let shuf: Vec<_> = perm.iter().map(|&i| shuf[i].clone()).collect();
+
     let ra = learn_logistic(&a, 5).unwrap();
-    let rb = learn_logistic(&b, 5).unwrap();
-    assert_eq!(ra.suppress_threshold, rb.suppress_threshold);
-    assert_eq!(ra.boost_threshold, rb.boost_threshold);
+    let rrev = learn_logistic(&rev, 5).unwrap();
+    let rshuf = learn_logistic(&shuf, 5).unwrap();
+    assert_eq!(ra.suppress_threshold, rrev.suppress_threshold);
+    assert_eq!(ra.boost_threshold, rrev.boost_threshold);
+    assert_eq!(ra.suppress_threshold, rshuf.suppress_threshold);
+    assert_eq!(ra.boost_threshold, rshuf.boost_threshold);
 }
 ```
+Pre-flight: confirm `build_sample_corpus_large()` reorders folds without the fix (add a temporary assert that `a`'s and `rev`'s fold assignments differ, then remove) — otherwise the test is a no-op.
 
 - [ ] **Step 2: Run, verify it FAILS** (fold assignment is first-appearance based, so order changes folds).
 - [ ] **Step 3: Implement** a stable sort by a canonical key (e.g. `(finding_id, file_path, title, score)`) before fold assignment. Document the key.
@@ -101,8 +110,13 @@ let (prior_suppress, prior_boost) = prior
 pub(crate) fn threshold_safe_under(oof_tp: &[f64], threshold: f64, min_tp_recall: f64) -> bool { /* ... */ }
 ```
 
-- [ ] **Step 1: Failing tests** — a prior threshold that still clears 99% TP-recall on a fresh OOF array → true; one that now suppresses >1% of TPs → false; empty → false.
-- [ ] **Step 2: Run, verify fail. Step 3: Implement (count fraction of TP OOF preds on the safe side of `threshold`). Step 4: Run, verify pass.**
+- [ ] **Step 1: Failing tests** — hand-computed expectations on tiny literal arrays (NOT derived by calling the fn under test):
+  - prior threshold that still clears 99% TP-recall on a fresh OOF array → true
+  - prior threshold that now suppresses >1% of TPs → false
+  - empty `oof_tp` → false
+  - **tie boundary:** all-equal OOF scores → decide the documented behavior (recommend false: no distinction possible) and assert it
+  - **NaN guard:** an OOF array containing `f64::NAN` must not silently miscount the safe-side fraction (filter non-finite like `fp_recall_at_tp_recall` does at metrics.rs:139) → assert the finite-only fraction
+- [ ] **Step 2: Run, verify fail. Step 3: Implement (count fraction of finite TP OOF preds on the safe side of `threshold`; filter non-finite). Step 4: Run, verify pass.**
 - [ ] **Step 5: Commit** — `feat(calibrate): threshold_safe_under operating-constraint predicate (#458)`.
 
 ---
@@ -135,7 +149,10 @@ pub(crate) fn hold_or_adopt_safe(
 }
 ```
 
-- [ ] **Step 1: Two-corpus regression (replaces rev-1 Task 5).** Build two real adjacent corpora A and B differing by ~1 sample that reproduce candidate ≈0.317 (A) then ≈0.742 (B). Train A, deploy 0.317. Train B; assert `hold_or_adopt_safe(Some(0.317), 0.742, oof_tp_B, 0.99)` **holds 0.317 IFF 0.317 still clears 99% TP-recall on B's OOF**, and adopts otherwise. This tests real behavior, not a constructed bracket.
+- [ ] **Step 1: Regression + guard tests (replaces rev-1 Task 5; antipattern-hardened).** Do NOT target magic threshold literals (≈0.317/≈0.742) and do NOT derive the expected outcome by calling `threshold_safe_under` inside the test (that mirrors the impl). Instead:
+  - Two adjacent corpora A, B differing by ~1 sample. Train A → prior `p`. Train B → candidate `c`. From B's *known* OOF data, hand-determine the ONE concrete expected outcome and assert the literal tuple, e.g. `assert_eq!(hold_or_adopt_safe(Some(p), c, &oof_tp_b, 0.99), (p, true))` — pick the corpus so the outcome is unambiguous, and assert `(value, held)` directly.
+  - **First-run:** `assert_eq!(hold_or_adopt_safe(None, c, &oof_tp_b, 0.99), (c, false))`.
+  - The behavior under assertion is "held vs adopted," not any particular number.
 - [ ] **Step 2–4:** implement, wire into `run_calibrate` (deployed value flows into the emitted `LogisticModel` + the report's "deployed" column + a `held` flag), verify.
 - [ ] **Step 5: Commit** — `feat(calibrate): safety-gated threshold hold (#458)`.
 
