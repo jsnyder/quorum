@@ -2284,6 +2284,33 @@ fn group_k_fold(families: &[&str], k: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Total order over the discriminating fields of a `JoinedSample`.
+///
+/// Used to canonicalize input order before training so that learned thresholds
+/// are byte-identical regardless of how the caller ordered the samples. Fully
+/// equal samples are interchangeable, so their relative order does not affect
+/// downstream floating-point summation.
+fn canonical_key_cmp(x: &JoinedSample, y: &JoinedSample) -> std::cmp::Ordering {
+    x.family
+        .cmp(&y.family)
+        .then_with(|| x.title.cmp(&y.title))
+        .then_with(|| x.file_path.cmp(&y.file_path))
+        .then_with(|| x.category.cmp(&y.category))
+        .then_with(|| x.severity.cmp(&y.severity))
+        .then_with(|| x.model.cmp(&y.model))
+        .then_with(|| x.is_fp.cmp(&y.is_fp))
+        .then_with(|| x.tp_weight.total_cmp(&y.tp_weight))
+        .then_with(|| x.fp_weight.total_cmp(&y.fp_weight))
+        .then_with(|| x.soft_fp_weight.total_cmp(&y.soft_fp_weight))
+        .then_with(|| x.full_suppress_weight.total_cmp(&y.full_suppress_weight))
+        .then_with(|| x.wontfix_weight.total_cmp(&y.wontfix_weight))
+        .then_with(|| x.max_similarity.total_cmp(&y.max_similarity))
+        .then_with(|| x.mean_similarity.total_cmp(&y.mean_similarity))
+        .then_with(|| x.precedent_count.cmp(&y.precedent_count))
+        .then_with(|| x.finding_span_lines.cmp(&y.finding_span_lines))
+        .then_with(|| x.source_is_ast.cmp(&y.source_is_ast))
+}
+
 /// Train a logistic model via cross-validation with per-fold feature screening.
 ///
 /// Returns `None` when:
@@ -2292,6 +2319,13 @@ fn group_k_fold(families: &[&str], k: usize) -> Vec<usize> {
 /// - Fewer than 2 features pass consensus selection
 /// - Model fails to beat baseline AP by >= 0.02
 pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<LogisticResult> {
+    // Canonicalize sample order up front so every downstream step (fold
+    // assignment, feature stats, floating-point summation) is independent of
+    // the caller's input ordering. This makes learned thresholds deterministic.
+    let mut samples = samples.to_vec();
+    samples.sort_by(canonical_key_cmp);
+    let samples = &samples[..];
+
     let n = samples.len();
 
     // Safety gate: minimum sample count
@@ -4783,6 +4817,103 @@ mod tests {
             .map(|(_, fold)| *fold)
             .collect();
         assert!(b_folds.iter().all(|f| *f == b_folds[0]));
+    }
+
+    /// Build a corpus large enough to clear all `learn_logistic` gates
+    /// (>= 220 samples, >= 30 FP, >= 30 TP) and span many families so that
+    /// fold membership genuinely depends on family order-of-first-appearance.
+    fn build_order_test_corpus() -> Vec<JoinedSample> {
+        (0..300)
+            .map(|i| {
+                let is_fp = i < 60; // 60 FP, 240 TP
+                JoinedSample {
+                    title: if is_fp {
+                        "bad pattern unwrap".to_string()
+                    } else {
+                        "good error handling code".to_string()
+                    },
+                    category: if is_fp {
+                        "style".to_string()
+                    } else {
+                        "correctness".to_string()
+                    },
+                    severity: "medium".to_string(),
+                    model: "gpt-5.4".to_string(),
+                    tp_weight: if is_fp { 0.1 } else { 2.5 },
+                    fp_weight: if is_fp { 2.5 } else { 0.1 },
+                    soft_fp_weight: if is_fp { 1.5 } else { 0.0 },
+                    full_suppress_weight: if is_fp { 2.5 } else { 0.1 },
+                    wontfix_weight: 0.0,
+                    precedent_count: if is_fp { 0 } else { 4 },
+                    max_similarity: if is_fp { 0.3 } else { 0.85 },
+                    mean_similarity: if is_fp { 0.2 } else { 0.75 },
+                    is_fp,
+                    // 12 distinct families (>= 6) so fold membership depends on order
+                    family: format!("family_{}", i % 12),
+                    file_path: "src/some_file.rs".to_string(),
+                    source_is_ast: false,
+                    finding_span_lines: 3,
+                }
+            })
+            .collect()
+    }
+
+    /// Map each family to its assigned fold under `group_k_fold`, in the order
+    /// the samples appear. Used to prove that reordering changes fold membership.
+    fn family_to_fold_map(samples: &[JoinedSample], k: usize) -> HashMap<String, usize> {
+        let families: Vec<&str> = samples.iter().map(|s| s.family.as_str()).collect();
+        let folds = group_k_fold(&families, k);
+        let mut map = HashMap::new();
+        for (fam, fold) in families.iter().zip(folds.iter()) {
+            map.entry((*fam).to_string()).or_insert(*fold);
+        }
+        map
+    }
+
+    #[test]
+    fn thresholds_are_order_invariant() {
+        let a = build_order_test_corpus();
+
+        let mut a_rev = a.clone();
+        a_rev.reverse();
+
+        let perm = deterministic_permutation(a.len());
+        let a_perm: Vec<JoinedSample> = perm.iter().map(|&i| a[i].clone()).collect();
+
+        // PRE-FLIGHT: confirm the reorderings actually change the family->fold
+        // assignment, otherwise this test would prove nothing.
+        let map_a = family_to_fold_map(&a, 5);
+        let map_rev = family_to_fold_map(&a_rev, 5);
+        let map_perm = family_to_fold_map(&a_perm, 5);
+        assert_ne!(
+            map_a, map_rev,
+            "reversed corpus must change family->fold assignment for the test to be meaningful"
+        );
+        assert_ne!(
+            map_a, map_perm,
+            "permuted corpus must change family->fold assignment for the test to be meaningful"
+        );
+
+        let r_a = learn_logistic(&a, 5).expect("corpus should train");
+        let r_rev = learn_logistic(&a_rev, 5).expect("reversed corpus should train");
+        let r_perm = learn_logistic(&a_perm, 5).expect("permuted corpus should train");
+
+        assert_eq!(
+            r_a.suppress_threshold, r_rev.suppress_threshold,
+            "suppress_threshold must be identical under input reversal"
+        );
+        assert_eq!(
+            r_a.boost_threshold, r_rev.boost_threshold,
+            "boost_threshold must be identical under input reversal"
+        );
+        assert_eq!(
+            r_a.suppress_threshold, r_perm.suppress_threshold,
+            "suppress_threshold must be identical under input permutation"
+        );
+        assert_eq!(
+            r_a.boost_threshold, r_perm.boost_threshold,
+            "boost_threshold must be identical under input permutation"
+        );
     }
 
     #[test]
