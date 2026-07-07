@@ -4070,7 +4070,9 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                 match prior_suppress {
                     Some(p) => eprintln!(
                         "  Suppress threshold: {:.4} deployed (= candidate; no hold guard in Phase 1)  [prior {:.4}, d={:+.4}]",
-                        result.suppress_threshold, p, result.suppress_threshold - p
+                        result.suppress_threshold,
+                        p,
+                        result.suppress_threshold - p
                     ),
                     None => eprintln!(
                         "  Suppress threshold: {:.4} deployed (= candidate; no hold guard in Phase 1)",
@@ -4080,7 +4082,9 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                 match prior_boost {
                     Some(p) => eprintln!(
                         "  Boost threshold:    {:.4} deployed (= candidate; no hold guard in Phase 1)  [prior {:.4}, d={:+.4}]",
-                        result.boost_threshold, p, result.boost_threshold - p
+                        result.boost_threshold,
+                        p,
+                        result.boost_threshold - p
                     ),
                     None => eprintln!(
                         "  Boost threshold:    {:.4} deployed (= candidate; no hold guard in Phase 1)",
@@ -4970,9 +4974,7 @@ mod backfill_linkage_tests {
 #[cfg(test)]
 mod prior_thresholds_tests {
     use super::*;
-    use quorum::calibrator_model::{
-        CalibratorModel, LogisticModel, ModelMeta, ScoreWeights,
-    };
+    use quorum::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
     use std::collections::HashMap;
 
     fn model_with(logistic: Option<LogisticModel>) -> CalibratorModel {
