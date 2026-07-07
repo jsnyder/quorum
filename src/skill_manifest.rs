@@ -264,14 +264,20 @@ fn is_valid_semver(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 const EMBEDDED_SKILLS: &[(&str, &str)] = &[
-    ("correctness.toml", include_str!("../skills/correctness.toml")),
+    (
+        "correctness.toml",
+        include_str!("../skills/correctness.toml"),
+    ),
     ("security.toml", include_str!("../skills/security.toml")),
     (
         "testing-antipatterns.toml",
         include_str!("../skills/testing-antipatterns.toml"),
     ),
     ("simplicity.toml", include_str!("../skills/simplicity.toml")),
-    ("performance.toml", include_str!("../skills/performance.toml")),
+    (
+        "performance.toml",
+        include_str!("../skills/performance.toml"),
+    ),
     (
         "architecture.toml",
         include_str!("../skills/architecture.toml"),
@@ -283,8 +289,7 @@ fn load_embedded_skills(
     bundled_namespaces: &mut HashMap<String, String>,
 ) {
     for (filename, content) in EMBEDDED_SKILLS {
-        let manifest: SkillManifest =
-            toml::from_str(content).expect("embedded skill must parse");
+        let manifest: SkillManifest = toml::from_str(content).expect("embedded skill must parse");
         let sha = canonical_sha256(&manifest).expect("embedded skill must hash");
         let name = manifest.name.clone();
         if let Some(ns) = manifest.calibration_namespace.clone() {
@@ -1011,7 +1016,9 @@ primary   =   "p"
 
     #[test]
     fn nonexistent_dirs_produce_empty_vec() {
-        let skills = load_skills_dirs_only(Path::new("/nonexistent/a"), Path::new("/nonexistent/b")).unwrap();
+        let skills =
+            load_skills_dirs_only(Path::new("/nonexistent/a"), Path::new("/nonexistent/b"))
+                .unwrap();
         assert!(skills.is_empty());
     }
 
@@ -1494,8 +1501,7 @@ primary = "prompt"
             .collect();
         assert!(!expected.is_empty(), "EMBEDDED_SKILLS must not be empty");
 
-        let loaded_names: Vec<&str> =
-            skills.iter().map(|s| s.manifest.name.as_str()).collect();
+        let loaded_names: Vec<&str> = skills.iter().map(|s| s.manifest.name.as_str()).collect();
         for name in &expected {
             assert!(
                 loaded_names.contains(&name.as_str()),

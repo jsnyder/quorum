@@ -618,15 +618,17 @@ impl ReviewLog {
 
     pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
         use std::sync::LazyLock;
-        static STOP_WORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| {
-            [
-                "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could", "for",
-                "from", "has", "have", "in", "is", "it", "its", "may", "might", "not", "of", "on",
-                "or", "should", "that", "the", "this", "to", "was", "were", "will", "with", "would",
-            ]
-            .into_iter()
-            .collect()
-        });
+        static STOP_WORDS: LazyLock<std::collections::HashSet<&'static str>> =
+            LazyLock::new(|| {
+                [
+                    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could", "for",
+                    "from", "has", "have", "in", "is", "it", "its", "may", "might", "not", "of",
+                    "on", "or", "should", "that", "the", "this", "to", "was", "were", "will",
+                    "with", "would",
+                ]
+                .into_iter()
+                .collect()
+            });
 
         let Backend::Sqlite(handle) = &self.backend else {
             return None;
