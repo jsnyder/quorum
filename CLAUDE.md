@@ -44,7 +44,7 @@ cargo run -- daemon --watch-dir .            # persistent daemon
 ```bash
 QUORUM_BASE_URL=https://litellm.example.com   # OpenAI-compatible endpoint
 QUORUM_API_KEY=sk-...                          # enables LLM review
-QUORUM_MODEL=gpt-5.4                           # default model
+QUORUM_MODEL=gpt-5.6                           # default model (v0.31.0+; was gpt-5.4)
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 # Precedence for the reviewer model: --model > QUORUM_ENSEMBLE_MODELS (ensemble only) > QUORUM_MODEL
 QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`DEFAULT_MODEL` is now `gpt-5.6`** (was `gpt-5.4`). Measured on the frozen JS recall fixture: 4/4 ground-truth bugs vs 3/4, at the *same* $0.055 per bug found, in half the wall-clock (81s vs 170s). The 2x sticker price ($5/$30 vs $2.50/$15) is offset by ~44% fewer output tokens on a byte-identical prompt — 4,545 vs 8,103.
+
+  One-time cost: `model_fp_rate` is keyed by `review_model` and falls back to the global FP rate for a model with no feedback history, so calibration precision dips until verdicts accumulate against the new default. Set `QUORUM_MODEL=gpt-5.4` to stay on the old default.
+
 ### Added
 
 - **`--no-cache` on `review`** (also `QUORUM_BYPASS_PROXY_CACHE=1`). Bypasses the LLM proxy's response cache so every call reaches the provider. The env var already existed but appeared in neither `--help` nor CLAUDE.md, and its absence cost real time: a session validating v0.30.0 against a fixture got a 1.7s cache replay of the *previous* build's answers and nearly recorded it as a fresh result. A 1.7s review is a cache hit, not a fast reviewer.
