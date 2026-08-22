@@ -12,3 +12,12 @@ mutants.out.old/
 eval/results/
 eval/binaries/
 eval/.venv/
+
+# Agent/session scratch — machine-local, never committed.
+# The global core.excludesfile no longer covers these, and a stray
+# `git add -A` otherwise sweeps in ~1000 files.
+.claude/worktrees/
+.claude/projects/
+.agents/rules/
+node-compile-cache/
+review_results.json

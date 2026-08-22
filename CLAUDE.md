@@ -10,13 +10,15 @@ git config core.hooksPath .githooks    # enable pre-commit hooks (fmt, clippy, c
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (1720 tests)
+cargo test --bin quorum        # run unit tests (1729 tests)
 cargo test                     # run all tests (includes CLI integration)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
 cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review src/*.rs --ensemble      # cross-model ensemble review
+cargo run -- review src/*.rs --model gpt-5.6 # override reviewer model (else QUORUM_MODEL)
+cargo run -- review src/*.rs --ensemble --model gpt-5.6,claude-opus-5  # override ensemble pool
 cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review
 cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
 cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
@@ -44,6 +46,7 @@ QUORUM_BASE_URL=https://litellm.example.com   # OpenAI-compatible endpoint
 QUORUM_API_KEY=sk-...                          # enables LLM review
 QUORUM_MODEL=gpt-5.4                           # default model
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
+# Precedence for the reviewer model: --model > QUORUM_ENSEMBLE_MODELS (ensemble only) > QUORUM_MODEL
 QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)
 GITHUB_TOKEN=ghp_...                           # GitHub API token for PR comments
 

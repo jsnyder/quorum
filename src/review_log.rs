@@ -1233,10 +1233,7 @@ pub fn detect_repo(start: &Path) -> Option<String> {
         if cur.join(".git").exists() {
             return cur.file_name().and_then(|s| s.to_str()).map(String::from);
         }
-        match cur.parent() {
-            Some(parent) => cur = parent,
-            None => return None,
-        }
+        cur = cur.parent()?;
     }
 }
 
