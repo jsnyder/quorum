@@ -21,3 +21,5 @@ eval/.venv/
 .agents/rules/
 node-compile-cache/
 review_results.json
+__pycache__/
+*.pyc

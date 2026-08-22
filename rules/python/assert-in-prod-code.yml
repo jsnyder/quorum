@@ -5,3 +5,8 @@ message: "assert is stripped by `python -O`. Use explicit validation for product
 note: "Feedback: 4 confirmed true positives"
 rule:
   kind: assert_statement
+metadata:
+  # `assert` in a test file is the point, not a defect. This rule produced
+  # 26 of 26 surfaced findings on one real Python diff, all against
+  # tests/test_*.py.
+  skip_test_files: true

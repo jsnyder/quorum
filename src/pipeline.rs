@@ -769,7 +769,8 @@ pub async fn review_file(
             rule_metadata = loaded_metadata;
             let mut ag_count = 0;
             if !rules.is_empty() {
-                let ag_findings = ast_grep::scan_file(source, ext, &rules, &rule_metadata);
+                let ag_findings =
+                    ast_grep::scan_file(source, ext, &rules, &rule_metadata, &file_str);
                 ag_count = ag_findings.len();
                 if !ag_findings.is_empty() {
                     all_sources.push(ag_findings);

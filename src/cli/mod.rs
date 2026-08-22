@@ -633,6 +633,13 @@ pub struct ReviewOpts {
     #[arg(long, value_delimiter = ',')]
     pub model: Vec<String>,
 
+    /// Bypass the LLM proxy's response cache so every call reaches the
+    /// provider (also: QUORUM_BYPASS_PROXY_CACHE=1). Use when A/B-ing models
+    /// or validating a build against a fixture -- otherwise a cached replay of
+    /// a previous run's answers is indistinguishable from a fresh review.
+    #[arg(long)]
+    pub no_cache: bool,
+
     /// Enable LLM micro-judge for speculative AST rules (also: QUORUM_JUDGE=1)
     #[arg(long)]
     pub judge: bool,

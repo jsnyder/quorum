@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`--no-cache` on `review`** (also `QUORUM_BYPASS_PROXY_CACHE=1`). Bypasses the LLM proxy's response cache so every call reaches the provider. The env var already existed but appeared in neither `--help` nor CLAUDE.md, and its absence cost real time: a session validating v0.30.0 against a fixture got a 1.7s cache replay of the *previous* build's answers and nearly recorded it as a fresh result. A 1.7s review is a cache hit, not a fast reviewer.
+- **`skip_test_files` rule metadata.** Rules describing a production-only hazard can now declare themselves suppressed in test paths, reusing the existing `is_test_file_path` predicate. Applied to `assert-in-prod-code` (Python) and `console-log-artifact` (JavaScript).
+- **JavaScript eval corpus** (`eval/corpus/javascript/`). The Shelly fan-control fixture with 4 ground-truth bugs that exposed the v0.28.0 axis regression, in the existing `<name>.ground_truth.json` format. Post-fix results are recorded in its README: gpt-5.6 and claude-opus-5 both 4/4, gpt-5.4 3/4, pre-fix 0/4.
+
+### Fixed
+
+- **Prod-only AST rules fired in test files.** `assert` in a test file is the point, not a defect; on one 208-line Python diff `assert-in-prod-code` produced 26 of 26 surfaced findings, every one against `tests/test_*.py`. This is worse than noise: bad precision trains skimming, and every session spent mass-marking rule noise as FP feeds junk labels to the calibrator.
+
+
 ## [0.30.0] - 2026-08-22
 
 ### Fixed

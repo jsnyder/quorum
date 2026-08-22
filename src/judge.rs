@@ -621,6 +621,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -655,6 +656,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -700,6 +702,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -742,6 +745,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let key = verdict_cache_key("ast-grep:python/test", "test code");
@@ -804,6 +808,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -811,6 +816,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
 
@@ -876,6 +882,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -883,6 +890,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
 
@@ -930,6 +938,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -985,6 +994,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -992,6 +1002,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -1032,6 +1043,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();

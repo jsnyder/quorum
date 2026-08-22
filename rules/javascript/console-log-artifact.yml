@@ -9,3 +9,7 @@ rule:
     inside:
       kind: catch_clause
       stopBy: end
+metadata:
+  # Debug logging in a test file is normal. Same prod-only class as
+  # assert-in-prod-code.
+  skip_test_files: true

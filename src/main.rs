@@ -1864,10 +1864,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             // benchmarking, A/B comparing, or measuring upstream prompt-cache
             // hit rate. Default off — production reviews keep the proxy's fast
             // replay behavior.
-            let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
-                .ok()
-                .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false);
+            let bypass_proxy_cache = opts.no_cache
+                || std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+                    .ok()
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
             match llm_client::OpenAiClient::new(&cfg.base_url, api_key) {
                 Ok(c) => Some(std::sync::Arc::new(
                     c.with_reasoning_effort(effort)
