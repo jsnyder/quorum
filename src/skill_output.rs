@@ -10,7 +10,7 @@
 //! into the LLM client happens in issue #410 — this module provides the
 //! building blocks.
 
-use crate::finding::Finding;
+use crate::finding::{Finding, LlmFinding};
 use crate::model_family::ModelFamily;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -163,7 +163,11 @@ fn snippet(raw: &str) -> String {
 ///    `ParseError { WrongSchema, ... }`.
 /// 6. Otherwise, return `ParseError { NotJson, ... }`.
 #[must_use]
-pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillResponseOutcome {
+pub fn classify_response(
+    raw: &str,
+    finish_reason: Option<&str>,
+    model: &str,
+) -> SkillResponseOutcome {
     // 1. Truncation check (finish_reason == "length").
     if finish_reason == Some("length") {
         return SkillResponseOutcome::Retry {
@@ -199,7 +203,7 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
     // be a different field like `"warnings": []`).
     if let Some(findings) = try_parse_envelope(&defenced) {
         return SkillResponseOutcome::Ok {
-            findings,
+            findings: into_findings(findings, model),
             parse_warnings: vec![],
         };
     }
@@ -208,7 +212,7 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
     let extracted = extract_json_block(&stripped);
     if let Some(findings) = try_parse_findings(&extracted) {
         return SkillResponseOutcome::Ok {
-            findings,
+            findings: into_findings(findings, model),
             parse_warnings: vec![],
         };
     }
@@ -217,7 +221,7 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
     let sanitized_defenced = sanitize_json_escapes(&defenced);
     if let Some(findings) = try_parse_envelope(&sanitized_defenced) {
         return SkillResponseOutcome::Ok {
-            findings,
+            findings: into_findings(findings, model),
             parse_warnings: vec!["sanitized invalid JSON escapes".to_owned()],
         };
     }
@@ -225,7 +229,7 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
     let sanitized_extracted = sanitize_json_escapes(&extracted);
     if let Some(findings) = try_parse_findings(&sanitized_extracted) {
         return SkillResponseOutcome::Ok {
-            findings,
+            findings: into_findings(findings, model),
             parse_warnings: vec!["sanitized invalid JSON escapes".to_owned()],
         };
     }
@@ -251,19 +255,32 @@ pub fn classify_response(raw: &str, finish_reason: Option<&str>) -> SkillRespons
 // Internal parsing helpers
 // ---------------------------------------------------------------------------
 
-/// Try to deserialize a string as `Vec<Finding>`. Returns `None` on failure.
-fn try_parse_findings(s: &str) -> Option<Vec<Finding>> {
-    serde_json::from_str::<Vec<Finding>>(s).ok()
+/// Stamp parsed `LlmFinding`s with their provenance, yielding real `Finding`s.
+/// Shares `LlmFinding::into_finding` with the legacy review path so severity
+/// mapping and line clamping stay identical across both.
+fn into_findings(raw: Vec<LlmFinding>, model: &str) -> Vec<Finding> {
+    raw.into_iter().map(|f| f.into_finding(model)).collect()
+}
+
+/// Try to deserialize a string as `Vec<LlmFinding>`. Returns `None` on failure.
+///
+/// Deserializes into `LlmFinding` -- the narrow shape the skill prompts
+/// actually ask for -- NOT `Finding`. `Finding` additionally requires
+/// `source`, `evidence`, `calibrator_action` and `similar_precedent`, none of
+/// which have a serde default and none of which an LLM emits, so targeting it
+/// here made every non-empty skill response fail as `wrong_schema`.
+fn try_parse_findings(s: &str) -> Option<Vec<LlmFinding>> {
+    serde_json::from_str::<Vec<LlmFinding>>(s).ok()
 }
 
 /// Wrapper envelope shape: `{"findings": [...]}`.
 #[derive(Deserialize)]
 struct FindingsEnvelope {
-    findings: Vec<Finding>,
+    findings: Vec<LlmFinding>,
 }
 
 /// Try to deserialize a string as a `{"findings": [...]}` envelope.
-fn try_parse_envelope(s: &str) -> Option<Vec<Finding>> {
+fn try_parse_envelope(s: &str) -> Option<Vec<LlmFinding>> {
     serde_json::from_str::<FindingsEnvelope>(s.trim())
         .ok()
         .map(|e| e.findings)
@@ -399,6 +416,106 @@ fn sanitize_json_escapes(json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Contract lock: every bundled skill prompt asks for exactly these fields.
+    /// If the parser stops accepting this shape, the axis reviewer silently
+    /// emits zero findings -- which is precisely what happened for 440
+    /// invocations. `evidence` is included because all six bundled prompts
+    /// request it.
+    #[test]
+    fn every_bundled_skill_output_shape_parses() {
+        for (skill, category) in [
+            ("correctness", "correctness"),
+            ("security", "security"),
+            ("testing-antipatterns", "testing"),
+            ("simplicity", "simplicity"),
+            ("performance", "performance"),
+            ("architecture", "architecture"),
+        ] {
+            let raw = format!(
+                r#"[{{"title":"t","description":"d","severity":"medium",
+                     "category":"{category}","line_start":1,"line_end":2,
+                     "evidence":["e1"]}}]"#
+            );
+            match classify_response(&raw, None, "gpt-5.4") {
+                SkillResponseOutcome::Ok { findings, .. } => {
+                    assert_eq!(findings.len(), 1, "{skill}: shape must parse");
+                    assert_eq!(
+                        findings[0].evidence,
+                        vec!["e1".to_owned()],
+                        "{skill}: evidence must survive parsing, not be dropped"
+                    );
+                }
+                other => panic!("{skill}: expected Ok, got {other:?}"),
+            }
+        }
+    }
+
+    /// A response carrying internal-only fields must still parse. Unknown keys
+    /// are ignored rather than rejected, so prompt changes cannot regress the
+    /// parser into `wrong_schema`.
+    #[test]
+    fn unknown_fields_are_ignored_not_rejected() {
+        let raw = r#"[{"title":"t","description":"d","severity":"high",
+                      "category":"security","line_start":3,"line_end":3,
+                      "evidence":[],"source":"whatever","made_up_field":123}]"#;
+        match classify_response(raw, None, "gpt-5.4") {
+            SkillResponseOutcome::Ok { findings, .. } => {
+                assert_eq!(findings.len(), 1);
+                assert_eq!(
+                    findings[0].source,
+                    crate::finding::Source::Llm("gpt-5.4".to_owned()),
+                    "source must come from the caller, never from model output"
+                );
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    /// Regression: the skill prompts ask for exactly these fields, and NOTHING
+    /// else. Parsing must target `LlmFinding`, not `Finding` -- `Finding`
+    /// additionally requires `source`, `evidence`, `calibrator_action` and
+    /// `similar_precedent`, none of which are defaulted and none of which an
+    /// LLM emits. Targeting `Finding` made every non-empty skill response fail
+    /// as `wrong_schema`: 440 real invocations emitted 0 findings, ever.
+    ///
+    /// The pre-existing tests missed this because they fed the parser
+    /// internal `Finding` JSON rather than real model output.
+    #[test]
+    fn parses_the_shape_the_skill_prompt_actually_requests() {
+        let raw = r#"[{
+            "title": "[cut] duplicate guard",
+            "description": "The freshness check runs twice.",
+            "severity": "medium",
+            "category": "simplicity",
+            "line_start": 12,
+            "line_end": 18,
+            "evidence": ["line 12 duplicates line 18"]
+        }]"#;
+        match classify_response(raw, None, "gpt-5.4") {
+            SkillResponseOutcome::Ok { findings, .. } => {
+                assert_eq!(findings.len(), 1, "skill-shaped JSON must parse");
+                assert_eq!(findings[0].severity, crate::finding::Severity::Medium);
+                assert_eq!(findings[0].line_start, 12);
+                assert_eq!(
+                    findings[0].source,
+                    crate::finding::Source::Llm("gpt-5.4".to_owned()),
+                    "provenance must be stamped from the calling model"
+                );
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    /// The empty case must stay `Ok` with no findings -- this is the arm that
+    /// masked the bug, reporting exit_status=ok on 174 invocations.
+    #[test]
+    fn empty_array_still_parses_as_ok() {
+        match classify_response("[]", None, "gpt-5.4") {
+            SkillResponseOutcome::Ok { findings, .. } => assert!(findings.is_empty()),
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
     use crate::category::Category;
     use crate::finding::{FindingBuilder, Severity, Source};
 
@@ -577,7 +694,7 @@ mod tests {
 
     #[test]
     fn classify_empty_string() {
-        let outcome = classify_response("", None);
+        let outcome = classify_response("", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::Empty);
@@ -588,7 +705,7 @@ mod tests {
 
     #[test]
     fn classify_whitespace_only() {
-        let outcome = classify_response("   \n\t  ", None);
+        let outcome = classify_response("   \n\t  ", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::Empty);
@@ -603,7 +720,7 @@ mod tests {
 
     #[test]
     fn classify_truncated_finish_reason() {
-        let outcome = classify_response("[{\"partial\": true", Some("length"));
+        let outcome = classify_response("[{\"partial\": true", Some("length"), "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Retry {
                 class,
@@ -619,7 +736,7 @@ mod tests {
     #[test]
     fn classify_truncated_even_if_empty_body() {
         // finish_reason takes priority over body analysis.
-        let outcome = classify_response("", Some("length"));
+        let outcome = classify_response("", Some("length"), "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Retry { class, .. } => {
                 assert_eq!(class, ParseErrorClass::Truncated);
@@ -630,7 +747,7 @@ mod tests {
 
     #[test]
     fn classify_stop_finish_reason_does_not_trigger_truncation() {
-        let outcome = classify_response("not json at all", Some("stop"));
+        let outcome = classify_response("not json at all", Some("stop"), "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::NotJson);
@@ -645,7 +762,7 @@ mod tests {
 
     #[test]
     fn classify_garbage_text() {
-        let outcome = classify_response("Here are my thoughts on the code...", None);
+        let outcome = classify_response("Here are my thoughts on the code...", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, raw_snippet } => {
                 assert_eq!(class, ParseErrorClass::NotJson);
@@ -657,7 +774,7 @@ mod tests {
 
     #[test]
     fn classify_partial_json() {
-        let outcome = classify_response("[{\"title\": \"incomplete", None);
+        let outcome = classify_response("[{\"title\": \"incomplete", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::NotJson);
@@ -672,7 +789,7 @@ mod tests {
 
     #[test]
     fn classify_valid_json_wrong_shape_object() {
-        let outcome = classify_response("{\"message\": \"no findings here\"}", None);
+        let outcome = classify_response("{\"message\": \"no findings here\"}", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::WrongSchema);
@@ -683,7 +800,7 @@ mod tests {
 
     #[test]
     fn classify_valid_json_wrong_shape_array_of_strings() {
-        let outcome = classify_response("[\"foo\", \"bar\"]", None);
+        let outcome = classify_response("[\"foo\", \"bar\"]", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::WrongSchema);
@@ -694,7 +811,7 @@ mod tests {
 
     #[test]
     fn classify_valid_json_wrong_shape_array_of_wrong_objects() {
-        let outcome = classify_response("[{\"name\": \"foo\", \"age\": 42}]", None);
+        let outcome = classify_response("[{\"name\": \"foo\", \"age\": 42}]", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::ParseError { class, .. } => {
                 assert_eq!(class, ParseErrorClass::WrongSchema);
@@ -721,7 +838,7 @@ mod tests {
     #[test]
     fn classify_valid_bare_array() {
         let json = format!("[{}]", make_finding_json("SQL injection"));
-        let outcome = classify_response(&json, None);
+        let outcome = classify_response(&json, None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok {
                 findings,
@@ -741,7 +858,7 @@ mod tests {
             "{{\"findings\": [{}]}}",
             make_finding_json("Buffer overflow")
         );
-        let outcome = classify_response(&json, None);
+        let outcome = classify_response(&json, None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { findings, .. } => {
                 assert_eq!(findings.len(), 1);
@@ -754,7 +871,7 @@ mod tests {
     #[test]
     fn classify_valid_array_in_markdown_fence() {
         let json = format!("```json\n[{}]\n```", make_finding_json("XSS"));
-        let outcome = classify_response(&json, None);
+        let outcome = classify_response(&json, None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { findings, .. } => {
                 assert_eq!(findings.len(), 1);
@@ -766,7 +883,7 @@ mod tests {
 
     #[test]
     fn classify_empty_findings_array() {
-        let outcome = classify_response("[]", None);
+        let outcome = classify_response("[]", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { findings, .. } => {
                 assert!(findings.is_empty());
@@ -777,7 +894,7 @@ mod tests {
 
     #[test]
     fn classify_empty_findings_envelope() {
-        let outcome = classify_response("{\"findings\": []}", None);
+        let outcome = classify_response("{\"findings\": []}", None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { findings, .. } => {
                 assert!(findings.is_empty());
@@ -793,7 +910,7 @@ mod tests {
             make_finding_json("Finding A"),
             make_finding_json("Finding B")
         );
-        let outcome = classify_response(&json, Some("stop"));
+        let outcome = classify_response(&json, Some("stop"), "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { findings, .. } => {
                 assert_eq!(findings.len(), 2);
@@ -814,7 +931,7 @@ mod tests {
         // Replace "Regex issue" with "Regex \d+ issue" (invalid \d escape).
         let broken = base.replace("Regex issue", "Regex \\d+ issue");
         let json = format!("[{}]", broken);
-        let outcome = classify_response(&json, None);
+        let outcome = classify_response(&json, None, "gpt-5.4");
         match outcome {
             SkillResponseOutcome::Ok { parse_warnings, .. } => {
                 assert!(

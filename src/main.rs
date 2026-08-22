@@ -1917,8 +1917,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         ))
     });
 
-    // Build pipeline config
-    let models = if opts.ensemble {
+    // Build pipeline config.
+    // Precedence: --model > QUORUM_ENSEMBLE_MODELS (ensemble only) > QUORUM_MODEL.
+    let flag_models: Vec<String> = opts
+        .model
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let models = if !flag_models.is_empty() {
+        flag_models
+    } else if opts.ensemble {
         // Ensemble: use QUORUM_ENSEMBLE_MODELS or default set
         std::env::var("QUORUM_ENSEMBLE_MODELS")
             .unwrap_or_else(|_| cfg.model.clone())
@@ -2481,6 +2490,34 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         );
 
                         drop(_exec_span);
+
+                        // Surface skill-cell failures on stderr. The audit log
+                        // already recorded `wrong_schema` 213 times while the
+                        // axis reviewer silently emitted zero findings for two
+                        // months; nothing ever read it back. A parse failure
+                        // must not look like a clean file.
+                        // CellResult carries no skill name; for a single file
+                        // the cells map 1:1 onto `ra.skills` in order.
+                        let failed: Vec<String> = cell_results
+                            .iter()
+                            .zip(&ra.skills)
+                            .filter(|(c, _)| {
+                                c.parse_error_class.is_some() || c.failure_reason.is_some()
+                            })
+                            .map(|(c, sk)| match &c.parse_error_class {
+                                Some(class) => format!("{} ({class})", sk.manifest.name),
+                                None => sk.manifest.name.clone(),
+                            })
+                            .collect();
+                        if !failed.is_empty() {
+                            eprintln!(
+                                "Warning: {} of {} skill axes failed on {}: {}",
+                                failed.len(),
+                                cell_results.len(),
+                                file_str,
+                                failed.join(", "),
+                            );
+                        }
 
                         let _int_span = tracing::info_span!(
                                 "phase.integrator",
@@ -3454,7 +3491,9 @@ fn run_feedback_inner(
     let use_json = json || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
     let linked = entry.finding_id.as_deref();
-    let linked_suffix = linked.map(|fid| format!("|linked:{fid}")).unwrap_or_default();
+    let linked_suffix = linked
+        .map(|fid| format!("|linked:{fid}"))
+        .unwrap_or_default();
     let output = if use_json {
         let mut json_obj = serde_json::json!({
             "verdict": verdict_label,
@@ -3472,7 +3511,9 @@ fn run_feedback_inner(
             verdict_label, entry.file_path, entry.finding_title, linked_suffix
         )
     } else {
-        let link_info = linked.map(|fid| format!(", linked: {fid}")).unwrap_or_default();
+        let link_info = linked
+            .map(|fid| format!(", linked: {fid}"))
+            .unwrap_or_default();
         format!(
             "Recorded: {} for \"{}\" in {} ({} entries{})",
             verdict_label, entry.finding_title, entry.file_path, total, link_info,

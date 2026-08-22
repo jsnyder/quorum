@@ -298,7 +298,7 @@ pub(crate) fn execute_cell(
     budget.record_tokens(usage.total());
 
     // Step 9: classify response
-    let outcome = classify_response(&raw_content, None);
+    let outcome = classify_response(&raw_content, None, &cell.model);
 
     // Handle Retry: one retry with continuation prompt.
     // The tuple tracks (findings, parse_error_class, findings_dropped, exit_status, failure_reason).
@@ -333,7 +333,7 @@ pub(crate) fn execute_cell(
                     usage.prompt_tokens += ru.prompt_tokens;
                     usage.completion_tokens += ru.completion_tokens;
                     usage.cached_tokens += ru.cached_tokens;
-                    match classify_response(&content, None) {
+                    match classify_response(&content, None, &cell.model) {
                         SkillResponseOutcome::Ok {
                             findings,
                             parse_warnings: _,
@@ -791,15 +791,30 @@ mod tests {
         skill
     }
 
+    /// Build a mock LLM response in the shape the skill PROMPTS actually
+    /// request -- title/description/severity/category/line_start/line_end/
+    /// evidence, and nothing else.
+    ///
+    /// This previously serialized an internal `Finding` via `FindingBuilder`
+    /// and fed it back to the parser, so every executor test round-tripped
+    /// `Finding -> JSON -> Finding` and passed trivially. That blind spot is
+    /// why nothing caught the parser targeting `Finding` (whose `source`,
+    /// `evidence`, `calibrator_action` and `similar_precedent` have no serde
+    /// default) instead of `LlmFinding`: real model output failed as
+    /// `wrong_schema` while the suite stayed green. Keep this emitting only
+    /// prompt-declared fields -- if it drifts back toward `Finding`, these
+    /// tests stop protecting anything.
     fn make_finding_json(title: &str) -> String {
-        let f = FindingBuilder::new()
-            .title(title)
-            .severity(Severity::High)
-            .category(Category::Security)
-            .source(Source::Llm("test-model".into()))
-            .lines(10, 20)
-            .build();
-        serde_json::to_string(&f).unwrap()
+        serde_json::json!({
+            "title": title,
+            "description": "mock finding body",
+            "severity": "high",
+            "category": "security",
+            "line_start": 10,
+            "line_end": 20,
+            "evidence": ["mock evidence line"],
+        })
+        .to_string()
     }
 
     fn make_findings_json(titles: &[&str]) -> String {

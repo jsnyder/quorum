@@ -1,6 +1,6 @@
 /// LLM-powered code review with structured output parsing.
 /// Defines the review signature and handles structured output parsing.
-use crate::finding::{Finding, Severity, Source};
+use crate::finding::Finding;
 use crate::hydration::HydrationContext;
 
 /// Input for LLM review — code + context, after secret redaction.
@@ -31,145 +31,7 @@ pub struct ReviewRequest {
     pub mode: crate::review_mode::ReviewMode,
 }
 
-/// A single finding as returned by the LLM (before normalization).
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct LlmFinding {
-    pub title: String,
-    pub description: String,
-    pub severity: String,
-    pub category: String,
-    pub line_start: u32,
-    pub line_end: u32,
-    #[serde(default)]
-    pub suggested_fix: Option<String>,
-    #[serde(default)]
-    pub reasoning: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_confidence")]
-    pub confidence: Option<f32>,
-}
-
-/// Deserialize `confidence` leniently: accept a JSON number as `Some(f32)`,
-/// `null` / missing as `None`, and any other type (e.g. the LLM emitting
-/// `"confidence": "high"`) as `None` rather than a hard parse error.
-fn deserialize_confidence<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-    use std::fmt;
-
-    struct ConfidenceVisitor;
-
-    impl<'de> Visitor<'de> for ConfidenceVisitor {
-        type Value = Option<f32>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a number or null")
-        }
-
-        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
-            #[allow(clippy::cast_possible_truncation)]
-            Ok(Some(v as f32))
-        }
-
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            #[allow(clippy::cast_possible_truncation)]
-            Ok(Some(v as f32))
-        }
-
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            #[allow(clippy::cast_possible_truncation)]
-            Ok(Some(v as f32))
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        // LLM emitted a string like "high" — not a number, silently discard.
-        fn visit_str<E: de::Error>(self, _v: &str) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_bool<E: de::Error>(self, _v: bool) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            while seq.next_element::<de::IgnoredAny>()?.is_some() {}
-            Ok(None)
-        }
-
-        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            while map
-                .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
-                .is_some()
-            {}
-            Ok(None)
-        }
-    }
-
-    deserializer.deserialize_any(ConfidenceVisitor)
-}
-
-impl LlmFinding {
-    pub fn into_finding(self, model_name: &str) -> Finding {
-        let severity = match self.severity.to_lowercase().as_str() {
-            "critical" => Severity::Critical,
-            "high" | "error" => Severity::High,
-            "medium" | "warning" | "warn" => Severity::Medium,
-            "low" | "note" => Severity::Low,
-            "info" | "suggestion" | "hint" => Severity::Info,
-            other => {
-                tracing::warn!(
-                    target: "review.severity_drift",
-                    model = %model_name,
-                    raw_severity = %other,
-                    "unknown severity in LLM response; defaulting to Medium"
-                );
-                Severity::Medium
-            }
-        };
-        Finding {
-            id: crate::finding::new_finding_ulid(),
-            title: self.title,
-            description: self.description,
-            severity,
-            category: self.category.into(),
-            source: Source::Llm(model_name.to_string()),
-            line_start: self.line_start.max(1),
-            line_end: self.line_end.max(self.line_start.max(1)),
-            evidence: vec![],
-            calibrator_action: None,
-            similar_precedent: vec![],
-            canonical_pattern: None,
-            suggested_fix: self.suggested_fix,
-            based_on_excerpt: None,
-            reasoning: self.reasoning,
-            llm_confidence: self.confidence.map(|c| c.clamp(0.0, 1.0)),
-            confidence: None,
-            cited_lines: None,
-            grounding_status: None,
-            grounding_confidence: None,
-            model_agreement: None,
-            rule_id: None,
-            judge_verdict: None,
-            judge_confidence: None,
-            precision_tier: None,
-            in_diff: None,
-            originating_skill: None,
-            skill_version: None,
-            manifest_sha256: None,
-            prompt_family: None,
-            skill_run_id: None,
-            clamped_from_severity: None,
-        }
-    }
-}
+pub use crate::finding::LlmFinding;
 
 /// Build the user-message portion of the review prompt.
 ///
@@ -555,6 +417,7 @@ fn extract_json_array(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::finding::{Severity, Source};
 
     // -- LlmFinding conversion --
 
@@ -567,6 +430,7 @@ mod tests {
             category: "security".into(),
             line_start: 42,
             line_end: 50,
+            evidence: vec![],
             suggested_fix: None,
             reasoning: None,
             confidence: None,
@@ -593,6 +457,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            evidence: vec![],
             suggested_fix: None,
             reasoning: None,
             confidence: None,
@@ -609,6 +474,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            evidence: vec![],
             suggested_fix: None,
             reasoning: None,
             confidence: None,
@@ -629,6 +495,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            evidence: vec![],
             suggested_fix: None,
             reasoning: None,
             confidence: None,
@@ -645,6 +512,7 @@ mod tests {
             category: "c".into(),
             line_start: 1,
             line_end: 1,
+            evidence: vec![],
             suggested_fix: None,
             reasoning: None,
             confidence: None,

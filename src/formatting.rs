@@ -37,23 +37,39 @@ pub fn estimate_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
 
 fn model_pricing(model: &str) -> (f64, f64) {
     // (input $/M, output $/M)
-    // Prices as of 2026-04-17. Sources:
-    //   OpenAI: https://openai.com/api/pricing/
-    //   Anthropic: https://docs.anthropic.com/en/docs/about-claude/pricing
-    //   Google: https://ai.google.dev/gemini-api/docs/pricing
+    // Verified 2026-08-21 against the LiteLLM proxy's /model/info.
+    //
+    // ponytail: hand-maintained table, drifts. It had already drifted:
+    // gemini-2.5-pro output was 4x low, gpt-5.4-mini/nano billed at full
+    // 5.4 rates. Upgrade path when it drifts again: read prices once from
+    // <base_url>/model/info and cache under ~/.quorum.
+    //
+    // ORDER MATTERS: arms are matched top-down, so every specific variant
+    // must sit above its own prefix. `pricing_prefers_specific_variants`
+    // locks that in.
     match model {
+        m if m.starts_with("gpt-5.6") => (5.0, 30.0),
+        m if m.starts_with("gpt-5.5") => (3.0, 15.0),
+        m if m.starts_with("gpt-5.4-mini") => (0.75, 4.5),
+        m if m.starts_with("gpt-5.4-nano") => (0.20, 1.25),
         m if m.starts_with("gpt-5.4") => (2.5, 15.0),
-        m if m.starts_with("gpt-5.3") => (1.0, 4.0),
+        m if m.starts_with("gpt-5.3") => (1.75, 14.0),
         m if m.starts_with("gpt-5.2") => (1.75, 14.0),
+        m if m.starts_with("gpt-5-nano") => (0.05, 0.40),
+        m if m.starts_with("gpt-5-mini") => (0.25, 2.0),
         m if m.starts_with("gpt-4o") => (2.5, 10.0),
         m if m.starts_with("gpt-4.1") => (2.0, 8.0),
         m if m.starts_with("o3") => (2.0, 8.0),
         m if m.starts_with("o4-mini") => (1.1, 4.4),
-        m if m.contains("claude-sonnet") => (3.0, 15.0),
+        m if m.contains("claude-fable") => (10.0, 50.0),
         m if m.contains("claude-opus") => (5.0, 25.0),
+        m if m.contains("claude-sonnet-5") => (2.0, 10.0),
+        m if m.contains("claude-sonnet") => (3.0, 15.0),
         m if m.contains("claude-haiku") => (1.0, 5.0),
-        m if m.starts_with("gemini-2.5-pro") => (1.25, 2.50),
-        m if m.starts_with("gemini-2.5-flash") => (0.10, 0.40),
+        m if m.starts_with("gemini-3") && m.contains("flash") => (0.50, 3.0),
+        m if m.starts_with("gemini-3") => (2.0, 12.0),
+        m if m.starts_with("gemini-2.5-pro") => (1.25, 10.0),
+        m if m.starts_with("gemini-2.5-flash") => (0.30, 2.50),
         _ => (3.0, 15.0), // conservative fallback
     }
 }
@@ -61,6 +77,31 @@ fn model_pricing(model: &str) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Locks the top-down match order in `model_pricing`: every specific
+    /// variant must resolve to its own price, not its prefix's. Moving an
+    /// arm above its specific sibling makes this fail.
+    #[test]
+    fn pricing_prefers_specific_variants() {
+        let cases = [
+            ("gpt-5.6", (5.0, 30.0)),
+            ("gpt-5.5", (3.0, 15.0)),
+            ("gpt-5.4", (2.5, 15.0)),
+            ("gpt-5.4-mini", (0.75, 4.5)),
+            ("gpt-5.4-nano", (0.20, 1.25)),
+            ("gpt-5-nano", (0.05, 0.40)),
+            ("claude-fable-5", (10.0, 50.0)),
+            ("claude-opus-5", (5.0, 25.0)),
+            ("claude-sonnet-5", (2.0, 10.0)),
+            ("claude-sonnet-4-6", (3.0, 15.0)),
+            ("gemini-3-pro-preview", (2.0, 12.0)),
+            ("gemini-3-flash-preview", (0.50, 3.0)),
+            ("gemini-2.5-pro", (1.25, 10.0)),
+        ];
+        for (model, expected) in cases {
+            assert_eq!(super::model_pricing(model), expected, "pricing for {model}");
+        }
+    }
 
     #[test]
     fn format_count_cases() {
@@ -140,7 +181,7 @@ mod tests {
     #[test]
     fn estimate_cost_gemini() {
         let cost = estimate_cost("gemini-2.5-pro", 1_000_000, 500_000);
-        // gemini-2.5-pro: $1.25/M input, $2.50/M output -> $1.25 + $1.25 = $2.50
-        assert!((cost - 2.50).abs() < 0.01, "cost was {cost}");
+        // gemini-2.5-pro: $1.25/M input, $10.00/M output -> $1.25 + $5.00 = $6.25
+        assert!((cost - 6.25).abs() < 0.01, "cost was {cost}");
     }
 }

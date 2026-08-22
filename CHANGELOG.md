@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-21
+
+### Fixed
+
+- **Skill/axis reviews emitted zero findings since 0.28.0.** `skill_output::classify_response` deserialized model responses directly into the internal `Finding` struct, whose `source`, `evidence`, `calibrator_action` and `similar_precedent` fields have no serde default and which no LLM emits. A skill that found nothing returned `[]` and parsed (`exit_status: ok`); a skill that **found something** failed as `wrong_schema`. Net effect: across 440 recorded invocations spanning 2026-06-10 (the 0.28.0 multi-axis release) to 2026-08-22, the axis reviewer emitted **0 findings**, having consumed ~3.39M input and ~386K output tokens. Because `e8112ed` made axes the default for every `code`-mode review, default reviews silently degraded to static analysis only, while still reporting success and exiting 0.
+
+  Fixed by parsing into `LlmFinding` — the narrow DTO the legacy review path already used — and stamping provenance via the shared `LlmFinding::into_finding`. `LlmFinding` moved from `review.rs` (binary-only) to `finding.rs` (lib) so both paths share one type; the original duplication existed only to dodge the unfinished lib/bin split, and is what allowed the two paths to drift.
+
+  Verified on a ground-truth fixture (187-line Shelly mJS script, 4 known bugs): before, 7 findings, 0 from the LLM; after, 19 findings, 12 from the LLM, including the critical stale-sensor case that leaves a mains relay latched on.
+
+- **Skill-reported `evidence` was silently discarded.** All six bundled skill prompts request an `evidence` array, but `LlmFinding` had no such field, so serde dropped it and `into_finding` hardcoded `evidence: vec![]`.
+
+- **Model pricing drift.** `gemini-2.5-pro` output was 4x under actual, `gpt-5.4-mini`/`-nano` were billed at full `gpt-5.4` rates (12x over on nano), and `claude-fable-5` fell to the generic fallback. Table re-verified against live provider metadata; match ordering locked by test.
+
+### Added
+
+- **`--model` on `review`.** Overrides `QUORUM_MODEL`; accepts a comma-separated list to override `QUORUM_ENSEMBLE_MODELS` under `--ensemble`. Precedence: `--model` > `QUORUM_ENSEMBLE_MODELS` > `QUORUM_MODEL`. Previously the reviewer model could only be set by environment variable.
+- **Pricing for current models:** gpt-5.6, gpt-5.5, gpt-5.4-mini/nano, gpt-5-mini/nano, claude-opus-5, claude-sonnet-5, claude-fable-5, gemini-3 pro/flash.
+
+### Testing
+
+- Skill-output parsing is now asserted against the shape the prompts actually declare, for all six bundled axes, including evidence retention and tolerance of unknown fields. The previous tests round-tripped `Finding -> JSON -> Finding` via `FindingBuilder`, so they validated the parser against a shape no model ever sends — which is why the suite stayed green for two months.
+
 ## [0.29.0] - 2026-06-18
 
 ### Simplicity axis
