@@ -439,6 +439,12 @@ pub struct StatsOpts {
     #[arg(long)]
     pub by_caller: bool,
 
+    /// Group stats by quorum version, oldest first. Reads as a time series:
+    /// a step change in critical+high per file at a release boundary is how a
+    /// silently-degraded reviewer shows up in the data.
+    #[arg(long)]
+    pub by_version: bool,
+
     /// Show rolling N-review windows (e.g. --rolling 50)
     #[arg(long, value_parser = parse_rolling_n)]
     pub rolling: Option<usize>,

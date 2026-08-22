@@ -287,6 +287,29 @@ pub fn format_external_corpus(overlap: &analytics::ExternalOverlap) -> String {
 /// window. Uses `precision_trend_per_finding` when the linkage gate is
 /// open; otherwise falls back to entry-level `precision_trend` with a
 /// "entry-level pending finding-id rollout" banner.
+/// Render the severity-regression alarm, or nothing when healthy.
+///
+/// Deliberately loud and deliberately unconditional: the 0.28.0 outage was
+/// recorded accurately in `reviews.jsonl` for two months and never read back,
+/// because reading it required a suspicion nobody had. A ledger nobody queries
+/// on a schedule is decoration.
+#[must_use]
+pub fn format_severity_regression(reg: &dimensions::SeverityRegression) -> String {
+    format!(
+        "\nWARNING: high-severity findings collapsed on quorum {v}.\n\
+         \x20 {rate:.3} critical+high per file over {files} files, against a \
+         {base:.3} median on earlier versions ({pct:.0}% of baseline).\n\
+         \x20 A reviewer that silently stops reporting looks identical to a clean \
+         codebase. Check that the LLM leg is producing findings before trusting \
+         a quiet result.\n",
+        v = reg.version,
+        rate = reg.rate,
+        files = reg.files,
+        base = reg.baseline,
+        pct = (reg.rate / reg.baseline) * 100.0,
+    )
+}
+
 pub fn format_headline_trend(report: &StatsReport) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -526,6 +549,7 @@ pub fn format_dimension_table(
     let mut out = String::new();
     let key_header = match mode {
         "by-caller" => "Caller",
+        "by-version" => "Version",
         "rolling" => "Window",
         _ => "Repo",
     };
@@ -662,6 +686,7 @@ fn color_for_accept(rate: f64, style: &Style) -> &str {
 fn unit_label_singular(mode: &str) -> &'static str {
     match mode {
         "by-caller" => "caller",
+        "by-version" => "version",
         "rolling" => "window",
         _ => "repo",
     }
@@ -670,6 +695,7 @@ fn unit_label_singular(mode: &str) -> &'static str {
 fn unit_label_plural(mode: &str) -> &'static str {
     match mode {
         "by-caller" => "callers",
+        "by-version" => "versions",
         "rolling" => "windows",
         _ => "repos",
     }
@@ -1612,6 +1638,7 @@ mod tests {
             key: key.into(),
             n_reviews: n,
             n_findings: findings,
+            files_reviewed: 0,
             findings_per_file: if files == 0 {
                 0.0
             } else {

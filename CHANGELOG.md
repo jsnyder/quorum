@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Severity-regression alarm.** `quorum review` now reads its own severity ledger back and warns when the running version's critical+high yield has collapsed against earlier versions. New `stats --by-version` shows the same data as a time series, oldest first.
+
+  This exists because the 0.28.0-0.29.0 outage was recorded accurately in `reviews.jsonl` for two months and never read: crit+high per file ran ~0.8 across earlier releases and fell to **0.103** on 0.29.0, while every other signal — exit code, run summary, `stats` — reported success. A ledger nobody queries on a schedule is decoration.
+
+  **The threshold is tuned against real history, not guessed.** Replayed over 32 versions of this project's own review log:
+
+  | ratio | versions flagged | caught 0.29.0 |
+  |-------|-----------------:|---------------|
+  | 0.50 | 8 of 32 | yes |
+  | 0.35 | 6 of 32 | yes |
+  | 0.25 | 2 of 32 | yes |
+  | **0.20** | **1 of 32** | yes |
+
+  0.5 was the intuitive threshold and fires on a quarter of all releases; an alarm that frequent is one people learn to ignore, which is the failure it exists to prevent. Ships at 0.2. Baseline versions are held to the same 20-file minimum as the candidate, because per-version samples here range from 3 to 1,154 files and a median polluted by 3-file versions is not a baseline.
+
+- `DimensionSlice.files_reviewed` is now exposed, so callers can weigh a rate by its sample instead of recovering the denominator by division.
+
 ### Changed
 
 - **`DEFAULT_MODEL` is now `gpt-5.6`** (was `gpt-5.4`). Measured on the frozen JS recall fixture: 4/4 ground-truth bugs vs 3/4, at the *same* $0.055 per bug found, in half the wall-clock (81s vs 170s). The 2x sticker price ($5/$30 vs $2.50/$15) is offset by ~44% fewer output tokens on a byte-identical prompt — 4,545 vs 8,103.

@@ -296,8 +296,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
-            let want_classic_dim =
-                !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
+            let want_classic_dim = !want_context_dim
+                && (opts.by_repo || opts.by_caller || opts.by_version || opts.rolling.is_some());
 
             if want_context_dim {
                 let log = review_log::ReviewLog::with_storage(storage_handle.clone());
@@ -380,6 +380,16 @@ async fn main() -> anyhow::Result<()> {
                     };
                     let slices = dimensions::group_by_caller(&records);
                     ("by-caller", records, slices)
+                } else if opts.by_version {
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_version(&records);
+                    ("by-version", records, slices)
                 } else {
                     let n = opts.rolling.unwrap();
                     let window_count = 3usize;
@@ -3131,6 +3141,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         };
         if let Err(e) = review_log.record_with_meta(&record, &finding_meta) {
             eprintln!("Warning: failed to write review log: {}", e);
+        }
+
+        // Read the severity ledger back. `reviews.jsonl` recorded the 0.28.0
+        // collapse (1.17 -> 0.014 crit+high per file) for two months and nothing
+        // ever queried it, because querying required a suspicion the tool's own
+        // "success" output actively discouraged. Checking here costs one bounded
+        // read and makes systemic silence loud on the next review rather than
+        // whenever someone thinks to look.
+        const REGRESSION_LOOKBACK: usize = 500;
+        match review_log.load_recent(REGRESSION_LOOKBACK) {
+            Ok(recent) => {
+                let by_version = dimensions::group_by_version(&recent);
+                if let Some(reg) = dimensions::detect_severity_regression(
+                    &by_version,
+                    dimensions::DEFAULT_REGRESSION_RATIO,
+                    dimensions::DEFAULT_REGRESSION_MIN_FILES,
+                ) {
+                    eprint!("{}", stats::format_severity_regression(&reg));
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "severity-regression check skipped");
+            }
         }
     }
 
