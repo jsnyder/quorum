@@ -15,12 +15,31 @@ It then became the verification target for the fix.
 
 **Measured results** (post-fix, `--skip-context7`, single file):
 
-| model | findings | LLM-sourced | ground truth | high |
-|-------|---------:|------------:|-------------:|-----:|
-| pre-fix, any model | 7 | 0 | 0/4 | 0 |
-| gpt-5.4 | 19 | 12 | 3/4 | 1 |
-| gpt-5.6 | 22 | 15 | 4/4 | 1 |
-| claude-opus-5 | 31 | 24 | 4/4 | 3 |
+| model | $/file | out tok | findings | LLM-sourced | ground truth | high | secs |
+|-------|-------:|--------:|---------:|------------:|-------------:|-----:|-----:|
+| pre-fix, any model | - | - | 7 | 0 | 0/4 | 0 | 65 |
+| gpt-5.4 | $0.164 | 8103 | 19 | 12 | 3/4 | 1 | 170 |
+| gpt-5.5 | $0.115 | 4391 | 20 | 13 | 2/4 | 0 | 143 |
+| **gpt-5.6** | $0.221 | 4545 | 22 | 15 | **4/4** | 1 | 81 |
+| claude-opus-5 | $0.425 | 11714 | 31 | 24 | **4/4** | 3 | 159 |
+
+Cost uses the v0.30.0 pricing table. Single run per model on this one file --
+enough to pick a default, not enough to reason about tradeoffs; see punch-list
+item 8b for the systematic study.
+
+**gpt-5.6 is the default as of v0.31.0.** Same $0.055 per ground-truth bug as
+gpt-5.4 but full coverage, in half the wall-clock; its 2x sticker price is
+offset by ~44% fewer output tokens on a byte-identical prompt.
+
+**gpt-5.5 is a trap.** Cheapest per file, but 2/4 and *zero* high-severity
+findings: it missed both critical bugs (sfc-002 staleness guard, sfc-004 NaN
+poisoning) and exited 1 rather than 2, so it would not fail a CI gate on a file
+with two critical defects. Note 5.5 and 5.6 spend near-identical output tokens
+(4391 vs 4545) -- 5.6 converts them into twice the coverage.
+
+**claude-opus-5 buys severity calibration**, not recall: same 4/4, but 3 high vs
+1, correctly elevating sfc-004 and the LAN-writable actuation. Worth 2x on
+release branches if you gate on exit 2; hard to justify per-file.
 
 A plain single-prompt call to gpt-5.4 (no axes) finds sfc-001 and sfc-003 but
 misses sfc-002 — the axis scaffolding earns its tokens on exactly the finding a
