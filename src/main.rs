@@ -3454,7 +3454,9 @@ fn run_feedback_inner(
     let use_json = json || (!use_compact && !std::io::IsTerminal::is_terminal(&std::io::stdout()));
 
     let linked = entry.finding_id.as_deref();
-    let linked_suffix = linked.map(|fid| format!("|linked:{fid}")).unwrap_or_default();
+    let linked_suffix = linked
+        .map(|fid| format!("|linked:{fid}"))
+        .unwrap_or_default();
     let output = if use_json {
         let mut json_obj = serde_json::json!({
             "verdict": verdict_label,
@@ -3472,7 +3474,9 @@ fn run_feedback_inner(
             verdict_label, entry.file_path, entry.finding_title, linked_suffix
         )
     } else {
-        let link_info = linked.map(|fid| format!(", linked: {fid}")).unwrap_or_default();
+        let link_info = linked
+            .map(|fid| format!(", linked: {fid}"))
+            .unwrap_or_default();
         format!(
             "Recorded: {} for \"{}\" in {} ({} entries{})",
             verdict_label, entry.finding_title, entry.file_path, total, link_info,
