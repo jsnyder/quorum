@@ -516,8 +516,7 @@ mod tests {
             other => panic!("expected Ok, got {other:?}"),
         }
     }
-    use crate::category::Category;
-    use crate::finding::{FindingBuilder, Severity, Source};
+    use crate::finding::{FindingBuilder, Severity};
 
     // -----------------------------------------------------------------------
     // ParseErrorClass serde roundtrip
@@ -824,15 +823,21 @@ mod tests {
     // classify_response: valid Finding array
     // -----------------------------------------------------------------------
 
+    /// Emit only the fields the skill prompts declare. Building a `Finding`
+    /// and serializing it back would round-trip `Finding -> JSON -> Finding`,
+    /// which is exactly the blind spot that let the parser reject all real
+    /// model output while these tests stayed green.
     fn make_finding_json(title: &str) -> String {
-        let f = FindingBuilder::new()
-            .title(title)
-            .severity(Severity::High)
-            .category(Category::Security)
-            .source(Source::Llm("gpt-5.4".into()))
-            .lines(10, 20)
-            .build();
-        serde_json::to_string(&f).unwrap()
+        serde_json::json!({
+            "title": title,
+            "description": "mock finding body",
+            "severity": "high",
+            "category": "security",
+            "line_start": 10,
+            "line_end": 20,
+            "evidence": ["mock evidence line"],
+        })
+        .to_string()
     }
 
     #[test]

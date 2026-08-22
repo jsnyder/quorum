@@ -628,8 +628,7 @@ fn build_invocation_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::category::Category;
-    use crate::finding::{FindingBuilder, Severity, Source};
+    use crate::finding::{FindingBuilder, Severity};
     use crate::skill_audit::{AuditReader, AxisSelectionSource, ExitStatus, FailureReason};
     use crate::skill_manifest::{
         Axis, Capability, CapabilityMode, Prompts, ProviderPrompt, SkillManifest, TrustTier,
@@ -1043,15 +1042,18 @@ mod tests {
 
     #[test]
     fn output_sanitized() {
-        // Build a finding JSON with ANSI in the title
-        let f = FindingBuilder::new()
-            .title("\x1b[31mRed Alert\x1b[0m")
-            .severity(Severity::High)
-            .category(Category::Security)
-            .source(Source::Llm("test".into()))
-            .lines(1, 1)
-            .build();
-        let json = format!("[{}]", serde_json::to_string(&f).unwrap());
+        // Prompt-shaped response carrying ANSI escapes in the title. Built as
+        // raw JSON, not by serializing a `Finding` -- see make_finding_json.
+        let json = serde_json::json!([{
+            "title": "\u{1b}[31mRed Alert\u{1b}[0m",
+            "description": "mock finding body",
+            "severity": "high",
+            "category": "security",
+            "line_start": 1,
+            "line_end": 1,
+            "evidence": [],
+        }])
+        .to_string();
         let reviewer = MockReviewer::with_default(&json, sample_usage());
         let skill = sample_skill("security", None, Severity::Critical);
         let cell = CellSpec {
