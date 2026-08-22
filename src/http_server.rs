@@ -31,6 +31,11 @@ pub struct DaemonState {
 pub struct ReviewRequest {
     pub file_path: String,
     pub code: String,
+    /// Per-request reviewer model override (`--model`). Empty/absent falls
+    /// back to the daemon's configured model. Without this the daemon
+    /// silently ignored the caller's model selection.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,8 +117,13 @@ async fn review(
     let cache_before = state.parse_cache.stats().hits;
 
     let feedback = state.feedback_store.load_all().unwrap_or_default();
+    let models = if req.models.is_empty() {
+        vec![state.config.model.clone()]
+    } else {
+        req.models.clone()
+    };
     let pipeline_cfg = PipelineConfig {
-        models: vec![state.config.model.clone()],
+        models,
         feedback,
         ..Default::default()
     };
@@ -175,6 +185,28 @@ pub fn create_daemon_state(cache_capacity: usize) -> anyhow::Result<Arc<DaemonSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--model` must reach the daemon. Before this, `ReviewRequest` carried
+    /// only file_path/code and the handler always used the daemon's own
+    /// configured model, so `--daemon --model X` silently ignored X.
+    #[test]
+    fn review_request_carries_model_override() {
+        let json = r#"{"file_path":"a.rs","code":"fn main() {}","models":["gpt-5.6"]}"#;
+        let req: ReviewRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.models, vec!["gpt-5.6".to_owned()]);
+    }
+
+    /// Older clients omit the field entirely; it must default rather than
+    /// fail to deserialize, so the daemon stays compatible.
+    #[test]
+    fn review_request_without_models_defaults_empty() {
+        let json = r#"{"file_path":"a.rs","code":"fn main() {}"}"#;
+        let req: ReviewRequest = serde_json::from_str(json).unwrap();
+        assert!(
+            req.models.is_empty(),
+            "absent models must default, letting the handler fall back to its configured model"
+        );
+    }
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;

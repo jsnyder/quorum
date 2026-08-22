@@ -1007,6 +1007,37 @@ impl quorum::skill_executor::LlmReviewer for SkillLlmAdapter {
     }
 }
 
+/// Report skill cells that failed, and return how many.
+///
+/// Cells expand to skills x models x files, so identity comes from the cell
+/// itself -- never from position in the skills list. A parse failure that is
+/// only written to the audit log looks identical to a clean file: that is how
+/// the axis reviewer emitted zero findings for 440 invocations without anyone
+/// noticing. Callers must fold the count into the exit status.
+fn report_failed_skill_cells(
+    cell_results: &[quorum::skill_executor::CellResult],
+    file: &str,
+) -> usize {
+    let failed: Vec<String> = cell_results
+        .iter()
+        .filter(|c| c.parse_error_class.is_some() || c.failure_reason.is_some())
+        .map(|c| match &c.parse_error_class {
+            Some(class) => format!("{}/{} ({class})", c.skill_name, c.actual_model),
+            None => format!("{}/{}", c.skill_name, c.actual_model),
+        })
+        .collect();
+    if !failed.is_empty() {
+        eprintln!(
+            "Warning: {} of {} skill axes failed on {}: {}",
+            failed.len(),
+            cell_results.len(),
+            file,
+            failed.join(", "),
+        );
+    }
+    failed.len()
+}
+
 /// Resolve the review axis set from CLI flags and available skills.
 ///
 /// Returns:
@@ -2289,6 +2320,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let mut all_findings = Vec::new();
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
+    // Shared across the sequential and parallel review paths; folded into the
+    // exit status so a review whose skill axes all failed cannot exit 0.
+    let skill_cells_failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // Linter coverage discovery, scoped to whichever project the first
     // reviewed file lives in. Nothing here runs the linters -- only reports
@@ -2496,28 +2530,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         // axis reviewer silently emitted zero findings for two
                         // months; nothing ever read it back. A parse failure
                         // must not look like a clean file.
-                        // CellResult carries no skill name; for a single file
-                        // the cells map 1:1 onto `ra.skills` in order.
-                        let failed: Vec<String> = cell_results
-                            .iter()
-                            .zip(&ra.skills)
-                            .filter(|(c, _)| {
-                                c.parse_error_class.is_some() || c.failure_reason.is_some()
-                            })
-                            .map(|(c, sk)| match &c.parse_error_class {
-                                Some(class) => format!("{} ({class})", sk.manifest.name),
-                                None => sk.manifest.name.clone(),
-                            })
-                            .collect();
-                        if !failed.is_empty() {
-                            eprintln!(
-                                "Warning: {} of {} skill axes failed on {}: {}",
-                                failed.len(),
-                                cell_results.len(),
-                                file_str,
-                                failed.join(", "),
-                            );
-                        }
+                        skill_cells_failed.fetch_add(
+                            report_failed_skill_cells(&cell_results, &file_str),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
 
                         let _int_span = tracing::info_span!(
                                 "phase.integrator",
@@ -2621,6 +2637,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let skill_audit_writer = skill_audit_writer_arc.clone();
             let integrator_audit_writer = integrator_audit_writer_arc.clone();
             let run_id = run_id.clone();
+            let skill_cells_failed = skill_cells_failed.clone();
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
@@ -2764,6 +2781,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 );
 
                                 drop(_exec_span);
+
+                                skill_cells_failed.fetch_add(
+                                    report_failed_skill_cells(&cell_results, &file_str),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
 
                                 let _int_span = tracing::info_span!(
                                     "phase.integrator",
@@ -3251,7 +3273,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         return review_exit;
     }
 
-    output::compute_exit_code(&all_findings)
+    // A review whose skill axes failed is not clean, even with no findings:
+    // that combination is exactly what hid the parser regression for two
+    // months. Floor the status at 1 (warnings) without escalating transient
+    // LLM failures to a tool error.
+    let code = output::compute_exit_code(&all_findings);
+    if skill_cells_failed.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        code.max(1)
+    } else {
+        code
+    }
 }
 
 /// Relevance gate: a detected linter is only worth surfacing in this review's
@@ -3328,6 +3359,16 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
     let client = reqwest::blocking::Client::new();
     let base = format!("http://127.0.0.1:{}", opts.daemon_port);
 
+    // Same precedence as the local path: --model wins, else the daemon's own
+    // configured model. Sent per request so `--daemon --model X` is honoured
+    // rather than silently ignored.
+    let daemon_models: Vec<String> = opts
+        .model
+        .iter()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+
     // Check if daemon is running
     match client.get(format!("{}/health", base)).send() {
         Ok(resp) if resp.status().is_success() => {}
@@ -3359,6 +3400,7 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
         let body = serde_json::json!({
             "file_path": file_path.to_string_lossy(),
             "code": source,
+            "models": daemon_models,
         });
 
         match client.post(format!("{}/review", base)).json(&body).send() {
