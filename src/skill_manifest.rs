@@ -320,11 +320,37 @@ fn load_embedded_skills(
 /// Malformed TOML files are skipped with a `tracing::warn` rather than
 /// aborting the entire load.
 pub fn load_skills(bundled_dir: &Path, user_dir: &Path) -> anyhow::Result<Vec<LoadedSkill>> {
+    load_skills_impl(bundled_dir, user_dir, true)
+}
+
+/// Test/introspection seam: loads only filesystem skills, excluding
+/// compile-time embedded defaults.
+///
+/// Identical to [`load_skills`] except Phase 0 (embedded skills) is skipped,
+/// so the returned set reflects exactly what lives in `bundled_dir` and
+/// `user_dir`. Used by tests that assert on precise directory contents.
+// Currently only exercised by tests; kept available for non-test introspection.
+#[allow(dead_code)]
+pub(crate) fn load_skills_dirs_only(
+    bundled_dir: &Path,
+    user_dir: &Path,
+) -> anyhow::Result<Vec<LoadedSkill>> {
+    load_skills_impl(bundled_dir, user_dir, false)
+}
+
+fn load_skills_impl(
+    bundled_dir: &Path,
+    user_dir: &Path,
+    include_embedded: bool,
+) -> anyhow::Result<Vec<LoadedSkill>> {
     let mut skills_by_name: HashMap<String, LoadedSkill> = HashMap::new();
     let mut bundled_namespaces: HashMap<String, String> = HashMap::new();
 
-    // Phase 0: embedded skills (compiled into the binary).
-    load_embedded_skills(&mut skills_by_name, &mut bundled_namespaces);
+    // Phase 0: embedded skills (compiled into the binary). Skipped for the
+    // dirs-only test seam.
+    if include_embedded {
+        load_embedded_skills(&mut skills_by_name, &mut bundled_namespaces);
+    }
 
     // Phase 1: filesystem bundled skills (override embedded on name collision).
     load_from_dir(
@@ -624,7 +650,7 @@ primary = "Review the code for security issues."
             &minimal_toml("performance"),
         );
 
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert_eq!(skills.len(), 2);
         let names: Vec<&str> = skills.iter().map(|s| s.manifest.name.as_str()).collect();
         assert!(names.contains(&"security"));
@@ -671,7 +697,7 @@ primary = "User prompt."
         write_skill(bundled.path(), "security.toml", bundled_toml);
         write_skill(user.path(), "security.toml", user_toml);
 
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].manifest.display_name, "User Security");
         assert_eq!(skills[0].manifest.version, "2.0.0");
@@ -701,7 +727,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(
             skills.is_empty(),
             "skill with empty calibration_namespace must be skipped"
@@ -777,7 +803,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         // Malformed/invalid manifests are skipped with a warning, not hard errors.
         assert!(skills.is_empty());
     }
@@ -802,7 +828,7 @@ mode = "pure"
 primary = ""
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(skills.is_empty());
     }
 
@@ -828,7 +854,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(
             skills.is_empty(),
             "unknown axis should fail deserialization"
@@ -857,7 +883,7 @@ mode = "indexed"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(
             skills.is_empty(),
             "non-pure capability mode should be rejected as reserved"
@@ -887,7 +913,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "security.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(
             skills[0].manifest.ast_rules,
@@ -984,13 +1010,15 @@ primary   =   "p"
     fn empty_dirs_produce_empty_vec() {
         let bundled = tempdir().unwrap();
         let user = tempdir().unwrap();
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(skills.is_empty());
     }
 
     #[test]
     fn nonexistent_dirs_produce_empty_vec() {
-        let skills = load_skills(Path::new("/nonexistent/a"), Path::new("/nonexistent/b")).unwrap();
+        let skills =
+            load_skills_dirs_only(Path::new("/nonexistent/a"), Path::new("/nonexistent/b"))
+                .unwrap();
         assert!(skills.is_empty());
     }
 
@@ -1004,7 +1032,7 @@ primary   =   "p"
         write_skill(bundled.path(), "bad.toml", "this is not {{ valid toml");
         write_skill(bundled.path(), "good.toml", &minimal_toml("good-skill"));
 
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].manifest.name, "good-skill");
     }
@@ -1166,7 +1194,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(skills.is_empty(), "invalid semver should be rejected");
     }
 
@@ -1214,7 +1242,7 @@ primary = "prompt"
 "#;
         write_skill(bundled.path(), "aaa.toml", toml_aaa);
 
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         let names: Vec<&str> = skills.iter().map(|s| s.manifest.name.as_str()).collect();
         assert_eq!(names, vec!["aaa", "zzz"]);
     }
@@ -1227,7 +1255,7 @@ primary = "prompt"
         let user = tempdir().unwrap();
 
         write_skill(bundled.path(), "test.toml", &minimal_toml("test"));
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(
             skills[0].manifest_sha256.len(),
@@ -1368,7 +1396,7 @@ mode = "pure"
 primary = "prompt"
 "#;
         write_skill(bundled.path(), "bad.toml", toml);
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(
             skills.is_empty(),
             "empty preferred_model should be rejected"
@@ -1439,11 +1467,46 @@ primary = "prompt"
         let user = tempdir().unwrap();
 
         write_skill(bundled.path(), "test.toml", &minimal_toml("test"));
-        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
         assert!(
             skills[0].source_path.ends_with("skills/test.toml"),
             "source_path should end with skills/test.toml: {:?}",
             skills[0].source_path
         );
+    }
+
+    // ── Public loader always includes compile-time embedded defaults ──
+
+    #[test]
+    fn load_skills_includes_embedded_defaults() {
+        // Empty temp dirs: any result must come from the embedded set.
+        let bundled = tempdir().unwrap();
+        let user = tempdir().unwrap();
+
+        let skills = load_skills(bundled.path(), user.path()).unwrap();
+        assert!(
+            !skills.is_empty(),
+            "public load_skills must surface embedded defaults even with empty dirs"
+        );
+
+        // Derive the expected skill names straight from EMBEDDED_SKILLS so this
+        // test tracks the const and cannot be masked by the dirs-only seam.
+        let expected: Vec<String> = EMBEDDED_SKILLS
+            .iter()
+            .map(|(_, content)| {
+                toml::from_str::<SkillManifest>(content)
+                    .expect("embedded skill must parse")
+                    .name
+            })
+            .collect();
+        assert!(!expected.is_empty(), "EMBEDDED_SKILLS must not be empty");
+
+        let loaded_names: Vec<&str> = skills.iter().map(|s| s.manifest.name.as_str()).collect();
+        for name in &expected {
+            assert!(
+                loaded_names.contains(&name.as_str()),
+                "embedded skill {name:?} missing from load_skills output: {loaded_names:?}"
+            );
+        }
     }
 }
