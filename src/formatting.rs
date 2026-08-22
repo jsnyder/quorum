@@ -36,6 +36,12 @@ pub fn estimate_cost(model: &str, tokens_in: u64, tokens_out: u64) -> f64 {
 }
 
 fn model_pricing(model: &str) -> (f64, f64) {
+    // Strip a provider prefix before matching. Proxies expose slugs like
+    // `openai/gpt-5.6-terra`, `openrouter/anthropic/claude-opus-4.7` and
+    // `google/gemini-3-pro-preview`; without this every one of them falls to
+    // the conservative fallback and silently mis-prices. Keep only the last
+    // segment, which is where the model identity lives.
+    let model = model.rsplit('/').next().unwrap_or(model);
     // (input $/M, output $/M)
     // Verified 2026-08-21 against the LiteLLM proxy's /model/info.
     //
@@ -77,6 +83,28 @@ fn model_pricing(model: &str) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provider-prefixed slugs must price identically to their bare form.
+    /// Proxies expose `openai/gpt-5.6-terra`, `google/gemini-2.5-pro` and the
+    /// like; matching on `starts_with("gpt-5.6")` missed every one of them and
+    /// silently applied the conservative fallback.
+    #[test]
+    fn pricing_ignores_provider_prefix() {
+        for (prefixed, bare) in [
+            ("openai/gpt-5.6-terra", "gpt-5.6"),
+            ("openai/gpt-5.6", "gpt-5.6"),
+            ("google/gemini-2.5-pro", "gemini-2.5-pro"),
+            ("openrouter/anthropic/claude-opus-4.7", "claude-opus-4.7"),
+        ] {
+            assert_eq!(
+                super::model_pricing(prefixed),
+                super::model_pricing(bare),
+                "{prefixed} must price as {bare}"
+            );
+        }
+        // And the fallback still applies to genuinely unknown models.
+        assert_eq!(super::model_pricing("openai/who-knows"), (3.0, 15.0));
+    }
 
     /// Locks the top-down match order in `model_pricing`: every specific
     /// variant must resolve to its own price, not its prefix's. Moving an

@@ -21,7 +21,13 @@ It then became the verification target for the fix.
 | gpt-5.4 | $0.164 | 8103 | 19 | 12 | 3/4 | 1 | 170 |
 | gpt-5.5 | $0.115 | 4391 | 20 | 13 | 2/4 | 0 | 143 |
 | **gpt-5.6** | $0.221 | 4545 | 22 | 15 | **4/4** | 1 | 81 |
+| gpt-5.6-sol | $0.227 | 4822 | 19 | 12 | **4/4** | 2 | 165 |
+| gpt-5.6-terra | $0.238* | 5181 | 18 | 11 | 1.5/4 | 0 | 132 |
 | claude-opus-5 | $0.425 | 11714 | 31 | 24 | **4/4** | 3 | 159 |
+
+`*` terra has no entry in the proxy's `/model/info`, so its price is assumed
+equal to gpt-5.6 and is unverified. Both variants are reachable through the
+LiteLLM `*` wildcard as `openai/gpt-5.6-{sol,terra}` with no proxy config.
 
 Cost uses the v0.30.0 pricing table. Single run per model on this one file --
 enough to pick a default, not enough to reason about tradeoffs; see punch-list
@@ -36,6 +42,21 @@ findings: it missed both critical bugs (sfc-002 staleness guard, sfc-004 NaN
 poisoning) and exited 1 rather than 2, so it would not fail a CI gate on a file
 with two critical defects. Note 5.5 and 5.6 spend near-identical output tokens
 (4391 vs 4545) -- 5.6 converts them into twice the coverage.
+
+**The noise floor, measured.** `gpt-5.6` and `gpt-5.6-sol` are the same model,
+so the gap between their rows *is* run-to-run variance: 3 findings, 3
+LLM-sourced findings and 1 high severity. But they agree exactly on
+ground-truth coverage (4/4) and exit code (2). Variance moves the decorative
+numbers and leaves the load-bearing ones stable -- which is what makes the
+ground-truth column trustworthy at n=1 and the raw finding count not.
+
+**terra is a real regression, not an unlucky sample.** 1.5/4 with zero
+high-severity findings sits far outside that noise band. It caught the unbounded
+queue and the decoder truncation but never reached the NaN mechanism, and missed
+both the staleness guard and the `JSON.parse` crash. It spent *more* output
+tokens than sol to do it, and exited 1 where sol and gpt-5.6 exit 2 -- so it
+would not fail a CI gate on a file with two critical defects. Same trap as
+gpt-5.5. Do not use either for gated review.
 
 **claude-opus-5 buys severity calibration**, not recall: same 4/4, but 3 high vs
 1, correctly elevating sfc-004 and the LAN-writable actuation. Worth 2x on
