@@ -3961,6 +3961,21 @@ fn run_backfill_linkage(opts: cli::BackfillLinkageOpts) -> i32 {
     0
 }
 
+/// Extract the previously-deployed logistic thresholds `(suppress, boost)` from
+/// a loaded calibrator model, if it carries a logistic sub-model.
+///
+/// Pure and unit-testable. Returns `(None, None)` when the model is absent or
+/// has no logistic sub-model. Used by `run_calibrate` to report prior-vs-candidate
+/// threshold deltas (Phase 1 observability).
+fn prior_thresholds(
+    model: Option<&calibrator_model::CalibratorModel>,
+) -> (Option<f64>, Option<f64>) {
+    match model.and_then(|m| m.logistic_model.as_ref()) {
+        Some(l) => (Some(l.suppress_threshold), Some(l.boost_threshold)),
+        None => (None, None),
+    }
+}
+
 /// CLI entry point for `quorum calibrate`.
 fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
     if let Err(e) = opts.validate() {
@@ -4160,6 +4175,18 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
             disable_fuzzy,
         );
 
+        // Load the previously-deployed model so we can report prior thresholds
+        // and prior->candidate deltas. NOTE: run_calibrate builds a *fresh*
+        // composite_model from feedback (whose logistic_model is None), which is
+        // a distinct code path from the review-time load at model_path (~2137).
+        // Without this explicit load there is no prior deployed threshold in
+        // scope here.
+        let prior_model_path = qhome.join("calibrator_model.toml");
+        let prior_model = quorum::calibrator_model::CalibratorModel::load_from(
+            &prior_model_path.to_string_lossy(),
+        );
+        let (prior_suppress, prior_boost) = prior_thresholds(prior_model.as_ref());
+
         match quorum::calibrate::learn_logistic(&joined, 5) {
             Some(result) => {
                 eprintln!(
@@ -4183,8 +4210,55 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
                     "  FP recall @ 99% TP recall: {:.4}",
                     result.fp_recall_at_99_tp_recall
                 );
-                eprintln!("  Suppress threshold: {:.4}", result.suppress_threshold);
-                eprintln!("  Boost threshold:    {:.4}", result.boost_threshold);
+                // Phase 1 is observability-first: there is NO hold guard yet, so
+                // the deployed value is ALWAYS the freshly-computed candidate.
+                // The label makes that explicit so nobody assumes a guard is
+                // gating deployment. The [prior ...] bracket is omitted on first
+                // run (no prior model on disk).
+                let suppress_delta = prior_suppress.map(|p| result.suppress_threshold - p);
+                let boost_delta = prior_boost.map(|p| result.boost_threshold - p);
+
+                match prior_suppress {
+                    Some(p) => eprintln!(
+                        "  Suppress threshold: {:.4} deployed (= candidate; no hold guard in Phase 1)  [prior {:.4}, d={:+.4}]",
+                        result.suppress_threshold,
+                        p,
+                        result.suppress_threshold - p
+                    ),
+                    None => eprintln!(
+                        "  Suppress threshold: {:.4} deployed (= candidate; no hold guard in Phase 1)",
+                        result.suppress_threshold
+                    ),
+                }
+                match prior_boost {
+                    Some(p) => eprintln!(
+                        "  Boost threshold:    {:.4} deployed (= candidate; no hold guard in Phase 1)  [prior {:.4}, d={:+.4}]",
+                        result.boost_threshold,
+                        p,
+                        result.boost_threshold - p
+                    ),
+                    None => eprintln!(
+                        "  Boost threshold:    {:.4} deployed (= candidate; no hold guard in Phase 1)",
+                        result.boost_threshold
+                    ),
+                }
+
+                tracing::info!(
+                    threshold = "suppress",
+                    prior = ?prior_suppress,
+                    candidate = result.suppress_threshold,
+                    deployed = result.suppress_threshold,
+                    delta = ?suppress_delta,
+                    "threshold report"
+                );
+                tracing::info!(
+                    threshold = "boost",
+                    prior = ?prior_boost,
+                    candidate = result.boost_threshold,
+                    deployed = result.boost_threshold,
+                    delta = ?boost_delta,
+                    "threshold report"
+                );
 
                 let lm = quorum::calibrator_model::LogisticModel {
                     computed_at: chrono::Utc::now().to_rfc3339(),
@@ -5045,5 +5119,79 @@ mod backfill_linkage_tests {
         let (linked2, cand2) = backfill_linkage_inner(&qhome);
         assert_eq!(linked2, 0, "second run must link 0 — already done");
         assert_eq!(cand2, 0, "no unlinked candidates remain");
+    }
+}
+
+#[cfg(test)]
+mod prior_thresholds_tests {
+    use super::*;
+    use quorum::calibrator_model::{CalibratorModel, LogisticModel, ModelMeta, ScoreWeights};
+    use std::collections::HashMap;
+
+    fn model_with(logistic: Option<LogisticModel>) -> CalibratorModel {
+        CalibratorModel {
+            meta: ModelMeta {
+                computed_at: "2026-07-03T00:00:00Z".to_string(),
+                feedback_count: 10,
+                global_fp_rate: 0.3,
+                learned_weights: None,
+            },
+            weights: ScoreWeights {
+                score: 0.5,
+                word_lor: 1.5,
+                family_fp_inv: 1.0,
+                language_fp_inv: 0.5,
+            },
+            logistic_model: logistic,
+            word_lor: HashMap::new(),
+            family_fp_rate: HashMap::new(),
+            language_fp_rate: HashMap::new(),
+            category_fp_rate_map: None,
+            severity_fp_rate: None,
+            model_fp_rate: None,
+            file_fp_rate: None,
+            file_finding_counts: None,
+        }
+    }
+
+    fn logistic_with(suppress: f64, boost: f64) -> LogisticModel {
+        LogisticModel {
+            computed_at: "2026-07-03T00:00:00Z".to_string(),
+            n_samples: 300,
+            n_fp: 60,
+            selected_features: vec!["a".to_string(), "b".to_string()],
+            coefficients: vec![0.1, 0.2],
+            intercept: 0.0,
+            feature_means: vec![0.0, 0.0],
+            feature_stddevs: vec![1.0, 1.0],
+            suppress_threshold: suppress,
+            boost_threshold: boost,
+            ap_score: 0.5,
+            fp_recall_at_99_tp_recall: 0.2,
+            baseline_ap: 0.2,
+        }
+    }
+
+    #[test]
+    fn prior_thresholds_returns_both_when_logistic_present() {
+        let model = model_with(Some(logistic_with(0.3170, 0.7400)));
+        let (suppress, boost) = prior_thresholds(Some(&model));
+        assert_eq!(suppress, Some(0.3170));
+        assert_eq!(boost, Some(0.7400));
+    }
+
+    #[test]
+    fn prior_thresholds_returns_none_when_logistic_absent() {
+        let model = model_with(None);
+        let (suppress, boost) = prior_thresholds(Some(&model));
+        assert_eq!(suppress, None);
+        assert_eq!(boost, None);
+    }
+
+    #[test]
+    fn prior_thresholds_returns_none_when_model_absent() {
+        let (suppress, boost) = prior_thresholds(None);
+        assert_eq!(suppress, None);
+        assert_eq!(boost, None);
     }
 }
