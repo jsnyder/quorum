@@ -2936,14 +2936,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 .cloned()
                 .unwrap_or_else(|| "none".to_string())
         };
+        let withheld: u32 = file_results
+            .iter()
+            .map(|r| r.judge_metrics.withheld_unjudged)
+            .sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}",
+            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
             model_label,
             total_findings,
             if total_suppressed > 0 {
                 format!(", {} suppressed", total_suppressed)
+            } else {
+                String::new()
+            },
+            if withheld > 0 {
+                format!(", {withheld} speculative withheld (run with --judge to evaluate them)")
             } else {
                 String::new()
             }

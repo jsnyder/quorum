@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`judge: required` was never enforced.** A speculative finding was dropped only on an explicit `Rejected` verdict. When no judge ran — `--judge` is opt-in — the code marked findings `Uncertain` and kept them, so seven rules that declare they *require* adjudication shipped their output completely unjudged.
+
+  `Uncertain` was conflating "the judge looked and could not rule it out" with "no judge ever looked". Those now differ: with no judge the verdict stays unset, and `judge: required` findings are withheld and counted.
+
+  This explains the worst rules in the feedback corpus rather than condemning them — `jinja-loop-variable-scoping` (0 of 8), `string-byte-slice-broad` (0 of 9), `discarded-result` (1 of 10) are all `judge: required`. They were not bad rules; they were running without their mandatory filter.
+
+  Withheld findings are reported on the summary line, never silently dropped:
+
+  ```
+  Reviewed 4 file(s) in 57.5s using gpt-5.6: 12 finding(s), 9 speculative withheld (run with --judge to evaluate them)
+  ```
+
+### Removed
+
+- **`missing-await` (Python).** It matched every bare call inside an `async def` that was not awaited — `print()`, `logger.info()`, `buf.append()` — because deciding whether a callee is a coroutine needs type information ast-grep does not have. ~40 findings on one 208-line async diff; with `assert-in-prod-code` on test files, the two were roughly 70% of raw findings on that review.
+
+  Enforcing `judge: required` would stop it reaching users raw, but its pre-judge precision is ~2%, so every async file would ship dozens of candidates purely to be rejected — a judge-work generator, not a speculative rule. Rationale and the viable narrow version (a fixed allowlist of always-await stdlib coroutines) are recorded in `rules/python/README-removed-rules.md`.
+
 ### Added
 
 - **Severity-regression alarm.** `quorum review` now reads its own severity ledger back and warns when the running version's critical+high yield has collapsed against earlier versions. New `stats --by-version` shows the same data as a time series, oldest first.

@@ -150,6 +150,10 @@ pub struct JudgeMetrics {
     pub rejected: u32,
     pub uncertain: u32,
     pub skipped: u32,
+    /// Speculative findings withheld because no judge ran. Non-zero means the
+    /// user is seeing fewer findings than the rules produced, which must be
+    /// stated rather than silently applied.
+    pub withheld_unjudged: u32,
     pub cache_hits: u32,
     pub calls: u32,
     pub latency_ms: u64,
@@ -821,6 +825,7 @@ pub async fn review_file(
                 judge_metrics.rejected += result.rejected;
                 judge_metrics.uncertain += result.uncertain;
                 judge_metrics.skipped += result.skipped;
+                judge_metrics.withheld_unjudged += result.withheld_unjudged;
                 judge_metrics.cache_hits += result.cache_hits;
                 judge_metrics.calls += result.calls;
                 judge_metrics.latency_ms += result.latency_ms;
