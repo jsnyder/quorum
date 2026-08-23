@@ -1,3 +1,8 @@
+> NOTE: line references below were retargeted to the vendored copy in this
+> directory (187 lines). They originally referenced the author's working
+> file and did not match. Ground truth in `shelly_fan_control.ground_truth.json`
+> is authoritative and verified against the vendored file.
+
 # Recall fixture: bathroom-fan-humidity.PREFIX.js
 
 Shelly Gen2 mJS (Espruino-derived) running on a Shelly Plus 2PM, fw 1.7.5,
@@ -12,7 +17,7 @@ cyclomatic complexity on decode/tick, 5x nullish-coalescing-broad).
 
 ---
 
-## 1. CRITICAL -- unbounded queue growth (L86, L120, L124-129)
+## 1. CRITICAL -- unbounded queue growth (L81, L86, L120)
 
 `queue()` pushes to `dirty[]` whenever the value differs, with no check for the
 key already being queued. `queue("ble_stats", JSON.stringify(stats))` runs on
@@ -24,13 +29,13 @@ The drain timer removes one entry per 2s. Measured advert rate on this device wa
 
 Outcome: heap exhaustion, script death within hours. If it dies mid-run the fan
 latches ON. Secondary: a flash KVS.Set every 2s forever (~43k NVS writes/day),
-`pending{}` never deletes keys, and the `sd_*` discovery writes at L124-126 are
+`pending{}` never deletes keys, and the `sd_*` discovery writes at L120 are
 not gated on `CFG.mac`, so rotating-MAC BLE devices keep minting new keys.
 
 Fix applied: dedupe on `dirty.indexOf(k) < 0`, gate discovery writes on
 `CFG.mac === null`, drop the per-advert stats write.
 
-## 2. CRITICAL -- staleness guard sits above all turn-off logic (L153)
+## 2. CRITICAL -- staleness guard sits above all turn-off logic (L138)
 
 `if (now() - lastSeen > CFG.staleS) return;` is placed before every off path.
 If the BLU H&T battery dies while a script-started run is active, every
@@ -43,7 +48,7 @@ burned us in service.
 Fix applied: restructured tick() so the running/turn-off block precedes the
 freshness check, with a `ranFor >= maxRunS` escape inside the stale branch.
 
-## 3. HIGH -- uncaught JSON.parse on external input in an async callback (L112)
+## 3. HIGH -- uncaught JSON.parse on external input in an async callback (L95-98)
 
 `readDemand()` parses a KVS value written by any host on the LAN. In this runtime
 an exception inside an async callback terminates the entire script. One malformed
@@ -55,10 +60,10 @@ try/catch IS supported in Shelly mJS and is absent here.
 Fix applied: try/catch, plus `isNum()` validation and a clamp to `now() +
 maxDemandS` (an epoch-milliseconds value would otherwise hold demand for decades).
 
-## 4. HIGH -- unchecked buffer reads produce NaN that poisons state (L66-81)
+## 4. HIGH -- unchecked buffer reads produce NaN that poisons state (L64-72)
 
 `charCodeAt(i+1)` / `charCodeAt(i+2)` are unbounded. A truncated advert yields
-NaN. The guard at L134 is `if (d.h === null) return;` which is FALSE for NaN, so
+NaN. The guard at L127 is `if (d.h === null) return;` which is FALSE for NaN, so
 `lastHum = NaN` is stored, `baseline` becomes NaN via the EMA and stays NaN
 forever. All subsequent comparisons evaluate false: the fan silently never
 triggers again until a script restart, and a running fan only exits via maxRunS.

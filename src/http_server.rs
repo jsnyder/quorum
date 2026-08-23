@@ -168,8 +168,18 @@ pub fn create_daemon_state(cache_capacity: usize) -> anyhow::Result<Arc<DaemonSt
     let feedback_path = PathBuf::from(&home).join(".quorum/feedback.jsonl");
     let feedback_store = FeedbackStore::new(feedback_path);
 
+    // The daemon holds ONE long-lived client, so cache-bypass is a process-level
+    // setting rather than a per-request one. Honour the env var at startup;
+    // `review --daemon --no-cache` is rejected outright rather than silently
+    // ignored (see run_review_via_daemon).
+    let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
     let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-        Some(Box::new(OpenAiClient::new(&config.base_url, api_key)?))
+        Some(Box::new(
+            OpenAiClient::new(&config.base_url, api_key)?
+                .with_bypass_proxy_cache(bypass_proxy_cache),
+        ))
     } else {
         None
     };

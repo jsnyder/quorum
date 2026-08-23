@@ -3413,6 +3413,21 @@ async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
 }
 
 fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
+    // The daemon holds one long-lived LLM client, so a per-request cache
+    // bypass cannot be honoured. Reject rather than accept-and-ignore: a flag
+    // that silently does nothing is the failure mode this release exists to
+    // remove.
+    if opts.no_cache {
+        eprintln!(
+            "error: --no-cache is not supported with --daemon.\n\
+             The daemon shares one LLM client across requests, so cache bypass \
+             is a process-level setting.\n\
+             Start the daemon with QUORUM_BYPASS_PROXY_CACHE=1, or drop --daemon \
+             for a one-off uncached review."
+        );
+        return 3;
+    }
+
     let client = reqwest::blocking::Client::new();
     let base = format!("http://127.0.0.1:{}", opts.daemon_port);
 

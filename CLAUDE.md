@@ -48,7 +48,7 @@ QUORUM_MODEL=gpt-5.6                           # default model (v0.31.0+; was gp
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 # Precedence for the reviewer model: --model > QUORUM_ENSEMBLE_MODELS (ensemble only) > QUORUM_MODEL
 QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)
-QUORUM_BYPASS_PROXY_CACHE=1                    # bypass the proxy's response cache so every call reaches
+QUORUM_BYPASS_PROXY_CACHE=1                    # (or `--no-cache`) bypass the proxy's response cache so every call reaches
                                                # the provider. Required when A/B-ing models or validating
                                                # a new build against a fixture -- otherwise a cached replay
                                                # of the PREVIOUS build's answers looks like a fresh run
