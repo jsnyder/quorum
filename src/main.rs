@@ -2923,10 +2923,24 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     {
         let total_suppressed: usize = file_results.iter().map(|r| r.suppressed).sum();
         let total_findings = all_findings.len();
+        // Name the model. A stale `QUORUM_MODEL` export silently downgraded a
+        // real review and the only way to notice was grepping a shell config:
+        // nothing in the output said which model ran. PR comments have always
+        // carried it; the CLI did not.
+        let model_label = if pipeline_cfg.models.len() > 1 {
+            pipeline_cfg.models.join(",")
+        } else {
+            pipeline_cfg
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "none".to_string())
+        };
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s: {} finding(s){}",
+            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}",
             file_results.len(),
             review_duration.as_secs_f64(),
+            model_label,
             total_findings,
             if total_suppressed > 0 {
                 format!(", {} suppressed", total_suppressed)
