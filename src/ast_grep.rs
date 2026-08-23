@@ -23,6 +23,14 @@ pub struct RuleMetadata {
     pub precision: PrecisionTier,
     #[serde(default)]
     pub judge: JudgeRequirement,
+    /// Suppress this rule in test files. For rules that describe a
+    /// production-only hazard (`assert` stripped by `python -O`, debug logging,
+    /// `console.log`), firing in `tests/` is pure noise: one 208-line Python
+    /// diff produced 26 findings, all of them `assert-in-prod-code` against a
+    /// test file. Bad precision trains skimming and feeds junk FP verdicts to
+    /// the calibrator, so it costs more than it looks.
+    #[serde(default)]
+    pub skip_test_files: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -305,6 +313,7 @@ pub fn scan_file(
     ext: &str,
     rules: &[RuleConfig<SupportLang>],
     metadata: &HashMap<String, RuleMetadata>,
+    file_path: &str,
 ) -> Vec<Finding> {
     if source.is_empty() {
         return Vec::new();
@@ -330,6 +339,9 @@ pub fn scan_file(
         for rule in lang_rules {
             let meta_key = format!("ast-grep:{}/{}", lang_name(lang), rule.id);
             let meta = metadata.get(meta_key.as_str()).cloned().unwrap_or_default();
+            if meta.skip_test_files && crate::calibrate::is_test_file_path(file_path) {
+                continue;
+            }
             let matches: Vec<_> = root.root().find_all(&rule.matcher).collect();
             for m in matches {
                 let start_line = m.start_pos().line() as u32 + 1;
@@ -385,6 +397,77 @@ pub fn scan_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Prod-only rules must not fire in test files. `assert-in-prod-code`
+    /// produced 26 of 26 surfaced findings on one real Python diff, every one
+    /// against `tests/test_*.py`. Precision that bad trains skimming and feeds
+    /// junk FP verdicts into the calibrator.
+    #[test]
+    fn skip_test_files_suppresses_prod_only_rule_in_tests() {
+        let yaml = r#"
+id: assert-in-prod-code
+language: Python
+severity: hint
+message: "assert is stripped by python -O"
+rule:
+  kind: assert_statement
+"#;
+        let rules = vec![
+            from_yaml_string::<SupportLang>(yaml, &Default::default())
+                .unwrap()
+                .pop()
+                .unwrap(),
+        ];
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "ast-grep:python/assert-in-prod-code".to_owned(),
+            RuleMetadata {
+                skip_test_files: true,
+                ..Default::default()
+            },
+        );
+        let src = "def f():\n    assert True\n";
+
+        let in_tests = scan_file(src, "py", &rules, &metadata, "tests/test_thing.py");
+        assert!(
+            in_tests.is_empty(),
+            "prod-only rule must not fire in a test file, got {in_tests:?}"
+        );
+
+        let in_prod = scan_file(src, "py", &rules, &metadata, "src/thing.py");
+        assert_eq!(
+            in_prod.len(),
+            1,
+            "the same rule must still fire in production code"
+        );
+    }
+
+    /// Without the flag, behaviour is unchanged -- rules fire everywhere.
+    #[test]
+    fn rules_without_skip_test_files_still_fire_in_tests() {
+        let yaml = r#"
+id: assert-in-prod-code
+language: Python
+severity: hint
+message: "assert is stripped by python -O"
+rule:
+  kind: assert_statement
+"#;
+        let rules = vec![
+            from_yaml_string::<SupportLang>(yaml, &Default::default())
+                .unwrap()
+                .pop()
+                .unwrap(),
+        ];
+        let findings = scan_file(
+            "def f():\n    assert True\n",
+            "py",
+            &rules,
+            &HashMap::new(),
+            "tests/test_thing.py",
+        );
+        assert_eq!(findings.len(), 1, "default must be unchanged");
+    }
 
     // ── Smoke tests: verify crate API works ──
 
@@ -581,7 +664,7 @@ rule:
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata, "src/lib.rs");
         assert!(!findings.is_empty(), "should find as-any-cast");
         let f = &findings[0];
         assert!(f.title.contains("as-any-cast"));
@@ -600,7 +683,13 @@ rule:
 "#;
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file("console.log('hello');", "ts", &rules, &HashMap::new());
+        let findings = scan_file(
+            "console.log('hello');",
+            "ts",
+            &rules,
+            &HashMap::new(),
+            "src/lib.rs",
+        );
         assert_eq!(findings[0].severity, Severity::Low);
     }
 
@@ -615,7 +704,7 @@ rule:
 "#;
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
-        let findings = scan_file("eval('code');", "ts", &rules, &HashMap::new());
+        let findings = scan_file("eval('code');", "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert_eq!(findings[0].severity, Severity::High);
     }
 
@@ -631,7 +720,7 @@ rule:
         let rules: Vec<RuleConfig<SupportLang>> =
             from_yaml_string(yaml, &GlobalRules::default()).unwrap();
         let source = "const a = 1;\nconst b = 2;\neval('code');\n";
-        let findings = scan_file(source, "ts", &rules, &HashMap::new());
+        let findings = scan_file(source, "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert_eq!(
             findings[0].line_start, 3,
             "line numbers should be 1-indexed"
@@ -641,7 +730,7 @@ rule:
     #[test]
     fn scan_file_unsupported_extension_returns_empty() {
         let rules = vec![];
-        let findings = scan_file("some code", "go", &rules, &HashMap::new());
+        let findings = scan_file("some code", "go", &rules, &HashMap::new(), "src/lib.rs");
         assert!(findings.is_empty());
     }
 
@@ -650,7 +739,7 @@ rule:
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("", "ts", &rules, &metadata);
+        let findings = scan_file("", "ts", &rules, &metadata, "src/lib.rs");
         assert!(findings.is_empty());
     }
 
@@ -659,7 +748,7 @@ rule:
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata, "src/lib.rs");
         assert!(!findings.is_empty());
         assert!(
             !findings[0].evidence.is_empty(),
@@ -672,7 +761,7 @@ rule:
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
-        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata);
+        let findings = scan_file("const x = 1 as any;", "ts", &rules, &metadata, "src/lib.rs");
         for f in &findings {
             assert_eq!(f.source, Source::Linter("ast-grep".into()));
         }
@@ -749,6 +838,7 @@ rule:
             "rs",
             &rules,
             &HashMap::new(),
+            "src/lib.rs",
         );
         assert!(!findings.is_empty(), "should flag block_on inside async fn");
     }
@@ -767,6 +857,7 @@ rule:
             "rs",
             &rules,
             &HashMap::new(),
+            "src/lib.rs",
         );
         assert!(findings.is_empty(), "must NOT flag in sync fn");
     }
@@ -961,7 +1052,7 @@ rule:
                     continue;
                 }
                 let source = std::fs::read_to_string(&fixture_path).unwrap();
-                let findings = scan_file(&source, ext, &rules, &metadata);
+                let findings = scan_file(&source, ext, &rules, &metadata, "src/lib.rs");
                 assert!(
                     !findings.is_empty(),
                     "bundled rule should match fixture: {}",
@@ -1003,7 +1094,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let setheader = "res.setHeader('Access-Control-Allow-Origin', '*');";
-        let findings = scan_file(setheader, "ts", &rules, &HashMap::new());
+        let findings = scan_file(setheader, "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert!(
             !findings.is_empty(),
             "should flag setHeader('Access-Control-Allow-Origin', '*')"
@@ -1014,7 +1105,7 @@ rule:
         );
 
         let header_fn = "res.header('Access-Control-Allow-Origin', '*');";
-        let findings2 = scan_file(header_fn, "ts", &rules, &HashMap::new());
+        let findings2 = scan_file(header_fn, "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert!(
             !findings2.is_empty(),
             "should flag res.header('Access-Control-Allow-Origin', '*')"
@@ -1034,7 +1125,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let unrelated = "res.setHeader('X-Custom-Flag', '*');";
-        let findings = scan_file(unrelated, "ts", &rules, &HashMap::new());
+        let findings = scan_file(unrelated, "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert!(
             findings.is_empty(),
             "should NOT flag unrelated header with '*' value"
@@ -1058,7 +1149,7 @@ rule:
             "res.setHeader(\"ACCESS-CONTROL-ALLOW-ORIGIN\", \"*\");",
             "res.setHeader('Access-control-allow-Origin', '*');",
         ] {
-            let findings = scan_file(lowered, "ts", &rules, &HashMap::new());
+            let findings = scan_file(lowered, "ts", &rules, &HashMap::new(), "src/lib.rs");
             assert!(
                 !findings.is_empty(),
                 "should flag case variant: {}",
@@ -1080,7 +1171,7 @@ rule:
             from_yaml_string(&yaml, &GlobalRules::default()).unwrap();
 
         let next_style = "response.headers.set('Access-Control-Allow-Origin', '*');";
-        let findings = scan_file(next_style, "ts", &rules, &HashMap::new());
+        let findings = scan_file(next_style, "ts", &rules, &HashMap::new(), "src/lib.rs");
         assert!(
             !findings.is_empty(),
             "should flag Next.js/Fetch-style headers.set(..., '*')"
@@ -1286,7 +1377,7 @@ rule:
             let src_path = project_dir.join(path);
             let source = std::fs::read_to_string(&src_path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", src_path.display()));
-            let findings = scan_file(&source, ext, &rules, &metadata);
+            let findings = scan_file(&source, ext, &rules, &metadata, "src/lib.rs");
             let matches = findings
                 .iter()
                 .filter(|f| f.title.contains(rule_id))
@@ -1565,7 +1656,7 @@ rule:
         std::fs::write(user_ts.join("b.yml"), yaml).unwrap();
 
         let (rules, metadata) = load_rules(project.path(), home.path());
-        let findings = scan_file("eval('x');", "ts", &rules, &metadata);
+        let findings = scan_file("eval('x');", "ts", &rules, &metadata, "src/lib.rs");
         let dup_findings = findings
             .iter()
             .filter(|f| f.title.contains("dup-rule"))
@@ -1584,7 +1675,7 @@ rule:
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         let source = "const x = foo as any;";
-        let findings = scan_file(source, "ts", &rules, &metadata);
+        let findings = scan_file(source, "ts", &rules, &metadata, "src/lib.rs");
         assert!(!findings.is_empty());
         assert_eq!(
             findings[0].rule_id.as_deref(),
@@ -1598,7 +1689,7 @@ rule:
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         let source = "try:\n    x()\nexcept:\n    pass\n";
-        let findings = scan_file(source, "py", &rules, &metadata);
+        let findings = scan_file(source, "py", &rules, &metadata, "src/lib.rs");
         // Should find bare-except-pass rule
         let bep = findings
             .iter()
@@ -1714,7 +1805,7 @@ metadata:
         let fake_home = tempfile::tempdir().unwrap();
         let (rules, metadata) = load_rules(&project_dir, fake_home.path());
         let source = "const x = foo as any;";
-        let findings = scan_file(source, "ts", &rules, &metadata);
+        let findings = scan_file(source, "ts", &rules, &metadata, "src/lib.rs");
         assert!(!findings.is_empty());
         // Default rules (no metadata block) should have precision High
         assert_eq!(findings[0].precision_tier, Some(PrecisionTier::High));

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "sfc-001",
+    "type": "real",
+    "title": "Unbounded KVS write queue from producer/consumer rate mismatch",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 81,
+    "line_end": 120,
+    "description": "queue() pushes to dirty[] whenever the value differs, with no check for the key already being queued. queue(\"ble_stats\", ...) runs on every advert carrying service_data and stats.adverts increments each time, so the value always differs and the key is pushed per advert. The drain timer removes one entry per 2s against a measured ~740 adverts/45s. Heap exhaustion kills the script, latching the fan ON. Requires reasoning about relative rates across two functions: producer in a BLE event callback, consumer in a Timer.set."
+  },
+  {
+    "id": "sfc-002",
+    "type": "real",
+    "title": "Staleness guard placed above all turn-off logic",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 138,
+    "line_end": 138,
+    "description": "`if (now() - lastSeen > CFG.staleS) return;` sits before every off path. If the sensor battery dies during a script-started run, every subsequent tick returns early: no fallOff check, no maxRunS ceiling, no demand expiry. The fan runs until a human intervenes. The guard should gate turn-ON only. Requires modelling the state machine rather than reading the guard locally."
+  },
+  {
+    "id": "sfc-003",
+    "type": "real",
+    "title": "Uncaught JSON.parse on LAN-writable input inside an async callback",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 95,
+    "line_end": 98,
+    "description": "readDemand() parses a KVS value writable by any host on the LAN. In this runtime an exception inside an async callback terminates the entire script, potentially mid-run with the fan on. try/catch is supported and absent. Requires knowing the runtime semantics: exceptions in callbacks are fatal, not merely logged."
+  },
+  {
+    "id": "sfc-004",
+    "type": "real",
+    "title": "Unchecked buffer reads produce NaN that poisons state permanently",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 64,
+    "line_end": 72,
+    "description": "charCodeAt(i+1)/(i+2) are unbounded. A truncated advert yields NaN. The guard at L134 is `if (d.h === null) return;` which is FALSE for NaN, so lastHum = NaN is stored and baseline becomes NaN via the EMA and stays NaN. All later comparisons evaluate false: the fan silently never triggers again until restart. Requires numeric-domain reasoning; a null-check does not catch NaN."
+  }
+]

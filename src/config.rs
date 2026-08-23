@@ -28,7 +28,18 @@ pub struct Config {
 
 impl Config {
     pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-    pub const DEFAULT_MODEL: &str = "gpt-5.4";
+    /// Default reviewer model.
+    ///
+    /// gpt-5.6 as of v0.31.0. Measured on the frozen JS recall fixture
+    /// (`eval/corpus/javascript/`): 4/4 ground-truth bugs vs gpt-5.4's 3/4, at
+    /// the same $0.055 per bug found and half the wall-clock. Its 2x sticker
+    /// price is offset by ~44% fewer output tokens on an identical prompt.
+    ///
+    /// Note the one-time cost of changing this: `model_fp_rate` is keyed by
+    /// `review_model` and falls back to the global FP rate for a model it has
+    /// no feedback for, so calibration precision dips until verdicts
+    /// accumulate against the new default.
+    pub const DEFAULT_MODEL: &str = "gpt-5.6";
 
     pub fn load(source: &dyn ConfigSource) -> anyhow::Result<Self> {
         let base_url = Self::get_trimmed(source, "QUORUM_BASE_URL")

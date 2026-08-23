@@ -296,8 +296,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let want_context_dim = opts.by_source || opts.by_reviewed_repo || opts.misleading;
-            let want_classic_dim =
-                !want_context_dim && (opts.by_repo || opts.by_caller || opts.rolling.is_some());
+            let want_classic_dim = !want_context_dim
+                && (opts.by_repo || opts.by_caller || opts.by_version || opts.rolling.is_some());
 
             if want_context_dim {
                 let log = review_log::ReviewLog::with_storage(storage_handle.clone());
@@ -380,6 +380,16 @@ async fn main() -> anyhow::Result<()> {
                     };
                     let slices = dimensions::group_by_caller(&records);
                     ("by-caller", records, slices)
+                } else if opts.by_version {
+                    let records = match log.load_all() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("error: cannot read reviews log: {e}");
+                            std::process::exit(3);
+                        }
+                    };
+                    let slices = dimensions::group_by_version(&records);
+                    ("by-version", records, slices)
                 } else {
                     let n = opts.rolling.unwrap();
                     let window_count = 3usize;
@@ -1864,10 +1874,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             // benchmarking, A/B comparing, or measuring upstream prompt-cache
             // hit rate. Default off — production reviews keep the proxy's fast
             // replay behavior.
-            let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
-                .ok()
-                .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-                .unwrap_or(false);
+            let bypass_proxy_cache = opts.no_cache
+                || std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+                    .ok()
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
             match llm_client::OpenAiClient::new(&cfg.base_url, api_key) {
                 Ok(c) => Some(std::sync::Arc::new(
                     c.with_reasoning_effort(effort)
@@ -2912,13 +2923,36 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     {
         let total_suppressed: usize = file_results.iter().map(|r| r.suppressed).sum();
         let total_findings = all_findings.len();
+        // Name the model. A stale `QUORUM_MODEL` export silently downgraded a
+        // real review and the only way to notice was grepping a shell config:
+        // nothing in the output said which model ran. PR comments have always
+        // carried it; the CLI did not.
+        let model_label = if pipeline_cfg.models.len() > 1 {
+            pipeline_cfg.models.join(",")
+        } else {
+            pipeline_cfg
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "none".to_string())
+        };
+        let withheld: u32 = file_results
+            .iter()
+            .map(|r| r.judge_metrics.withheld_unjudged)
+            .sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s: {} finding(s){}",
+            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
+            model_label,
             total_findings,
             if total_suppressed > 0 {
                 format!(", {} suppressed", total_suppressed)
+            } else {
+                String::new()
+            },
+            if withheld > 0 {
+                format!(", {withheld} speculative withheld (run with --judge to evaluate them)")
             } else {
                 String::new()
             }
@@ -3130,6 +3164,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         };
         if let Err(e) = review_log.record_with_meta(&record, &finding_meta) {
             eprintln!("Warning: failed to write review log: {}", e);
+        }
+
+        // Read the severity ledger back. `reviews.jsonl` recorded the 0.28.0
+        // collapse (1.17 -> 0.014 crit+high per file) for two months and nothing
+        // ever queried it, because querying required a suspicion the tool's own
+        // "success" output actively discouraged. Checking here costs one bounded
+        // read and makes systemic silence loud on the next review rather than
+        // whenever someone thinks to look.
+        const REGRESSION_LOOKBACK: usize = 500;
+        match review_log.load_recent(REGRESSION_LOOKBACK) {
+            Ok(recent) => {
+                let by_version = dimensions::group_by_version(&recent);
+                if let Some(reg) = dimensions::detect_severity_regression(
+                    &by_version,
+                    dimensions::DEFAULT_REGRESSION_RATIO,
+                    dimensions::DEFAULT_REGRESSION_MIN_FILES,
+                ) {
+                    eprint!("{}", stats::format_severity_regression(&reg));
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "severity-regression check skipped");
+            }
         }
     }
 
@@ -3356,6 +3413,21 @@ async fn run_daemon(opts: cli::DaemonOpts) -> anyhow::Result<()> {
 }
 
 fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
+    // The daemon holds one long-lived LLM client, so a per-request cache
+    // bypass cannot be honoured. Reject rather than accept-and-ignore: a flag
+    // that silently does nothing is the failure mode this release exists to
+    // remove.
+    if opts.no_cache {
+        eprintln!(
+            "error: --no-cache is not supported with --daemon.\n\
+             The daemon shares one LLM client across requests, so cache bypass \
+             is a process-level setting.\n\
+             Start the daemon with QUORUM_BYPASS_PROXY_CACHE=1, or drop --daemon \
+             for a one-off uncached review."
+        );
+        return 3;
+    }
+
     let client = reqwest::blocking::Client::new();
     let base = format!("http://127.0.0.1:{}", opts.daemon_port);
 

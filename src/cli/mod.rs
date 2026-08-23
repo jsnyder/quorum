@@ -439,6 +439,12 @@ pub struct StatsOpts {
     #[arg(long)]
     pub by_caller: bool,
 
+    /// Group stats by quorum version, oldest first. Reads as a time series:
+    /// a step change in critical+high per file at a release boundary is how a
+    /// silently-degraded reviewer shows up in the data.
+    #[arg(long)]
+    pub by_version: bool,
+
     /// Show rolling N-review windows (e.g. --rolling 50)
     #[arg(long, value_parser = parse_rolling_n)]
     pub rolling: Option<usize>,
@@ -632,6 +638,13 @@ pub struct ReviewOpts {
     /// QUORUM_ENSEMBLE_MODELS.
     #[arg(long, value_delimiter = ',')]
     pub model: Vec<String>,
+
+    /// Bypass the LLM proxy's response cache so every call reaches the
+    /// provider (also: QUORUM_BYPASS_PROXY_CACHE=1). Use when A/B-ing models
+    /// or validating a build against a fixture -- otherwise a cached replay of
+    /// a previous run's answers is indistinguishable from a fresh review.
+    #[arg(long)]
+    pub no_cache: bool,
 
     /// Enable LLM micro-judge for speculative AST rules (also: QUORUM_JUDGE=1)
     #[arg(long)]

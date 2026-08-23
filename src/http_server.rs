@@ -117,10 +117,43 @@ async fn review(
     let cache_before = state.parse_cache.stats().hits;
 
     let feedback = state.feedback_store.load_all().unwrap_or_default();
+    // Bound the caller-supplied override. This array multiplies LLM calls --
+    // one review pass per model -- so accepting it unvalidated turns a single
+    // HTTP request into arbitrary API spend. Cap the count and the identifier
+    // length, and drop duplicates.
+    const MAX_MODELS: usize = 4;
+    const MAX_MODEL_LEN: usize = 64;
     let models = if req.models.is_empty() {
         vec![state.config.model.clone()]
     } else {
-        req.models.clone()
+        if req.models.len() > MAX_MODELS {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("at most {MAX_MODELS} models may be requested"),
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(req.models.len());
+        for m in &req.models {
+            let m = m.trim();
+            if m.is_empty() {
+                continue;
+            }
+            if m.len() > MAX_MODEL_LEN {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("model identifier exceeds {MAX_MODEL_LEN} characters"),
+                ));
+            }
+            if seen.insert(m.to_owned()) {
+                out.push(m.to_owned());
+            }
+        }
+        if out.is_empty() {
+            vec![state.config.model.clone()]
+        } else {
+            out
+        }
     };
     let pipeline_cfg = PipelineConfig {
         models,
@@ -168,8 +201,18 @@ pub fn create_daemon_state(cache_capacity: usize) -> anyhow::Result<Arc<DaemonSt
     let feedback_path = PathBuf::from(&home).join(".quorum/feedback.jsonl");
     let feedback_store = FeedbackStore::new(feedback_path);
 
+    // The daemon holds ONE long-lived client, so cache-bypass is a process-level
+    // setting rather than a per-request one. Honour the env var at startup;
+    // `review --daemon --no-cache` is rejected outright rather than silently
+    // ignored (see run_review_via_daemon).
+    let bypass_proxy_cache = std::env::var("QUORUM_BYPASS_PROXY_CACHE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
     let llm_reviewer: Option<Box<dyn LlmReviewer>> = if let Ok(api_key) = config.require_api_key() {
-        Some(Box::new(OpenAiClient::new(&config.base_url, api_key)?))
+        Some(Box::new(
+            OpenAiClient::new(&config.base_url, api_key)?
+                .with_bypass_proxy_cache(bypass_proxy_cache),
+        ))
     } else {
         None
     };

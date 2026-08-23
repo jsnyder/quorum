@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`judge: required` was never enforced.** A speculative finding was dropped only on an explicit `Rejected` verdict. When no judge ran — `--judge` is opt-in — the code marked findings `Uncertain` and kept them, so seven rules that declare they *require* adjudication shipped their output completely unjudged.
+
+  `Uncertain` was conflating "the judge looked and could not rule it out" with "no judge ever looked". Those now differ: with no judge the verdict stays unset, and `judge: required` findings are withheld and counted.
+
+  This explains the worst rules in the feedback corpus rather than condemning them — `jinja-loop-variable-scoping` (0 of 8), `string-byte-slice-broad` (0 of 9), `discarded-result` (1 of 10) are all `judge: required`. They were not bad rules; they were running without their mandatory filter.
+
+  Withheld findings are reported on the summary line, never silently dropped:
+
+  ```
+  Reviewed 4 file(s) in 57.5s using gpt-5.6: 12 finding(s), 9 speculative withheld (run with --judge to evaluate them)
+  ```
+
+### Removed
+
+- **`missing-await` (Python).** It matched every bare call inside an `async def` that was not awaited — `print()`, `logger.info()`, `buf.append()` — because deciding whether a callee is a coroutine needs type information ast-grep does not have. ~40 findings on one 208-line async diff; with `assert-in-prod-code` on test files, the two were roughly 70% of raw findings on that review.
+
+  Enforcing `judge: required` would stop it reaching users raw, but its pre-judge precision is ~2%, so every async file would ship dozens of candidates purely to be rejected — a judge-work generator, not a speculative rule. Rationale and the viable narrow version (a fixed allowlist of always-await stdlib coroutines) are recorded in `rules/python/README-removed-rules.md`.
+
+### Added
+
+- **Severity-regression alarm.** `quorum review` now reads its own severity ledger back and warns when the running version's critical+high yield has collapsed against earlier versions. New `stats --by-version` shows the same data as a time series, oldest first.
+
+  This exists because the 0.28.0-0.29.0 outage was recorded accurately in `reviews.jsonl` for two months and never read: crit+high per file ran ~0.8 across earlier releases and fell to **0.103** on 0.29.0, while every other signal — exit code, run summary, `stats` — reported success. A ledger nobody queries on a schedule is decoration.
+
+  **The threshold is tuned against real history, not guessed.** Replayed over 32 versions of this project's own review log:
+
+  | ratio | versions flagged | caught 0.29.0 |
+  |-------|-----------------:|---------------|
+  | 0.50 | 8 of 32 | yes |
+  | 0.35 | 6 of 32 | yes |
+  | 0.25 | 2 of 32 | yes |
+  | **0.20** | **1 of 32** | yes |
+
+  0.5 was the intuitive threshold and fires on a quarter of all releases; an alarm that frequent is one people learn to ignore, which is the failure it exists to prevent. Ships at 0.2. Baseline versions are held to the same 20-file minimum as the candidate, because per-version samples here range from 3 to 1,154 files and a median polluted by 3-file versions is not a baseline.
+
+- `DimensionSlice.files_reviewed` is now exposed, so callers can weigh a rate by its sample instead of recovering the denominator by division.
+
+### Changed
+
+- **`DEFAULT_MODEL` is now `gpt-5.6`** (was `gpt-5.4`). Measured on the frozen JS recall fixture: 4/4 ground-truth bugs vs 3/4, at the *same* $0.055 per bug found, in half the wall-clock (81s vs 170s). The 2x sticker price ($5/$30 vs $2.50/$15) is offset by ~44% fewer output tokens on a byte-identical prompt — 4,545 vs 8,103.
+
+  One-time cost: `model_fp_rate` is keyed by `review_model` and falls back to the global FP rate for a model with no feedback history, so calibration precision dips until verdicts accumulate against the new default. Set `QUORUM_MODEL=gpt-5.4` to stay on the old default.
+
+### Added
+
+- **`--no-cache` on `review`** (also `QUORUM_BYPASS_PROXY_CACHE=1`). Bypasses the LLM proxy's response cache so every call reaches the provider. The env var already existed but appeared in neither `--help` nor CLAUDE.md, and its absence cost real time: a session validating v0.30.0 against a fixture got a 1.7s cache replay of the *previous* build's answers and nearly recorded it as a fresh result. A 1.7s review is a cache hit, not a fast reviewer.
+- **`skip_test_files` rule metadata.** Rules describing a production-only hazard can now declare themselves suppressed in test paths, reusing the existing `is_test_file_path` predicate. Applied to `assert-in-prod-code` (Python) and `console-log-artifact` (JavaScript).
+- **JavaScript eval corpus** (`eval/corpus/javascript/`). The Shelly fan-control fixture with 4 ground-truth bugs that exposed the v0.28.0 axis regression, in the existing `<name>.ground_truth.json` format. Post-fix results are recorded in its README: gpt-5.6 and claude-opus-5 both 4/4, gpt-5.4 3/4, pre-fix 0/4.
+
+### Fixed
+
+- **Prod-only AST rules fired in test files.** `assert` in a test file is the point, not a defect; on one 208-line Python diff `assert-in-prod-code` produced 26 of 26 surfaced findings, every one against `tests/test_*.py`. This is worse than noise: bad precision trains skimming, and every session spent mass-marking rule noise as FP feeds junk labels to the calibrator.
+
+
 ## [0.30.0] - 2026-08-22
 
 ### Fixed

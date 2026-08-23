@@ -212,6 +212,10 @@ pub struct JudgeResult {
     pub rejected: u32,
     pub uncertain: u32,
     pub skipped: u32,
+    /// Findings dropped because their rule declares `judge: required` but no
+    /// judge ran. Surfaced to the user -- withholding silently would repeat the
+    /// failure this enforcement exists to fix.
+    pub withheld_unjudged: u32,
     pub cache_hits: u32,
     pub calls: u32,
     pub latency_ms: u64,
@@ -381,19 +385,26 @@ pub async fn judge_findings<J: JudgeLlm>(
                 tracing::warn!("judge LLM returned no response");
             }
 
-            // Any remaining unjudged findings (LLM didn't return verdict): mark uncertain
-            for &i in &to_judge {
-                if findings[i].judge_verdict.is_none() {
-                    findings[i].judge_verdict = Some(JudgeVerdict::Uncertain);
-                    result.uncertain += 1;
-                }
-            }
+            // Deliberately leave unresolved findings at `None`.
+            //
+            // If the call returned nothing, returned malformed JSON, or simply
+            // omitted an item, no judgment occurred -- which is the same state
+            // as having no judge at all, and must not be recorded as
+            // `Uncertain`. `Uncertain` means the judge looked and could not
+            // decide; only a real verdict may set it. The retain below then
+            // withholds `judge: required` findings and counts them, instead of
+            // emitting them as if they had been examined.
+            //
+            // Found by quorum reviewing this very change: the no-judge branch
+            // was fixed first and this one kept the original conflation.
         } else {
-            // No LLM available: mark all as uncertain
-            for &i in &to_judge {
-                findings[i].judge_verdict = Some(JudgeVerdict::Uncertain);
-                result.uncertain += 1;
-            }
+            // No LLM available. Deliberately leave the verdict as `None`.
+            //
+            // This used to mark them `Uncertain`, which conflates two very
+            // different states: "the judge looked and could not rule it out"
+            // (worth keeping) and "no judge ever looked" (not worth showing for
+            // a rule that declares it requires one). The retain below drops the
+            // latter for `judge: required` rules and reports the count.
         }
     }
 
@@ -413,6 +424,20 @@ pub async fn judge_findings<J: JudgeLlm>(
         }
     }
 
+    // Enforce `judge: required`.
+    //
+    // Previously a finding was dropped only on an explicit `Rejected` verdict,
+    // so when no judge ran (`--judge` is opt-in) `judge_verdict` stayed `None`
+    // and the finding was KEPT -- a rule declaring that it requires judgment
+    // emitted completely unjudged. That is how the speculative rules reached
+    // users raw: `missing-await` at ~40 findings per async Python file,
+    // `jinja-loop-variable-scoping` at 0/8 precision, `string-byte-slice-broad`
+    // 0/9, `discarded-result` 1/10. Those rules are not bad; they were running
+    // without their mandatory filter.
+    //
+    // `Uncertain` is deliberately kept: the judge looked and did not rule it
+    // out, which is different from never having looked.
+    let mut withheld_unjudged = 0usize;
     findings.retain(|f| {
         let meta = f
             .rule_id
@@ -420,10 +445,19 @@ pub async fn judge_findings<J: JudgeLlm>(
             .and_then(|rid| metadata.get(rid.as_str()))
             .cloned()
             .unwrap_or_default();
-
-        !(meta.judge == JudgeRequirement::Required
-            && f.judge_verdict == Some(JudgeVerdict::Rejected))
+        if meta.judge != JudgeRequirement::Required {
+            return true;
+        }
+        match &f.judge_verdict {
+            Some(JudgeVerdict::Rejected) => false,
+            None => {
+                withheld_unjudged += 1;
+                false
+            }
+            _ => true,
+        }
     });
+    result.withheld_unjudged = withheld_unjudged as u32;
 
     result.latency_ms = start.elapsed().as_millis() as u64;
     result
@@ -621,6 +655,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -655,6 +690,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -700,6 +736,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -742,6 +779,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let key = verdict_cache_key("ast-grep:python/test", "test code");
@@ -804,6 +842,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -811,6 +850,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
 
@@ -876,6 +916,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -883,6 +924,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::High,
                 judge: JudgeRequirement::Skip,
+                skip_test_files: false,
             },
         );
 
@@ -930,6 +972,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -945,9 +988,14 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.uncertain, 1);
-        assert_eq!(result.calls, 1);
-        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+        // These findings are `judge: required`. A failed call is not a verdict,
+        // so they are withheld rather than emitted as if examined. This test
+        // previously asserted `Uncertain`, which is the conflation quorum
+        // flagged when reviewing the enforcement change.
+        assert_eq!(result.calls, 1, "the call is still attempted and counted");
+        assert_eq!(result.uncertain, 0, "a failed call yields no verdict");
+        assert_eq!(result.withheld_unjudged, 1);
+        assert!(findings.is_empty(), "required findings must not survive");
     }
 
     #[tokio::test]
@@ -985,6 +1033,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         metadata.insert(
@@ -992,6 +1041,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -1007,8 +1057,14 @@ mod tests {
         )
         .await;
 
+        // The judge returned a verdict for one finding and omitted the other.
+        // The answered one is approved; the omitted one received no judgment at
+        // all, so for a `judge: required` rule it is withheld rather than
+        // emitted as `Uncertain`.
         assert_eq!(result.approved, 1);
-        assert_eq!(result.uncertain, 1);
+        assert_eq!(result.uncertain, 0, "an omitted item is not a verdict");
+        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(findings.len(), 1, "only the judged finding survives");
     }
 
     #[tokio::test]
@@ -1032,6 +1088,7 @@ mod tests {
             RuleMetadata {
                 precision: PrecisionTier::Speculative,
                 judge: JudgeRequirement::Required,
+                skip_test_files: false,
             },
         );
         let dir = tempfile::tempdir().unwrap();
@@ -1047,11 +1104,137 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            result.uncertain, 1,
-            "malformed JSON should degrade to Uncertain"
+        // Malformed JSON degrades gracefully -- no panic, call counted -- but it
+        // is not a verdict. For a `judge: required` rule the finding is
+        // withheld, not emitted with a fabricated `Uncertain`.
+        assert_eq!(result.calls, 1, "malformed JSON must not panic");
+        assert_eq!(result.uncertain, 0);
+        assert_eq!(result.withheld_unjudged, 1);
+        assert!(findings.is_empty());
+    }
+
+    fn speculative_finding(rule: &str) -> Finding {
+        let mut f = FindingBuilder::new()
+            .title("speculative")
+            .severity(crate::finding::Severity::Medium)
+            .source(Source::Linter("ast-grep".into()))
+            .rule_id(rule)
+            .evidence("ev")
+            .lines(1, 1)
+            .build();
+        f.precision_tier = Some(crate::finding::PrecisionTier::Speculative);
+        f
+    }
+
+    fn required_meta(rule: &str) -> HashMap<String, RuleMetadata> {
+        let mut m = HashMap::new();
+        m.insert(
+            rule.to_string(),
+            RuleMetadata {
+                precision: crate::finding::PrecisionTier::Speculative,
+                judge: crate::finding::JudgeRequirement::Required,
+                skip_test_files: false,
+            },
         );
-        assert_eq!(result.calls, 1);
-        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+        m
+    }
+
+    /// The bug this enforcement fixes. `judge: required` used to drop a finding
+    /// only on an explicit `Rejected`; with no judge configured the verdict
+    /// stayed `None` and the finding was KEPT, so rules declaring that they
+    /// require judgment shipped completely unjudged. That is how
+    /// `jinja-loop-variable-scoping` reached 0/8 precision and `missing-await`
+    /// produced ~40 findings on one Python diff.
+    #[tokio::test]
+    async fn required_rules_are_withheld_when_no_judge_runs() {
+        let rule = "ast-grep:yaml/jinja-loop-variable-scoping";
+        let mut findings = vec![speculative_finding(rule)];
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &cache_path,
+            None::<&MockJudge>, // no judge configured -- the default
+        )
+        .await;
+
+        assert!(
+            findings.is_empty(),
+            "a judge:required finding must not survive an unjudged run"
+        );
+        assert_eq!(
+            result.withheld_unjudged, 1,
+            "withholding must be counted so it can be reported, not silent"
+        );
+    }
+
+    /// The second half of the enforcement, found by quorum reviewing the first
+    /// half. When a judge IS configured but its call fails or omits an item,
+    /// the old code marked the finding `Uncertain` -- which the retain keeps --
+    /// so a required rule still emitted unjudged. `Uncertain` must mean "the
+    /// judge looked and could not decide", never "the call failed".
+    #[tokio::test]
+    async fn required_rules_are_withheld_when_the_judge_call_fails() {
+        let rule = "ast-grep:python/some-speculative";
+        let mut findings = vec![speculative_finding(rule)];
+        let judge = MockJudge { response: None }; // configured, but returns nothing
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &cache_path,
+            Some(&judge),
+        )
+        .await;
+
+        assert!(
+            findings.is_empty(),
+            "a failed judge call must not be treated as an Uncertain verdict"
+        );
+        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(
+            result.uncertain, 0,
+            "no real verdict was returned, so nothing is genuinely Uncertain"
+        );
+    }
+
+    /// Rules that do not require a judge are unaffected: this must not become a
+    /// blanket suppression of speculative findings.
+    #[tokio::test]
+    async fn optional_rules_survive_an_unjudged_run() {
+        let rule = "ast-grep:python/some-optional";
+        let mut findings = vec![speculative_finding(rule)];
+        let mut meta = HashMap::new();
+        meta.insert(
+            rule.to_string(),
+            RuleMetadata {
+                precision: PrecisionTier::Speculative,
+                judge: JudgeRequirement::Optional,
+                skip_test_files: false,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &meta,
+            &HashMap::new(),
+            &cache_path,
+            None::<&MockJudge>,
+        )
+        .await;
+
+        assert_eq!(findings.len(), 1, "judge:optional must still emit");
+        assert_eq!(result.withheld_unjudged, 0);
     }
 }

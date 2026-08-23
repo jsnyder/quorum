@@ -17,6 +17,11 @@ pub struct DimensionSlice {
     pub key: String,
     pub n_reviews: u32,
     pub n_findings: u32,
+    /// Files reviewed across the slice. The denominator behind
+    /// `findings_per_file`, exposed so callers can weigh a rate by its sample
+    /// instead of recovering it by division.
+    #[serde(default)]
+    pub files_reviewed: u64,
     pub findings_per_file: f64,
     pub findings_per_kloc: Option<f64>,
     pub accept_rate: Option<f64>,
@@ -122,6 +127,7 @@ fn aggregate(key: String, records: &[&ReviewRecord]) -> DimensionSlice {
         key,
         n_reviews,
         n_findings,
+        files_reviewed,
         findings_per_file,
         findings_per_kloc,
         accept_rate: None, // feedback join is a later sub-task
@@ -200,6 +206,145 @@ pub fn group_by_caller(records: &[ReviewRecord]) -> Vec<DimensionSlice> {
             .then_with(|| a.key.cmp(&b.key))
     });
     slices
+}
+
+/// Group reviews by the quorum version that produced them, oldest first.
+///
+/// Unlike the other dimensions this is ordered chronologically (by each
+/// version's earliest review) rather than by volume, because the point is to
+/// read it as a time series and spot a step change at a release boundary.
+#[must_use]
+pub fn group_by_version(records: &[ReviewRecord]) -> Vec<DimensionSlice> {
+    let mut buckets: HashMap<String, Vec<&ReviewRecord>> = HashMap::new();
+    let mut first_seen: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    for r in records {
+        buckets.entry(r.quorum_version.clone()).or_default().push(r);
+        first_seen
+            .entry(r.quorum_version.clone())
+            .and_modify(|t| {
+                if r.timestamp < *t {
+                    *t = r.timestamp;
+                }
+            })
+            .or_insert(r.timestamp);
+    }
+    let mut slices: Vec<_> = buckets.into_iter().map(|(k, v)| aggregate(k, &v)).collect();
+    slices.sort_by(|a, b| {
+        first_seen
+            .get(&a.key)
+            .cmp(&first_seen.get(&b.key))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    slices
+}
+
+/// Fire when the newest version's high-severity rate falls below this fraction
+/// of the baseline median. See `detect_severity_regression` for the tuning data.
+pub const DEFAULT_REGRESSION_RATIO: f64 = 0.2;
+
+/// Minimum files reviewed before a version is judged, or used as baseline.
+pub const DEFAULT_REGRESSION_MIN_FILES: u64 = 20;
+
+/// A detected collapse in high-severity yield at a version boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeverityRegression {
+    /// Version whose rate collapsed.
+    pub version: String,
+    /// crit+high per file reviewed, for that version.
+    pub rate: f64,
+    /// Median of the same rate across all preceding versions.
+    pub baseline: f64,
+    /// Files reviewed on the suspect version -- the sample behind `rate`.
+    pub files: u64,
+}
+
+/// crit+high findings per file reviewed. The metric that collapsed 1.17 -> 0.014
+/// across the 0.28.0 boundary while every other signal read "success".
+fn high_severity_rate(s: &DimensionSlice) -> Option<f64> {
+    let files = s.files_reviewed;
+    if files == 0 {
+        return None;
+    }
+    let ch = f64::from(s.severity_mix.critical + s.severity_mix.high);
+    Some(ch / files as f64)
+}
+
+/// Flag the newest version when its high-severity yield falls below
+/// `threshold_ratio` of the median of preceding versions with a comparable
+/// sample.
+///
+/// **Tuned against real history, not guessed.** Replayed over 32 versions of
+/// this project's own `reviews.jsonl`, which contains the 0.29.0 outage:
+///
+/// | ratio | versions flagged | caught 0.29.0 |
+/// |-------|------------------|---------------|
+/// | 0.50  | 8 of 32          | yes           |
+/// | 0.35  | 6 of 32          | yes           |
+/// | 0.25  | 2 of 32          | yes           |
+/// | 0.20  | 1 of 32          | yes           |
+///
+/// 0.5 was the intuitive threshold and it fires on a quarter of all releases --
+/// an alarm that cries wolf that often is one people learn to ignore, which is
+/// the same failure it exists to prevent. `DEFAULT_REGRESSION_RATIO` is 0.2:
+/// one alarm across the project's entire history, on the version that was
+/// actually broken.
+///
+/// This exists because quorum recorded exactly this collapse for two months and
+/// nothing read it back: 1.17 (April) -> 1.09 (May) -> 0.014 (July), across the
+/// release that made the axis reviewer default. Aggregate rate is the only
+/// signal that catches *systemic* silence, and unlike a false-negative channel
+/// it needs no new data -- `reviews.jsonl` already carries `quorum_version`.
+///
+/// Returns `None` when there is no prior baseline, when the newest version has
+/// too small a sample to judge, or when the rate is healthy.
+#[must_use]
+pub fn detect_severity_regression(
+    slices: &[DimensionSlice],
+    threshold_ratio: f64,
+    min_files: u64,
+) -> Option<SeverityRegression> {
+    let (newest, prior) = slices.split_last()?;
+    if prior.is_empty() {
+        return None;
+    }
+    if newest.files_reviewed < min_files {
+        return None;
+    }
+    let rate = high_severity_rate(newest)?;
+
+    // Judge the baseline by the same sample bar as the candidate. Per-version
+    // rates swing wildly with how much was reviewed (this project's history
+    // ranges 3 to 1154 files per version), so a median polluted by 3-file
+    // versions is not a baseline.
+    let mut baseline: Vec<f64> = prior
+        .iter()
+        .filter(|s| s.files_reviewed >= min_files)
+        .filter_map(high_severity_rate)
+        .collect();
+    if baseline.is_empty() {
+        return None;
+    }
+    baseline.sort_by(f64::total_cmp);
+    let mid = baseline.len() / 2;
+    let median = if baseline.len().is_multiple_of(2) {
+        (baseline[mid - 1] + baseline[mid]) / 2.0
+    } else {
+        baseline[mid]
+    };
+
+    // A baseline that never produced high-severity findings cannot regress.
+    if median <= 0.0 {
+        return None;
+    }
+    if rate >= median * threshold_ratio {
+        return None;
+    }
+    Some(SeverityRegression {
+        version: newest.key.clone(),
+        rate,
+        baseline: median,
+        files: newest.files_reviewed,
+    })
 }
 
 /// Context-dimension slice: per-source / per-reviewed-repo / misleading-watch row.
@@ -619,6 +764,197 @@ mod tests {
             skill_findings: None,
             integrator_findings_out: None,
         }
+    }
+
+    /// Build a record on a given version, at a given time, with `high` findings
+    /// over `files` files.
+    fn ver_rec(version: &str, days_ago: i64, files: u32, high: u32) -> ReviewRecord {
+        let mut r = rec("repo", "cli", files, high);
+        r.quorum_version = version.into();
+        r.timestamp = Utc::now() - chrono::Duration::days(days_ago);
+        r
+    }
+
+    #[test]
+    fn group_by_version_orders_chronologically_not_by_volume() {
+        // The newest version has the FEWEST reviews; volume ordering would put
+        // it first and break reading the slices as a time series.
+        let records = vec![
+            ver_rec("0.27.0", 90, 10, 10),
+            ver_rec("0.27.0", 89, 10, 10),
+            ver_rec("0.27.0", 88, 10, 10),
+            ver_rec("0.28.0", 30, 10, 0),
+        ];
+        let slices = group_by_version(&records);
+        let keys: Vec<&str> = slices.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, vec!["0.27.0", "0.28.0"], "oldest version first");
+        assert_eq!(slices[0].files_reviewed, 30);
+        assert_eq!(slices[1].files_reviewed, 10);
+    }
+
+    /// Replays the real regression: crit+high per file ran ~1.1 for two
+    /// versions, then collapsed to ~0.01 when the axis reviewer silently
+    /// stopped emitting findings. quorum recorded this for two months and
+    /// nothing read it back.
+    #[test]
+    fn detects_the_0_28_0_style_collapse() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.26.0", 120 - d, 10, 11)); // 1.1/file
+            records.push(ver_rec("0.27.0", 90 - d, 10, 11)); // 1.1/file
+        }
+        // Newest version: 100 files, a single high finding.
+        for d in 0..10 {
+            records.push(ver_rec("0.28.0", 30 - d, 10, u32::from(d == 0)));
+        }
+        let slices = group_by_version(&records);
+        let hit = detect_severity_regression(
+            &slices,
+            DEFAULT_REGRESSION_RATIO,
+            DEFAULT_REGRESSION_MIN_FILES,
+        )
+        .expect("a 100x collapse must be flagged");
+        assert_eq!(hit.version, "0.28.0");
+        assert!(hit.rate < 0.02, "rate was {}", hit.rate);
+        assert!(hit.baseline > 1.0, "baseline was {}", hit.baseline);
+        assert_eq!(hit.files, 100);
+    }
+
+    #[test]
+    fn healthy_newest_version_is_not_flagged() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.26.0", 120 - d, 10, 11));
+            records.push(ver_rec("0.27.0", 90 - d, 10, 10));
+        }
+        for d in 0..5 {
+            records.push(ver_rec("0.28.0", 30 - d, 10, 9)); // 0.9 vs ~1.05 median
+        }
+        let slices = group_by_version(&records);
+        assert!(
+            detect_severity_regression(
+                &slices,
+                DEFAULT_REGRESSION_RATIO,
+                DEFAULT_REGRESSION_MIN_FILES
+            )
+            .is_none(),
+            "a mild dip within the threshold must not fire"
+        );
+    }
+
+    /// Guard against crying wolf on a handful of reviews: a new release
+    /// typically has a tiny sample on day one.
+    #[test]
+    fn small_sample_on_newest_version_is_not_flagged() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.27.0", 90 - d, 10, 11));
+        }
+        records.push(ver_rec("0.28.0", 1, 2, 0)); // only 2 files
+        let slices = group_by_version(&records);
+        assert!(
+            detect_severity_regression(
+                &slices,
+                DEFAULT_REGRESSION_RATIO,
+                DEFAULT_REGRESSION_MIN_FILES
+            )
+            .is_none(),
+            "must not fire on a 2-file sample"
+        );
+    }
+
+    /// The tuning that matters: 0.5 was the intuitive threshold and it fires on
+    /// a quarter of this project's releases. A moderate dip -- the common case
+    /// when a release happens to review cleaner code -- must NOT alarm, or the
+    /// alarm gets ignored and recreates the failure it exists to catch.
+    #[test]
+    fn moderate_dip_does_not_alarm_at_the_tuned_ratio() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.26.0", 120 - d, 20, 20)); // 1.0/file
+            records.push(ver_rec("0.27.0", 90 - d, 20, 20)); // 1.0/file
+        }
+        for d in 0..5 {
+            records.push(ver_rec("0.28.0", 30 - d, 20, 8)); // 0.4/file: 40% of baseline
+        }
+        let slices = group_by_version(&records);
+        assert!(
+            detect_severity_regression(&slices, 0.5, DEFAULT_REGRESSION_MIN_FILES).is_some(),
+            "the rejected 0.5 threshold would have fired here"
+        );
+        assert!(
+            detect_severity_regression(
+                &slices,
+                DEFAULT_REGRESSION_RATIO,
+                DEFAULT_REGRESSION_MIN_FILES
+            )
+            .is_none(),
+            "the tuned 0.2 threshold must stay quiet on a 40%-of-baseline dip"
+        );
+    }
+
+    /// Small-sample versions must not pollute the baseline median. This
+    /// project's per-version samples range 3 to 1154 files.
+    #[test]
+    fn tiny_versions_are_excluded_from_the_baseline() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.26.0", 120 - d, 20, 20)); // 1.0/file, counts
+        }
+        // A 2-file version with a freak 0.0 rate would drag the median down.
+        records.push(ver_rec("0.27.0", 60, 2, 0));
+        for d in 0..5 {
+            records.push(ver_rec("0.28.0", 30 - d, 20, 1)); // 0.05/file
+        }
+        let slices = group_by_version(&records);
+        let hit = detect_severity_regression(
+            &slices,
+            DEFAULT_REGRESSION_RATIO,
+            DEFAULT_REGRESSION_MIN_FILES,
+        )
+        .expect("baseline must ignore the 2-file version and still flag the collapse");
+        assert_eq!(hit.version, "0.28.0");
+        assert!(
+            (hit.baseline - 1.0).abs() < 1e-9,
+            "baseline should be 1.0 from the 20-file version, got {}",
+            hit.baseline
+        );
+    }
+
+    #[test]
+    fn no_prior_baseline_cannot_regress() {
+        let records = vec![ver_rec("0.28.0", 1, 50, 0)];
+        let slices = group_by_version(&records);
+        assert!(
+            detect_severity_regression(
+                &slices,
+                DEFAULT_REGRESSION_RATIO,
+                DEFAULT_REGRESSION_MIN_FILES
+            )
+            .is_none()
+        );
+    }
+
+    /// A project that has never produced crit+high findings has no baseline to
+    /// fall from; flagging it would fire forever.
+    #[test]
+    fn zero_baseline_never_fires() {
+        let mut records = vec![];
+        for d in 0..5 {
+            records.push(ver_rec("0.27.0", 90 - d, 10, 0));
+        }
+        for d in 0..5 {
+            records.push(ver_rec("0.28.0", 30 - d, 10, 0));
+        }
+        let slices = group_by_version(&records);
+        assert!(
+            detect_severity_regression(
+                &slices,
+                DEFAULT_REGRESSION_RATIO,
+                DEFAULT_REGRESSION_MIN_FILES
+            )
+            .is_none()
+        );
     }
 
     #[test]
