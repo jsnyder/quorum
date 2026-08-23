@@ -627,6 +627,12 @@ pub struct ReviewOpts {
     #[arg(long, value_delimiter = ',')]
     pub axes: Vec<String>,
 
+    /// Reviewer model, overriding QUORUM_MODEL (e.g. gpt-5.6, claude-opus-5).
+    /// With --ensemble, accepts a comma-separated list and overrides
+    /// QUORUM_ENSEMBLE_MODELS.
+    #[arg(long, value_delimiter = ',')]
+    pub model: Vec<String>,
+
     /// Enable LLM micro-judge for speculative AST rules (also: QUORUM_JUDGE=1)
     #[arg(long)]
     pub judge: bool,

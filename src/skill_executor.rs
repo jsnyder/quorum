@@ -158,6 +158,11 @@ pub struct CellSpec {
 
 #[derive(Debug, Clone)]
 pub struct CellResult {
+    /// Which skill produced this cell. `execute_matrix` expands to
+    /// skills x models x files, so callers must NOT assume cells line up
+    /// 1:1 with the skills list -- a repeated `--model` yields several
+    /// cells per skill.
+    pub skill_name: String,
     pub skill_run_id: String,
     pub findings: Vec<Finding>,
     pub usage: TokenUsage,
@@ -224,6 +229,7 @@ pub(crate) fn execute_cell(
     // Step 1: budget check
     if let Err(BudgetExhausted) = budget.try_reserve_call() {
         return CellResult {
+            skill_name: cell.skill.manifest.name.clone(),
             skill_run_id,
             findings: vec![],
             usage: zero_usage,
@@ -277,6 +283,7 @@ pub(crate) fn execute_cell(
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
         Err(_) => {
             return CellResult {
+                skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
                 findings: vec![],
                 usage: zero_usage,
@@ -298,7 +305,7 @@ pub(crate) fn execute_cell(
     budget.record_tokens(usage.total());
 
     // Step 9: classify response
-    let outcome = classify_response(&raw_content, None);
+    let outcome = classify_response(&raw_content, None, &cell.model);
 
     // Handle Retry: one retry with continuation prompt.
     // The tuple tracks (findings, parse_error_class, findings_dropped, exit_status, failure_reason).
@@ -333,7 +340,7 @@ pub(crate) fn execute_cell(
                     usage.prompt_tokens += ru.prompt_tokens;
                     usage.completion_tokens += ru.completion_tokens;
                     usage.cached_tokens += ru.cached_tokens;
-                    match classify_response(&content, None) {
+                    match classify_response(&content, None, &cell.model) {
                         SkillResponseOutcome::Ok {
                             findings,
                             parse_warnings: _,
@@ -367,6 +374,7 @@ pub(crate) fn execute_cell(
     tag_findings(&mut findings, &cell.skill, family, &skill_run_id);
 
     CellResult {
+        skill_name: cell.skill.manifest.name.clone(),
         skill_run_id,
         findings,
         usage,
@@ -436,6 +444,7 @@ pub fn execute_matrix(
         if budget.tokens_exceeded() {
             let skill_run_id = ulid::Ulid::new().to_string();
             let budget_result = CellResult {
+                skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
                 findings: vec![],
                 usage: TokenUsage::default(),
@@ -628,8 +637,48 @@ fn build_invocation_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::category::Category;
-    use crate::finding::{FindingBuilder, Severity, Source};
+
+    /// Regression: cells expand to skills x models x files, so they do NOT
+    /// line up 1:1 with the skills list. Reporting code that zipped cell
+    /// results against `skills` truncated later failures and mislabelled a
+    /// second model's result as the next skill. `--model a,b` is the trigger.
+    #[test]
+    fn expand_matrix_is_skills_times_models_not_one_to_one() {
+        let skills = vec![
+            sample_skill("correctness", None, Severity::Critical),
+            sample_skill("security", None, Severity::Critical),
+        ];
+        let files = vec![(
+            "src/main.rs".to_owned(),
+            "abc123".to_owned(),
+            "fn main() {}".to_owned(),
+        )];
+        let mut cfg = default_config();
+        cfg.global_models = vec!["gpt-5.6".to_owned(), "claude-opus-5".to_owned()];
+
+        let cells = expand_matrix(&skills, &files, &cfg);
+
+        assert_eq!(
+            cells.len(),
+            4,
+            "2 skills x 2 models x 1 file must yield 4 cells, not {}",
+            cells.len()
+        );
+        // Every skill must appear once per model, so position in `skills`
+        // cannot identify a cell.
+        for name in ["correctness", "security"] {
+            let n = cells
+                .iter()
+                .filter(|c| c.skill.manifest.name == name)
+                .count();
+            assert_eq!(n, 2, "{name} should have one cell per model");
+        }
+        assert!(
+            cells.len() > skills.len(),
+            "cells outnumber skills, so zip(skills) would silently truncate"
+        );
+    }
+    use crate::finding::{FindingBuilder, Severity};
     use crate::skill_audit::{AuditReader, AxisSelectionSource, ExitStatus, FailureReason};
     use crate::skill_manifest::{
         Axis, Capability, CapabilityMode, Prompts, ProviderPrompt, SkillManifest, TrustTier,
@@ -791,15 +840,30 @@ mod tests {
         skill
     }
 
+    /// Build a mock LLM response in the shape the skill PROMPTS actually
+    /// request -- title/description/severity/category/line_start/line_end/
+    /// evidence, and nothing else.
+    ///
+    /// This previously serialized an internal `Finding` via `FindingBuilder`
+    /// and fed it back to the parser, so every executor test round-tripped
+    /// `Finding -> JSON -> Finding` and passed trivially. That blind spot is
+    /// why nothing caught the parser targeting `Finding` (whose `source`,
+    /// `evidence`, `calibrator_action` and `similar_precedent` have no serde
+    /// default) instead of `LlmFinding`: real model output failed as
+    /// `wrong_schema` while the suite stayed green. Keep this emitting only
+    /// prompt-declared fields -- if it drifts back toward `Finding`, these
+    /// tests stop protecting anything.
     fn make_finding_json(title: &str) -> String {
-        let f = FindingBuilder::new()
-            .title(title)
-            .severity(Severity::High)
-            .category(Category::Security)
-            .source(Source::Llm("test-model".into()))
-            .lines(10, 20)
-            .build();
-        serde_json::to_string(&f).unwrap()
+        serde_json::json!({
+            "title": title,
+            "description": "mock finding body",
+            "severity": "high",
+            "category": "security",
+            "line_start": 10,
+            "line_end": 20,
+            "evidence": ["mock evidence line"],
+        })
+        .to_string()
     }
 
     fn make_findings_json(titles: &[&str]) -> String {
@@ -1028,15 +1092,18 @@ mod tests {
 
     #[test]
     fn output_sanitized() {
-        // Build a finding JSON with ANSI in the title
-        let f = FindingBuilder::new()
-            .title("\x1b[31mRed Alert\x1b[0m")
-            .severity(Severity::High)
-            .category(Category::Security)
-            .source(Source::Llm("test".into()))
-            .lines(1, 1)
-            .build();
-        let json = format!("[{}]", serde_json::to_string(&f).unwrap());
+        // Prompt-shaped response carrying ANSI escapes in the title. Built as
+        // raw JSON, not by serializing a `Finding` -- see make_finding_json.
+        let json = serde_json::json!([{
+            "title": "\u{1b}[31mRed Alert\u{1b}[0m",
+            "description": "mock finding body",
+            "severity": "high",
+            "category": "security",
+            "line_start": 1,
+            "line_end": 1,
+            "evidence": [],
+        }])
+        .to_string();
         let reviewer = MockReviewer::with_default(&json, sample_usage());
         let skill = sample_skill("security", None, Severity::Critical);
         let cell = CellSpec {
@@ -1253,6 +1320,7 @@ mod tests {
             code: "fn main() {}".to_owned(),
         };
         let result = CellResult {
+            skill_name: "security".to_owned(),
             skill_run_id: "run-123".to_owned(),
             findings: vec![FindingBuilder::new().build()],
             usage: TokenUsage {
@@ -1298,6 +1366,7 @@ mod tests {
             code: "fn main() {}".to_owned(),
         };
         let result = CellResult {
+            skill_name: "security".to_owned(),
             skill_run_id: "run-456".to_owned(),
             findings: vec![],
             usage: TokenUsage::default(),

@@ -19,10 +19,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Run review
-        run: quorum review --json --diff-file pr.diff $(git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD) > findings.json
+        # Generate findings.json for the companion "report" workflow to post as PR
+        # comments. This job must SUCCEED regardless of what the review finds:
+        #   - quorum exits 1 (warnings) / 2 (critical) when it finds issues; those
+        #     are review *results*, not job failures. The report job is gated on this
+        #     job's success (workflow_run.conclusion == 'success'), so failing here
+        #     silently suppresses ALL PR comments.
+        #   - Only reviewable code files are passed; prose/docs files just emit noise.
+        # LLM vs AST: if QUORUM_API_KEY is set (e.g. a direct Anthropic key -- the
+        # built-in base-URL allowlist already permits api.anthropic.com), quorum runs
+        # the full LLM review; if unset, it cleanly falls back to AST-only. No code
+        # change to switch -- just add the secrets.
+        run: |
+          files=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD \
+            | grep -vE '(^|/)docs/|\.(md|markdown|txt|lock)$' || true)
+          if [ -z "$files" ]; then
+            echo "No reviewable code files changed; nothing to review."
+            echo '[]' > findings.json
+            exit 0
+          fi
+          quorum review --json --diff-file pr.diff $files > findings.json || true
         env:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}
           QUORUM_API_KEY: ${{ secrets.QUORUM_API_KEY }}
+          QUORUM_MODEL: ${{ secrets.QUORUM_MODEL }}
       - uses: actions/upload-artifact@v4
         with:
           name: quorum-findings

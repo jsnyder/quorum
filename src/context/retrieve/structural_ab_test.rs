@@ -104,7 +104,7 @@ fn print_results(label: &str, hits: &[ScoredChunk]) {
         println!(
             "{:<5} {:<30} {:<8.4} {:<8.4} {:<8.4} {:<8.4} {}",
             i + 1,
-            &hit.chunk.id,
+            hit.chunk.id,
             hit.score,
             hit.components.bm25_norm,
             hit.components.vec_norm,
