@@ -385,13 +385,18 @@ pub async fn judge_findings<J: JudgeLlm>(
                 tracing::warn!("judge LLM returned no response");
             }
 
-            // Any remaining unjudged findings (LLM didn't return verdict): mark uncertain
-            for &i in &to_judge {
-                if findings[i].judge_verdict.is_none() {
-                    findings[i].judge_verdict = Some(JudgeVerdict::Uncertain);
-                    result.uncertain += 1;
-                }
-            }
+            // Deliberately leave unresolved findings at `None`.
+            //
+            // If the call returned nothing, returned malformed JSON, or simply
+            // omitted an item, no judgment occurred -- which is the same state
+            // as having no judge at all, and must not be recorded as
+            // `Uncertain`. `Uncertain` means the judge looked and could not
+            // decide; only a real verdict may set it. The retain below then
+            // withholds `judge: required` findings and counts them, instead of
+            // emitting them as if they had been examined.
+            //
+            // Found by quorum reviewing this very change: the no-judge branch
+            // was fixed first and this one kept the original conflation.
         } else {
             // No LLM available. Deliberately leave the verdict as `None`.
             //
@@ -983,9 +988,14 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.uncertain, 1);
-        assert_eq!(result.calls, 1);
-        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+        // These findings are `judge: required`. A failed call is not a verdict,
+        // so they are withheld rather than emitted as if examined. This test
+        // previously asserted `Uncertain`, which is the conflation quorum
+        // flagged when reviewing the enforcement change.
+        assert_eq!(result.calls, 1, "the call is still attempted and counted");
+        assert_eq!(result.uncertain, 0, "a failed call yields no verdict");
+        assert_eq!(result.withheld_unjudged, 1);
+        assert!(findings.is_empty(), "required findings must not survive");
     }
 
     #[tokio::test]
@@ -1047,8 +1057,14 @@ mod tests {
         )
         .await;
 
+        // The judge returned a verdict for one finding and omitted the other.
+        // The answered one is approved; the omitted one received no judgment at
+        // all, so for a `judge: required` rule it is withheld rather than
+        // emitted as `Uncertain`.
         assert_eq!(result.approved, 1);
-        assert_eq!(result.uncertain, 1);
+        assert_eq!(result.uncertain, 0, "an omitted item is not a verdict");
+        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(findings.len(), 1, "only the judged finding survives");
     }
 
     #[tokio::test]
@@ -1088,12 +1104,13 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            result.uncertain, 1,
-            "malformed JSON should degrade to Uncertain"
-        );
-        assert_eq!(result.calls, 1);
-        assert_eq!(findings[0].judge_verdict, Some(JudgeVerdict::Uncertain));
+        // Malformed JSON degrades gracefully -- no panic, call counted -- but it
+        // is not a verdict. For a `judge: required` rule the finding is
+        // withheld, not emitted with a fabricated `Uncertain`.
+        assert_eq!(result.calls, 1, "malformed JSON must not panic");
+        assert_eq!(result.uncertain, 0);
+        assert_eq!(result.withheld_unjudged, 1);
+        assert!(findings.is_empty());
     }
 
     fn speculative_finding(rule: &str) -> Finding {
@@ -1152,6 +1169,40 @@ mod tests {
         assert_eq!(
             result.withheld_unjudged, 1,
             "withholding must be counted so it can be reported, not silent"
+        );
+    }
+
+    /// The second half of the enforcement, found by quorum reviewing the first
+    /// half. When a judge IS configured but its call fails or omits an item,
+    /// the old code marked the finding `Uncertain` -- which the retain keeps --
+    /// so a required rule still emitted unjudged. `Uncertain` must mean "the
+    /// judge looked and could not decide", never "the call failed".
+    #[tokio::test]
+    async fn required_rules_are_withheld_when_the_judge_call_fails() {
+        let rule = "ast-grep:python/some-speculative";
+        let mut findings = vec![speculative_finding(rule)];
+        let judge = MockJudge { response: None }; // configured, but returns nothing
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &cache_path,
+            Some(&judge),
+        )
+        .await;
+
+        assert!(
+            findings.is_empty(),
+            "a failed judge call must not be treated as an Uncertain verdict"
+        );
+        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(
+            result.uncertain, 0,
+            "no real verdict was returned, so nothing is genuinely Uncertain"
         );
     }
 
