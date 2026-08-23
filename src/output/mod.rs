@@ -476,6 +476,45 @@ mod tests {
     use crate::finding::FindingBuilder;
     use crate::linter::{LinterHint, LinterKind};
 
+    /// Env vars that force compact mode. `should_use_compact` reads all of
+    /// these, and `std::env` is process-global, so any test that depends on
+    /// them must both clear them ALL and hold this lock -- otherwise it races
+    /// with any other test mutating the same vars.
+    ///
+    /// This was a real flake: `terminal_without_flags_produces_human` had no
+    /// guard at all and only passed in CI (where `GITHUB_ACTIONS=true`) when it
+    /// happened to run inside the window where a sibling test had temporarily
+    /// removed that var. Adding unrelated tests changed thread scheduling and
+    /// it started failing.
+    const COMPACT_ENV_VARS: [&str; 5] = [
+        "CLAUDE_CODE",
+        "GEMINI_CLI",
+        "CODEX_CI",
+        "AGENT",
+        "GITHUB_ACTIONS",
+    ];
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Run `f` with every compact-forcing env var cleared, restoring them after.
+    fn with_clean_compact_env<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = COMPACT_ENV_VARS
+            .iter()
+            .map(|v| (*v, std::env::var(v).ok()))
+            .collect();
+        for (v, _) in &saved {
+            unsafe { std::env::remove_var(v) };
+        }
+        let out = f();
+        for (v, old) in saved {
+            if let Some(val) = old {
+                unsafe { std::env::set_var(v, val) };
+            }
+        }
+        out
+    }
+
     fn hint(linter: LinterKind, lang: &'static str, n: usize, inst: &'static str) -> LinterHint {
         LinterHint {
             linter,
@@ -916,13 +955,18 @@ mod tests {
 
     #[test]
     fn should_use_compact_github_actions() {
-        unsafe {
-            std::env::set_var("GITHUB_ACTIONS", "true");
-        }
-        assert!(should_use_compact(false));
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-        }
+        // This test previously set GITHUB_ACTIONS and then REMOVED it
+        // unconditionally, never restoring the original. Under CI -- where the
+        // var is legitimately set -- that destroyed it for every test that ran
+        // afterwards, making `terminal_without_flags_produces_human` pass or
+        // fail purely on thread scheduling. Take the lock and restore.
+        let result = with_clean_compact_env(|| {
+            unsafe { std::env::set_var("GITHUB_ACTIONS", "true") };
+            let r = should_use_compact(false);
+            unsafe { std::env::remove_var("GITHUB_ACTIONS") };
+            r
+        });
+        assert!(result);
     }
 
     #[test]
@@ -1169,19 +1213,14 @@ mod tests {
 
     #[test]
     fn pipe_without_flags_produces_json() {
-        // Clear env vars that trigger compact mode (e.g. GITHUB_ACTIONS in CI)
-        let saved = std::env::var("GITHUB_ACTIONS").ok();
-        unsafe { std::env::remove_var("GITHUB_ACTIONS") };
-        let result = resolve_output_mode(false, false, false);
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("GITHUB_ACTIONS", v) };
-        }
+        let result = with_clean_compact_env(|| resolve_output_mode(false, false, false));
         assert_eq!(result, OutputMode::Json);
     }
 
     #[test]
     fn terminal_without_flags_produces_human() {
-        assert_eq!(resolve_output_mode(false, false, true), OutputMode::Human,);
+        let result = with_clean_compact_env(|| resolve_output_mode(false, false, true));
+        assert_eq!(result, OutputMode::Human);
     }
 
     #[test]
