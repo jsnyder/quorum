@@ -76,7 +76,7 @@ tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 tree-sitter-bash = "0.25"
-tree-sitter-go = "0.23"
+tree-sitter-go = "0.25"
 tree-sitter-hcl = "1.1"
 tree-sitter-language = "0.1"
 
