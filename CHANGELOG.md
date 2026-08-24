@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-23
+
 ### Fixed
 
 - **`judge: required` was never enforced.** A speculative finding was dropped only on an explicit `Rejected` verdict. When no judge ran — `--judge` is opt-in — the code marked findings `Uncertain` and kept them, so seven rules that declare they *require* adjudication shipped their output completely unjudged.
@@ -59,6 +61,9 @@
 
 
 ## [0.30.0] - 2026-08-22
+
+> Tagged retroactively on 2026-08-23. v0.29.0 and v0.30.0 were released as
+> version bumps without git tags, so `git describe` reported v0.28.0 until then.
 
 ### Fixed
 
