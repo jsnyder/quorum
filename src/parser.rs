@@ -813,13 +813,20 @@ int main(void) { return add(1, 2); }
         assert_eq!(names, vec!["dup", "argv_of", "ref_of"]);
     }
 
-    /// A declarator chain that never reaches a name must yield nothing rather
-    /// than spinning -- the helper's termination condition.
+    /// A declarator chain that never reaches a name must terminate and yield
+    /// nothing rather than spinning. This is a bare declaration, not a
+    /// definition, so there is no `function_definition` node to extract at all
+    /// -- reaching the assertion is itself the termination evidence.
     #[test]
     fn function_without_resolvable_name_is_skipped_not_hung() {
         let source = "int (*signal(int, void (*)(int)))(int);\n";
         let tree = parse(source, Language::Cpp).unwrap();
-        let _ = extract_functions(&tree, source, Language::Cpp);
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        assert!(
+            fns.is_empty(),
+            "a declaration with no body must not yield a function, got {:?}",
+            fns.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
