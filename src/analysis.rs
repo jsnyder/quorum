@@ -21,6 +21,7 @@ pub fn analyze_complexity(
         Language::Dockerfile => &[][..],
         Language::Terraform => &[][..],
         Language::Go => &["function_declaration", "method_declaration"][..],
+        Language::Cpp => &["function_definition"][..],
     };
 
     let mut func_nodes = Vec::new();
@@ -174,6 +175,9 @@ fn scan_insecure_nodes(
         Language::Dockerfile => scan_insecure_dockerfile(node, source, findings),
         Language::Terraform => scan_insecure_terraform(node, source, findings),
         Language::Go => return,
+        // Phase 1 is LLM-only by design (#482): no AST checks ship yet, so the
+        // measurement of the unaided model path is not confounded by rules.
+        Language::Cpp => return,
     }
 
     for i in 0..node.child_count() {

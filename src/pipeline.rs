@@ -1471,17 +1471,7 @@ pub async fn review_source(
 }
 
 fn lang_name(lang: Language) -> &'static str {
-    match lang {
-        Language::Rust => "rust",
-        Language::Python => "python",
-        Language::TypeScript => "typescript",
-        Language::Tsx => "tsx",
-        Language::Yaml => "yaml",
-        Language::Bash => "bash",
-        Language::Dockerfile => "dockerfile",
-        Language::Terraform => "terraform",
-        Language::Go => "go",
-    }
+    lang.name()
 }
 
 /// Infer a language name from file extension for LLM-only review.

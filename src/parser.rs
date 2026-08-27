@@ -11,22 +11,70 @@ pub enum Language {
     Dockerfile,
     Terraform,
     Go,
+    /// C and C++ share one variant. tree-sitter-cpp parses C as a subset, and
+    /// `.h` is ambiguous between the two -- splitting would force a guess on
+    /// the most common extension of all. Split it when a rule needs to fire on
+    /// one and not the other.
+    Cpp,
 }
 
 impl Language {
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_ascii_lowercase().as_str() {
-            "rs" => Some(Language::Rust),
-            "py" => Some(Language::Python),
-            "ts" | "js" | "mjs" | "cjs" => Some(Language::TypeScript),
-            "tsx" | "jsx" => Some(Language::Tsx),
-            "yaml" | "yml" => Some(Language::Yaml),
-            "sh" | "bash" | "zsh" | "bats" => Some(Language::Bash),
-            "dockerfile" => Some(Language::Dockerfile),
-            "tf" | "tfvars" => Some(Language::Terraform),
-            "go" => Some(Language::Go),
-            _ => None,
+    /// Every variant, in catalog order. The MCP catalog and `from_extension`
+    /// are both derived from this, so a new language cannot be added without
+    /// being advertised and routable (#483).
+    pub const ALL: &'static [Language] = &[
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::Tsx,
+        Language::Yaml,
+        Language::Bash,
+        Language::Dockerfile,
+        Language::Terraform,
+        Language::Go,
+        Language::Cpp,
+    ];
+
+    /// Stable lowercase slug. Used for LLM prompt language tags, MCP responses
+    /// and the catalog -- previously duplicated across four match statements.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Python => "python",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
+            Language::Yaml => "yaml",
+            Language::Bash => "bash",
+            Language::Dockerfile => "dockerfile",
+            Language::Terraform => "terraform",
+            Language::Go => "go",
+            Language::Cpp => "cpp",
         }
+    }
+
+    /// Extensions this language claims, lowercase and without the leading dot.
+    /// The single source of truth for extension routing.
+    pub fn extensions(&self) -> &'static [&'static str] {
+        match self {
+            Language::Rust => &["rs"],
+            Language::Python => &["py"],
+            Language::TypeScript => &["ts", "js", "mjs", "cjs"],
+            Language::Tsx => &["tsx", "jsx"],
+            Language::Yaml => &["yaml", "yml"],
+            Language::Bash => &["sh", "bash", "zsh", "bats"],
+            Language::Dockerfile => &["dockerfile"],
+            Language::Terraform => &["tf", "tfvars"],
+            Language::Go => &["go"],
+            Language::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+        }
+    }
+
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        let ext = ext.to_ascii_lowercase();
+        Language::ALL
+            .iter()
+            .find(|lang| lang.extensions().contains(&ext.as_str()))
+            .copied()
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
@@ -61,6 +109,7 @@ impl Language {
             }
             Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         }
     }
 
@@ -74,6 +123,10 @@ impl Language {
             Language::Dockerfile => &[],
             Language::Terraform => &[],
             Language::Go => &["function_declaration", "method_declaration"],
+            // Covers free functions, methods defined out of line, and member
+            // functions defined inside a class body -- tree-sitter-cpp uses
+            // function_definition for all three.
+            Language::Cpp => &["function_definition"],
         }
     }
 }
@@ -90,6 +143,35 @@ pub struct FunctionInfo {
     pub name: String,
     pub line_start: u32,
     pub line_end: u32,
+}
+
+/// tree-sitter-cpp puts no `name` field on `function_definition`. The identifier
+/// hangs off `declarator`, wrapped in one extra node per pointer or reference in
+/// the return type (`char **f()` nests two deep), so descend until an actual
+/// name kind turns up. Returns None rather than looping if the chain runs out.
+fn cpp_function_name(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut cur = node.child_by_field_name("declarator")?;
+    loop {
+        match cur.kind() {
+            "identifier"
+            | "field_identifier"
+            | "qualified_identifier"
+            | "destructor_name"
+            | "operator_name" => return Some(cur),
+            // `reference_declarator` (`int &f()`) holds its inner declarator as
+            // a positional child with no field name, unlike `pointer_declarator`.
+            // Fall back to scanning when the field lookup comes up empty.
+            _ => {
+                cur = cur.child_by_field_name("declarator").or_else(|| {
+                    (0..cur.named_child_count())
+                        .filter_map(|i| cur.named_child(i as u32))
+                        .find(|c| {
+                            c.kind().ends_with("declarator") || c.kind().ends_with("identifier")
+                        })
+                })?
+            }
+        }
+    }
 }
 
 pub fn extract_functions(
@@ -110,7 +192,11 @@ pub fn extract_functions(
 
             // Standard named functions/methods
             if kinds.contains(&node.kind())
-                && let Some(name_node) = node.child_by_field_name("name")
+                && let Some(name_node) = node.child_by_field_name("name").or_else(|| {
+                    matches!(lang, Language::Cpp)
+                        .then(|| cpp_function_name(node))
+                        .flatten()
+                })
             {
                 let name = &source[name_node.byte_range()];
                 functions.push(FunctionInfo {
@@ -571,5 +657,179 @@ mod tests {
         let fns = extract_functions(&tree, source, Language::Go);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["Serve", "Stop"]);
+    }
+}
+
+#[cfg(test)]
+mod cpp_tests {
+    use super::*;
+
+    /// C and C++ share one variant: tree-sitter-cpp parses C as a subset, and
+    /// `.h` is genuinely ambiguous between the two. Splitting the enum would
+    /// force a guess on the single most common extension.
+    #[test]
+    fn cpp_and_c_extensions_map_to_cpp() {
+        for ext in ["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"] {
+            assert_eq!(
+                Language::from_extension(ext),
+                Some(Language::Cpp),
+                "extension .{ext} must map to Cpp"
+            );
+        }
+    }
+
+    #[test]
+    fn cpp_extensions_are_case_insensitive() {
+        for ext in ["C", "H", "CPP", "Cc", "HPP"] {
+            assert_eq!(
+                Language::from_extension(ext),
+                Some(Language::Cpp),
+                "extension .{ext} must map to Cpp regardless of case"
+            );
+        }
+    }
+
+    #[test]
+    fn from_path_routes_cpp_sources() {
+        for p in ["src/main.cpp", "lib/BleFingerprint.h", "a/b/mqtt.cc"] {
+            assert_eq!(
+                Language::from_path(Path::new(p)),
+                Some(Language::Cpp),
+                "{p} must route to Cpp"
+            );
+        }
+    }
+
+    /// A file named `Dockerfile.h` hits the filename prefix check before the
+    /// extension is consulted. Pin the precedence so adding C/C++ cannot
+    /// silently steal Dockerfile routing.
+    #[test]
+    fn dockerfile_prefix_still_wins_over_cpp_extension() {
+        assert_eq!(
+            Language::from_path(Path::new("Dockerfile.h")),
+            Some(Language::Dockerfile)
+        );
+    }
+
+    #[test]
+    fn parses_cpp_translation_unit() {
+        let source = r#"
+#include <cstdint>
+namespace ble {
+class Fingerprint {
+ public:
+  bool seen(int rssi) { return rssi > -90; }
+};
+}  // namespace ble
+"#;
+        let tree = parse(source, Language::Cpp).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "C++ translation unit must parse without error"
+        );
+    }
+
+    /// Plain C must parse through the same grammar.
+    #[test]
+    fn parses_c_translation_unit() {
+        let source = r#"
+#include <stdio.h>
+static int add(int a, int b) { return a + b; }
+int main(void) { return add(1, 2); }
+"#;
+        let tree = parse(source, Language::Cpp).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "C translation unit must parse without error"
+        );
+    }
+
+    #[test]
+    fn extracts_free_functions_from_c() {
+        let source =
+            "static int add(int a, int b) { return a + b; }\nint main(void) { return 0; }\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["add", "main"]);
+    }
+
+    /// Every variant must report a slug and at least one extension. This is the
+    /// regression guard for #483: the MCP catalog is derived from these, so a
+    /// new variant cannot be added without appearing in the catalog.
+    #[test]
+    fn every_language_has_a_name_and_extensions() {
+        for lang in Language::ALL {
+            assert!(!lang.name().is_empty(), "{lang:?} must have a name");
+            assert!(
+                !lang.extensions().is_empty(),
+                "{lang:?} must declare at least one extension"
+            );
+        }
+    }
+
+    /// `from_extension` is derived from `extensions()`, so the two cannot drift.
+    #[test]
+    fn every_declared_extension_round_trips() {
+        for lang in Language::ALL {
+            for ext in lang.extensions() {
+                assert_eq!(
+                    Language::from_extension(ext),
+                    Some(*lang),
+                    ".{ext} must round-trip to {lang:?}"
+                );
+            }
+        }
+    }
+
+    /// Member functions defined inside a class body.
+    #[test]
+    fn extracts_member_functions_from_cpp() {
+        let source = "class Fingerprint {\n public:\n  bool seen(int rssi) { return rssi > -90; }\n  void reset() {}\n};\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["seen", "reset"]);
+    }
+
+    /// Out-of-line definitions carry a `qualified_identifier`, not a plain one.
+    #[test]
+    fn extracts_out_of_line_method_definition() {
+        let source = "void Fingerprint::reset() {}\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["Fingerprint::reset"]);
+    }
+
+    /// Each pointer or reference in the return type wraps the declarator in
+    /// another node, so the descent must not stop at the first level.
+    #[test]
+    fn extracts_functions_with_pointer_return_types() {
+        let source = "char *dup(const char *s) { return 0; }\nchar **argv_of(int n) { return 0; }\nint &ref_of(int &x) { return x; }\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["dup", "argv_of", "ref_of"]);
+    }
+
+    /// A declarator chain that never reaches a name must yield nothing rather
+    /// than spinning -- the helper's termination condition.
+    #[test]
+    fn function_without_resolvable_name_is_skipped_not_hung() {
+        let source = "int (*signal(int, void (*)(int)))(int);\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let _ = extract_functions(&tree, source, Language::Cpp);
+    }
+
+    #[test]
+    fn all_contains_every_variant_exactly_once() {
+        let mut seen: Vec<Language> = Vec::new();
+        for lang in Language::ALL {
+            assert!(!seen.contains(lang), "{lang:?} appears twice in ALL");
+            seen.push(*lang);
+        }
+        // Bumped deliberately when a language is added.
+        assert_eq!(seen.len(), 10, "ALL must list every Language variant");
     }
 }

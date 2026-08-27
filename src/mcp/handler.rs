@@ -267,20 +267,38 @@ impl QuorumHandler {
     fn handle_catalog(&self, params: CatalogTool) -> Result<CallToolResult, String> {
         let result = match params.query.to_lowercase().as_str() {
             "models" => {
-                format!("Configured model: {}\nSet QUORUM_MODEL to change.", self.config.model)
+                format!(
+                    "Configured model: {}\nSet QUORUM_MODEL to change.",
+                    self.config.model
+                )
             }
             "languages" => {
-                "Supported languages:\n- Rust (.rs)\n- Python (.py)\n- TypeScript (.ts)\n- TSX (.tsx)\n- Bash (.sh, .bash, .zsh)\n- Dockerfile (Dockerfile*)".to_string()
+                // Derived from Language::ALL rather than hand-written: the
+                // literal it replaced claimed six languages while the enum had
+                // nine, so YAML, Terraform and Go were supported but never
+                // advertised (#483). Deriving makes that drift impossible.
+                let mut out = String::from("Supported languages:");
+                for lang in Language::ALL {
+                    let exts = lang
+                        .extensions()
+                        .iter()
+                        .map(|e| format!(".{e}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("\n- {} ({})", lang.name(), exts));
+                }
+                out
             }
             "domains" => {
                 let cwd = match std::env::current_dir() {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::warn!("MCP catalog domains: cannot determine working directory: {e}");
-                        return Ok(CallToolResult::text_content(vec![format!(
-                            "Error: cannot determine working directory: {e}"
-                        )
-                        .into()]));
+                        tracing::warn!(
+                            "MCP catalog domains: cannot determine working directory: {e}"
+                        );
+                        return Ok(CallToolResult::text_content(vec![
+                            format!("Error: cannot determine working directory: {e}").into(),
+                        ]));
                     }
                 };
                 let info = crate::domain::detect_domain(&cwd);
@@ -303,7 +321,11 @@ impl QuorumHandler {
                 let cs = self.parse_cache.stats();
                 report.push_str(&format!(
                     "Parse cache: {}/{} entries, {} hits, {} misses, {:.0}% hit rate\n\n",
-                    cs.size, cs.capacity, cs.hits, cs.misses, cs.hit_rate() * 100.0
+                    cs.size,
+                    cs.capacity,
+                    cs.hits,
+                    cs.misses,
+                    cs.hit_rate() * 100.0
                 ));
                 // Feedback stats
                 match self.feedback_store.load_all() {
@@ -315,7 +337,10 @@ impl QuorumHandler {
                 }
                 report
             }
-            other => format!("Unknown catalog query: {}. Use: models, languages, domains, or stats.", other),
+            other => format!(
+                "Unknown catalog query: {}. Use: models, languages, domains, or stats.",
+                other
+            ),
         };
         Ok(CallToolResult::text_content(vec![result.into()]))
     }
@@ -338,17 +363,7 @@ impl QuorumHandler {
                 .file_path
                 .as_deref()
                 .and_then(|p| Language::from_path(std::path::Path::new(p)))
-                .map(|l| match l {
-                    Language::Rust => "rust",
-                    Language::Python => "python",
-                    Language::TypeScript => "typescript",
-                    Language::Tsx => "tsx",
-                    Language::Yaml => "yaml",
-                    Language::Bash => "bash",
-                    Language::Dockerfile => "dockerfile",
-                    Language::Terraform => "terraform",
-                    Language::Go => "go",
-                })
+                .map(|l| l.name())
                 .unwrap_or("text");
             prompt.push_str(&format!("```{}\n{}\n```\n", lang, redacted));
         }
@@ -408,17 +423,7 @@ impl QuorumHandler {
         let lang = Language::from_path(std::path::Path::new(&params.file_path))
             .ok_or_else(|| format!("Unsupported file type: {}", params.file_path))?;
 
-        let lang_name = match lang {
-            Language::Rust => "rust",
-            Language::Python => "python",
-            Language::TypeScript => "typescript",
-            Language::Tsx => "tsx",
-            Language::Yaml => "yaml",
-            Language::Bash => "bash",
-            Language::Dockerfile => "dockerfile",
-            Language::Terraform => "terraform",
-            Language::Go => "go",
-        };
+        let lang_name = lang.name();
 
         let framework_hint = params
             .framework
@@ -560,6 +565,48 @@ impl ServerHandler for QuorumHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_handler() -> QuorumHandler {
+        QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(PathBuf::from("/tmp/quorum-test-feedback.jsonl")),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        }
+    }
+
+    /// Regression guard for #483. The catalog used to be a hand-written literal
+    /// naming six languages while the enum carried nine, so YAML, Terraform and
+    /// Go were supported but never advertised. It is derived from
+    /// `Language::ALL` now, and this fails if anyone reverts it to a literal.
+    #[test]
+    fn catalog_advertises_every_supported_language() {
+        let result = test_handler()
+            .handle_catalog(CatalogTool {
+                query: "languages".into(),
+            })
+            .unwrap();
+        let text = format!("{:?}", result.content);
+
+        for lang in Language::ALL {
+            assert!(
+                text.contains(lang.name()),
+                "catalog omits {} -- it is supported but unadvertised",
+                lang.name()
+            );
+            for ext in lang.extensions() {
+                assert!(
+                    text.contains(&format!(".{ext}")),
+                    "catalog omits .{ext} for {}",
+                    lang.name()
+                );
+            }
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn review_handler_parses_clean_rust() {
@@ -854,9 +901,15 @@ mod tests {
         };
 
         let result = handler.handle_catalog(params).unwrap();
-        let text = serde_json::to_string(&result.content[0]).unwrap();
-        assert!(text.contains("Rust"));
-        assert!(text.contains("Python"));
+        let text = serde_json::to_string(&result.content[0])
+            .unwrap()
+            .to_lowercase();
+        // Case-insensitive: the catalog is derived from `Language::name()` now,
+        // which emits the lowercase slug ("rust") rather than the display form
+        // ("Rust") the old hand-written literal used. The intent here is that
+        // these languages are advertised at all, not how they are capitalised.
+        assert!(text.contains("rust"));
+        assert!(text.contains("python"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

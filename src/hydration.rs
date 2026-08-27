@@ -140,6 +140,7 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["function_declaration", "method_declaration"],
+        Language::Cpp => vec!["function_definition"],
     }
 }
 
@@ -157,6 +158,7 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["type_spec"],
+        Language::Cpp => vec!["class_specifier", "struct_specifier", "enum_specifier"],
     }
 }
 
@@ -170,6 +172,7 @@ fn call_expr_kinds(lang: Language) -> Vec<&'static str> {
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["call_expression"],
+        Language::Cpp => vec!["call_expression"],
     }
 }
 
@@ -183,6 +186,7 @@ fn import_kinds(lang: Language) -> Vec<&'static str> {
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["import_declaration"],
+        Language::Cpp => vec!["preproc_include"],
     }
 }
 
