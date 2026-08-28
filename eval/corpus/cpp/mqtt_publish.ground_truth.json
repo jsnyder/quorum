@@ -1,0 +1,12 @@
+[
+  {
+    "id": "mqtt-vla-001",
+    "type": "real",
+    "title": "Variable-length array on FreeRTOS task stack sized from runtime JSON length",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 22,
+    "line_end": 22,
+    "description": "pub() serializes a JSON document into `char buffer[jsonSize + 1]`, a variable-length array whose size is derived at runtime from measureJson(). This runs on Arduino-ESP32's loopTask, whose default stack is 8 KB, and the caller chain includes Home Assistant discovery payloads that grow as entities are added. There is no bound check between measureJson() and the declaration, so a large document overflows the task stack and corrupts the adjacent TCB and heap metadata. Symptoms in the field were broker-side 'Invalid PUBLISH (QoS=0 and DUP=1)' followed by 'malformed packet' disconnects, and FreeRTOS vTaskSwitchContext panics with heap-poison bytes in argument registers. The fix replaces the VLA with a heap allocation, which is safe here because AsyncMqttClient copies the payload synchronously inside PublishOutPacket's constructor before publish() returns."
+  }
+]
