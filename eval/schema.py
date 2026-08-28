@@ -29,6 +29,22 @@ class GroundTruthEntry:
     line_end: int
     description: str
     cve: str | None = None
+    # Present in the speculative_patterns fixtures but never declared here, so
+    # load_ground_truth() raised TypeError on all four of them and any walk of
+    # the whole corpus died. Declared now so the corpus loads; semantics
+    # unchanged. `rule` names the speculative rule under test, `expected_verdict`
+    # is what the JUDGE should decide about that rule's finding.
+    rule: str | None = None
+    expected_verdict: str | None = None
+    # "hit"  - a defect the tool SHOULD report. Counts toward recall as usual.
+    # "miss" - a control: a genuine defect that is NOT identifiable from the
+    #          source alone, because recognising it needs domain knowledge the
+    #          file does not carry. Silence is the correct answer, so it is
+    #          excluded from the recall denominator; a tool that reports it is
+    #          counted as overconfident instead.
+    # Defaulted, so existing corpora keep their current scoring and
+    # load_ground_truth() needs no change.
+    expected: str = "hit"
 
 
 @dataclass
