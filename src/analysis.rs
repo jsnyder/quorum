@@ -33,9 +33,10 @@ pub fn analyze_complexity(
         if let Some(node) = node {
             let cc = cyclomatic_complexity(&node, source);
             if cc >= threshold {
-                // Extract name directly from the function node
-                let name = node
-                    .child_by_field_name("name")
+                // Language-aware: C/C++ has no `name` field on
+                // function_definition, so reading the field directly reported
+                // every C++ function as "unknown".
+                let name = crate::parser::function_name_node(node, lang)
                     .map(|n| &source[n.byte_range()])
                     .unwrap_or("unknown");
                 // Per the system-prompt severity rubric: maintainability,
@@ -111,9 +112,13 @@ fn count_decisions(node: &tree_sitter::Node, source: &str, complexity: &mut u32)
         // Loops
         "for_expression" | "for_statement" | "for_in_statement" => *complexity += 1,
         "while_expression" | "while_statement" => *complexity += 1,
+        // C/C++: range-based for and do-while are distinct node kinds
+        "for_range_loop" | "do_statement" => *complexity += 1,
 
         // Match/switch arms (each arm is a path)
         "match_arm" | "case_clause" | "default_clause" => *complexity += 1,
+        // C/C++ switch labels (both `case N:` and `default:` are case_statement)
+        "case_statement" => *complexity += 1,
         // Go switch/select cases
         "expression_case" | "type_case" | "communication_case" => *complexity += 1,
 
@@ -2493,6 +2498,78 @@ mod tests {
     }
 
     // -- analyze_complexity integration --
+
+    /// C++ `function_definition` has no `name` field -- the identifier hangs off
+    /// `declarator`. Reading only the field made every C++ complexity finding
+    /// report "Function `unknown`", which is what a live run against real ESP32
+    /// firmware actually produced before this was wired to the shared resolver.
+    #[test]
+    fn cpp_complexity_finding_names_the_function() {
+        let source = "int tangled(int a, int b) {\n    if (a) { if (b) { return 1; } }\n    if (a && b) { return 2; }\n    for (int i = 0; i < 10; i++) { if (i > 5) break; }\n    while (a) { a--; }\n    return 0;\n}\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let findings = analyze_complexity(&tree, source, Language::Cpp, 3);
+        assert!(
+            !findings.is_empty(),
+            "complex C++ function should be flagged"
+        );
+        assert!(
+            findings[0].title.contains("tangled"),
+            "finding must name the function, got: {}",
+            findings[0].title
+        );
+        assert!(
+            !findings[0].title.contains("unknown"),
+            "finding must not fall back to `unknown`, got: {}",
+            findings[0].title
+        );
+    }
+
+    /// Out-of-line method definitions carry a `qualified_identifier`.
+    #[test]
+    fn cpp_complexity_names_out_of_line_methods() {
+        let source = "int Widget::spin(int a, int b) {\n    if (a) { if (b) { return 1; } }\n    if (a && b) { return 2; }\n    for (int i = 0; i < 10; i++) { if (i > 5) break; }\n    return 0;\n}\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let findings = analyze_complexity(&tree, source, Language::Cpp, 3);
+        assert!(!findings.is_empty(), "complex C++ method should be flagged");
+        assert!(
+            findings[0].title.contains("Widget::spin"),
+            "finding must name the qualified method, got: {}",
+            findings[0].title
+        );
+    }
+
+    /// Range-based for, switch cases and do-while are all decision points that
+    /// the shared `count_decisions` table did not know about, so C++ complexity
+    /// was silently undercounted.
+    #[test]
+    fn cpp_range_for_counts_as_a_decision() {
+        let plain = "void f(int n) { int t = 0; t += n; }\n";
+        let ranged = "void f(const V &v) { int t = 0; for (auto &x : v) { t += x; } }\n";
+        let a = cyclomatic_complexity(&parse(plain, Language::Cpp).unwrap().root_node(), plain);
+        let b = cyclomatic_complexity(&parse(ranged, Language::Cpp).unwrap().root_node(), ranged);
+        assert_eq!(b, a + 1, "range-based for must add one decision point");
+    }
+
+    #[test]
+    fn cpp_switch_cases_count_as_decisions() {
+        let plain = "int f(int n) { return n; }\n";
+        let sw = "int f(int n) { switch (n) { case 1: return 1; case 2: return 2; default: return 0; } }\n";
+        let a = cyclomatic_complexity(&parse(plain, Language::Cpp).unwrap().root_node(), plain);
+        let b = cyclomatic_complexity(&parse(sw, Language::Cpp).unwrap().root_node(), sw);
+        assert!(
+            b >= a + 2,
+            "two case labels must add at least two decision points, got {a} -> {b}"
+        );
+    }
+
+    #[test]
+    fn cpp_do_while_counts_as_a_decision() {
+        let plain = "void f(int n) { int t = 0; t += n; }\n";
+        let dow = "void f(int n) { int t = 0; do { t += n; n--; } while (n > 0); }\n";
+        let a = cyclomatic_complexity(&parse(plain, Language::Cpp).unwrap().root_node(), plain);
+        let b = cyclomatic_complexity(&parse(dow, Language::Cpp).unwrap().root_node(), dow);
+        assert_eq!(b, a + 1, "do-while must add one decision point");
+    }
 
     #[test]
     fn analyze_flags_complex_function() {

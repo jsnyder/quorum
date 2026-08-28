@@ -157,7 +157,11 @@ fn cpp_function_name(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
             | "field_identifier"
             | "qualified_identifier"
             | "destructor_name"
-            | "operator_name" => return Some(cur),
+            | "operator_name"
+            // Conversion operators (`operator int() const`) sit in the
+            // declarator slot as `operator_cast` and match no other arm, so
+            // without this the whole function is silently skipped.
+            | "operator_cast" => return Some(cur),
             // `reference_declarator` (`int &f()`) holds its inner declarator as
             // a positional child with no field name, unlike `pointer_declarator`.
             // Fall back to scanning when the field lookup comes up empty.
@@ -172,6 +176,22 @@ fn cpp_function_name(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
             }
         }
     }
+}
+
+/// Resolve the identifier node for a function definition, language-aware.
+///
+/// Most grammars expose a `name` field. C/C++ does not, so callers that read
+/// the field directly silently get nothing and fall back to placeholder names.
+/// Shared so `analysis.rs` and `hydration.rs` cannot drift from this.
+pub fn function_name_node<'a>(
+    node: tree_sitter::Node<'a>,
+    lang: Language,
+) -> Option<tree_sitter::Node<'a>> {
+    node.child_by_field_name("name").or_else(|| {
+        matches!(lang, Language::Cpp)
+            .then(|| cpp_function_name(node))
+            .flatten()
+    })
 }
 
 pub fn extract_functions(
@@ -192,11 +212,7 @@ pub fn extract_functions(
 
             // Standard named functions/methods
             if kinds.contains(&node.kind())
-                && let Some(name_node) = node.child_by_field_name("name").or_else(|| {
-                    matches!(lang, Language::Cpp)
-                        .then(|| cpp_function_name(node))
-                        .flatten()
-                })
+                && let Some(name_node) = function_name_node(node, lang)
             {
                 let name = &source[name_node.byte_range()];
                 functions.push(FunctionInfo {
@@ -811,6 +827,27 @@ int main(void) { return add(1, 2); }
         let fns = extract_functions(&tree, source, Language::Cpp);
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["dup", "argv_of", "ref_of"]);
+    }
+
+    /// Conversion operators put `operator_cast` in the declarator slot, which
+    /// matches no other terminal kind and has no descendant declarator, so the
+    /// whole function was silently skipped before it was added.
+    #[test]
+    fn extracts_conversion_operator() {
+        let source = "struct Reading {\n  int raw;\n  operator int() const { return raw; }\n};\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let fns = extract_functions(&tree, source, Language::Cpp);
+        assert_eq!(
+            fns.len(),
+            1,
+            "conversion operator must be extracted, got {:?}",
+            fns.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            fns[0].name.contains("operator"),
+            "name should be the conversion operator, got {}",
+            fns[0].name
+        );
     }
 
     /// A declarator chain that never reaches a name must terminate and yield

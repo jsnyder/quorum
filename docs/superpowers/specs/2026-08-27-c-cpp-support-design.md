@@ -21,7 +21,7 @@ Phase 1 only. Explicitly **not** in this branch:
 
 One enum variant covering both languages:
 
-```
+```text
 from_extension:       c h cpp cc cxx hpp hh hxx  ->  Language::Cpp
 tree_sitter_language:                            ->  tree_sitter_cpp::LANGUAGE
 function_node_kinds:                             ->  ["function_definition"]

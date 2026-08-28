@@ -54,6 +54,7 @@ pub fn hydrate(
         &func_kinds,
         &type_kinds,
         &import_kinds,
+        lang,
         &mut all_funcs,
         &mut all_types,
         &mut all_imports,
@@ -158,7 +159,12 @@ fn type_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["type_spec"],
-        Language::Cpp => vec!["class_specifier", "struct_specifier", "enum_specifier"],
+        Language::Cpp => vec![
+            "class_specifier",
+            "struct_specifier",
+            "enum_specifier",
+            "union_specifier",
+        ],
     }
 }
 
@@ -197,6 +203,7 @@ fn collect_definitions(
     func_kinds: &[&str],
     type_kinds: &[&str],
     import_kinds_list: &[&str],
+    lang: Language,
     funcs: &mut Vec<(String, String, u32, u32)>,
     types: &mut Vec<(String, String)>,
     imports: &mut Vec<(String, String)>,
@@ -205,8 +212,11 @@ fn collect_definitions(
     let line1 = node.start_position().row as u32 + 1;
     let line2 = node.end_position().row as u32 + 1;
 
+    // Language-aware name resolution: C/C++ function_definition has no `name`
+    // field, so reading the field directly collected nothing and left
+    // callee_signatures permanently empty for C++.
     if func_kinds.contains(&kind)
-        && let Some(name_node) = node.child_by_field_name("name")
+        && let Some(name_node) = crate::parser::function_name_node(*node, lang)
     {
         let name = source[name_node.byte_range()].to_string();
         // Extract first line as signature
@@ -240,6 +250,7 @@ fn collect_definitions(
                 func_kinds,
                 type_kinds,
                 import_kinds_list,
+                lang,
                 funcs,
                 types,
                 imports,
@@ -827,6 +838,54 @@ fn handle(req: Request) {
         assert!(
             ctx.type_definitions.iter().any(|s| s.contains("Request")),
             "Should find type definition for Request. Got: {:?}",
+            ctx.type_definitions
+        );
+    }
+
+    /// `collect_definitions` read the `name` field directly, which C++
+    /// function_definition does not have, so callee_signatures was permanently
+    /// empty for C++ while the func_kinds arm advertised support.
+    #[test]
+    fn hydrate_collects_cpp_function_definitions() {
+        let source = "\
+int helper(int a) {
+    return a * 2;
+}
+
+void caller(int n) {
+    helper(n);
+}
+";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let ctx = hydrate(&tree, source, Language::Cpp, &[(5, 7)]);
+        assert!(
+            ctx.callee_signatures.iter().any(|s| s.contains("helper")),
+            "C++ callee signature should be hydrated. Got: {:?}",
+            ctx.callee_signatures
+        );
+    }
+
+    /// Unions are a distinct node kind from struct/class in tree-sitter-cpp, so
+    /// omitting `union_specifier` silently drops them from hydration context --
+    /// and unions are exactly where a reviewer needs the layout to reason about
+    /// type punning, which is common in embedded C.
+    #[test]
+    fn hydrate_type_definition_cpp_union() {
+        let source = "\
+union Packet {
+    uint32_t raw;
+    struct { uint16_t lo; uint16_t hi; } parts;
+};
+
+void handle(Packet p) {
+    consume(p.raw);
+}
+";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let ctx = hydrate(&tree, source, Language::Cpp, &[(6, 8)]);
+        assert!(
+            ctx.type_definitions.iter().any(|s| s.contains("Packet")),
+            "Should find union definition for Packet. Got: {:?}",
             ctx.type_definitions
         );
     }
