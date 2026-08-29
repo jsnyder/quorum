@@ -78,6 +78,7 @@ tree-sitter-yaml = "0.7"
 tree-sitter-bash = "0.25"
 tree-sitter-go = "0.23"
 tree-sitter-hcl = "1.1"
+tree-sitter-cpp = "0.23"
 tree-sitter-language = "0.1"
 
 # ast-grep (compiled-in rule engine)

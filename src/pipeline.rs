@@ -725,7 +725,7 @@ pub async fn review_file(
 
     // Derive language string: from AST when available, from file extension otherwise.
     let lang_str = match &ast {
-        Some(ctx) => lang_name(ctx.language).to_string(),
+        Some(ctx) => ctx.language.name().to_string(),
         None => lang_name_from_path(file_path),
     };
 
@@ -1233,7 +1233,7 @@ pub(crate) async fn build_file_context(
 
     // ── 4. Feedback precedent selection ─────────────────────────────────
     let language: String = if let Some(ast_ctx) = ast {
-        lang_name(ast_ctx.language).to_string()
+        ast_ctx.language.name().to_string()
     } else {
         lang_name_from_path(file_path)
     };
@@ -1293,7 +1293,7 @@ pub(crate) async fn build_file_context(
             v.dedup();
             v
         };
-        let lang_str = lang_name(ast_ctx.language);
+        let lang_str = ast_ctx.language.name();
         let mut structural_fingerprints =
             crate::context::extract::dispatch::compute_source_fingerprints(
                 &redacted_code,
@@ -1468,20 +1468,6 @@ pub async fn review_source(
         language: lang,
     };
     review_file(file_path, source, Some(ast_ctx), llm, pipeline_config).await
-}
-
-fn lang_name(lang: Language) -> &'static str {
-    match lang {
-        Language::Rust => "rust",
-        Language::Python => "python",
-        Language::TypeScript => "typescript",
-        Language::Tsx => "tsx",
-        Language::Yaml => "yaml",
-        Language::Bash => "bash",
-        Language::Dockerfile => "dockerfile",
-        Language::Terraform => "terraform",
-        Language::Go => "go",
-    }
 }
 
 /// Infer a language name from file extension for LLM-only review.
