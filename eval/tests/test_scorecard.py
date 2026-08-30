@@ -296,3 +296,27 @@ def test_duplicate_ids_across_files_are_rejected(tmp_path):
     (tmp_path / "b.ground_truth.json").write_text(json.dumps([entry]))
     with pytest.raises(ValueError, match="duplicate ground-truth id"):
         _partition_corpus(tmp_path)
+
+
+def test_per_file_tp_agrees_with_summary_tp(tmp_path):
+    # The per-file table counted raw verdicts while the summary withdrew control
+    # hits, so a tool that hit a control reported a different TP in the two
+    # tables of the same report.
+    import json
+    from scorecard import generate_scorecard
+    entries = [
+        {"id": "gt-1", "type": "real", "title": "t", "category": "c",
+         "severity": "high", "line_start": 1, "line_end": 2, "description": "d"},
+        {"id": "ctl-1", "type": "real", "title": "t", "category": "c",
+         "severity": "high", "line_start": 3, "line_end": 4, "description": "d",
+         "expected": "miss"},
+    ]
+    (tmp_path / "x.ground_truth.json").write_text(json.dumps(entries))
+    verdicts = [_v("t", "tp", gt_id="gt-1"), _v("t", "tp", gt_id="ctl-1")]
+    out = generate_scorecard(verdicts, {"t": []}, tmp_path)
+
+    summary_tp = out["data"]["tools"]["t"]["tp_count"]
+    assert summary_tp == 1
+    per_file_row = [ln for ln in out["markdown"].splitlines()
+                    if ln.startswith("| t |")][-1]
+    assert per_file_row.split("|")[2].strip() == str(summary_tp)

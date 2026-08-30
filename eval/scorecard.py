@@ -237,7 +237,11 @@ def generate_scorecard(
             lines.append("| Tool | TP | FP | Partial |")
             lines.append("|------|----|----|---------|")
             for tool in tools:
-                fv = [v for v in verdicts if v.file == file and v.tool == tool]
+                # Same withdrawal as the summary table: a control hit is not a
+                # TP. Counting raw verdicts here made the per-file TP disagree
+                # with the summary TP for any tool that hit a control.
+                fv = [v for v in verdicts if v.file == file and v.tool == tool
+                      and v.matched_ground_truth_id not in control_ids]
                 tp = sum(1 for v in fv if v.verdict == "tp")
                 fp = sum(1 for v in fv if v.verdict == "fp")
                 p = sum(1 for v in fv if v.verdict == "partial")
