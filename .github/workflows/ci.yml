@@ -70,3 +70,47 @@ jobs:
         with:
           shared-key: msrv-ubuntu-latest
       - run: cargo check --workspace --locked
+
+  eval:
+    name: eval harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      # Deps only, not `pip install -e .`: eval/ is a flat module layout beside
+      # data dirs (corpus, results, binaries), so setuptools auto-discovery
+      # refuses to build it. Nothing here needs the package installed --
+      # pyproject sets `pythonpath = ["."]` so pytest imports the modules
+      # directly.
+      - name: install
+        working-directory: eval
+        run: pip install pytest httpx
+      - name: pytest
+        working-directory: eval
+        run: python -m pytest tests -q
+      # The scorer could not load its own corpus for an unknown length of time
+      # (#485) because nothing ever walked the whole thing. The unit tests use
+      # synthetic fixtures and would not have caught it, so load the real corpus
+      # and assert the partition, which is the check that was missing.
+      - name: full corpus loads and partitions
+        working-directory: eval
+        run: |
+          python -c "
+          import pathlib, sys
+          from scorecard import _partition_corpus
+          p = _partition_corpus(pathlib.Path('corpus'))
+          actual = (len(p.scoreable), len(p.rejected), len(p.controls))
+          expected = (63, 14, 1)
+          print(f'{actual[0]} scoreable / {actual[1]} rejected / {actual[2]} control')
+          if actual != expected:
+              sys.exit(
+                  f'corpus partition changed: got {actual}, expected {expected}. '
+                  'If this is a deliberate corpus change, update the expected '
+                  'tuple in this workflow in the same commit -- the numbers are '
+                  'pinned so that a silent drop or a miscategorised entry, which '
+                  'shifts every recall denominator and breaks comparison against '
+                  'earlier benchmark runs, cannot pass unnoticed.'
+              )
+          "

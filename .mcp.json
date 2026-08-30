@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "granola": { "disabled": true },
+    "retellai": { "disabled": true },
+    "tavily-search": { "disabled": true },
+    "perplexity-ask": { "disabled": true },
+    "stitch": { "disabled": true },
+    "transcriptor": { "disabled": true }
+  }
+}

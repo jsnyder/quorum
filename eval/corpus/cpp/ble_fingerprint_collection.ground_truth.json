@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ble-ub-001",
+    "type": "real",
+    "title": "Pointer taken into a by-value temporary that dies at the end of the full expression",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 262,
+    "line_end": 266,
+    "description": "NimBLEAdvertisedDevice::getAddress() returns NimBLEAddress by value. `advertisedDevice->getAddress().getVal()` (and the getNative() branch) takes a pointer into that temporary, whose storage is released at the end of the full expression. The resulting `mac` pointer is then passed to classify(), cold.insert(), cold.lookup() and cold.remove() further down Seen(), so every use after the declaration reads freed stack. This is undefined behaviour that happens to work while the stack slot is not yet reused, which makes it latent: any inlining change or interrupt-driven stack write silently corrupts the hash lookup and memcmp. The fix copies the six bytes into a local buffer that outlives the calls. Detecting this requires knowing getAddress() returns by value rather than by reference, which is the interesting part of the fixture."
+  },
+  {
+    "id": "ble-rssi-001",
+    "type": "real",
+    "title": "KNOWN-NEGATIVE (expected miss): RSSI floor on promotion starves multilateration",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 285,
+    "line_end": 286,
+    "expected": "miss",
+    "description": "EXPECTED MISS - this entry is a control, not a target. Promotion from the cold tier requires both `seenCount >= DEFAULT_COLD_PROMOTION_COUNT` and `rssi > DEFAULT_COLD_PROMOTION_RSSI` (-75 dBm). The second condition is a design defect, but only in context: ESPresense resolves device position by multilateration, which needs three or more nodes reporting the same device simultaneously, and the distant nodes that supply the geometric spread are precisely the ones reading weak. An RSSI floor on promotion silences them, so every device collapses to its single nearest reporting node and never resolves to a position. It compounds with private resolvable addresses, which rotate MAC roughly every 15 minutes and reset seenCount, so a node reading below -75 restarts the warmup forever and never promotes even once. Measured on real hardware: removing this condition took one node from reporting ~14 devices to 51, more than any other node in a 16-node fleet. NOTHING IN THE FILE INDICATES THIS. The code is internally consistent, the constant is well named, and the surrounding comment justifies the gate coherently. Correctly identifying it requires knowing what multilateration needs, which is domain knowledge the source does not carry. A tool that reports this with confidence is more likely pattern-matching 'magic threshold' than reasoning, so treat a confident hit here as a signal to inspect the justification rather than as a win."
+  }
+]

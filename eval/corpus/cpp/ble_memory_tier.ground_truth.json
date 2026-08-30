@@ -1,0 +1,12 @@
+[
+  {
+    "id": "ble-deadapi-001",
+    "type": "real",
+    "title": "addKnownMac() is never called outside tests, so isKnownMac() always returns false",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 186,
+    "line_end": 195,
+    "description": "QuickClassifier::addKnownMac() populates the knownMacs_ table that isKnownMac() searches, and isKnownMac() gates the ClassifyResult::HOT fast path for user-configured devices. In the firmware, addKnownMac() is never called from anywhere: the only call sites in the repository are unit tests. The table is allocated, memset to zero in the constructor, and stays empty for the process lifetime, so isKnownMac() unconditionally returns false and the user's configured known_macs receive no protection from the pre-filter at all. The feature reads as implemented and is covered by passing tests, which is what let it survive months in production. The detectable shape is 'public method that mutates state consumed by a hot path, with no non-test callers' - reachability rather than a local code smell. Related dead code in the same file: EvictionScorer's idType bonuses (+50 iBeacon, +100 known MAC) are unreachable for the same reason, since ColdRecord.idType was never written either."
+  }
+]

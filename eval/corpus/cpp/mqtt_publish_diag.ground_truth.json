@@ -1,0 +1,12 @@
+[
+  {
+    "id": "mqtt-comment-001",
+    "type": "real",
+    "title": "Comment asserts two publish failure paths; the implementation has three",
+    "category": "maintainability",
+    "severity": "low",
+    "line_start": 15,
+    "line_end": 16,
+    "description": "The comment states that AsyncMqttClient::publish has 'exactly two failure paths: _state != CONNECTED || ESP.getMaxAllocHeap() < MQTT_MIN_FREE_MEMORY', and the diagnostic below it logs only those two inputs. The vendored fork actually has three: it also returns 0 when `_queuedBytes + needed > _maxQueueBytes` (an 8 KB outbox cap). That third path is the one that fires in practice. Because it logs via log_w and firmware builds with CORE_DEBUG_LEVEL=1, the drop is silent, and the diagnostic that this comment describes actively misleads: it prints connected=1 and a maxAlloc far above the floor, which reads as 'both conditions passed, so this cannot have failed'. A reviewer that can compare a comment's factual claim against the function it describes should flag the count. Note the claim is about a vendored library not present in this fixture, so detection likely requires reasoning from the diagnostic's own contradictory output rather than cross-file analysis."
+  }
+]

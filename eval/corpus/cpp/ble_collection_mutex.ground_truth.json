@@ -1,0 +1,62 @@
+[
+  {
+    "id": "ble-mutex-001",
+    "type": "real",
+    "title": "Config(): logs failed mutex acquire then enters the critical section anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 417,
+    "line_end": 418,
+    "description": "`if (xSemaphoreTake(fingerprintMutex, MAX_WAIT) != pdTRUE) log_e(...)` has no return. On timeout the function logs and falls through into the loop over `fingerprints` without holding the lock, then reaches an unconditional xSemaphoreGive() on a mutex it never owned. That both destroys mutual exclusion on the shared slot vector and releases a mutex held by another task. MAX_WAIT is 100 ms and Seen() runs in the NimBLE scan callback task, so timeouts are reachable under BLE-saturated conditions - exactly the load this subsystem targets. The detectable shape is a guard whose failure branch is a bare log with no control-flow exit, paired with an unconditional release later in the same scope."
+  },
+  {
+    "id": "ble-mutex-002",
+    "type": "real",
+    "title": "GetFingerprint(): logs failed mutex acquire then enters the critical section anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 628,
+    "line_end": 629,
+    "description": "Same defect as ble-mutex-001. The failed-acquire branch logs 'Couldn't take semaphore!' and continues into getFingerprintInternal(), then calls xSemaphoreGive() unconditionally on the following line. Returning an empty lease on timeout is the correct behaviour; instead the shared fingerprint vector is read without the lock and another task's ownership is released."
+  },
+  {
+    "id": "ble-mutex-003",
+    "type": "real",
+    "title": "Cleanup path: logs failed mutex acquire then enters the critical section anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 636,
+    "line_end": 637,
+    "description": "Same defect as ble-mutex-001. On timeout the function proceeds to CleanupOldFingerprints(), which mutates the slot vector and can delete BleFingerprint objects, while not holding the lock and while another task may be iterating that same vector. This is the most damaging of the six sites because it frees memory other readers may still hold pointers into."
+  },
+  {
+    "id": "ble-mutex-004",
+    "type": "real",
+    "title": "Release(): logs failed mutex acquire then mutates slot refcounts anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 656,
+    "line_end": 657,
+    "description": "Same defect as ble-mutex-001. On timeout the function continues into the `lease.slot < fingerprints.size()` branch and adjusts reference counts without the lock. Corrupting a refcount here is particularly bad because the slot pool uses refs to decide when a fingerprint may be evicted or deleted, so a lost decrement leaks a slot and a lost increment enables a use-after-free. Leaking the refcount on timeout is preferable to touching shared state unlocked."
+  },
+  {
+    "id": "ble-mutex-005",
+    "type": "real",
+    "title": "Size(): logs failed mutex acquire then reads shared state anyway",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 672,
+    "line_end": 673,
+    "description": "Same defect as ble-mutex-001, with the mildest consequence: on timeout the function calls CleanupOldFingerprints() and reads activeFingerprints without the lock, then releases a mutex it does not own. The read alone would be a benign race, but the unconditional xSemaphoreGive() still releases another task's lock, and the CleanupOldFingerprints() call makes it a write. Severity is high rather than critical only because the mutation is shared with ble-mutex-003."
+  },
+  {
+    "id": "ble-mutex-006",
+    "type": "real",
+    "title": "addOrReplace(): logs failed mutex acquire then enters the critical section anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 329,
+    "line_end": 330,
+    "description": "Same defect as ble-mutex-001, on deviceConfigMutex rather than fingerprintMutex. The failed-acquire branch is a bare log_e with no return, so on timeout the function falls through into the alias-dedup loop that erases from `deviceConfigs` and into the push_back below it, then reaches an unconditional xSemaphoreGive() at line 358 on a mutex it never owned. The same file shows the correct shape 40 lines later: removeConfig() at line 368 takes the identical mutex with the identical predicate and returns false on failure, which is what makes this a defect rather than a house style."
+  }
+]
