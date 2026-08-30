@@ -3,6 +3,10 @@ import json
 from pathlib import Path
 
 
+VALID_EXPECTED = {"hit", "miss"}
+VALID_EXPECTED_VERDICT = {"approved", "rejected"}
+
+
 @dataclass
 class CanonicalFinding:
     tool: str
@@ -45,6 +49,26 @@ class GroundTruthEntry:
     # Defaulted, so existing corpora keep their current scoring and
     # load_ground_truth() needs no change.
     expected: str = "hit"
+
+    def __post_init__(self) -> None:
+        # Both fields are read by _partition_corpus() through an if/elif/else
+        # whose final branch is a catch-all, so an unrecognised value does not
+        # raise -- it lands silently in `scoreable`. A fixture typo ("Miss",
+        # "mis") would therefore add an unfindable bug to every tool's recall
+        # denominator and quietly deflate the scores, which is precisely the
+        # failure the control mechanism exists to prevent. Fail at the loader
+        # where the file name is still in hand.
+        if self.expected not in VALID_EXPECTED:
+            raise ValueError(
+                f"ground-truth entry {self.id!r}: expected={self.expected!r}, "
+                f"must be one of {sorted(VALID_EXPECTED)}"
+            )
+        if self.expected_verdict is not None and self.expected_verdict not in VALID_EXPECTED_VERDICT:
+            raise ValueError(
+                f"ground-truth entry {self.id!r}: expected_verdict="
+                f"{self.expected_verdict!r}, must be one of "
+                f"{sorted(VALID_EXPECTED_VERDICT)} or absent"
+            )
 
 
 @dataclass

@@ -32,11 +32,23 @@ def compute_metrics(
     # Everything absent from the recall denominator. Controls are always part of
     # this; judge-rejected entries join them but are NOT overconfidence, so the
     # two sets stay separate. Defaults to controls alone for older callers.
-    excluded = excluded_ids if excluded_ids is not None else controls
+    # The union is enforced rather than assumed: passing excluded_ids that omit
+    # a control would leave that control in the recall numerator while also
+    # counting it overconfident, which is the contradictory state this design
+    # exists to prevent.
+    excluded = (excluded_ids if excluded_ids is not None else set()) | controls
 
-    tp = sum(1 for v in verdicts if v.verdict == "tp")
-    fp = sum(1 for v in verdicts if v.verdict == "fp")
-    partial = sum(1 for v in verdicts if v.verdict == "partial")
+    # Precision is scored over judgeable claims only. A control entry is by
+    # construction not identifiable from the source, so a hit on one is neither
+    # a bug found nor a mistake the tool could have avoided -- crediting it as a
+    # tp let the scorecard scold a tool in the Overconf column while paying it
+    # in the TP and Precision columns of the same row. It is measured by
+    # `overconfident` instead, and leaves this tally entirely.
+    judgeable = [v for v in verdicts if v.matched_ground_truth_id not in controls]
+
+    tp = sum(1 for v in judgeable if v.verdict == "tp")
+    fp = sum(1 for v in judgeable if v.verdict == "fp")
+    partial = sum(1 for v in judgeable if v.verdict == "partial")
     total = len(verdicts)
 
     effective_tp = tp + 0.5 * partial
@@ -102,8 +114,23 @@ def _partition_corpus(corpus_dir: Path) -> CorpusPartition:
     scoreable: set[str] = set()
     rejected: set[str] = set()
     controls: set[str] = set()
-    for gt_file in corpus_dir.rglob("*.ground_truth.json"):
+    # Entry ids key these sets, but verdict identity elsewhere is the pair
+    # (file, matched_ground_truth_id). A id reused across two fixtures would
+    # therefore collapse two known bugs into one -- understating the denominator
+    # and reporting 100% recall for finding half of them -- and an exclusion in
+    # one file would silently exclude the other file's scoreable entry. Nothing
+    # else in the pipeline can detect this, because by the time it reaches
+    # compute_metrics the two entries are indistinguishable.
+    seen: dict[str, Path] = {}
+    for gt_file in sorted(corpus_dir.rglob("*.ground_truth.json")):
         for entry in load_ground_truth(gt_file):
+            if entry.id in seen:
+                raise ValueError(
+                    f"duplicate ground-truth id {entry.id!r}: in {gt_file} and "
+                    f"{seen[entry.id]}. Ids must be unique across the corpus, "
+                    f"not just within a file."
+                )
+            seen[entry.id] = gt_file
             if entry.expected == "miss":
                 controls.add(entry.id)
             elif entry.expected_verdict == "rejected":
@@ -116,23 +143,27 @@ def _partition_corpus(corpus_dir: Path) -> CorpusPartition:
 def _find_unique(
     tool: str,
     all_verdicts: list[Verdict],
-    control_ids: set[str] | None = None,
+    excluded_ids: set[str] | None = None,
 ) -> int:
-    """Bugs only this tool found. Controls are excluded — being alone in
-    reporting an unsupportable claim is not a unique find, it is the
-    overconfidence signal, and it is counted there instead."""
-    controls = control_ids or set()
+    """Bugs only this tool found, over scoreable entries only.
+
+    Takes the full excluded set, not just controls: being alone in reporting a
+    control is not a unique find but the overconfidence signal, counted there
+    instead, and a judge-rejected entry is not a bug at all so being alone on it
+    is not a strength either. Neither belongs in a column headed "unique finds".
+    """
+    excluded = excluded_ids or set()
     tool_tps = {
         (v.file, v.matched_ground_truth_id)
         for v in all_verdicts
         if v.tool == tool and v.verdict == "tp" and v.matched_ground_truth_id
-        and v.matched_ground_truth_id not in controls
+        and v.matched_ground_truth_id not in excluded
     }
     other_tps = {
         (v.file, v.matched_ground_truth_id)
         for v in all_verdicts
         if v.tool != tool and v.verdict == "tp" and v.matched_ground_truth_id
-        and v.matched_ground_truth_id not in controls
+        and v.matched_ground_truth_id not in excluded
     }
     return len(tool_tps - other_tps)
 
