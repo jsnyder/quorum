@@ -27,7 +27,7 @@
     "severity": "critical",
     "line_start": 636,
     "line_end": 637,
-    "description": "Same defect as ble-mutex-001. On timeout the function proceeds to CleanupOldFingerprints(), which mutates the slot vector and can delete BleFingerprint objects, while not holding the lock and while another task may be iterating that same vector. This is the most damaging of the five sites because it frees memory other readers may still hold pointers into."
+    "description": "Same defect as ble-mutex-001. On timeout the function proceeds to CleanupOldFingerprints(), which mutates the slot vector and can delete BleFingerprint objects, while not holding the lock and while another task may be iterating that same vector. This is the most damaging of the six sites because it frees memory other readers may still hold pointers into."
   },
   {
     "id": "ble-mutex-004",
@@ -48,5 +48,15 @@
     "line_start": 672,
     "line_end": 673,
     "description": "Same defect as ble-mutex-001, with the mildest consequence: on timeout the function calls CleanupOldFingerprints() and reads activeFingerprints without the lock, then releases a mutex it does not own. The read alone would be a benign race, but the unconditional xSemaphoreGive() still releases another task's lock, and the CleanupOldFingerprints() call makes it a write. Severity is high rather than critical only because the mutation is shared with ble-mutex-003."
+  },
+  {
+    "id": "ble-mutex-006",
+    "type": "real",
+    "title": "addOrReplace(): logs failed mutex acquire then enters the critical section anyway",
+    "category": "correctness",
+    "severity": "critical",
+    "line_start": 329,
+    "line_end": 330,
+    "description": "Same defect as ble-mutex-001, on deviceConfigMutex rather than fingerprintMutex. The failed-acquire branch is a bare log_e with no return, so on timeout the function falls through into the alias-dedup loop that erases from `deviceConfigs` and into the push_back below it, then reaches an unconditional xSemaphoreGive() at line 358 on a mutex it never owned. The same file shows the correct shape 40 lines later: removeConfig() at line 368 takes the identical mutex with the identical predicate and returns false on failure, which is what makes this a defect rather than a house style."
   }
 ]
