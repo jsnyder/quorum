@@ -127,7 +127,7 @@ Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), e
 | `compensating-control` | `compensating_control` | 120 | ~83d | Real pattern but mitigated upstream. **Requires** `--fp-reference <file:line\|PR\|URL>` (CLI) or nested `{reference: "..."}` (MCP) |
 | `out-of-scope` | `out_of_scope` | 120 | ~83d | Pre-existing issue surfaced by a diff-scoped review — not introduced by this change. Optional `--fp-tracked-in <PR/issue>` records the follow-up link |
 
-The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kind_utilization_rate` is reported in `quorum stats` Feedback Health when ≥10% of FPs in the rolling window are tagged. Untagged FPs (and `Option<FpKind> = None` for pre-bump rows) use the default τ=120d.
+The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kind_utilization_rate` is computed per review and written to `~/.quorum/telemetry.jsonl`, but **is not currently surfaced by `quorum stats`** — `compute_report` reads only `tokens_in`, `tokens_out`, `findings`, `suppressed`, and `model` (#491). Untagged FPs (and `Option<FpKind> = None` for pre-bump rows) use the default τ=120d.
 
 **fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `FeedbackStore::record_external` / `ExternalVerdictInput`, which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary so dropped fields are visible. fp_kind only persists on the Human / direct ingestion paths.
 
