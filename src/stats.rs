@@ -16,6 +16,74 @@ const HIGHLIGHT_TOP_N: usize = 3;
 const ROLLING_N: usize = 50;
 const ROLLING_WINDOWS: usize = 4;
 
+/// #491 guard: `TelemetryEntry` fields that `compute_report` actually reads
+/// back. Paired with `TELEMETRY_WRITE_ONLY_ALLOWLIST`; the guard test
+/// `every_telemetry_field_is_consumed_or_allowlisted` asserts the two lists
+/// together cover every serialized field. Adding a counter then forces a
+/// deliberate choice about who reads it instead of a silent omission.
+///
+/// ponytail: hand-maintained. The test proves every field is *accounted for*,
+/// not that `compute_report` truly touches the ones listed here — Rust has no
+/// field reflection, and a proc-macro tracking real reads would cost more than
+/// the bug it prevents.
+pub const TELEMETRY_CONSUMED_FIELDS: &[&str] = &[
+    "ts",       // load_since() window filter
+    "findings", // findings_per_review, tokens_per_finding, capture_total
+    "model",    // modal model + cost estimate
+    "tokens_in",
+    "tokens_out",
+    "suppressed", // suppression_rate
+];
+
+/// #491 debt ledger: fields written to `~/.quorum/telemetry.jsonl` that no
+/// stats view reads back, each with the reason that is acceptable. Every entry
+/// here is a metric whose silence is indistinguishable from health. Shrink
+/// this list; do not grow it.
+pub const TELEMETRY_WRITE_ONLY_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "files",
+        "per-review path list, not an aggregate metric; file-level rollups come from feedback via `stats --by-file`",
+    ),
+    ("duration_ms", "#491: no aggregate view of review latency"),
+    (
+        "context7_resolved",
+        "#491: enrichment success count never surfaced",
+    ),
+    (
+        "context7_resolve_failed",
+        "#491: a review where every dep resolution failed reads identically to one where all succeeded",
+    ),
+    (
+        "context7_query_failed",
+        "#491: Context7 query failures never surfaced",
+    ),
+    (
+        "context7_skipped_popular",
+        "#491: precision-targeting Layer 2 effect never surfaced",
+    ),
+    (
+        "context7_budget_reduced",
+        "#491: precision-targeting Layer 3 effect never surfaced",
+    ),
+    (
+        "fp_kind_utilization_rate",
+        "#491: computed per review, reported nowhere",
+    ),
+    ("judge_calls", "#491: judge volume never surfaced"),
+    ("judge_approved", "#491: judge approvals never surfaced"),
+    (
+        "judge_rejected",
+        "#491: judge rejections never surfaced; per-run `withheld_unjudged` is the only judge signal",
+    ),
+    ("judge_uncertain", "#491: judge uncertainty never surfaced"),
+    ("judge_skipped", "#491: judge skips never surfaced"),
+    (
+        "judge_cache_hits",
+        "#491: judge cache efficacy never surfaced",
+    ),
+    ("judge_latency_ms", "#491: judge latency never surfaced"),
+];
+
 pub struct StatsReport {
     pub feedback_count: usize,
     pub precision: f64,
@@ -1119,6 +1187,90 @@ mod tests {
             skill_findings: None,
             integrator_findings_out: None,
         }
+    }
+
+    // ─── #491: write-only observability guard ───
+
+    /// Every `TelemetryEntry` field must be either consumed by
+    /// `compute_report` or explicitly booked as debt with a reason. This is
+    /// the only thing in #491 that stops the *next* write-only counter
+    /// rather than clearing the current backlog: adding a field to
+    /// `TelemetryEntry` fails this test until someone decides who reads it.
+    #[test]
+    fn every_telemetry_field_is_consumed_or_allowlisted() {
+        use std::collections::BTreeSet;
+
+        // Fully populated: any `Option` left `None` would be hidden by
+        // `skip_serializing_if` and silently escape the check.
+        let entry = crate::telemetry::TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: vec!["src/main.rs".into()],
+            findings: std::collections::HashMap::from([("high".to_string(), 1usize)]),
+            model: "gpt-5.6".into(),
+            tokens_in: 1,
+            tokens_out: 1,
+            duration_ms: 1,
+            suppressed: 1,
+            context7_resolved: 1,
+            context7_resolve_failed: 1,
+            context7_query_failed: 1,
+            context7_skipped_popular: 1,
+            context7_budget_reduced: 1,
+            fp_kind_utilization_rate: Some(0.5),
+            judge_calls: 1,
+            judge_approved: 1,
+            judge_rejected: 1,
+            judge_uncertain: 1,
+            judge_skipped: 1,
+            judge_cache_hits: 1,
+            judge_latency_ms: 1,
+        };
+
+        let value = serde_json::to_value(&entry).expect("TelemetryEntry serializes");
+        let serialized: BTreeSet<String> = value
+            .as_object()
+            .expect("TelemetryEntry is a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+
+        let mut accounted: BTreeSet<String> = BTreeSet::new();
+        for field in TELEMETRY_CONSUMED_FIELDS {
+            assert!(
+                accounted.insert((*field).to_string()),
+                "`{field}` appears twice in TELEMETRY_CONSUMED_FIELDS"
+            );
+        }
+        for (field, reason) in TELEMETRY_WRITE_ONLY_ALLOWLIST {
+            assert!(
+                !reason.trim().is_empty(),
+                "allowlist entry `{field}` needs a one-line reason"
+            );
+            assert!(
+                accounted.insert((*field).to_string()),
+                "`{field}` is in both TELEMETRY_CONSUMED_FIELDS and \
+                 TELEMETRY_WRITE_ONLY_ALLOWLIST (or listed twice)"
+            );
+        }
+
+        let unaccounted: Vec<&String> = serialized.difference(&accounted).collect();
+        assert!(
+            unaccounted.is_empty(),
+            "TelemetryEntry field(s) {unaccounted:?} are written but neither \
+             consumed by compute_report nor booked as debt. Either surface \
+             them (add to TELEMETRY_CONSUMED_FIELDS and read them) or add \
+             them to TELEMETRY_WRITE_ONLY_ALLOWLIST with a reason. See #491: \
+             instrumentation nothing reads back is indistinguishable from \
+             health."
+        );
+
+        let stale: Vec<&String> = accounted.difference(&serialized).collect();
+        assert!(
+            stale.is_empty(),
+            "field(s) {stale:?} are listed in TELEMETRY_CONSUMED_FIELDS or \
+             TELEMETRY_WRITE_ONLY_ALLOWLIST but no longer exist on \
+             TelemetryEntry — remove the stale entries"
+        );
     }
 
     // ─── Stats redesign Task 11: section label normalization ───
