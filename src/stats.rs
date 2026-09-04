@@ -104,6 +104,7 @@ impl TelemetryCounters {
         self.judge_calls | self.judge_skipped | self.judge_cache_hits != 0
     }
 
+    /// Fold a window of telemetry entries into one aggregate.
     fn sum(entries: &[crate::telemetry::TelemetryEntry]) -> Self {
         let mut c = Self::default();
         let mut duration_total: u64 = 0;
@@ -1407,6 +1408,8 @@ pub fn format_integrator_table(
     out
 }
 
+/// Single-line `--integrator` output, including the severity-transition
+/// histogram when any clamp fired.
 pub fn format_integrator_compact(
     rows: &[dimensions::IntegratorAuditRow],
     transitions: &std::collections::BTreeMap<String, u32>,
@@ -1436,6 +1439,7 @@ pub fn format_integrator_compact(
     line
 }
 
+/// Sum a set of per-row histograms into one, for the table footers.
 fn merge_histograms<'a>(
     maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u32>>,
 ) -> std::collections::BTreeMap<String, u32> {
@@ -1448,6 +1452,7 @@ fn merge_histograms<'a>(
     merged
 }
 
+/// Render a histogram as `key count, key count` in key order.
 fn join_histogram(hist: &std::collections::BTreeMap<String, u32>) -> String {
     hist.iter()
         .map(|(k, v)| format!("{k} {v}"))
@@ -1455,6 +1460,8 @@ fn join_histogram(hist: &std::collections::BTreeMap<String, u32>) -> String {
         .join(", ")
 }
 
+/// Single-line `--skills` output for LLM/CI consumption. Carries the same
+/// blackout signal (`zero_streak`) as the table.
 pub fn format_skill_compact(
     rows: &[dimensions::SkillAuditRow],
     read: &crate::skill_audit::AuditReadStats,

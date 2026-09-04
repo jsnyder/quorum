@@ -477,14 +477,14 @@ pub struct StatsOpts {
     /// Decision-kind rollup of the integrator audit log
     /// (`~/.quorum/integrator_decisions.jsonl`): merge/suppress/pass-through
     /// shares and severity clamp transitions. A missing log is not an error.
-    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule", "skills"])]
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "by_version", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule", "skills"])]
     pub integrator: bool,
 
     /// Per-skill rollup of the skill invocation audit log
     /// (`~/.quorum/skill_invocations.jsonl`): runs, findings emitted,
     /// zero-finding streaks, parse-error classes. A missing log is not an
     /// error -- a fresh install simply has no rows.
-    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule"])]
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "by_version", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule"])]
     pub skills: bool,
 
     /// Filter rules by glob pattern (e.g. "ast-grep:python/*")
@@ -1228,6 +1228,26 @@ mod tests {
         match args.command {
             Command::Stats(opts) => assert!(opts.by_caller),
             _ => panic!("Expected Stats command"),
+        }
+    }
+
+    /// The audit views short-circuit the Stats arm before any reviews.jsonl
+    /// dimension runs, so a combination like `--skills --by-version` would
+    /// silently drop the second flag. clap rejects it instead.
+    #[test]
+    fn stats_audit_views_conflict_with_dimensional_flags() {
+        use clap::Parser;
+        for (view, other) in [
+            ("--skills", "--by-version"),
+            ("--skills", "--by-repo"),
+            ("--integrator", "--by-version"),
+            ("--integrator", "--by-file"),
+            ("--skills", "--integrator"),
+        ] {
+            assert!(
+                Args::try_parse_from(["quorum", "stats", view, other]).is_err(),
+                "parser should reject `stats {view} {other}`"
+            );
         }
     }
 

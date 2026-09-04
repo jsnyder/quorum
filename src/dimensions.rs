@@ -765,6 +765,8 @@ pub struct SkillAuditRow {
 }
 
 impl SkillAuditRow {
+    /// Share of this skill's runs that emitted nothing. Lifetime rate --
+    /// `zero_streak` is the one that says whether it is broken *now*.
     pub fn zero_finding_rate(&self) -> f64 {
         if self.runs == 0 {
             0.0
