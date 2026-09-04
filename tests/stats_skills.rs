@@ -156,3 +156,93 @@ fn skills_view_compact_mode_is_single_line() {
     assert!(text.contains("security:runs=1"), "got: {text}");
     assert!(text.contains("parse_errors:0"), "got: {text}");
 }
+
+// ─── #491 T4: integrator decision log ───
+
+fn decision(kind: &str, pre: &str, post: &str, reason: &str, seq: u32) -> String {
+    format!(
+        r#"{{"run_id":"review-1","ts":"2026-09-01T12:00:0{s}Z","decision":"{kind}",
+"cluster_key":{{"file_path":"src/main.rs","line_range":[1,2],"finding_kind":"security"}},
+"input_finding_ids":["f{seq}"],"input_confidences":[0.8],"input_severities":["{pre}"],
+"calibrator_weights":{{}},"confidence_floor":0.3,"output_finding_id":"f{seq}",
+"output_confidence":0.7,"severity_pre_clamp":"{pre}","severity_post_clamp":"{post}",
+"reason":"{reason}","originating_skills":["security"]}}"#,
+        s = seq % 10,
+    )
+    .replace('\n', "")
+}
+
+fn seed_integrator_log(home: &Path, lines: &[String]) {
+    let dir = home.join(".quorum");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("integrator_decisions.jsonl"),
+        format!("{}\n", lines.join("\n")),
+    )
+    .unwrap();
+}
+
+#[test]
+fn integrator_view_without_audit_log_is_not_an_error() {
+    let tmp = TempDir::new().unwrap();
+    quorum(tmp.path())
+        .arg("stats")
+        .arg("--integrator")
+        .arg("--json")
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn integrator_view_reports_decisions_and_severity_transitions() {
+    let tmp = TempDir::new().unwrap();
+    let mut lines: Vec<String> = (0..4)
+        .map(|i| decision("merged", "high", "medium", "clamped", i))
+        .collect();
+    lines.push(decision("suppressed", "low", "low", "below floor", 9));
+    seed_integrator_log(tmp.path(), &lines);
+
+    let out = quorum(tmp.path())
+        .arg("stats")
+        .arg("--integrator")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["mode"], "integrator");
+    assert_eq!(v["meta"]["parsed_ok"], 5);
+    assert_eq!(v["severity_transitions"]["high->medium"], 4);
+
+    let merged = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["decision"] == "merged")
+        .expect("merged row");
+    assert_eq!(merged["count"], 4);
+    assert_eq!(merged["severity_changed"], 4);
+}
+
+#[test]
+fn integrator_view_compact_mode_is_single_line() {
+    let tmp = TempDir::new().unwrap();
+    seed_integrator_log(
+        tmp.path(),
+        &[decision("suppressed", "high", "high", "dup", 0)],
+    );
+
+    let out = quorum(tmp.path())
+        .arg("stats")
+        .arg("--integrator")
+        .arg("--compact")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        text.trim().lines().count(),
+        1,
+        "compact is one line: {text}"
+    );
+    assert!(text.contains("suppressed=1"), "got: {text}");
+}

@@ -1311,6 +1311,131 @@ pub fn format_skill_table(
     out
 }
 
+/// #491: `stats --integrator` -- decision-kind rollup of
+/// `integrator_decisions.jsonl`, with the severity-transition histogram that
+/// would have shown the v0.28.0 severity collapse the week it shipped.
+pub fn format_integrator_table(
+    rows: &[dimensions::IntegratorAuditRow],
+    transitions: &std::collections::BTreeMap<String, u32>,
+    read: &crate::skill_audit::AuditReadStats,
+    style: &Style,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: integrator{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    out.push_str(&format!(
+        "  Rows: {} parsed, {} parse errors\n\n",
+        read.parsed_ok, read.parse_errors,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no integrator decisions recorded)\n");
+        return out;
+    }
+
+    out.push_str(&format!(
+        "  {bold}{:<14}  {:>6}  {:>6}  {:>10}  {:>12}{reset}\n",
+        "Decision",
+        "Count",
+        "Share",
+        "Avg conf",
+        "Sev changed",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    for r in rows {
+        out.push_str(&format!(
+            "  {:<14}  {:>6}  {:>5}%  {:>10.2}  {:>12}{}\n",
+            r.decision,
+            r.count,
+            (r.share * 100.0).round() as u32,
+            r.avg_output_confidence,
+            r.severity_changed,
+            if r.low_sample { " *" } else { "" },
+        ));
+    }
+
+    if !transitions.is_empty() {
+        out.push_str(&format!(
+            "\n  Severity transitions: {}\n",
+            join_histogram(transitions)
+        ));
+    }
+
+    // Loud cases. A run where the integrator ate everything, or downgraded
+    // most of what it saw, is the shape both prior incidents took.
+    let total: u32 = rows.iter().map(|r| r.count).sum();
+    if total >= dimensions::MIN_SAMPLE {
+        if let Some(sup) = rows.iter().find(|r| r.decision == "suppressed")
+            && sup.count == total
+        {
+            out.push_str(&format!(
+                "\n  warning: the integrator suppressed all {total} decision(s) -- \
+                 no finding reached output\n"
+            ));
+        }
+        let changed: u32 = rows.iter().map(|r| r.severity_changed).sum();
+        if changed * 2 > total {
+            out.push_str(&format!(
+                "\n  warning: {changed} of {total} decision(s) changed severity -- \
+                 check for a clamp regression\n"
+            ));
+        }
+    }
+
+    let reasons = merge_histograms(rows.iter().map(|r| &r.reasons));
+    if !reasons.is_empty() {
+        let mut top: Vec<_> = reasons.iter().collect();
+        top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let rendered: Vec<String> = top
+            .iter()
+            .take(5)
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect();
+        out.push_str(&format!("\n  Top reasons: {}\n", rendered.join(", ")));
+    }
+
+    if rows.iter().any(|r| r.low_sample) {
+        out.push_str(&format!(
+            "\n  * = low sample (<{} decisions)\n",
+            dimensions::MIN_SAMPLE
+        ));
+    }
+    out
+}
+
+pub fn format_integrator_compact(
+    rows: &[dimensions::IntegratorAuditRow],
+    transitions: &std::collections::BTreeMap<String, u32>,
+    read: &crate::skill_audit::AuditReadStats,
+) -> String {
+    if rows.is_empty() {
+        return format!("integrator: (no data) parse_errors:{}", read.parse_errors);
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{}={},sev_changed={}",
+                r.decision, r.count, r.severity_changed
+            )
+        })
+        .collect();
+    let mut line = format!(
+        "integrator: {} | parsed:{} parse_errors:{}",
+        parts.join(" | "),
+        read.parsed_ok,
+        read.parse_errors
+    );
+    if !transitions.is_empty() {
+        line.push_str(&format!(" | transitions:{}", join_histogram(transitions)));
+    }
+    line
+}
+
 fn merge_histograms<'a>(
     maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u32>>,
 ) -> std::collections::BTreeMap<String, u32> {
@@ -1739,6 +1864,67 @@ mod tests {
         let out = format_skill_table(&[], &read, &Style::plain(), false);
         assert!(out.contains("0 parsed, 7 parse errors"), "{out}");
         assert!(out.contains("(no skill invocations recorded)"), "{out}");
+    }
+
+    // ─── #491 T4: --integrator human rendering ───
+
+    fn int_row(
+        decision: &str,
+        count: u32,
+        share: f64,
+        severity_changed: u32,
+    ) -> dimensions::IntegratorAuditRow {
+        dimensions::IntegratorAuditRow {
+            decision: decision.into(),
+            count,
+            share,
+            avg_output_confidence: 0.7,
+            severity_changed,
+            reasons: Default::default(),
+            low_sample: count < dimensions::MIN_SAMPLE,
+        }
+    }
+
+    fn read_stats(n: usize) -> crate::skill_audit::AuditReadStats {
+        crate::skill_audit::AuditReadStats {
+            total_lines: n,
+            parsed_ok: n,
+            parse_errors: 0,
+        }
+    }
+
+    #[test]
+    fn integrator_table_warns_when_everything_is_suppressed() {
+        let rows = vec![int_row("suppressed", 20, 1.0, 0)];
+        let out =
+            format_integrator_table(&rows, &Default::default(), &read_stats(20), &Style::plain());
+        assert!(
+            out.contains("suppressed all 20 decision(s)"),
+            "an integrator that ate every finding must say so: {out}"
+        );
+    }
+
+    #[test]
+    fn integrator_table_warns_on_widespread_severity_clamping() {
+        let rows = vec![int_row("merged", 10, 1.0, 8)];
+        let transitions = std::collections::BTreeMap::from([("high->medium".to_string(), 8u32)]);
+        let out = format_integrator_table(&rows, &transitions, &read_stats(10), &Style::plain());
+        assert!(
+            out.contains("8 of 10 decision(s) changed severity"),
+            "{out}"
+        );
+        assert!(out.contains("high->medium 8"), "{out}");
+    }
+
+    #[test]
+    fn integrator_table_stays_quiet_on_healthy_output() {
+        let rows = vec![
+            int_row("pass_through", 10, 0.8, 0),
+            int_row("merged", 2, 0.2, 1),
+        ];
+        let out =
+            format_integrator_table(&rows, &Default::default(), &read_stats(12), &Style::plain());
+        assert!(!out.contains("warning:"), "no warning expected: {out}");
     }
 
     // ─── #491: write-only observability guard ───

@@ -9,7 +9,9 @@ use chrono::{DateTime, Utc};
 
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::review_log::{ReviewRecord, SeverityCounts};
-use crate::skill_audit::{ExitStatus, SkillInvocationRecord};
+use crate::skill_audit::{
+    ExitStatus, IntegratorDecision, IntegratorDecisionRecord, SkillInvocationRecord,
+};
 
 pub const MIN_SAMPLE: u32 = 5;
 
@@ -856,6 +858,83 @@ pub fn group_by_skill(records: &[SkillInvocationRecord]) -> Vec<SkillAuditRow> {
             .then(a.skill.cmp(&b.skill))
     });
     rows
+}
+
+// ---------------------------------------------------------------------------
+// #491: integrator decision audit rollup
+// ---------------------------------------------------------------------------
+
+/// One row per integrator decision kind from `integrator_decisions.jsonl`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct IntegratorAuditRow {
+    /// "merged" | "suppressed" | "pass_through".
+    pub decision: String,
+    pub count: u32,
+    pub share: f64,
+    pub avg_output_confidence: f64,
+    /// Decisions where the integrator changed a finding's severity. The
+    /// v0.28.0 severity collapse lived here for two months (#491).
+    pub severity_changed: u32,
+    pub reasons: BTreeMap<String, u32>,
+    pub low_sample: bool,
+}
+
+/// Aggregate integrator decisions by kind, plus a severity-transition
+/// histogram keyed `"high->medium"`.
+pub fn group_by_integrator_decision(
+    records: &[IntegratorDecisionRecord],
+) -> (Vec<IntegratorAuditRow>, BTreeMap<String, u32>) {
+    let mut buckets: BTreeMap<String, Vec<&IntegratorDecisionRecord>> = BTreeMap::new();
+    let mut transitions: BTreeMap<String, u32> = BTreeMap::new();
+
+    for r in records {
+        let key = match r.decision {
+            IntegratorDecision::Merged => "merged",
+            IntegratorDecision::Suppressed => "suppressed",
+            IntegratorDecision::PassThrough => "pass_through",
+        };
+        buckets.entry(key.to_string()).or_default().push(r);
+        if r.severity_pre_clamp != r.severity_post_clamp {
+            *transitions
+                .entry(format!(
+                    "{}->{}",
+                    r.severity_pre_clamp, r.severity_post_clamp
+                ))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let total = records.len().max(1) as f64;
+    let mut rows: Vec<IntegratorAuditRow> = buckets
+        .into_iter()
+        .map(|(decision, group)| {
+            let count = group.len() as u32;
+            let mut reasons: BTreeMap<String, u32> = BTreeMap::new();
+            let mut confidence_total = 0.0;
+            let mut severity_changed = 0;
+            for r in &group {
+                *reasons.entry(r.reason.clone()).or_insert(0) += 1;
+                if r.output_confidence.is_finite() {
+                    confidence_total += r.output_confidence;
+                }
+                if r.severity_pre_clamp != r.severity_post_clamp {
+                    severity_changed += 1;
+                }
+            }
+            IntegratorAuditRow {
+                decision,
+                count,
+                share: f64::from(count) / total,
+                avg_output_confidence: confidence_total / f64::from(count),
+                severity_changed,
+                reasons,
+                low_sample: count < MIN_SAMPLE,
+            }
+        })
+        .collect();
+
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then(a.decision.cmp(&b.decision)));
+    (rows, transitions)
 }
 
 #[cfg(test)]
@@ -1923,5 +2002,84 @@ mod tests {
     #[test]
     fn group_by_skill_on_empty_input_is_empty() {
         assert!(group_by_skill(&[]).is_empty());
+    }
+
+    // ─── #491: integrator audit rollup ───
+
+    fn dec(
+        decision: IntegratorDecision,
+        pre: &str,
+        post: &str,
+        reason: &str,
+    ) -> IntegratorDecisionRecord {
+        use crate::skill_audit::ClusterKey;
+        IntegratorDecisionRecord {
+            run_id: "review-1".into(),
+            ts: Utc::now(),
+            decision,
+            cluster_key: ClusterKey {
+                file_path: "src/main.rs".into(),
+                line_range: (1, 2),
+                finding_kind: "security".into(),
+            },
+            input_finding_ids: vec!["f1".into()],
+            input_confidences: vec![0.8],
+            input_severities: vec![pre.into()],
+            calibrator_weights: Default::default(),
+            confidence_floor: 0.3,
+            output_finding_id: Some("f1".into()),
+            output_confidence: 0.7,
+            severity_pre_clamp: pre.into(),
+            severity_post_clamp: post.into(),
+            reason: reason.into(),
+            originating_skills: vec!["security".into()],
+        }
+    }
+
+    #[test]
+    fn integrator_rollup_counts_decisions_and_shares() {
+        let records = vec![
+            dec(IntegratorDecision::Merged, "high", "high", "duplicate"),
+            dec(
+                IntegratorDecision::Suppressed,
+                "high",
+                "high",
+                "below floor",
+            ),
+            dec(
+                IntegratorDecision::Suppressed,
+                "high",
+                "high",
+                "below floor",
+            ),
+        ];
+        let (rows, _) = group_by_integrator_decision(&records);
+        assert_eq!(rows[0].decision, "suppressed");
+        assert_eq!(rows[0].count, 2);
+        assert!((rows[0].share - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(rows[0].reasons.get("below floor"), Some(&2));
+        assert!((rows[0].avg_output_confidence - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn integrator_rollup_surfaces_severity_collapse() {
+        // v0.28.0 collapsed crit+high per file from 1.17 to 0.014 and it sat
+        // unread for two months (#491). The transition histogram is the tell.
+        let records = vec![
+            dec(IntegratorDecision::Merged, "high", "medium", "clamped"),
+            dec(IntegratorDecision::Merged, "high", "medium", "clamped"),
+            dec(IntegratorDecision::Merged, "critical", "low", "clamped"),
+        ];
+        let (rows, transitions) = group_by_integrator_decision(&records);
+        assert_eq!(rows[0].severity_changed, 3);
+        assert_eq!(transitions.get("high->medium"), Some(&2));
+        assert_eq!(transitions.get("critical->low"), Some(&1));
+    }
+
+    #[test]
+    fn integrator_rollup_on_empty_input_is_empty() {
+        let (rows, transitions) = group_by_integrator_decision(&[]);
+        assert!(rows.is_empty());
+        assert!(transitions.is_empty());
     }
 }

@@ -474,6 +474,12 @@ pub struct StatsOpts {
     #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file"])]
     pub by_rule: bool,
 
+    /// Decision-kind rollup of the integrator audit log
+    /// (`~/.quorum/integrator_decisions.jsonl`): merge/suppress/pass-through
+    /// shares and severity clamp transitions. A missing log is not an error.
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule", "skills"])]
+    pub integrator: bool,
+
     /// Per-skill rollup of the skill invocation audit log
     /// (`~/.quorum/skill_invocations.jsonl`): runs, findings emitted,
     /// zero-finding streaks, parse-error classes. A missing log is not an
