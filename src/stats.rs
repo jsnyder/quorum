@@ -32,57 +32,114 @@ pub const TELEMETRY_CONSUMED_FIELDS: &[&str] = &[
     "model",    // modal model + cost estimate
     "tokens_in",
     "tokens_out",
-    "suppressed", // suppression_rate
+    "suppressed",  // suppression_rate
+    "duration_ms", // Activity: avg duration
+    // Context7 block, emitted when any counter is non-zero.
+    "context7_resolved",
+    "context7_resolve_failed",
+    "context7_query_failed",
+    "context7_skipped_popular",
+    "context7_budget_reduced",
+    "fp_kind_utilization_rate", // Feedback Health: "FP kinds tagged"
+    // Judge block, emitted when the judge ran at all.
+    "judge_calls",
+    "judge_approved",
+    "judge_rejected",
+    "judge_uncertain",
+    "judge_skipped",
+    "judge_cache_hits",
+    "judge_latency_ms",
 ];
 
 /// #491 debt ledger: fields written to `~/.quorum/telemetry.jsonl` that no
 /// stats view reads back, each with the reason that is acceptable. Every entry
 /// here is a metric whose silence is indistinguishable from health. Shrink
 /// this list; do not grow it.
-pub const TELEMETRY_WRITE_ONLY_ALLOWLIST: &[(&str, &str)] = &[
-    (
-        "files",
-        "per-review path list, not an aggregate metric; file-level rollups come from feedback via `stats --by-file`",
-    ),
-    ("duration_ms", "#491: no aggregate view of review latency"),
-    (
-        "context7_resolved",
-        "#491: enrichment success count never surfaced",
-    ),
-    (
-        "context7_resolve_failed",
-        "#491: a review where every dep resolution failed reads identically to one where all succeeded",
-    ),
-    (
-        "context7_query_failed",
-        "#491: Context7 query failures never surfaced",
-    ),
-    (
-        "context7_skipped_popular",
-        "#491: precision-targeting Layer 2 effect never surfaced",
-    ),
-    (
-        "context7_budget_reduced",
-        "#491: precision-targeting Layer 3 effect never surfaced",
-    ),
-    (
-        "fp_kind_utilization_rate",
-        "#491: computed per review, reported nowhere",
-    ),
-    ("judge_calls", "#491: judge volume never surfaced"),
-    ("judge_approved", "#491: judge approvals never surfaced"),
-    (
-        "judge_rejected",
-        "#491: judge rejections never surfaced; per-run `withheld_unjudged` is the only judge signal",
-    ),
-    ("judge_uncertain", "#491: judge uncertainty never surfaced"),
-    ("judge_skipped", "#491: judge skips never surfaced"),
-    (
-        "judge_cache_hits",
-        "#491: judge cache efficacy never surfaced",
-    ),
-    ("judge_latency_ms", "#491: judge latency never surfaced"),
-];
+pub const TELEMETRY_WRITE_ONLY_ALLOWLIST: &[(&str, &str)] = &[(
+    "files",
+    "per-review path list, not an aggregate metric; file-level rollups come \
+     from feedback via `stats --by-file`",
+)];
+
+/// #491: aggregate of the `TelemetryEntry` counters that used to be written
+/// and never read. Summed over the same 7-day window as the rest of the
+/// Activity block.
+///
+/// Rendering follows the `suppressed` precedent — a block is printed only
+/// when something in it is non-zero, so a clean run stays quiet.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct TelemetryCounters {
+    pub context7_resolved: u64,
+    pub context7_resolve_failed: u64,
+    pub context7_query_failed: u64,
+    pub context7_skipped_popular: u64,
+    pub context7_budget_reduced: u64,
+    pub judge_calls: u64,
+    pub judge_approved: u64,
+    pub judge_rejected: u64,
+    pub judge_uncertain: u64,
+    pub judge_skipped: u64,
+    pub judge_cache_hits: u64,
+    pub judge_latency_ms: u64,
+    /// Mean review wall-clock over the window. 0 when no reviews.
+    pub avg_duration_ms: u64,
+    /// Mean of the per-review rate over entries that carry one. `None` when
+    /// no entry in the window had FP feedback to measure.
+    pub fp_kind_utilization_rate: Option<f64>,
+}
+
+impl TelemetryCounters {
+    /// True when any Context7 counter fired -- gates the Context7 block.
+    pub fn any_context7(&self) -> bool {
+        self.context7_resolved
+            | self.context7_resolve_failed
+            | self.context7_query_failed
+            | self.context7_skipped_popular
+            | self.context7_budget_reduced
+            != 0
+    }
+
+    /// True when the judge ran (or was deliberately skipped) at all.
+    pub fn any_judge(&self) -> bool {
+        self.judge_calls | self.judge_skipped | self.judge_cache_hits != 0
+    }
+
+    fn sum(entries: &[crate::telemetry::TelemetryEntry]) -> Self {
+        let mut c = Self::default();
+        let mut duration_total: u64 = 0;
+        let mut fp_kind_total: f64 = 0.0;
+        let mut fp_kind_n: usize = 0;
+
+        for e in entries {
+            c.context7_resolved += u64::from(e.context7_resolved);
+            c.context7_resolve_failed += u64::from(e.context7_resolve_failed);
+            c.context7_query_failed += u64::from(e.context7_query_failed);
+            c.context7_skipped_popular += u64::from(e.context7_skipped_popular);
+            c.context7_budget_reduced += u64::from(e.context7_budget_reduced);
+            c.judge_calls += u64::from(e.judge_calls);
+            c.judge_approved += u64::from(e.judge_approved);
+            c.judge_rejected += u64::from(e.judge_rejected);
+            c.judge_uncertain += u64::from(e.judge_uncertain);
+            c.judge_skipped += u64::from(e.judge_skipped);
+            c.judge_cache_hits += u64::from(e.judge_cache_hits);
+            c.judge_latency_ms = c.judge_latency_ms.saturating_add(e.judge_latency_ms);
+            duration_total = duration_total.saturating_add(e.duration_ms);
+            // NaN-safe: a corrupt row must not poison the mean.
+            if let Some(r) = e.fp_kind_utilization_rate.filter(|r| r.is_finite()) {
+                fp_kind_total += f64::from(r);
+                fp_kind_n += 1;
+            }
+        }
+
+        if !entries.is_empty() {
+            c.avg_duration_ms = duration_total / entries.len() as u64;
+        }
+        if fp_kind_n > 0 {
+            c.fp_kind_utilization_rate = Some(fp_kind_total / fp_kind_n as f64);
+        }
+        c
+    }
+}
 
 pub struct StatsReport {
     pub feedback_count: usize,
@@ -129,6 +186,10 @@ pub struct StatsReport {
     /// Per-finding precision trend (None when linkage rate is below the
     /// per-finding gate so renderers don't have to recompute the cutoff).
     pub precision_trend_per_finding: Vec<analytics::PrecisionWindow>,
+
+    /// #491: Context7 / judge / duration counters, summed over the same
+    /// 7-day window as the Activity block.
+    pub counters: TelemetryCounters,
 }
 
 /// Take top-N slices by review volume. Ties resolved by insertion order
@@ -183,6 +244,9 @@ pub fn compute_report(
         .map(|e| e.findings.values().sum::<usize>())
         .sum();
     let total_suppressed_7d: usize = recent.iter().map(|e| e.suppressed).sum();
+
+    // #491: the counters that used to be written and never read.
+    let counters = TelemetryCounters::sum(&recent);
 
     let findings_per_review = if reviews_7d > 0 {
         total_findings_7d as f64 / reviews_7d as f64
@@ -307,6 +371,7 @@ pub fn compute_report(
         headline_trend_uses_finding_id,
         external_overlap,
         precision_trend_per_finding,
+        counters,
     })
 }
 
@@ -543,6 +608,49 @@ fn format_highlight_block(
     out
 }
 
+/// #491: Context7 and judge counter blocks. Each is emitted only when
+/// something in it fired, so a clean run's dashboard is unchanged.
+fn format_counter_blocks(c: &TelemetryCounters, style: &Style) -> String {
+    let mut out = String::new();
+
+    if c.any_context7() {
+        out.push_str(&format!(
+            "\n{bold}Context7 (last 7 days){reset}\n",
+            bold = style.bold,
+            reset = style.reset
+        ));
+        out.push_str(&format!(
+            "  Resolved: {}  Resolve failed: {}  Query failed: {}\n",
+            c.context7_resolved, c.context7_resolve_failed, c.context7_query_failed,
+        ));
+        out.push_str(&format!(
+            "  Skipped (popular): {}  Budget reduced: {}\n",
+            c.context7_skipped_popular, c.context7_budget_reduced,
+        ));
+    }
+
+    if c.any_judge() {
+        out.push_str(&format!(
+            "\n{bold}Judge (last 7 days){reset}\n",
+            bold = style.bold,
+            reset = style.reset
+        ));
+        out.push_str(&format!(
+            "  Calls: {}  Approved: {}  Rejected: {}  Uncertain: {}\n",
+            c.judge_calls, c.judge_approved, c.judge_rejected, c.judge_uncertain,
+        ));
+        let avg_latency = c.judge_latency_ms.checked_div(c.judge_calls).unwrap_or(0);
+        out.push_str(&format!(
+            "  Skipped: {}  Cache hits: {}  Avg latency: {}\n",
+            c.judge_skipped,
+            c.judge_cache_hits,
+            formatting::format_duration(std::time::Duration::from_millis(avg_latency)),
+        ));
+    }
+
+    out
+}
+
 fn format_human_core(report: &StatsReport, style: &Style) -> String {
     let mut out = String::new();
 
@@ -560,6 +668,12 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         "  TP: {}  FP: {}  Partial: {}  Wontfix: {}\n",
         report.tp, report.fp, report.partial, report.wontfix,
     ));
+    if let Some(rate) = report.counters.fp_kind_utilization_rate {
+        out.push_str(&format!(
+            "  FP kinds tagged: {}\n",
+            formatting::format_pct(rate)
+        ));
+    }
 
     // Channel attribution table — counts only, no precision column.
     // Always rendered (even all-zero Human) so the dashboard shape is
@@ -582,11 +696,23 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         reset = style.reset
     ));
     out.push_str(&format!(
-        "  Reviews: {}  Findings/review: {:.1}  Suppression: {}\n",
+        "  Reviews: {}  Findings/review: {:.1}  Suppression: {}{}\n",
         report.reviews_7d,
         report.findings_per_review,
         formatting::format_pct(report.suppression_rate),
+        if report.counters.avg_duration_ms > 0 {
+            format!(
+                "  Avg duration: {}",
+                formatting::format_duration(std::time::Duration::from_millis(
+                    report.counters.avg_duration_ms
+                ))
+            )
+        } else {
+            String::new()
+        },
     ));
+
+    out.push_str(&format_counter_blocks(&report.counters, style));
 
     if report.tokens_in_7d > 0 || report.tokens_out_7d > 0 {
         out.push_str(&format!(
@@ -849,6 +975,31 @@ pub fn format_compact(report: &StatsReport) -> String {
         parts.push(format!("external:{}", agent_parts.join(",")));
     }
 
+    // #491: only non-zero counters, so the compact line stays short on
+    // clean runs but a failure spike is impossible to miss.
+    let c = &report.counters;
+    for (name, value) in [
+        ("context7_resolved", c.context7_resolved),
+        ("context7_resolve_failed", c.context7_resolve_failed),
+        ("context7_query_failed", c.context7_query_failed),
+        ("context7_skipped_popular", c.context7_skipped_popular),
+        ("context7_budget_reduced", c.context7_budget_reduced),
+        ("judge_calls", c.judge_calls),
+        ("judge_approved", c.judge_approved),
+        ("judge_rejected", c.judge_rejected),
+        ("judge_uncertain", c.judge_uncertain),
+        ("judge_skipped", c.judge_skipped),
+        ("judge_cache_hits", c.judge_cache_hits),
+        ("avg_duration_ms", c.avg_duration_ms),
+    ] {
+        if value > 0 {
+            parts.push(format!("{name}:{value}"));
+        }
+    }
+    if let Some(rate) = c.fp_kind_utilization_rate {
+        parts.push(format!("fp_kind_tagged:{}", formatting::format_pct(rate)));
+    }
+
     if !report.precision_trend_per_finding.is_empty() {
         let pf: Vec<String> = report
             .precision_trend_per_finding
@@ -1038,6 +1189,7 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
                 })
             }).collect::<Vec<_>>()
         },
+        "counters": report.counters,
         "precision_trend_per_finding": report.precision_trend_per_finding.iter().map(|w| {
             serde_json::json!({
                 "week_start": w.week_start.to_rfc3339(),
@@ -1187,6 +1339,180 @@ mod tests {
             skill_findings: None,
             integrator_findings_out: None,
         }
+    }
+
+    // ─── #491: failure counters surfaced in stats ───
+
+    /// All-zero telemetry entry; tests set the one or two fields they care
+    /// about. Mirrors what `run_review` writes for a clean, judge-less run.
+    fn tentry() -> crate::telemetry::TelemetryEntry {
+        crate::telemetry::TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: vec!["src/main.rs".into()],
+            findings: std::collections::HashMap::from([("high".to_string(), 1usize)]),
+            model: "gpt-5.6".into(),
+            tokens_in: 100,
+            tokens_out: 50,
+            duration_ms: 0,
+            suppressed: 0,
+            context7_resolved: 0,
+            context7_resolve_failed: 0,
+            context7_query_failed: 0,
+            context7_skipped_popular: 0,
+            context7_budget_reduced: 0,
+            fp_kind_utilization_rate: None,
+            judge_calls: 0,
+            judge_approved: 0,
+            judge_rejected: 0,
+            judge_uncertain: 0,
+            judge_skipped: 0,
+            judge_cache_hits: 0,
+            judge_latency_ms: 0,
+        }
+    }
+
+    fn report_from(entries: &[crate::telemetry::TelemetryEntry]) -> (TempDir, StatsReport) {
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        for e in entries {
+            tl.record(e).unwrap();
+        }
+        let rl = make_review_log(&dir, &[]);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        (dir, report)
+    }
+
+    #[test]
+    fn context7_failures_are_surfaced() {
+        // The bug in #491: a review where every dep resolution failed reads
+        // identically to one where all succeeded.
+        let mut a = tentry();
+        a.context7_resolved = 4;
+        a.context7_resolve_failed = 3;
+        let mut b = tentry();
+        b.context7_query_failed = 1;
+        b.context7_skipped_popular = 2;
+        b.context7_budget_reduced = 5;
+
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.context7_resolved, 4);
+        assert_eq!(report.counters.context7_resolve_failed, 3);
+        assert_eq!(report.counters.context7_query_failed, 1);
+        assert_eq!(report.counters.context7_skipped_popular, 2);
+        assert_eq!(report.counters.context7_budget_reduced, 5);
+
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Context7"), "expected Context7 block: {out}");
+        assert!(
+            out.contains("Resolve failed: 3"),
+            "expected resolve failures: {out}"
+        );
+        assert!(
+            out.contains("Query failed: 1"),
+            "expected query failures: {out}"
+        );
+    }
+
+    #[test]
+    fn context7_block_hidden_when_all_counters_zero() {
+        // Follows the `suppressed` precedent: quiet runs stay quiet.
+        let (_dir, report) = report_from(&[tentry()]);
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("Context7"),
+            "clean run should not print a Context7 block: {out}"
+        );
+    }
+
+    #[test]
+    fn judge_counters_are_surfaced() {
+        let mut a = tentry();
+        a.judge_calls = 10;
+        a.judge_approved = 6;
+        a.judge_rejected = 3;
+        a.judge_uncertain = 1;
+        a.judge_skipped = 2;
+        a.judge_cache_hits = 4;
+        a.judge_latency_ms = 2000;
+
+        let (_dir, report) = report_from(&[a]);
+        assert_eq!(report.counters.judge_calls, 10);
+        assert_eq!(report.counters.judge_rejected, 3);
+
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Judge"), "expected Judge block: {out}");
+        assert!(out.contains("Rejected: 3"), "expected rejections: {out}");
+        assert!(out.contains("Uncertain: 1"), "expected uncertain: {out}");
+    }
+
+    #[test]
+    fn judge_block_hidden_when_judge_never_ran() {
+        let (_dir, report) = report_from(&[tentry()]);
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("Judge"),
+            "judge-less run should not print a Judge block: {out}"
+        );
+    }
+
+    #[test]
+    fn fp_kind_utilization_is_surfaced_when_present() {
+        // CLAUDE.md documented this as reported for months while nothing
+        // read it (#491). It is averaged over entries that carry it.
+        let mut a = tentry();
+        a.fp_kind_utilization_rate = Some(0.5);
+        let mut b = tentry();
+        b.fp_kind_utilization_rate = Some(1.0);
+
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.fp_kind_utilization_rate, Some(0.75));
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            out.contains("FP kinds tagged"),
+            "expected fp_kind utilization line: {out}"
+        );
+    }
+
+    #[test]
+    fn fp_kind_utilization_absent_when_untagged() {
+        let (_dir, report) = report_from(&[tentry()]);
+        assert_eq!(report.counters.fp_kind_utilization_rate, None);
+        assert!(!format_human(&report, &Style::plain()).contains("FP kinds tagged"));
+    }
+
+    #[test]
+    fn avg_duration_is_surfaced() {
+        let mut a = tentry();
+        a.duration_ms = 4000;
+        let mut b = tentry();
+        b.duration_ms = 2000;
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.avg_duration_ms, 3000);
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Avg duration"), "expected duration: {out}");
+    }
+
+    #[test]
+    fn counters_appear_in_json_and_compact() {
+        let mut a = tentry();
+        a.context7_resolve_failed = 2;
+        a.judge_rejected = 1;
+        let (_dir, report) = report_from(&[a]);
+
+        let json: serde_json::Value = serde_json::from_str(&format_json(&report).unwrap()).unwrap();
+        assert_eq!(json["counters"]["context7_resolve_failed"], 2);
+        assert_eq!(json["counters"]["judge_rejected"], 1);
+
+        let compact = format_compact(&report);
+        assert!(
+            compact.contains("context7_resolve_failed:2"),
+            "compact should carry non-zero counters: {compact}"
+        );
+        assert!(
+            !compact.contains("judge_uncertain"),
+            "compact should omit zero counters: {compact}"
+        );
     }
 
     // ─── #491: write-only observability guard ───
@@ -1385,6 +1711,7 @@ mod tests {
             headline_trend_uses_finding_id: uses_finding_id,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: trend_per_finding,
+            counters: Default::default(),
         }
     }
 
@@ -1689,6 +2016,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_compact(&report);
         assert!(out.contains("feedback:100"));
@@ -1738,6 +2066,7 @@ mod tests {
                 }],
             },
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_compact(&report);
         assert!(out.contains("linkage:92%"));
@@ -1776,6 +2105,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
@@ -1936,6 +2266,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let json = format_json(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
