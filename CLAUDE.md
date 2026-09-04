@@ -29,6 +29,8 @@ cargo run -- stats --by-caller               # dimensional stats by caller
 cargo run -- stats --by-file                 # file hotspot ranking from feedback
 cargo run -- stats --by-file --top 10        # top N file hotspots
 cargo run -- stats --rolling 50              # rolling 50-review windows
+cargo run -- stats --skills                  # per-axis skill audit rollup (zero-finding streaks)
+cargo run -- stats --integrator              # integrator decisions + severity clamp transitions
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
@@ -127,7 +129,7 @@ Verdicts: tp, fp, partial, wontfix. Provenance: post_fix (1.5x), human (1.0x), e
 | `compensating-control` | `compensating_control` | 120 | ~83d | Real pattern but mitigated upstream. **Requires** `--fp-reference <file:line\|PR\|URL>` (CLI) or nested `{reference: "..."}` (MCP) |
 | `out-of-scope` | `out_of_scope` | 120 | ~83d | Pre-existing issue surfaced by a diff-scoped review — not introduced by this change. Optional `--fp-tracked-in <PR/issue>` records the follow-up link |
 
-The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kind_utilization_rate` is computed per review and written to `~/.quorum/telemetry.jsonl`, but **is not currently surfaced by `quorum stats`** — `compute_report` reads only `tokens_in`, `tokens_out`, `findings`, `suppressed`, and `model` (#491). Untagged FPs (and `Option<FpKind> = None` for pre-bump rows) use the default τ=120d.
+The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kind_utilization_rate` is computed per review, written to `~/.quorum/telemetry.jsonl`, and surfaced as the `FP kinds tagged` line under `quorum stats` Feedback Health when any review in the 7-day window carries one (#491). Untagged FPs (and `Option<FpKind> = None` for pre-bump rows) use the default τ=120d.
 
 **fp_kind is dropped on the External path** — when `--from-agent` (CLI) or `fromAgent` (MCP) is set, the verdict routes through `FeedbackStore::record_external` / `ExternalVerdictInput`, which does not currently carry fp_kind. A `tracing::warn` fires at the MCP boundary so dropped fields are visible. fp_kind only persists on the Human / direct ingestion paths.
 
@@ -153,8 +155,10 @@ Feedback verdict `context_misleading` (with `blamed_chunks`) raises per-chunk in
 
 Per-review records at `~/.quorum/reviews.jsonl` (ULID-keyed, enables exact joins to feedback). Fields: `run_id, timestamp, repo, invoked_from, model, files_reviewed, findings_by_severity, tokens_in/out/cache_read, duration_ms, flags`. Cost is computed at display time, not stored (model pricing drifts).
 
+**Write-only guard (#491):** every `TelemetryEntry` field must appear in either `stats::TELEMETRY_CONSUMED_FIELDS` or `stats::TELEMETRY_WRITE_ONLY_ALLOWLIST` (with a reason), enforced by `every_telemetry_field_is_consumed_or_allowlisted`. Adding a counter fails the test until someone decides who reads it. The Context7, judge, `fp_kind_utilization_rate` and `duration_ms` counters are surfaced by `quorum stats`, each block emitted only when non-zero so clean runs stay quiet.
+
 The `context7_resolved`, `context7_resolve_failed`, and `context7_query_failed` counters live on `TelemetryEntry` in `~/.quorum/telemetry.jsonl` (written from `src/main.rs`), not on `ReviewRecord`. They use `serde(default)` for backward-compat with pre-bump rows.
 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 
-Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--by-file`, `--rolling N`. `--by-file` ranks files by finding frequency from feedback (hotspot detection); `--top N` limits output rows. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.
+Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--by-file`, `--rolling N`. Two more views read the skills-framework audit logs instead: `stats --skills` rolls up `skill_invocations.jsonl` per axis (runs, findings emitted, zero-finding streak, parse-error classes) and `stats --integrator` rolls up `integrator_decisions.jsonl` (merge/suppress shares, severity clamp transitions). Both report the reader's own parse-error count, and treat a missing log as a fresh install rather than an error. `--by-file` ranks files by finding frequency from feedback (hotspot detection); `--top N` limits output rows. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.
