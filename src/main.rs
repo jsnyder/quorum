@@ -203,6 +203,59 @@ async fn main() -> anyhow::Result<()> {
             // Context dims (Task 6.3): --by-source/--by-reviewed-repo/--misleading.
             // Context dims compose with --rolling by restricting aggregation to
             // the chronologically-last N records.
+            // #491: the audit-log reader (`AuditReader::load_all`) shipped
+            // fully tested with zero production callers, which is how the
+            // axis reviewer stayed silent for 440 invocations. This is the
+            // caller.
+            if opts.skills {
+                let reader: skill_audit::AuditReader<skill_audit::SkillInvocationRecord> =
+                    skill_audit::AuditReader::new(
+                        quorum_home.join(skill_audit::SKILL_INVOCATIONS_FILE),
+                    );
+                // A missing log is a fresh install, not a failure.
+                let (records, read_stats) = match reader.load_all() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("error: cannot read skill invocation log: {e}");
+                        std::process::exit(3);
+                    }
+                };
+                let rows = dimensions::group_by_skill(&records);
+
+                let is_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                match output::resolve_output_mode(opts.json, opts.compact, is_terminal) {
+                    output::OutputMode::Json => {
+                        let payload = serde_json::json!({
+                            "mode": "skills",
+                            "rows": rows,
+                            "meta": {
+                                "total_lines": read_stats.total_lines,
+                                "parsed_ok": read_stats.parsed_ok,
+                                "parse_errors": read_stats.parse_errors,
+                            },
+                        });
+                        match serde_json::to_string_pretty(&payload) {
+                            Ok(json) => println!("{json}"),
+                            Err(e) => {
+                                eprintln!("error: failed to serialize --skills output: {e}");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
+                    output::OutputMode::Compact => {
+                        println!("{}", stats::format_skill_compact(&rows, &read_stats));
+                    }
+                    output::OutputMode::Human => {
+                        let style = output::Style::detect(false);
+                        print!(
+                            "{}",
+                            stats::format_skill_table(&rows, &read_stats, &style, unicode_ok())
+                        );
+                    }
+                }
+                std::process::exit(0);
+            }
+
             if opts.by_rule {
                 let fb_store = feedback::FeedbackStore::new(quorum_home.join("feedback.jsonl"));
                 let entries = match fb_store.load_all() {

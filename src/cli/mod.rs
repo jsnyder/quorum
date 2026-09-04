@@ -474,6 +474,13 @@ pub struct StatsOpts {
     #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file"])]
     pub by_rule: bool,
 
+    /// Per-skill rollup of the skill invocation audit log
+    /// (`~/.quorum/skill_invocations.jsonl`): runs, findings emitted,
+    /// zero-finding streaks, parse-error classes. A missing log is not an
+    /// error -- a fresh install simply has no rows.
+    #[arg(long, conflicts_with_all = ["by_repo", "by_caller", "rolling", "by_source", "by_reviewed_repo", "misleading", "by_file", "by_rule"])]
+    pub skills: bool,
+
     /// Filter rules by glob pattern (e.g. "ast-grep:python/*")
     #[arg(long, requires = "by_rule")]
     pub rule: Option<String>,

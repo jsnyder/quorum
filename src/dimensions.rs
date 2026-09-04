@@ -3,12 +3,13 @@
 //! Produces `DimensionSlice` rows for stats views: by-repo, by-caller,
 //! rolling N-run windows. Respects MIN_SAMPLE gate.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 
 use crate::feedback::{FeedbackEntry, Verdict};
 use crate::review_log::{ReviewRecord, SeverityCounts};
+use crate::skill_audit::{ExitStatus, SkillInvocationRecord};
 
 pub const MIN_SAMPLE: u32 = 5;
 
@@ -724,6 +725,137 @@ fn glob_match(pattern: &str, value: &str) -> bool {
     } else {
         value == pattern
     }
+}
+
+// ---------------------------------------------------------------------------
+// #491: skill invocation audit rollup
+// ---------------------------------------------------------------------------
+
+/// One row per skill (axis) aggregated from `skill_invocations.jsonl`.
+///
+/// The reader for that log existed and was tested for months with zero
+/// production callers, which is how the axis reviewer emitted zero findings
+/// across 440 invocations without anyone noticing (#491). `zero_streak` is the
+/// column that would have made it obvious.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SkillAuditRow {
+    pub skill: String,
+    pub runs: u32,
+    pub findings_emitted: u64,
+    pub zero_finding_runs: u32,
+    /// Consecutive most-recent runs that emitted no findings. A healthy skill
+    /// resets this constantly; a broken one climbs forever.
+    pub zero_streak: u32,
+    pub findings_clamped: u64,
+    pub findings_dropped_invalid_json: u64,
+    /// Runs whose `exit_status` was `Error`.
+    pub errors: u32,
+    /// Runs that fell back off the requested model.
+    pub model_fallbacks: u32,
+    pub avg_duration_ms: u64,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    /// `parse_error_class` histogram. `wrong_schema` here is the exact signal
+    /// that was logged 213 times and never read.
+    pub parse_error_classes: BTreeMap<String, u32>,
+    pub failure_reasons: BTreeMap<String, u32>,
+    pub low_sample: bool,
+}
+
+impl SkillAuditRow {
+    pub fn zero_finding_rate(&self) -> f64 {
+        if self.runs == 0 {
+            0.0
+        } else {
+            f64::from(self.zero_finding_runs) / f64::from(self.runs)
+        }
+    }
+}
+
+/// Aggregate skill invocation records into one row per skill.
+///
+/// Rows sort by `zero_streak` descending, then by run count -- a blackout
+/// belongs at the top of the table, not buried alphabetically.
+pub fn group_by_skill(records: &[SkillInvocationRecord]) -> Vec<SkillAuditRow> {
+    let mut buckets: HashMap<&str, Vec<&SkillInvocationRecord>> = HashMap::new();
+    for r in records {
+        buckets.entry(r.skill_name.as_str()).or_default().push(r);
+    }
+
+    let mut rows: Vec<SkillAuditRow> = buckets
+        .into_iter()
+        .map(|(skill, mut runs)| {
+            // The log is append-ordered, but sort defensively: `zero_streak`
+            // is only meaningful on a chronological sequence.
+            runs.sort_by_key(|r| r.ts);
+
+            let mut row = SkillAuditRow {
+                skill: skill.to_string(),
+                runs: runs.len() as u32,
+                findings_emitted: 0,
+                zero_finding_runs: 0,
+                zero_streak: 0,
+                findings_clamped: 0,
+                findings_dropped_invalid_json: 0,
+                errors: 0,
+                model_fallbacks: 0,
+                avg_duration_ms: 0,
+                tokens_in: 0,
+                tokens_out: 0,
+                parse_error_classes: BTreeMap::new(),
+                failure_reasons: BTreeMap::new(),
+                low_sample: (runs.len() as u32) < MIN_SAMPLE,
+            };
+
+            let mut duration_total: u64 = 0;
+            for r in &runs {
+                row.findings_emitted += u64::from(r.findings_emitted);
+                if r.findings_emitted == 0 {
+                    row.zero_finding_runs += 1;
+                }
+                row.findings_clamped += u64::from(r.findings_clamped);
+                row.findings_dropped_invalid_json += u64::from(r.findings_dropped_invalid_json);
+                if matches!(r.exit_status, ExitStatus::Error) {
+                    row.errors += 1;
+                }
+                if r.model_was_fallback {
+                    row.model_fallbacks += 1;
+                }
+                duration_total = duration_total.saturating_add(r.duration_ms);
+                row.tokens_in = row.tokens_in.saturating_add(r.tokens_in);
+                row.tokens_out = row.tokens_out.saturating_add(r.tokens_out);
+                if let Some(class) = &r.parse_error_class {
+                    *row.parse_error_classes
+                        .entry(class.to_string())
+                        .or_insert(0) += 1;
+                }
+                if let Some(reason) = &r.failure_reason {
+                    *row.failure_reasons
+                        .entry(format!("{reason:?}"))
+                        .or_insert(0) += 1;
+                }
+            }
+
+            row.zero_streak = runs
+                .iter()
+                .rev()
+                .take_while(|r| r.findings_emitted == 0)
+                .count() as u32;
+
+            if !runs.is_empty() {
+                row.avg_duration_ms = duration_total / runs.len() as u64;
+            }
+            row
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        b.zero_streak
+            .cmp(&a.zero_streak)
+            .then(b.runs.cmp(&a.runs))
+            .then(a.skill.cmp(&b.skill))
+    });
+    rows
 }
 
 #[cfg(test)]
@@ -1688,5 +1820,108 @@ mod tests {
             "context_misleading-only file should be excluded"
         );
         assert_eq!(rows[0].file_path, "real.rs");
+    }
+
+    // ─── #491: skill audit rollup ───
+
+    fn inv(skill: &str, findings: u32, offset_secs: i64) -> SkillInvocationRecord {
+        use crate::skill_audit::AxisSelectionSource;
+        SkillInvocationRecord {
+            skill_run_id: format!("run-{skill}-{offset_secs}"),
+            run_id: "review-1".into(),
+            ts: Utc::now() + chrono::Duration::seconds(offset_secs),
+            skill_name: skill.into(),
+            skill_version: "1.0.0".into(),
+            manifest_sha256: "a".repeat(64),
+            prompt_family: "default".into(),
+            prompt_sha256: "b".repeat(64),
+            model: "gpt-5.6".into(),
+            model_was_fallback: false,
+            axis_selection_source: AxisSelectionSource::Default,
+            capability_mode: "pure".into(),
+            trust_tier: "bundled".into(),
+            file_path: "src/main.rs".into(),
+            file_sha256: "c".repeat(64),
+            tokens_in: 100,
+            tokens_out: 20,
+            tokens_cache_read: 0,
+            llm_cache_hit: false,
+            duration_ms: 1000,
+            findings_emitted: findings,
+            findings_clamped: 0,
+            findings_dropped_invalid_json: 0,
+            parse_error_class: None,
+            exit_status: ExitStatus::Ok,
+            failure_reason: None,
+            calibrator_suppressions: 0,
+            calibrator_precedents_matched: 0,
+        }
+    }
+
+    #[test]
+    fn group_by_skill_counts_findings_and_zero_runs() {
+        let records = vec![
+            inv("security", 2, 0),
+            inv("security", 0, 1),
+            inv("correctness", 1, 2),
+        ];
+        let rows = group_by_skill(&records);
+        let sec = rows.iter().find(|r| r.skill == "security").unwrap();
+        assert_eq!(sec.runs, 2);
+        assert_eq!(sec.findings_emitted, 2);
+        assert_eq!(sec.zero_finding_runs, 1);
+        assert_eq!(sec.zero_finding_rate(), 0.5);
+        assert_eq!(sec.avg_duration_ms, 1000);
+        assert!(sec.low_sample, "2 runs is under MIN_SAMPLE");
+    }
+
+    #[test]
+    fn zero_streak_counts_only_trailing_silent_runs() {
+        // The 440-invocation blackout: a skill that used to work and then
+        // went silent must show the streak, not just the lifetime rate.
+        let mut records = vec![inv("axis", 3, 0)];
+        for i in 1..=6 {
+            records.push(inv("axis", 0, i));
+        }
+        let rows = group_by_skill(&records);
+        assert_eq!(rows[0].zero_streak, 6);
+        assert_eq!(rows[0].zero_finding_runs, 6);
+    }
+
+    #[test]
+    fn zero_streak_resets_on_a_recent_finding() {
+        let records = vec![inv("axis", 0, 0), inv("axis", 0, 1), inv("axis", 1, 2)];
+        assert_eq!(group_by_skill(&records)[0].zero_streak, 0);
+    }
+
+    #[test]
+    fn group_by_skill_sorts_blackouts_first() {
+        let mut records: Vec<_> = (0..10).map(|i| inv("healthy", 2, i)).collect();
+        records.extend((10..13).map(|i| inv("silent", 0, i)));
+        let rows = group_by_skill(&records);
+        assert_eq!(rows[0].skill, "silent", "the blackout must lead: {rows:?}");
+    }
+
+    #[test]
+    fn group_by_skill_histograms_parse_errors_and_failures() {
+        use crate::skill_audit::FailureReason;
+        use quorum::skill_output::ParseErrorClass;
+        let mut a = inv("security", 0, 0);
+        a.parse_error_class = Some(ParseErrorClass::WrongSchema);
+        let mut b = inv("security", 0, 1);
+        b.parse_error_class = Some(ParseErrorClass::WrongSchema);
+        let mut c = inv("security", 0, 2);
+        c.exit_status = ExitStatus::Error;
+        c.failure_reason = Some(FailureReason::ModelTimeout);
+
+        let rows = group_by_skill(&[a, b, c]);
+        assert_eq!(rows[0].parse_error_classes.get("wrong_schema"), Some(&2));
+        assert_eq!(rows[0].errors, 1);
+        assert_eq!(rows[0].failure_reasons.get("ModelTimeout"), Some(&1));
+    }
+
+    #[test]
+    fn group_by_skill_on_empty_input_is_empty() {
+        assert!(group_by_skill(&[]).is_empty());
     }
 }

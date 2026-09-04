@@ -1201,6 +1201,159 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(&json)?)
 }
 
+/// #491: `stats --skills` -- per-axis rollup of `skill_invocations.jsonl`.
+///
+/// `read` carries the reader's own health: a corrupt audit log that silently
+/// returns fewer rows is the same bug one level down, so parse errors are
+/// printed even when every row aggregates cleanly.
+pub fn format_skill_table(
+    rows: &[dimensions::SkillAuditRow],
+    read: &crate::skill_audit::AuditReadStats,
+    style: &Style,
+    unicode: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: skills{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    out.push_str(&format!(
+        "  Rows: {} parsed, {} parse errors\n\n",
+        read.parsed_ok, read.parse_errors,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no skill invocations recorded)\n");
+        return out;
+    }
+
+    let name_width = rows
+        .iter()
+        .map(|r| r.skill.chars().count())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 30);
+    let max_findings = rows.iter().map(|r| r.findings_emitted).max().unwrap_or(0);
+
+    out.push_str(&format!(
+        "  {bold}{:<nw$}  {:>5}  {:>8}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}{reset}\n",
+        "Skill",
+        "Runs",
+        "Findings",
+        "Zero%",
+        "Streak",
+        "Clamped",
+        "Dropped",
+        "Errors",
+        bold = style.bold,
+        reset = style.reset,
+        nw = name_width,
+    ));
+
+    for r in rows {
+        let bar = glyphs::hbar(
+            r.findings_emitted as f64,
+            max_findings.max(1) as f64,
+            unicode,
+        );
+        out.push_str(&format!(
+            "  {:<nw$}  {:>5}  {:>8}  {:>4}%  {:>6}  {:>7}  {:>7}  {:>6}  {}{}\n",
+            truncate_key(&r.skill, name_width),
+            r.runs,
+            r.findings_emitted,
+            (r.zero_finding_rate() * 100.0).round() as u32,
+            r.zero_streak,
+            r.findings_clamped,
+            r.findings_dropped_invalid_json,
+            r.errors,
+            bar,
+            if r.low_sample { " *" } else { "" },
+            nw = name_width,
+        ));
+    }
+
+    // The loud part. A skill that has gone quiet is the failure this view
+    // exists to catch -- it must not be something you have to notice in a
+    // column of numbers.
+    for r in rows
+        .iter()
+        .filter(|r| r.zero_streak >= dimensions::MIN_SAMPLE)
+    {
+        out.push_str(&format!(
+            "\n  warning: {} emitted zero findings across its last {} run(s)\n",
+            r.skill, r.zero_streak,
+        ));
+    }
+
+    let parse_errors = merge_histograms(rows.iter().map(|r| &r.parse_error_classes));
+    if !parse_errors.is_empty() {
+        out.push_str(&format!(
+            "\n  Parse errors: {}\n",
+            join_histogram(&parse_errors)
+        ));
+    }
+    let failures = merge_histograms(rows.iter().map(|r| &r.failure_reasons));
+    if !failures.is_empty() {
+        out.push_str(&format!("  Failures: {}\n", join_histogram(&failures)));
+    }
+    let fallbacks: u32 = rows.iter().map(|r| r.model_fallbacks).sum();
+    if fallbacks > 0 {
+        out.push_str(&format!("  Model fallbacks: {fallbacks}\n"));
+    }
+
+    if rows.iter().any(|r| r.low_sample) {
+        out.push_str(&format!(
+            "\n  * = low sample (<{} runs)\n",
+            dimensions::MIN_SAMPLE
+        ));
+    }
+    out
+}
+
+fn merge_histograms<'a>(
+    maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u32>>,
+) -> std::collections::BTreeMap<String, u32> {
+    let mut merged = std::collections::BTreeMap::new();
+    for m in maps {
+        for (k, v) in m {
+            *merged.entry(k.clone()).or_insert(0) += v;
+        }
+    }
+    merged
+}
+
+fn join_histogram(hist: &std::collections::BTreeMap<String, u32>) -> String {
+    hist.iter()
+        .map(|(k, v)| format!("{k} {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn format_skill_compact(
+    rows: &[dimensions::SkillAuditRow],
+    read: &crate::skill_audit::AuditReadStats,
+) -> String {
+    if rows.is_empty() {
+        return format!("skills: (no data) parse_errors:{}", read.parse_errors);
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:runs={},findings={},zero_streak={},errors={}",
+                r.skill, r.runs, r.findings_emitted, r.zero_streak, r.errors
+            )
+        })
+        .collect();
+    format!(
+        "skills: {} | parsed:{} parse_errors:{}",
+        parts.join(" | "),
+        read.parsed_ok,
+        read.parse_errors
+    )
+}
+
 pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: bool) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -1513,6 +1666,79 @@ mod tests {
             !compact.contains("judge_uncertain"),
             "compact should omit zero counters: {compact}"
         );
+    }
+
+    // ─── #491: --skills human rendering ───
+
+    fn skill_row(skill: &str, runs: u32, findings: u64, streak: u32) -> dimensions::SkillAuditRow {
+        dimensions::SkillAuditRow {
+            skill: skill.into(),
+            runs,
+            findings_emitted: findings,
+            zero_finding_runs: streak,
+            zero_streak: streak,
+            findings_clamped: 0,
+            findings_dropped_invalid_json: 0,
+            errors: 0,
+            model_fallbacks: 0,
+            avg_duration_ms: 1000,
+            tokens_in: 0,
+            tokens_out: 0,
+            parse_error_classes: Default::default(),
+            failure_reasons: Default::default(),
+            low_sample: runs < dimensions::MIN_SAMPLE,
+        }
+    }
+
+    #[test]
+    fn skill_table_shouts_about_a_zero_finding_streak() {
+        let mut row = skill_row("axis", 440, 0, 440);
+        row.parse_error_classes.insert("wrong_schema".into(), 213);
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 440,
+            parsed_ok: 440,
+            parse_errors: 0,
+        };
+        let out = format_skill_table(&[row], &read, &Style::plain(), false);
+        assert!(
+            out.contains("warning: axis emitted zero findings across its last 440 run(s)"),
+            "a blackout must be loud, not a column of zeros: {out}"
+        );
+        assert!(
+            out.contains("wrong_schema 213"),
+            "parse error classes belong in the view: {out}"
+        );
+    }
+
+    #[test]
+    fn skill_table_stays_quiet_for_healthy_skills() {
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 10,
+            parsed_ok: 10,
+            parse_errors: 0,
+        };
+        let out = format_skill_table(
+            &[skill_row("security", 10, 25, 0)],
+            &read,
+            &Style::plain(),
+            false,
+        );
+        assert!(!out.contains("warning:"), "no warning expected: {out}");
+        assert!(out.contains("Rows: 10 parsed, 0 parse errors"), "{out}");
+    }
+
+    #[test]
+    fn skill_table_reports_parse_errors_on_an_empty_read() {
+        // A corrupt log that parses to zero rows must not look like an
+        // idle install.
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 7,
+            parsed_ok: 0,
+            parse_errors: 7,
+        };
+        let out = format_skill_table(&[], &read, &Style::plain(), false);
+        assert!(out.contains("0 parsed, 7 parse errors"), "{out}");
+        assert!(out.contains("(no skill invocations recorded)"), "{out}");
     }
 
     // ─── #491: write-only observability guard ───
