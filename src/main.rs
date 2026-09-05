@@ -1820,7 +1820,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {
-        return run_review_via_daemon(&opts);
+        // The daemon path uses reqwest::blocking and synchronous file I/O.
+        // Keep it off Tokio's runtime so its blocking client can shut down
+        // without panicking in an asynchronous context.
+        return match tokio::task::spawn_blocking(move || run_review_via_daemon(&opts)).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("Error: daemon review worker failed: {}", e);
+                3
+            }
+        };
     }
 
     // Warn on mode/extension mismatch (advisory, never blocks the review).
@@ -3455,23 +3464,17 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
         Ok(resp) => {
             eprintln!("Error: Daemon health check returned {}", resp.status());
             eprintln!(
-                "Error: Daemon not running on port {}. Start with: quorum daemon",
+                "Error: Daemon is running on port {} but reported an unhealthy status.",
                 opts.daemon_port
             );
-            eprintln!("Falling back to local review.");
-            // Fall through to local review by calling run_review without --daemon
-            // For simplicity, just return 3 to indicate tool error
             return 3;
         }
         Err(e) => {
             eprintln!("Error: Could not reach daemon health endpoint: {}", e);
             eprintln!(
-                "Error: Daemon not running on port {}. Start with: quorum daemon",
+                "Error: Daemon is not reachable on port {}. Start with: quorum daemon",
                 opts.daemon_port
             );
-            eprintln!("Falling back to local review.");
-            // Fall through to local review by calling run_review without --daemon
-            // For simplicity, just return 3 to indicate tool error
             return 3;
         }
     }
