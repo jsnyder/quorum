@@ -1469,10 +1469,13 @@ fn finding_feedback_similarity(finding: &Finding, entry: &FeedbackEntry) -> f64 
     let title_sim = word_jaccard(&finding.title, &entry.finding_title);
     score += title_sim * 3.0;
 
-    // Category match — weight 2 (normalize legacy strings through Category enum)
-    if !entry.finding_category.is_empty()
-        && finding.category == Category::from(entry.finding_category.as_str())
-    {
+    // Category match — weight 2 (normalize legacy strings through Category enum).
+    // #499: `parse`, not `from`. `from` folds anything unrecognized into
+    // Maintainability, so the CLI's old "manual" default (~25% of the corpus)
+    // and the External path's "unknown" would false-match every genuine
+    // Maintainability finding while matching nothing else. An unrecognized
+    // category now scores 0, exactly like the blank one it should have been.
+    if Category::stated(&entry.finding_category) == Some(finding.category) {
         score += 2.0;
     }
 
@@ -2536,6 +2539,57 @@ mod tests {
             .build();
         let entry = fb("Unused import os", "style", Verdict::Fp);
         assert!(finding_feedback_similarity(&finding, &entry) < 0.3);
+    }
+
+    // #499: the CLI's old no---category placeholder ("manual", ~25% of the
+    // corpus) must not be laundered into a real category by `From`'s
+    // catch-all. Legacy *labels* like "style" are unaffected -- see
+    // category::tests::stated_keeps_folding_unrecognized_labels_to_maintainability.
+    #[test]
+    fn similarity_unrecognized_category_never_scores_the_category_term() {
+        // Against a Maintainability finding: this is the regression. Before
+        // the fix "manual" -> Maintainability, so the category term fired.
+        let maint = FindingBuilder::new()
+            .title("Duplicated helper")
+            .category("maintainability".into())
+            .build();
+        let entry = fb("Totally unrelated title", "manual", Verdict::Fp);
+        let sim = finding_feedback_similarity(&maint, &entry);
+        assert!(
+            sim < 1e-9,
+            "placeholder category must contribute 0, got {sim}"
+        );
+
+        // The External path's placeholder must behave identically.
+        let unknown = fb("Totally unrelated title", "unknown", Verdict::Fp);
+        assert!(finding_feedback_similarity(&maint, &unknown) < 1e-9);
+
+        // But a legacy *label* meaning Maintainability must still match.
+        let legacy = fb("Totally unrelated title", "style", Verdict::Fp);
+        assert!(
+            (finding_feedback_similarity(&maint, &legacy) - 0.4).abs() < 1e-9,
+            "legacy label must still score the category term"
+        );
+
+        // A blank category already behaved correctly; "manual" must match it.
+        let blank = fb("Totally unrelated title", "", Verdict::Fp);
+        assert!(
+            (sim - finding_feedback_similarity(&maint, &blank)).abs() < 1e-9,
+            "\"manual\" must score identically to a blank category"
+        );
+    }
+
+    #[test]
+    fn similarity_recognized_category_still_scores_the_category_term() {
+        // Guard the fix does not disable the feature it is narrowing.
+        let finding = FindingBuilder::new()
+            .title("Totally unrelated title")
+            .category("security".into())
+            .build();
+        let entry = fb("Nothing in common here", "security", Verdict::Fp);
+        // Zero title overlap, so the whole score is the category term: 2/5.
+        let sim = finding_feedback_similarity(&finding, &entry);
+        assert!((sim - 0.4).abs() < 1e-9, "expected 0.4, got {sim}");
     }
 
     #[test]

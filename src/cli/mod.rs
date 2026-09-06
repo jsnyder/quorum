@@ -733,7 +733,9 @@ pub struct FeedbackOpts {
     pub blamed_chunks: Option<String>,
 
     /// Finding category (e.g. "security", "correctness"). If omitted, the
-    /// Human path records "manual"; the External path records "unknown".
+    /// Human path records it blank; the External path records "unknown".
+    /// Supply it when you can -- the category term is 40% of the calibrator's
+    /// precedent-similarity score, and a blank one can never match (#499).
     #[arg(long)]
     pub category: Option<String>,
 
