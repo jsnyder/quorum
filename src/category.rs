@@ -98,19 +98,25 @@ impl Category {
     /// designed behavior, and narrowing it would silently drop real
     /// precedents.
     pub fn stated(s: &str) -> Option<Self> {
-        let norm = s.to_lowercase().trim().replace([' ', '_'], "-");
+        let norm = Self::normalize(s);
         if norm.is_empty() || PLACEHOLDER_CATEGORIES.contains(&norm.as_str()) {
             return None;
         }
-        Some(Category::from(norm))
+        Some(Self::fold(&norm))
     }
-}
 
-impl From<String> for Category {
-    fn from(s: String) -> Self {
-        // Lenient by design: unrecognized *labels* fold to Maintainability.
-        // Callers that must not guess use `Category::stated` instead (#499).
-        match s.to_lowercase().trim().replace([' ', '_'], "-").as_str() {
+    /// Case, separator and whitespace normalization shared by `stated` and
+    /// `From`. Callers pass the result to `fold`, never to `From` -- doing
+    /// both would normalize twice.
+    fn normalize(s: &str) -> String {
+        s.to_lowercase().trim().replace([' ', '_'], "-")
+    }
+
+    /// Fold an already-normalized string onto a variant. Lenient by design:
+    /// unrecognized *labels* become `Maintainability` (see `stated` for why
+    /// that is not the same question as "is this a placeholder").
+    fn fold(norm: &str) -> Self {
+        match norm {
             "security" | "safety" => Category::Security,
             "correctness" | "functional-bug" | "bug" => Category::Correctness,
             "logic" | "logic-error" => Category::Logic,
@@ -122,6 +128,14 @@ impl From<String> for Category {
             "performance" | "complexity" => Category::Performance,
             _ => Category::Maintainability,
         }
+    }
+}
+
+impl From<String> for Category {
+    fn from(s: String) -> Self {
+        // Lenient by design: unrecognized *labels* fold to Maintainability.
+        // Callers that must not guess use `Category::stated` instead (#499).
+        Category::fold(&Category::normalize(&s))
     }
 }
 
