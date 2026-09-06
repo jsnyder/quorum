@@ -19,7 +19,7 @@
 //! 3. **`tests/spawn_helper_guard.rs`** fails if any integration test reaches
 //!    the binary without going through this module.
 //!
-//! Real endpoints are reachable two ways, both explicit: `quorum_with_cassette`
+//! Real endpoints are reachable two ways, both explicit: `with_cassette`
 //! (replays a recorded response off a local mock -- free) and `quorum_live`
 //! (requires `QUORUM_TEST_LIVE=1` -- spends real money).
 
@@ -219,10 +219,28 @@ pub fn quorum_std_with_quorum_home(home: &Path) -> std::process::Command {
 /// The closure form keeps the server and its runtime alive for exactly the
 /// duration of the run, and shuts both down after.
 ///
+/// # Returns the requests the binary actually sent
+///
+/// The mock matches any `POST /chat/completions` and does not inspect the
+/// request body, so on its own it would replay the cassette no matter what
+/// the binary sent -- including a truncated prompt, a missing system message,
+/// or no prompt at all. That is the classic VCR staleness hole: the test stays
+/// green while testing nothing about prompt assembly.
+///
+/// Matching strictly on the body would be the over-correction, since then
+/// every prompt tweak forces a re-record with real money. Instead the captured
+/// request bodies come back with the result, so a test can pin a few
+/// invariants that break loudly on a real regression and survive a wording
+/// change. See `tests/llm_path_replay.rs`.
+///
 /// Recording a new cassette is `scripts/record-llm-cassette.sh`, run by hand.
 /// There is deliberately no record mode wired into the harness: it would run
 /// twice a year, and would itself need to be money-safe.
-pub fn with_cassette<T>(home: &Path, cassette: &str, f: impl FnOnce(Command) -> T) -> T {
+pub fn with_cassette<T>(
+    home: &Path,
+    cassette: &str,
+    f: impl FnOnce(Command) -> T,
+) -> (T, Vec<serde_json::Value>) {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -252,8 +270,22 @@ pub fn with_cassette<T>(home: &Path, cassette: &str, f: impl FnOnce(Command) -> 
         .env("QUORUM_API_KEY", "sk-cassette-not-a-real-key");
 
     let out = f(cmd);
+
+    let sent = rt.block_on(async {
+        server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests")
+            .iter()
+            .map(|r| {
+                serde_json::from_slice(&r.body)
+                    .unwrap_or_else(|e| panic!("request body the binary sent is not JSON: {e}"))
+            })
+            .collect::<Vec<serde_json::Value>>()
+    });
+
     drop(server);
-    out
+    (out, sent)
 }
 
 /// Spawn `quorum` pointed at a real endpoint, spending real money.
