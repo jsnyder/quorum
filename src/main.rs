@@ -2707,7 +2707,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             result.usage.cached_tokens += cr.usage.cached_tokens;
                         }
 
-                        result.findings.extend(int_output.findings);
+                        // #486: stamp the skill findings before they join the result.
+                        // review_file already classified everything it merged itself,
+                        // but these arrive afterwards -- without this every LLM finding
+                        // in a multi-axis review keeps in_diff: None.
+                        let mut int_findings = int_output.findings;
+                        if let Some(ref diff_ranges) = pipeline_cfg.diff_ranges {
+                            pipeline::classify_findings_for_file(
+                                &mut int_findings,
+                                std::path::Path::new(&file_str),
+                                diff_ranges,
+                            );
+                        }
+                        result.findings.extend(int_findings);
                         result.suppressed += int_output.suppressed.len();
                     }
 
@@ -2957,7 +2969,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     result.usage.cached_tokens += cr.usage.cached_tokens;
                                 }
 
-                                result.findings.extend(int_output.findings);
+                                // #486: same stamping as the sequential path.
+                                let mut int_findings = int_output.findings;
+                                if let Some(ref diff_ranges) = pipeline_cfg.diff_ranges {
+                                    pipeline::classify_findings_for_file(
+                                        &mut int_findings,
+                                        std::path::Path::new(&file_str),
+                                        diff_ranges,
+                                    );
+                                }
+                                result.findings.extend(int_findings);
                                 result.suppressed += int_output.suppressed.len();
                         }
 
