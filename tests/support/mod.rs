@@ -161,10 +161,17 @@ pub fn quorum(home: &Path) -> Command {
     cmd
 }
 
-/// Same guarantees as [`quorum`], but isolates via `QUORUM_HOME` instead of
-/// `HOME`. For tests that exercise the `QUORUM_HOME` override itself.
+/// Same guarantees as [`quorum`], but points `QUORUM_HOME` at `home` as well.
+/// For tests that exercise the `QUORUM_HOME` override itself.
+///
+/// `HOME` is pinned here too, and that is load-bearing rather than tidiness:
+/// Context7 falls back to reading `$HOME/.context7_key` when
+/// `CONTEXT7_API_KEY` is unset (src/context_enrichment.rs:684). Setting only
+/// `QUORUM_HOME` would leave the developer's real profile readable, so
+/// stripping the env var would not actually close that outbound path.
 pub fn quorum_with_quorum_home(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("quorum").expect("quorum binary builds");
+    cmd.env("HOME", home).env("USERPROFILE", home);
     sanitize(&mut cmd);
     cmd.env("QUORUM_HOME", home); // after sanitize, which removes it
     cmd
@@ -193,9 +200,12 @@ pub fn quorum_std(home: &Path) -> std::process::Command {
     cmd
 }
 
-/// [`quorum_std`] isolated via `QUORUM_HOME` instead of `HOME`.
+/// [`quorum_std`] with `QUORUM_HOME` pointed at `home` as well.
+///
+/// Pins `HOME` for the same reason as [`quorum_with_quorum_home`].
 pub fn quorum_std_with_quorum_home(home: &Path) -> std::process::Command {
     let mut cmd = quorum_std_bare();
+    cmd.env("HOME", home).env("USERPROFILE", home);
     sanitize_std(&mut cmd);
     cmd.env("QUORUM_HOME", home); // after sanitize, which removes it
     cmd

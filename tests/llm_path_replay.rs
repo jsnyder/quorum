@@ -58,13 +58,24 @@ fn replayed_llm_finding_reaches_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Parse rather than substring-match the whole payload: `--json` promises
+    // valid JSON, and a test that only greps would pass on a truncated or
+    // half-rendered document.
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "--json must emit valid JSON: {e}\n\
+             If this is a base_url error instead, the three env vars \
+             `with_cassette` sets have drifted apart -- see its docs.\n\
+             status={:?}\nstdout={stdout}\nstderr={stderr}",
+            output.status.code()
+        )
+    });
+
     assert!(
-        stdout.contains("unwrap() on a fallible parse can panic"),
-        "the cassette's finding should reach JSON output.\n\
-         If this fails with a base_url error, the three env vars \
-         `with_cassette` sets have drifted apart -- see its docs.\n\
-         status={:?}\nstdout={stdout}\nstderr={stderr}",
-        output.status.code()
+        parsed
+            .to_string()
+            .contains("unwrap() on a fallible parse can panic"),
+        "the cassette's finding should reach JSON output; got {parsed}"
     );
 }
 
@@ -142,6 +153,11 @@ fn request_carries_the_reviewed_source_and_model() {
 ///
 /// Exit codes are the CLI's contract (0 clean, 1 warnings, 2 critical), and
 /// until now nothing checked that an LLM-sourced finding moved them at all.
+///
+/// Pinned to exactly 2 rather than "1 or 2": `compute_exit_code`
+/// (src/output/mod.rs:397) maps Critical and High alike to 2, so there is no
+/// ambiguity to accommodate, and accepting either would hide a regression that
+/// downgraded the cassette's High finding to Medium.
 #[test]
 fn replayed_llm_finding_is_reflected_in_the_exit_code() {
     let tmp = tempfile::tempdir().unwrap();
@@ -151,10 +167,10 @@ fn replayed_llm_finding_is_reflected_in_the_exit_code() {
         cmd.arg("review").arg(&subject).output().unwrap()
     });
 
-    let code = output.status.code();
-    assert!(
-        matches!(code, Some(1) | Some(2)),
-        "a high-severity finding should exit 1 or 2, not {code:?}.\nstderr={}",
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "the cassette's high-severity finding should exit 2.\nstderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

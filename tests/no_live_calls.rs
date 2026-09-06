@@ -27,8 +27,14 @@ fn helper_strips_api_key_so_review_stays_ast_only() {
     let tmp = tempfile::tempdir().unwrap();
     let subject = write_fixture(tmp.path());
 
-    // Deliberately export a key into the parent process's view of the world.
-    // The helper must strip it regardless.
+    // On a machine with QUORUM_API_KEY exported -- the situation this whole
+    // issue is about -- this exercises the strip directly, because the child
+    // would otherwise inherit it. On a machine without one it degrades to a
+    // plain AST-only smoke test. Injecting a key into the parent's own
+    // environment to make it self-contained is not worth it: `set_var` is
+    // unsafe in edition 2024 and would race the other tests in this binary.
+    // `leaked_api_key_dies_in_the_base_url_validator` below covers the
+    // adversarial case without needing that.
     let out = support::quorum(tmp.path())
         .arg("review")
         .arg(&subject)
@@ -65,6 +71,13 @@ fn leaked_api_key_dies_in_the_base_url_validator() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
+    assert!(
+        !out.status.success(),
+        "an un-opted-in LLM call must FAIL, not merely complain. A zero exit \
+         here means the review carried on and the tripwire is decorative.\n\
+         stderr={stderr}\nstdout={stdout}"
+    );
+
     // Pins `actionable_error_for_private_ip` (src/llm_client.rs:592), the
     // exact branch the tripwire depends on -- not just "some error happened".
     assert!(
@@ -81,22 +94,34 @@ fn leaked_api_key_dies_in_the_base_url_validator() {
 
 /// The opt-in is the *only* way to a live call. A present key is not enough.
 ///
-/// Asserts on the helper's own precondition rather than spawning anything --
-/// the whole point is that no code path here reaches the network.
+/// Both branches assert something real. An earlier version faked the expected
+/// panic when the opt-in happened to be set, which made the test pass without
+/// exercising anything -- the exact "green for the wrong reason" failure this
+/// file exists to prevent.
 #[test]
-#[should_panic(expected = "QUORUM_TEST_LIVE=1")]
 fn live_helper_refuses_without_the_explicit_opt_in() {
-    // SAFETY: single-threaded within this test binary's use of the var, and
-    // the value is only read by the assertion inside `quorum_live`.
-    if std::env::var("QUORUM_TEST_LIVE").is_ok_and(|v| v == "1") {
-        // A developer really did opt in for this run; the refusal under test
-        // is not applicable. Panic with the expected message so the test
-        // stays meaningful rather than silently passing for the wrong reason.
-        panic!("QUORUM_TEST_LIVE=1 set for this run; refusal path not exercised");
-    }
+    let opted_in = std::env::var("QUORUM_TEST_LIVE").is_ok_and(|v| v == "1");
 
     let tmp = tempfile::tempdir().unwrap();
-    let _ = support::quorum_live(tmp.path());
+    let attempt = std::panic::catch_unwind(|| {
+        // Building the Command reaches no network; the refusal is a
+        // precondition check inside the helper.
+        let _cmd = support::quorum_live(tmp.path());
+    });
+
+    if opted_in {
+        assert!(
+            attempt.is_ok(),
+            "with QUORUM_TEST_LIVE=1 the helper should hand back a Command, \
+             not refuse"
+        );
+    } else {
+        assert!(
+            attempt.is_err(),
+            "without QUORUM_TEST_LIVE=1 the helper MUST refuse, even though \
+             QUORUM_API_KEY may be set -- present-key-means-live is issue #501"
+        );
+    }
 }
 
 /// The fixture the rest of the suite reviews must stay clean, or several

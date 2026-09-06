@@ -44,6 +44,22 @@ esac
 base_url="${QUORUM_BASE_URL:-https://api.openai.com/v1}"
 model="${QUORUM_MODEL:-gpt-5.6}"
 
+# The API key is sent as a Bearer token to whatever this points at, so hold it
+# to the same bar quorum's own validate_base_url does: https, or explicit
+# loopback for a local gateway. Without this, a stale QUORUM_BASE_URL sends the
+# key somewhere in cleartext.
+case "$base_url" in
+    https://*) ;;
+    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|'http://[::1]'*)
+        echo "warning: recording over plaintext http to a local endpoint" >&2
+        ;;
+    *)
+        echo "error: refusing to send QUORUM_API_KEY to '$base_url'." >&2
+        echo "       Use https, or a loopback address for a local gateway." >&2
+        exit 2
+        ;;
+esac
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 out_dir="$repo_root/tests/fixtures/llm"
 out="$out_dir/$name.json"
@@ -74,18 +90,43 @@ raw=$(curl -sS --fail-with-body \
 #   - `choices[].message.content` is the model's reply and is the point of the
 #     cassette, so it is KEPT -- review it by eye before committing. If the
 #     prompt embedded proprietary source, the reply may quote it back.
+#
+# Built into a temp file and moved into place only on success, so a jq failure
+# or a rejected redaction cannot destroy a cassette that was already there.
+tmp_out="$(mktemp "${TMPDIR:-/tmp}/quorum-cassette.XXXXXX")"
+trap 'rm -f "$tmp_out"' EXIT
+
 printf '%s' "$raw" | jq '
     del(.request, .echo, .organization, .system_fingerprint, .service_tier)
     | .id = "chatcmpl-quorum-test-cassette"
     | .created = 1746000000
-' > "$out"
+' > "$tmp_out"
 
-# Fail loudly rather than commit something key-shaped.
-if grep -Eq 'sk-[A-Za-z0-9]{16,}|Bearer [A-Za-z0-9._-]{16,}' "$out"; then
-    echo "error: recorded cassette still contains something key-shaped; refusing to keep it" >&2
-    rm -f "$out"
+# A 200 carrying an error payload is not a usable cassette. Catch it here
+# rather than at `cargo test` time, where the failure is far less obvious.
+if ! jq -e '.choices[0].message.content | strings' "$tmp_out" >/dev/null; then
+    echo "error: response has no choices[0].message.content; not a usable cassette." >&2
+    echo "       Raw response was:" >&2
+    printf '%s\n' "$raw" | head -c 2000 >&2
     exit 1
 fi
+
+# Fail loudly rather than commit a credential. Two checks, because the shape
+# heuristic alone misses provider keys that do not look like `sk-...`:
+#   1. the literal key that was just used, matched with -F so its own
+#      metacharacters cannot alter the pattern
+#   2. common key shapes, for anything echoed back that is not our key
+if grep -qF "$QUORUM_API_KEY" "$tmp_out"; then
+    echo "error: cassette contains the API key verbatim; refusing to keep it" >&2
+    exit 1
+fi
+if grep -Eq 'sk-[A-Za-z0-9]{16,}|Bearer [A-Za-z0-9._-]{16,}' "$tmp_out"; then
+    echo "error: recorded cassette still contains something key-shaped; refusing to keep it" >&2
+    exit 1
+fi
+
+mv "$tmp_out" "$out"
+trap - EXIT
 
 echo "Wrote $out" >&2
 echo "Review it by eye for anything from your prompt before committing." >&2
