@@ -102,19 +102,59 @@ struct PrimaryKey {
 
 /// Extract the cluster kind key from a finding.
 ///
-/// Returns `rule_id` if present (AST/linter findings), otherwise falls back
-/// to [`normalize_title_slug`] on the finding's title.
+/// Returns `rule_id` if present (AST/linter findings), otherwise the
+/// finding's `category`.
+///
+/// LLM skill findings carry no `rule_id`, and this used to fall back to a
+/// slug of the whole title (#498). Two axes describing one defect in
+/// different words then landed in different primary groups, so every group
+/// was size 1 and the merge path was unreachable. `category` is the coarse
+/// taxonomy the axes share; [`should_merge_into_cluster`] does the fine
+/// discrimination via line overlap plus title-topic overlap.
 pub(crate) fn finding_kind(finding: &Finding) -> String {
     if let Some(ref rule_id) = finding.rule_id
         && !rule_id.is_empty()
     {
         return rule_id.clone();
     }
-    let slug = normalize_title_slug(&finding.title);
-    if slug.is_empty() {
-        return finding.title.to_lowercase();
+    finding.category.as_str().to_owned()
+}
+
+/// Tokens from a finding title that carry topic signal.
+///
+/// Slug tokens minus single characters and generic connectors, so title
+/// overlap is measured on words that actually name the defect.
+fn topic_tokens(title: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "the", "in", "on", "of", "to", "for", "with", "and", "or", "not", "is", "are",
+        "was", "be", "by", "at", "from", "into", "via", "this", "that", "it", "its", "as", "when",
+        "if", "no", "can", "may", "should", "could", "does", "do",
+    ];
+    normalize_title_slug(title)
+        .split('-')
+        .filter(|t| t.len() > 1 && !STOPWORDS.contains(t))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether two titles describe the same topic.
+///
+/// True when they share at least two topic tokens, or one token when the
+/// shorter title only has one or two to give. Deliberately conservative: a
+/// missed merge costs a duplicate finding, a false merge silently drops a
+/// real one.
+///
+/// ponytail: token overlap, not embeddings. Upgrade to a similarity model
+/// only if duplicate cross-axis findings show up in the audit log.
+fn titles_share_topic(a: &str, b: &str) -> bool {
+    let ta = topic_tokens(a);
+    let tb = topic_tokens(b);
+    if ta.is_empty() || tb.is_empty() {
+        return false;
     }
-    slug
+    let shared = ta.iter().filter(|t| tb.contains(t)).count();
+    let shorter = ta.len().min(tb.len());
+    shared >= 2 || (shared == 1 && shorter <= 2)
 }
 
 /// Produce a deterministic slug from a finding title.
@@ -418,9 +458,15 @@ fn form_line_clusters(group: &[TaggedFinding]) -> Vec<Vec<&TaggedFinding>> {
 }
 
 /// Check if a tagged finding should merge into an existing cluster.
+///
+/// The primary key is coarse (file + rule_id-or-category), so this is where
+/// the discrimination happens: overlapping lines are necessary but not
+/// sufficient. Findings that share a `rule_id` are the same rule by
+/// definition; LLM findings additionally have to describe the same topic.
 fn should_merge_into_cluster(tf: &TaggedFinding, cluster: &[&TaggedFinding]) -> bool {
     let new_range = (tf.finding.line_start, tf.finding.line_end);
     let new_pattern = tf.finding.canonical_pattern.as_deref();
+    let has_rule_id = tf.finding.rule_id.as_deref().is_some_and(|r| !r.is_empty());
 
     for existing in cluster {
         // Short-circuit: identical canonical_pattern.
@@ -433,7 +479,12 @@ fn should_merge_into_cluster(tf: &TaggedFinding, cluster: &[&TaggedFinding]) -> 
 
         // Line-range overlap check.
         let existing_range = (existing.finding.line_start, existing.finding.line_end);
-        if ranges_overlap_enough(new_range, existing_range) {
+        if !ranges_overlap_enough(new_range, existing_range) {
+            continue;
+        }
+
+        // Same rule_id (guaranteed by the primary key) needs nothing more.
+        if has_rule_id || titles_share_topic(&tf.finding.title, &existing.finding.title) {
             return true;
         }
     }
@@ -623,6 +674,7 @@ fn process_cluster(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::category::Category;
     use crate::finding::{FindingBuilder, Severity, Source};
 
     // -- Helpers --------------------------------------------------------------
@@ -694,25 +746,76 @@ mod tests {
     }
 
     #[test]
-    fn kind_uses_title_slug_for_llm() {
+    fn kind_uses_category_for_llm_findings() {
         let f = FindingBuilder::new()
             .title("Unvalidated User Input")
+            .category(Category::Validation)
             .build();
-        assert_eq!(finding_kind(&f), "unvalidated-user-input");
+        assert_eq!(finding_kind(&f), "validation");
     }
 
     #[test]
-    fn kind_empty_title() {
-        let f = FindingBuilder::new().title("").build();
-        assert_eq!(finding_kind(&f), "");
+    fn kind_is_title_independent() {
+        // #498: differently-worded titles in the same category must share a
+        // primary key, or the merge path is never reached.
+        let a = FindingBuilder::new()
+            .title("SQL injection via string concatenation")
+            .category(Category::Security)
+            .build();
+        let b = FindingBuilder::new()
+            .title("Unsanitized input reaches SQL query")
+            .category(Category::Security)
+            .build();
+        assert_eq!(finding_kind(&a), finding_kind(&b));
     }
 
     #[test]
-    fn kind_vendor_only_title_falls_back_to_lowercase() {
+    fn kind_empty_title_still_keyed_by_category() {
         let f = FindingBuilder::new()
-            .title("Potential Vulnerability")
+            .title("")
+            .category(Category::Performance)
             .build();
-        assert_eq!(finding_kind(&f), "potential vulnerability");
+        assert_eq!(finding_kind(&f), "performance");
+    }
+
+    // =========================================================================
+    // Title topic overlap (~4)
+    // =========================================================================
+
+    #[test]
+    fn topic_shared_when_two_tokens_match() {
+        assert!(titles_share_topic(
+            "SQL injection via string concatenation in build_query",
+            "Unsanitized input reaches SQL query"
+        ));
+    }
+
+    #[test]
+    fn topic_not_shared_for_unrelated_defects() {
+        assert!(!titles_share_topic(
+            "Hardcoded API key in client constructor",
+            "TLS certificate verification disabled"
+        ));
+    }
+
+    #[test]
+    fn topic_shared_for_short_titles_with_one_token() {
+        assert!(titles_share_topic("Deadlock", "Deadlock on shutdown path"));
+    }
+
+    #[test]
+    fn topic_not_shared_on_single_incidental_token() {
+        // One shared word between two long titles is not enough.
+        assert!(!titles_share_topic(
+            "Unbounded loop in the request parser",
+            "Missing null check before parser dispatch"
+        ));
+    }
+
+    #[test]
+    fn topic_empty_titles_never_share() {
+        assert!(!titles_share_topic("", ""));
+        assert!(!titles_share_topic("", "SQL injection"));
     }
 
     // =========================================================================
@@ -858,6 +961,84 @@ mod tests {
             decision
                 .originating_skills
                 .contains(&"correctness".to_owned())
+        );
+    }
+
+    #[test]
+    fn two_axes_same_defect_overlapping_lines_merge() {
+        // Regression for #498. Two LLM skill findings from different axes
+        // describing the same SQL-injection defect in different words. No
+        // rule_id, no canonical_pattern -- exactly what the skill executor
+        // produces. They must land in one cluster and merge.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("SQL injection via string concatenation in build_query")
+            .category(Category::Security)
+            .confidence(0.7)
+            .severity(Severity::High)
+            .lines(40, 52)
+            .originating_skill("security")
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("Unsanitized input reaches SQL query")
+            .category(Category::Security)
+            .confidence(0.6)
+            .severity(Severity::Medium)
+            .lines(44, 50)
+            .originating_skill("correctness")
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/db.rs", f1), tagged("src/db.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "two axes on the same defect should merge into one finding"
+        );
+        assert_eq!(output.decisions.len(), 1);
+        assert_eq!(output.decisions[0].decision, IntegratorDecision::Merged);
+        assert_eq!(output.decisions[0].input_finding_ids.len(), 2);
+    }
+
+    #[test]
+    fn two_distinct_defects_same_category_overlapping_lines_stay_separate() {
+        // Guard against over-merging in the other direction (#498): two
+        // genuinely different security defects on the same lines must not
+        // collapse just because they share a file and a category.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Hardcoded API key in client constructor")
+            .category(Category::Security)
+            .confidence(0.8)
+            .severity(Severity::High)
+            .lines(40, 52)
+            .originating_skill("security")
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("TLS certificate verification disabled")
+            .category(Category::Security)
+            .confidence(0.7)
+            .severity(Severity::High)
+            .lines(44, 50)
+            .originating_skill("security")
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/db.rs", f1), tagged("src/db.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(
+            output.findings.len(),
+            2,
+            "unrelated defects must not merge on line overlap alone"
         );
     }
 
