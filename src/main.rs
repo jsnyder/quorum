@@ -3706,47 +3706,100 @@ mod daemon_review_tests {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
+    /// What the mock daemon actually did, returned rather than panicked.
+    ///
+    /// Issue #518. Every operation on a *client* socket here can fail for a
+    /// reason that is not a defect: several of these tests deliberately drive
+    /// `run_review_via_daemon` down an early-return path, so the client is
+    /// *expected* to hang up partway through. When the scaffolding panicked on
+    /// that, `server.join().unwrap()` re-raised it and the test failed without
+    /// ever reaching its assertion -- a behavioural regression is what it
+    /// looked like, and a timing race is what it was. It failed only on Linux,
+    /// where the client-close/server-accept ordering loses more often.
+    ///
+    /// The class is worth naming: test *scaffolding* held to a lower standard
+    /// than the test. The better-known form is an assertion that passes
+    /// without testing anything; this is the mirror image, scaffolding that
+    /// fails without testing anything, and looking for vacuous assertions does
+    /// not find it.
+    #[derive(Debug, Default)]
+    struct ServerLog {
+        /// Responses actually written to a client.
+        responses_served: usize,
+        /// Why the server stopped before serving every queued response.
+        stopped_early: Option<String>,
+    }
+
+    /// Write one response. Best-effort throughout: a closed peer means the
+    /// client already gave up, which for several cases here is the behaviour
+    /// under test rather than a failure.
     fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
         let reason = match status {
             200 => "OK",
             500 => "Internal Server Error",
             _ => "Response",
         };
-        write!(
+        let _ = write!(
             stream,
             "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
-        )
-        .unwrap();
-        stream.flush().unwrap();
-        stream.shutdown(Shutdown::Write).unwrap();
+        );
+        let _ = stream.flush();
+        let _ = stream.shutdown(Shutdown::Write);
     }
 
-    fn daemon_server(responses: Vec<(u16, String)>) -> (u16, JoinHandle<()>) {
+    fn daemon_server(responses: Vec<(u16, String)>) -> (u16, JoinHandle<ServerLog>) {
+        // Setup failures stay fatal: if the listener cannot be created, the
+        // test genuinely cannot run and silence would be worse.
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
+
         let handle = thread::spawn(move || {
+            let mut log = ServerLog::default();
+
             for (status, body) in responses {
-                let (mut stream, _) = (0..500)
-                    .find_map(|_| match listener.accept() {
-                        Ok(connection) => Some(connection),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(10));
-                            None
-                        }
-                        Err(error) => panic!("accept failed: {error}"),
-                    })
-                    .expect("timed out waiting for daemon request");
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
+                let accepted = (0..500).find_map(|_| match listener.accept() {
+                    Ok(connection) => Some(Ok(connection)),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                        None
+                    }
+                    Err(error) => Some(Err(error)),
+                });
+
+                let (mut stream, _) = match accepted {
+                    Some(Ok(connection)) => connection,
+                    Some(Err(error)) => {
+                        log.stopped_early = Some(format!("accept failed: {error}"));
+                        return log;
+                    }
+                    None => {
+                        log.stopped_early = Some("client made no further requests".to_owned());
+                        return log;
+                    }
+                };
+
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
                 let mut request = [0_u8; 4096];
                 let _ = stream.read(&mut request);
                 write_response(&mut stream, status, &body);
+                log.responses_served += 1;
             }
+
+            log
         });
+
         (port, handle)
+    }
+
+    /// Join the mock server, failing only on a genuine panic in its thread.
+    ///
+    /// Distinct from the old `server.join().unwrap()` in what it *cannot* do:
+    /// a client that hung up early no longer reaches this as a panic, so a
+    /// failure here means the scaffolding itself broke, not the client.
+    fn join_server(server: JoinHandle<ServerLog>) -> ServerLog {
+        server.join().expect("mock daemon thread panicked")
     }
 
     fn review_opts(port: u16, files: &[PathBuf]) -> cli::ReviewOpts {
@@ -3769,12 +3822,52 @@ mod daemon_review_tests {
         .to_string()
     }
 
+    /// The scaffolding regression test for #518.
+    ///
+    /// The race that caused the original Linux-only failure is not
+    /// reproducible on demand, but the *class* is: a client that hangs up
+    /// before the server finishes with the socket. Every write the mock makes
+    /// then fails, and the old code unwrapped them, so the panic surfaced
+    /// through `server.join().unwrap()` as a failure of whichever test
+    /// happened to be running -- looking like a behavioural regression rather
+    /// than a scaffolding race.
+    ///
+    /// This pins the invariant directly: a hung-up client is a supported
+    /// state, not a test failure.
+    ///
+    /// The oversized body is what makes it deterministic rather than
+    /// timing-dependent. A small response to a dropped peer is simply buffered
+    /// by the kernel and the write succeeds, so the first formulation of this
+    /// test passed against the buggy code -- it reproduced the situation but
+    /// not the failure. Writing more than the socket buffer can hold forces
+    /// the write to observe the dead peer. Verified in both directions:
+    /// restoring the `.unwrap()` calls in `write_response` makes this fail
+    /// with the same panic-in-server-thread shape seen in CI.
+    #[test]
+    fn a_client_that_hangs_up_does_not_panic_the_mock_server() {
+        // Far larger than any socket buffer, so the server's write cannot
+        // complete into the kernel and must observe the dead peer.
+        let big = "x".repeat(8 * 1024 * 1024);
+        let (port, server) = daemon_server(vec![(200, big)]);
+
+        drop(TcpStream::connect(("127.0.0.1", port)).expect("connect to mock daemon"));
+
+        // The assertion is that joining does not panic.
+        let log = join_server(server);
+        assert_eq!(
+            log.responses_served, 1,
+            "the server should complete its iteration against a dead peer \
+             rather than abort; stopped_early={:?}",
+            log.stopped_early
+        );
+    }
+
     #[test]
     fn unreadable_file_is_a_tool_error() {
         let (port, server) = daemon_server(vec![(200, "ok".to_owned())]);
         let missing = Path::new("this-file-does-not-exist-for-quorum-493.rs").to_owned();
         let result = run_review_via_daemon(&review_opts(port, &[missing]));
-        server.join().unwrap();
+        let _log = join_server(server);
         assert_eq!(result, 3);
     }
 
@@ -3786,8 +3879,17 @@ mod daemon_review_tests {
         ]);
         let file = tempfile::NamedTempFile::new().unwrap();
         let result = run_review_via_daemon(&review_opts(port, &[file.path().to_owned()]));
-        server.join().unwrap();
+        let log = join_server(server);
         assert_eq!(result, 3);
+        // The client must actually reach the review request, not just the
+        // health check -- otherwise this passes for the wrong reason. The old
+        // scaffolding turned this into a 5s timeout and a confusing panic;
+        // now it is an assertion that says what it means.
+        assert_eq!(
+            log.responses_served, 2,
+            "expected health check + review request; stopped_early={:?}",
+            log.stopped_early
+        );
     }
 
     #[test]
@@ -3798,8 +3900,13 @@ mod daemon_review_tests {
         ]);
         let file = tempfile::NamedTempFile::new().unwrap();
         let result = run_review_via_daemon(&review_opts(port, &[file.path().to_owned()]));
-        server.join().unwrap();
+        let log = join_server(server);
         assert_eq!(result, 3);
+        assert_eq!(
+            log.responses_served, 2,
+            "expected health check + review request; stopped_early={:?}",
+            log.stopped_early
+        );
     }
 
     #[test]
@@ -3818,7 +3925,7 @@ mod daemon_review_tests {
             port,
             &[first.path().to_owned(), second.path().to_owned()],
         ));
-        server.join().unwrap();
+        let _log = join_server(server);
         assert_eq!(result, 1);
     }
 }
