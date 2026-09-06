@@ -201,6 +201,61 @@ pub fn quorum_std_with_quorum_home(home: &Path) -> std::process::Command {
     cmd
 }
 
+/// Replay a recorded LLM response to the spawned binary. Costs nothing.
+///
+/// Pure env-stripping makes the suite free and hermetic but leaves the LLM
+/// path with *zero* integration coverage, which is its own hole. This closes
+/// it: a checked-in provider response from `tests/fixtures/llm/<cassette>.json`
+/// is served off a loopback `wiremock` server, and the binary reviews against
+/// it exactly as it would against a real endpoint.
+///
+/// The three interacting env vars this needs are the reason the helper exists.
+/// `Config::validate_url` accepts loopback http, but `validate_base_url`
+/// rejects it unless `QUORUM_ALLOW_PRIVATE_BASE_URL=1` -- deliberate post-#167
+/// semantics, since the scheme check keys on whether the host is actually
+/// private rather than on the env var. Getting one of the three wrong yields a
+/// confusing failure, so no individual test should have to.
+///
+/// The closure form keeps the server and its runtime alive for exactly the
+/// duration of the run, and shuts both down after.
+///
+/// Recording a new cassette is `scripts/record-llm-cassette.sh`, run by hand.
+/// There is deliberately no record mode wired into the harness: it would run
+/// twice a year, and would itself need to be money-safe.
+pub fn with_cassette<T>(home: &Path, cassette: &str, f: impl FnOnce(Command) -> T) -> T {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/llm")
+        .join(format!("{cassette}.json"));
+    let body: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("cassette {} unreadable: {e}", fixture.display())),
+    )
+    .unwrap_or_else(|e| panic!("cassette {} is not valid JSON: {e}", fixture.display()));
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime for the cassette server");
+    let server = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    });
+
+    let mut cmd = quorum(home);
+    cmd.env("QUORUM_BASE_URL", server.uri())
+        .env("QUORUM_ALLOW_PRIVATE_BASE_URL", "1")
+        .env("QUORUM_API_KEY", "sk-cassette-not-a-real-key");
+
+    let out = f(cmd);
+    drop(server);
+    out
+}
+
 /// Spawn `quorum` pointed at a real endpoint, spending real money.
 ///
 /// Panics unless `QUORUM_TEST_LIVE=1` is set. A present `QUORUM_API_KEY` is
