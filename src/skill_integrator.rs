@@ -766,6 +766,23 @@ mod tests {
         }
     }
 
+    /// Canonical cluster partition: each cluster as its sorted input finding
+    /// ids, the clusters themselves sorted. Output ULIDs and timestamps are
+    /// regenerated per run, so the input ids are the only stable identity.
+    fn partition_of(out: &IntegratorOutput) -> Vec<Vec<String>> {
+        let mut parts: Vec<Vec<String>> = out
+            .decisions
+            .iter()
+            .map(|d| {
+                let mut ids = d.input_finding_ids.clone();
+                ids.sort();
+                ids
+            })
+            .collect();
+        parts.sort();
+        parts
+    }
+
     fn default_config() -> IntegratorConfig {
         IntegratorConfig {
             run_id: "test-run-001".to_owned(),
@@ -1198,10 +1215,25 @@ mod tests {
             &config,
         );
 
+        // Cardinality alone would not catch a regression here: {A,B},{C}
+        // and {A},{B,C} are both "2 findings", and only one of them is what
+        // this code does. The seed is the sort-first member, so C seeds and
+        // B joins it; A shares nothing with the seed and stands alone. What
+        // matters either way is that all three do NOT collapse into one.
         assert_eq!(
-            output.findings.len(),
-            2,
-            "A+B merge, C stays separate -- no transitive chaining"
+            partition_of(&output),
+            vec![
+                vec!["F001".to_owned()],
+                vec!["F002".to_owned(), "F003".to_owned()]
+            ],
+            "no transitive chaining: A and C must not end up together"
+        );
+        assert!(
+            partition_of(&output)
+                .iter()
+                .all(|cluster| !(cluster.contains(&"F001".to_owned())
+                    && cluster.contains(&"F003".to_owned()))),
+            "A and C share no topic tokens and must never share a cluster"
         );
     }
 
@@ -1239,12 +1271,28 @@ mod tests {
         };
 
         let config = default_config();
-        let forward = integrate(make([0, 1, 2]), &config);
-        let reversed = integrate(make([2, 1, 0]), &config);
-        let shuffled = integrate(make([1, 2, 0]), &config);
+        let forward = partition_of(&integrate(make([0, 1, 2]), &config));
+        let reversed = partition_of(&integrate(make([2, 1, 0]), &config));
+        let shuffled = partition_of(&integrate(make([1, 2, 0]), &config));
 
-        assert_eq!(forward.findings.len(), reversed.findings.len());
-        assert_eq!(forward.findings.len(), shuffled.findings.len());
+        // Compare cluster MEMBERSHIP, not cardinality. Three orderings can
+        // yield three different partitions that agree on the count --
+        // {F1,F2},{F3} and {F1,F3},{F2} are both "2 findings".
+        assert_eq!(forward, reversed, "reversed order changed the partition");
+        assert_eq!(forward, shuffled, "shuffled order changed the partition");
+        // The seed is the sort-first member (by line range, then title), so
+        // "Credential theft via logged access token" (F003) seeds, F002
+        // joins it on {credential, theft}, and F001 shares nothing with the
+        // seed and stands alone. Which PAIR merges is a function of the
+        // canonical sort, not of input order -- that is the property.
+        assert_eq!(
+            forward,
+            vec![
+                vec!["F001".to_owned()],
+                vec!["F002".to_owned(), "F003".to_owned()]
+            ],
+            "and the partition itself must be the expected one"
+        );
     }
 
     #[test]
@@ -1322,16 +1370,32 @@ mod tests {
             &config,
         );
 
-        let merged = output
+        // A merge COUNT of 2 is satisfied by the wrong two merges just as
+        // well as by the right ones. Pin the partition.
+        assert_eq!(
+            partition_of(&output),
+            vec![
+                vec!["F1".to_owned(), "F2".to_owned()],
+                vec!["F3".to_owned(), "F4".to_owned()],
+                vec!["F5".to_owned()],
+                vec!["F6".to_owned()],
+            ],
+            "the two cross-axis pairs merge; the unrelated two stay alone"
+        );
+        let merged: Vec<&IntegratorDecisionRecord> = output
             .decisions
             .iter()
             .filter(|d| d.decision == IntegratorDecision::Merged)
-            .count();
-        assert_eq!(
-            merged, 2,
-            "both cross-axis pairs should merge: {:#?}",
-            output.decisions
-        );
+            .collect();
+        assert_eq!(merged.len(), 2, "decision kind must say Merged too");
+        for d in merged {
+            assert_eq!(
+                d.originating_skills.len(),
+                2,
+                "a merged row credits both axes: {:?}",
+                d.originating_skills
+            );
+        }
         assert_eq!(output.findings.len(), 4);
     }
 
