@@ -1934,7 +1934,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     // If --daemon flag is set, send requests to running daemon
     if opts.daemon {
-        return run_review_via_daemon(&opts);
+        // The daemon path uses reqwest::blocking and synchronous file I/O.
+        // Keep it off Tokio's runtime so its blocking client can shut down
+        // without panicking in an asynchronous context.
+        return match tokio::task::spawn_blocking(move || run_review_via_daemon(&opts)).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("Error: daemon review worker failed: {}", e);
+                3
+            }
+        };
     }
 
     // Warn on mode/extension mismatch (advisory, never blocks the review).
@@ -3542,7 +3551,15 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
         return 3;
     }
 
-    let client = reqwest::blocking::Client::new();
+    // The daemon is always local. Bypass ambient system proxies so a proxy
+    // cannot turn a healthy loopback daemon into a misleading 4xx/5xx result.
+    let client = match reqwest::blocking::Client::builder().no_proxy().build() {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("Error: Could not create daemon HTTP client: {}", e);
+            return 3;
+        }
+    };
     let base = format!("http://127.0.0.1:{}", opts.daemon_port);
 
     // Same precedence as the local path: --model wins, else the daemon's own
@@ -3558,14 +3575,20 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
     // Check if daemon is running
     match client.get(format!("{}/health", base)).send() {
         Ok(resp) if resp.status().is_success() => {}
-        _ => {
+        Ok(resp) => {
+            eprintln!("Error: Daemon health check returned {}", resp.status());
             eprintln!(
-                "Error: Daemon not running on port {}. Start with: quorum daemon",
+                "Error: Daemon is running on port {} but reported an unhealthy status.",
                 opts.daemon_port
             );
-            eprintln!("Falling back to local review.");
-            // Fall through to local review by calling run_review without --daemon
-            // For simplicity, just return 3 to indicate tool error
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("Error: Could not reach daemon health endpoint: {}", e);
+            eprintln!(
+                "Error: Daemon is not reachable on port {}. Start with: quorum daemon",
+                opts.daemon_port
+            );
             return 3;
         }
     }
@@ -3573,12 +3596,14 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
     let use_json = opts.json || !std::io::IsTerminal::is_terminal(&std::io::stdout());
     let style = output::Style::detect(opts.no_color);
     let mut all_findings = Vec::new();
+    let mut had_errors = false;
 
     for file_path in &opts.files {
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error: Could not read {}: {}", file_path.display(), e);
+                had_errors = true;
                 continue;
             }
         };
@@ -3591,21 +3616,32 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
 
         match client.post(format!("{}/review", base)).json(&body).send() {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(review) = resp.json::<http_server::ReviewResponse>() {
-                    let cache_note = if review.cache_hit { " (cached)" } else { "" };
-                    if !use_json {
-                        let file_str = file_path.to_string_lossy();
-                        eprint!("{}{}", file_str, cache_note);
-                        eprintln!();
-                        print!(
-                            "{}",
-                            output::format_review(&file_str, &review.findings, &style)
+                match resp.json::<http_server::ReviewResponse>() {
+                    Ok(review) => {
+                        let cache_note = if review.cache_hit { " (cached)" } else { "" };
+                        if !use_json {
+                            let file_str = file_path.to_string_lossy();
+                            eprint!("{}{}", file_str, cache_note);
+                            eprintln!();
+                            print!(
+                                "{}",
+                                output::format_review(&file_str, &review.findings, &style)
+                            );
+                        }
+                        all_findings.extend(review.findings);
+                    }
+                    Err(e) => {
+                        had_errors = true;
+                        eprintln!(
+                            "Error: Invalid response from daemon for {}: {}",
+                            file_path.display(),
+                            e
                         );
                     }
-                    all_findings.extend(review.findings);
                 }
             }
             Ok(resp) => {
+                had_errors = true;
                 eprintln!("Error: Daemon returned {}", resp.status());
             }
             Err(e) => {
@@ -3625,7 +3661,145 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
         }
     }
 
-    output::compute_exit_code(&all_findings)
+    let code = output::compute_exit_code(&all_findings);
+    if had_errors {
+        // A daemon review is incomplete when any input or response failed.
+        // Preserve finding severity for completed files, but never report a
+        // clean review after a partial failure.
+        if all_findings.is_empty() {
+            3
+        } else {
+            code.max(1)
+        }
+    } else {
+        code
+    }
+}
+
+#[cfg(test)]
+mod daemon_review_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+
+    fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = match status {
+            200 => "OK",
+            500 => "Internal Server Error",
+            _ => "Response",
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+    }
+
+    fn daemon_server(responses: Vec<(u16, String)>) -> (u16, JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = (0..500)
+                    .find_map(|_| match listener.accept() {
+                        Ok(connection) => Some(connection),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                            None
+                        }
+                        Err(error) => panic!("accept failed: {error}"),
+                    })
+                    .expect("timed out waiting for daemon request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request);
+                write_response(&mut stream, status, &body);
+            }
+        });
+        (port, handle)
+    }
+
+    fn review_opts(port: u16, files: &[PathBuf]) -> cli::ReviewOpts {
+        let mut args = vec![
+            "quorum".to_owned(),
+            "--daemon".to_owned(),
+            "--json".to_owned(),
+            "--daemon-port".to_owned(),
+            port.to_string(),
+        ];
+        args.extend(files.iter().map(|path| path.to_string_lossy().into_owned()));
+        cli::ReviewOpts::try_parse_from(args).unwrap()
+    }
+
+    fn valid_response(findings: &[quorum::finding::Finding]) -> String {
+        serde_json::json!({
+            "findings": findings,
+            "cache_hit": false,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn unreadable_file_is_a_tool_error() {
+        let (port, server) = daemon_server(vec![(200, "ok".to_owned())]);
+        let missing = Path::new("this-file-does-not-exist-for-quorum-493.rs").to_owned();
+        let result = run_review_via_daemon(&review_opts(port, &[missing]));
+        server.join().unwrap();
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    fn daemon_http_error_is_a_tool_error() {
+        let (port, server) = daemon_server(vec![
+            (200, "ok".to_owned()),
+            (500, "daemon failed".to_owned()),
+        ]);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let result = run_review_via_daemon(&review_opts(port, &[file.path().to_owned()]));
+        server.join().unwrap();
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    fn invalid_success_response_is_a_tool_error() {
+        let (port, server) = daemon_server(vec![
+            (200, "ok".to_owned()),
+            (200, "not valid review json".to_owned()),
+        ]);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let result = run_review_via_daemon(&review_opts(port, &[file.path().to_owned()]));
+        server.join().unwrap();
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    fn partial_daemon_failure_is_never_reported_clean() {
+        let finding = quorum::finding::FindingBuilder::new()
+            .severity(quorum::finding::Severity::Info)
+            .build();
+        let (port, server) = daemon_server(vec![
+            (200, "ok".to_owned()),
+            (200, valid_response(&[finding])),
+            (200, "not valid review json".to_owned()),
+        ]);
+        let first = tempfile::NamedTempFile::new().unwrap();
+        let second = tempfile::NamedTempFile::new().unwrap();
+        let result = run_review_via_daemon(&review_opts(
+            port,
+            &[first.path().to_owned(), second.path().to_owned()],
+        ));
+        server.join().unwrap();
+        assert_eq!(result, 1);
+    }
 }
 
 /// Core feedback logic -- testable with custom feedback path.
@@ -3679,10 +3853,14 @@ fn run_feedback_inner(
         finding_title: finding.to_string(),
         // Mirror record_external/MCP normalization: trim and treat blank as
         // missing so analytics buckets don't fragment by ingestion path.
+        // #499: blank, never "manual". A placeholder that parses as a real
+        // category is worse than an absent one -- the precedent matcher can
+        // skip a blank, but it cannot tell a laundered default from a real
+        // Maintainability verdict.
         finding_category: category
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("manual")
+            .unwrap_or_default()
             .to_string(),
         verdict: verdict.clone(),
         reason: reason.to_string(),
@@ -4769,7 +4947,7 @@ mod feedback_tests {
     }
 
     #[test]
-    fn feedback_category_is_manual() {
+    fn feedback_category_defaults_to_blank_not_manual() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
@@ -4789,7 +4967,11 @@ mod feedback_tests {
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("\"finding_category\":\"manual\""));
+        // #499: an omitted --category records blank. "manual" parsed as a
+        // real Maintainability category and false-matched every genuine
+        // Maintainability precedent; blank correctly matches nothing.
+        assert!(contents.contains("\"finding_category\":\"\""));
+        assert!(!contents.contains("manual"));
     }
 
     #[test]

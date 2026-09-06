@@ -232,11 +232,11 @@ impl QuorumHandler {
             finding_title: params.finding,
             // Honor caller-supplied category on the Human path too — keeps
             // analytics aligned across the three ingestion surfaces. Falls
-            // back to "manual" to match the CLI Human default.
+            // back to blank, matching the CLI Human default (#499).
             finding_category: params
                 .category
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "manual".to_string()),
+                .unwrap_or_default(),
             verdict: verdict.clone(),
             reason: params.reason,
             model: params.model,
