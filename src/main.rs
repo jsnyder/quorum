@@ -1769,7 +1769,7 @@ mod skill_integration_tests {
                     mode: skill_manifest::CapabilityMode::Pure,
                 },
                 prompts: skill_manifest::Prompts {
-                    primary: "Review for {name}".into(),
+                    primary: format!("Review for the {name} axis"),
                     anthropic: None,
                     openai: None,
                     google: None,
@@ -1798,11 +1798,19 @@ mod skill_integration_tests {
     impl skill_executor::LlmReviewer for MockReviewer {
         fn review(
             &self,
-            _prompt: &str,
+            prompt: &str,
             _model: &str,
             _system_prompt: &str,
         ) -> anyhow::Result<skill_executor::LlmResponse> {
-            let json = format!("[{}]", make_finding_json("Test bug"));
+            // Two axes, two wordings of the same defect on the same lines --
+            // the shape that #498 proved never merged. Identical titles would
+            // make this test pass even with the old title-slug primary key.
+            let title = if prompt.contains("security") {
+                "Unsanitized input reaches the SQL query"
+            } else {
+                "SQL injection via string concatenation"
+            };
+            let json = format!("[{}]", make_finding_json(title));
             Ok(skill_executor::LlmResponse {
                 content: json,
                 usage: Some(skill_executor::TokenUsage {
@@ -1872,15 +1880,24 @@ mod skill_integration_tests {
                 })
             })
             .collect();
+        // Guard the fixture itself: if the mock stops varying the title per
+        // axis, this test silently stops covering #498.
+        let titles: std::collections::BTreeSet<&str> = results
+            .iter()
+            .flat_map(|cr| cr.findings.iter().map(|f| f.title.as_str()))
+            .collect();
+        assert_eq!(
+            titles.len(),
+            2,
+            "the two axes must report differently-worded findings: {titles:?}"
+        );
+
         let int_cfg = skill_integrator::IntegratorConfig::default();
         let output = skill_integrator::integrate(tagged, &int_cfg);
-        assert!(
-            !output.findings.is_empty(),
-            "integrator should emit findings"
-        );
-        assert!(
-            output.findings.len() < 4,
-            "integrator should merge overlapping findings from 2 skills"
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "integrator must merge the two axes' overlapping findings into one (#498)"
         );
 
         let total_prompt: u64 = results.iter().map(|r| r.usage.prompt_tokens).sum();

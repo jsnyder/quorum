@@ -137,24 +137,71 @@ fn topic_tokens(title: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether two titles describe the same topic.
-///
-/// True when they share at least two topic tokens, or one token when the
-/// shorter title only has one or two to give. Deliberately conservative: a
-/// missed merge costs a duplicate finding, a false merge silently drops a
-/// real one.
-///
-/// ponytail: token overlap, not embeddings. Upgrade to a similarity model
-/// only if duplicate cross-axis findings show up in the audit log.
-fn titles_share_topic(a: &str, b: &str) -> bool {
+/// Count topic tokens two titles share, and the token count of the shorter
+/// title. Returns `None` when either title has no topic tokens at all.
+fn shared_topic_tokens(a: &str, b: &str) -> Option<(usize, usize)> {
     let ta = topic_tokens(a);
     let tb = topic_tokens(b);
     if ta.is_empty() || tb.is_empty() {
-        return false;
+        return None;
     }
     let shared = ta.iter().filter(|t| tb.contains(t)).count();
-    let shorter = ta.len().min(tb.len());
-    shared >= 2 || (shared == 1 && shorter <= 2)
+    Some((shared, ta.len().min(tb.len())))
+}
+
+/// Whether two titles describe the same topic, judged on title text alone.
+///
+/// True when they share at least two topic tokens, or one token when the
+/// shorter title only has one or two to give.
+///
+/// ponytail: token overlap, not embeddings. Upgrade to a similarity model
+/// only if the audit log shows cross-axis duplicates surviving this gate.
+fn titles_share_topic(a: &str, b: &str) -> bool {
+    // Reflexivity. A title made entirely of vendor terms or stopwords
+    // ("Potential Vulnerability") has no topic tokens at all, and without
+    // this it would refuse to merge with an identical copy of itself.
+    let (ra, rb) = (a.trim(), b.trim());
+    if !ra.is_empty() && ra.eq_ignore_ascii_case(rb) {
+        return true;
+    }
+
+    match shared_topic_tokens(a, b) {
+        Some((shared, shorter)) => shared >= 2 || (shared == 1 && shorter <= 2),
+        None => false,
+    }
+}
+
+/// Whether one line range fully contains the other.
+///
+/// Stronger evidence than the 50% test in [`ranges_overlap_enough`]: two
+/// axes that bracket the same code are far more likely to be describing one
+/// defect than two whose ranges merely graze.
+fn range_contains(a: (u32, u32), b: (u32, u32)) -> bool {
+    let (a_lo, a_hi) = (a.0.min(a.1), a.0.max(a.1));
+    let (b_lo, b_hi) = (b.0.min(b.1), b.0.max(b.1));
+    (a_lo <= b_lo && b_hi <= a_hi) || (b_lo <= a_lo && a_hi <= b_hi)
+}
+
+/// Same-topic test for two findings whose line ranges already overlap.
+///
+/// The title bar drops to a single shared token when one range fully
+/// contains the other, because the range is then carrying real evidence of
+/// its own. Cross-axis phrasings of one defect routinely share only the
+/// noun: "Unsanitized input reaches the SQL query" and "SQL injection via
+/// string concatenation" have exactly `sql` in common, and under a flat
+/// two-token bar the integrator refuses every such pair -- which is #498
+/// again, one layer down.
+///
+/// ponytail: the known cost is that two unrelated defects bracketing the
+/// same lines and sharing one content word ("parser") will merge, keeping
+/// only the higher-confidence body. Tighten by weighting tokens with corpus
+/// IDF if the audit log shows that actually happening.
+fn findings_share_topic(a: &str, a_range: (u32, u32), b: &str, b_range: (u32, u32)) -> bool {
+    if titles_share_topic(a, b) {
+        return true;
+    }
+    range_contains(a_range, b_range)
+        && shared_topic_tokens(a, b).is_some_and(|(shared, _)| shared >= 1)
 }
 
 /// Produce a deterministic slug from a finding title.
@@ -435,13 +482,31 @@ pub fn integrate(
 ///
 /// Returns a Vec of clusters, each containing references to the TaggedFindings.
 fn form_line_clusters(group: &[TaggedFinding]) -> Vec<Vec<&TaggedFinding>> {
+    // Order the group first so the partition is a function of the finding
+    // set, not of the order the executor happened to emit axes in. The
+    // primary key got coarser in #498, which made groups big enough for
+    // greedy order-dependence to actually bite.
+    let mut ordered: Vec<&TaggedFinding> = group.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.finding
+            .line_start
+            .cmp(&b.finding.line_start)
+            .then_with(|| a.finding.line_end.cmp(&b.finding.line_end))
+            .then_with(|| a.finding.title.cmp(&b.finding.title))
+            .then_with(|| a.finding.id.cmp(&b.finding.id))
+    });
+
     let mut clusters: Vec<Vec<&TaggedFinding>> = Vec::new();
 
-    for tf in group {
+    for tf in ordered {
         let mut merged_into = None;
 
         for (ci, cluster) in clusters.iter().enumerate() {
-            if should_merge_into_cluster(tf, cluster) {
+            // Match against the cluster seed only. Matching any member
+            // would let A~B and B~C chain A and C together even when A and
+            // C share nothing -- silently dropping one of two unrelated
+            // defects, which is the failure this whole gate exists to stop.
+            if should_merge_into_cluster(tf, cluster[0]) {
                 merged_into = Some(ci);
                 break;
             }
@@ -457,39 +522,40 @@ fn form_line_clusters(group: &[TaggedFinding]) -> Vec<Vec<&TaggedFinding>> {
     clusters
 }
 
-/// Check if a tagged finding should merge into an existing cluster.
+/// Check if a tagged finding should merge into a cluster, given that
+/// cluster's seed finding.
 ///
 /// The primary key is coarse (file + rule_id-or-category), so this is where
 /// the discrimination happens: overlapping lines are necessary but not
 /// sufficient. Findings that share a `rule_id` are the same rule by
 /// definition; LLM findings additionally have to describe the same topic.
-fn should_merge_into_cluster(tf: &TaggedFinding, cluster: &[&TaggedFinding]) -> bool {
-    let new_range = (tf.finding.line_start, tf.finding.line_end);
-    let new_pattern = tf.finding.canonical_pattern.as_deref();
-    let has_rule_id = tf.finding.rule_id.as_deref().is_some_and(|r| !r.is_empty());
-
-    for existing in cluster {
-        // Short-circuit: identical canonical_pattern.
-        if let (Some(np), Some(ep)) = (new_pattern, existing.finding.canonical_pattern.as_deref())
-            && !np.is_empty()
-            && np == ep
-        {
-            return true;
-        }
-
-        // Line-range overlap check.
-        let existing_range = (existing.finding.line_start, existing.finding.line_end);
-        if !ranges_overlap_enough(new_range, existing_range) {
-            continue;
-        }
-
-        // Same rule_id (guaranteed by the primary key) needs nothing more.
-        if has_rule_id || titles_share_topic(&tf.finding.title, &existing.finding.title) {
-            return true;
-        }
+fn should_merge_into_cluster(tf: &TaggedFinding, seed: &TaggedFinding) -> bool {
+    // Short-circuit: identical canonical_pattern.
+    if let (Some(np), Some(ep)) = (
+        tf.finding.canonical_pattern.as_deref(),
+        seed.finding.canonical_pattern.as_deref(),
+    ) && !np.is_empty()
+        && np == ep
+    {
+        return true;
     }
 
-    false
+    // Line-range overlap check.
+    let new_range = (tf.finding.line_start, tf.finding.line_end);
+    let seed_range = (seed.finding.line_start, seed.finding.line_end);
+    if !ranges_overlap_enough(new_range, seed_range) {
+        return false;
+    }
+
+    // Same rule_id (guaranteed by the primary key) needs nothing more.
+    let has_rule_id = tf.finding.rule_id.as_deref().is_some_and(|r| !r.is_empty());
+    has_rule_id
+        || findings_share_topic(
+            &tf.finding.title,
+            new_range,
+            &seed.finding.title,
+            seed_range,
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -783,24 +849,44 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn topic_shared_when_two_tokens_match() {
-        assert!(titles_share_topic(
-            "SQL injection via string concatenation in build_query",
-            "Unsanitized input reaches SQL query"
-        ));
-    }
-
-    #[test]
-    fn topic_not_shared_for_unrelated_defects() {
-        assert!(!titles_share_topic(
-            "Hardcoded API key in client constructor",
-            "TLS certificate verification disabled"
-        ));
-    }
-
-    #[test]
-    fn topic_shared_for_short_titles_with_one_token() {
+    fn topic_shared_for_one_token_title() {
         assert!(titles_share_topic("Deadlock", "Deadlock on shutdown path"));
+    }
+
+    #[test]
+    fn topic_shared_when_shorter_title_has_exactly_two_tokens() {
+        // Pins the `shorter <= 2` boundary: 2-token title, 1 shared token.
+        assert!(titles_share_topic(
+            "Race condition",
+            "Race in the scheduler"
+        ));
+    }
+
+    #[test]
+    fn topic_not_shared_when_shorter_title_has_three_tokens_and_one_match() {
+        // The other side of the same boundary: 3 tokens needs 2 shared.
+        assert!(!titles_share_topic(
+            "Unbounded retry loop",
+            "Loop variable captured by the closure"
+        ));
+    }
+
+    #[test]
+    fn identical_titles_always_share_topic() {
+        // A title made only of vendor terms slugs to the empty string and
+        // has no topic tokens; it must still match itself.
+        for t in [
+            "Potential Vulnerability",
+            "Detected Issue",
+            "a b",
+            "SQL injection",
+        ] {
+            assert!(titles_share_topic(t, t), "title must match itself: {t}");
+        }
+        assert!(titles_share_topic(
+            "Potential Vulnerability",
+            "potential vulnerability"
+        ));
     }
 
     #[test]
@@ -1003,6 +1089,356 @@ mod tests {
         assert_eq!(output.decisions.len(), 1);
         assert_eq!(output.decisions[0].decision, IntegratorDecision::Merged);
         assert_eq!(output.decisions[0].input_finding_ids.len(), 2);
+
+        // The merge must actually do the merging, not just collapse a row.
+        let merged = &output.findings[0];
+        assert_eq!(merged.severity, Severity::High, "severity = max");
+        let conf = confidence_of(merged);
+        assert!(
+            (conf - 0.88).abs() < 0.01,
+            "noisy-or of 0.7 and 0.6 should be 0.88; got {conf}"
+        );
+        assert_eq!(
+            (merged.line_start, merged.line_end),
+            (40, 52),
+            "bounding range across the cluster"
+        );
+        assert!(
+            merged.description.contains("Also flagged by: correctness"),
+            "merged body should credit the other axis: {}",
+            merged.description
+        );
+        let skills = &output.decisions[0].originating_skills;
+        assert!(skills.contains(&"security".to_owned()));
+        assert!(skills.contains(&"correctness".to_owned()));
+    }
+
+    #[test]
+    fn same_rule_id_merges_regardless_of_title() {
+        // AST/linter findings: the rule_id IS the identity, so an unrelated
+        // title must not block the merge.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .rule_id("ast-grep:rust/ignored-io-result")
+            .title("Ignored io::Result from write")
+            .confidence(0.7)
+            .severity(Severity::Medium)
+            .lines(10, 14)
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .rule_id("ast-grep:rust/ignored-io-result")
+            .title("Discarded return value")
+            .confidence(0.6)
+            .severity(Severity::Medium)
+            .lines(11, 13)
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/io.rs", f1), tagged("src/io.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(output.findings.len(), 1, "same rule_id should merge");
+        assert_eq!(output.decisions[0].decision, IntegratorDecision::Merged);
+    }
+
+    #[test]
+    fn chained_topic_overlap_does_not_transitively_merge_unrelated_defects() {
+        // A~B and B~C, but A and C share nothing. Greedy clustering that
+        // matched any cluster member would collapse all three and silently
+        // drop one real defect.
+        let a = FindingBuilder::new()
+            .id("F001")
+            .title("SQL injection in query builder")
+            .category(Category::Security)
+            .confidence(0.7)
+            .severity(Severity::High)
+            .lines(40, 52)
+            .build();
+        let b = FindingBuilder::new()
+            .id("F002")
+            .title("SQL injection allows credential theft")
+            .category(Category::Security)
+            .confidence(0.7)
+            .severity(Severity::High)
+            .lines(40, 52)
+            .build();
+        let c = FindingBuilder::new()
+            .id("F003")
+            .title("Credential theft via logged access token")
+            .category(Category::Security)
+            .confidence(0.7)
+            .severity(Severity::High)
+            .lines(40, 52)
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![
+                tagged("src/db.rs", a),
+                tagged("src/db.rs", b),
+                tagged("src/db.rs", c),
+            ],
+            &config,
+        );
+
+        assert_eq!(
+            output.findings.len(),
+            2,
+            "A+B merge, C stays separate -- no transitive chaining"
+        );
+    }
+
+    #[test]
+    fn cluster_partition_is_order_independent() {
+        // Same set, different input order, same number of output findings.
+        let make = |order: [usize; 3]| {
+            let build = |i: usize| match i {
+                0 => FindingBuilder::new()
+                    .id("F001")
+                    .title("SQL injection in query builder")
+                    .category(Category::Security)
+                    .confidence(0.7)
+                    .lines(40, 52)
+                    .build(),
+                1 => FindingBuilder::new()
+                    .id("F002")
+                    .title("SQL injection allows credential theft")
+                    .category(Category::Security)
+                    .confidence(0.7)
+                    .lines(40, 52)
+                    .build(),
+                _ => FindingBuilder::new()
+                    .id("F003")
+                    .title("Credential theft via logged access token")
+                    .category(Category::Security)
+                    .confidence(0.7)
+                    .lines(40, 52)
+                    .build(),
+            };
+            order
+                .iter()
+                .map(|&i| tagged("src/db.rs", build(i)))
+                .collect::<Vec<_>>()
+        };
+
+        let config = default_config();
+        let forward = integrate(make([0, 1, 2]), &config);
+        let reversed = integrate(make([2, 1, 0]), &config);
+        let shuffled = integrate(make([1, 2, 0]), &config);
+
+        assert_eq!(forward.findings.len(), reversed.findings.len());
+        assert_eq!(forward.findings.len(), shuffled.findings.len());
+    }
+
+    #[test]
+    fn multi_axis_corpus_produces_at_least_one_merge_decision() {
+        // The #498 canary. Its signature in the audit log was that every
+        // single decision came back PassThrough; assert the distribution,
+        // not just the finding count.
+        let mk = |id: &str, title: &str, cat: Category, skill: &str, lo: u32, hi: u32| {
+            tagged(
+                "src/handler.rs",
+                FindingBuilder::new()
+                    .id(id)
+                    .title(title)
+                    .category(cat)
+                    .confidence(0.7)
+                    .severity(Severity::Medium)
+                    .lines(lo, hi)
+                    .originating_skill(skill)
+                    .build(),
+            )
+        };
+
+        let config = default_config();
+        let output = integrate(
+            vec![
+                mk(
+                    "F1",
+                    "Unbounded request body read into memory",
+                    Category::Reliability,
+                    "security",
+                    20,
+                    30,
+                ),
+                mk(
+                    "F2",
+                    "Request body read without a size bound",
+                    Category::Reliability,
+                    "correctness",
+                    22,
+                    28,
+                ),
+                mk(
+                    "F3",
+                    "Missing timeout on outbound HTTP call",
+                    Category::Reliability,
+                    "reliability",
+                    60,
+                    66,
+                ),
+                mk(
+                    "F4",
+                    "Outbound HTTP call has no timeout",
+                    Category::Reliability,
+                    "correctness",
+                    61,
+                    65,
+                ),
+                mk(
+                    "F5",
+                    "Nested match could be a single let-else",
+                    Category::Maintainability,
+                    "simplicity",
+                    90,
+                    96,
+                ),
+                mk(
+                    "F6",
+                    "Hardcoded credential in the client builder",
+                    Category::Security,
+                    "security",
+                    12,
+                    14,
+                ),
+            ],
+            &config,
+        );
+
+        let merged = output
+            .decisions
+            .iter()
+            .filter(|d| d.decision == IntegratorDecision::Merged)
+            .count();
+        assert_eq!(
+            merged, 2,
+            "both cross-axis pairs should merge: {:#?}",
+            output.decisions
+        );
+        assert_eq!(output.findings.len(), 4);
+    }
+
+    #[test]
+    fn containment_relaxes_the_title_bar_to_one_shared_token() {
+        // Two axes, one defect, one shared noun. Under a flat two-token bar
+        // this pair refuses to merge -- #498 one layer down.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Unsanitized input reaches the SQL query")
+            .category(Category::Correctness)
+            .confidence(0.7)
+            .lines(1, 5)
+            .originating_skill("security")
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("SQL injection via string concatenation")
+            .category(Category::Correctness)
+            .confidence(0.7)
+            .lines(1, 5)
+            .originating_skill("correctness")
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/db.rs", f1), tagged("src/db.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(output.findings.len(), 1);
+        assert_eq!(output.decisions[0].decision, IntegratorDecision::Merged);
+    }
+
+    #[test]
+    fn containment_does_not_merge_titles_with_nothing_in_common() {
+        // The relaxed bar is one *shared* token, not zero. Identical ranges
+        // must still not collapse unrelated defects.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Hardcoded credential in the client builder")
+            .category(Category::Security)
+            .confidence(0.7)
+            .lines(1, 5)
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("Unbounded retry loop on transport failure")
+            .category(Category::Security)
+            .confidence(0.7)
+            .lines(1, 5)
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/db.rs", f1), tagged("src/db.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(output.findings.len(), 2);
+    }
+
+    #[test]
+    fn partial_overlap_keeps_the_two_token_bar() {
+        // Ranges that merely graze (50% of the shorter, no containment) get
+        // no discount: one shared token is not enough.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Unsanitized input reaches the SQL query")
+            .category(Category::Correctness)
+            .confidence(0.7)
+            .lines(10, 19)
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("SQL injection via string concatenation")
+            .category(Category::Correctness)
+            .confidence(0.7)
+            .lines(15, 24)
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/db.rs", f1), tagged("src/db.rs", f2)],
+            &config,
+        );
+
+        assert!(ranges_overlap_enough((10, 19), (15, 24)));
+        assert!(!range_contains((10, 19), (15, 24)));
+        assert_eq!(output.findings.len(), 2);
+    }
+
+    #[test]
+    fn two_findings_different_category_not_merged() {
+        // A genuine different-primary-key case now that kind is category.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Missing bounds check on index")
+            .category(Category::Security)
+            .confidence(0.8)
+            .lines(10, 20)
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("Missing bounds check on index")
+            .category(Category::Performance)
+            .confidence(0.7)
+            .lines(10, 20)
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![tagged("src/main.rs", f1), tagged("src/main.rs", f2)],
+            &config,
+        );
+
+        assert_eq!(
+            output.findings.len(),
+            2,
+            "different categories are different primary keys"
+        );
     }
 
     #[test]
@@ -1040,6 +1476,18 @@ mod tests {
             2,
             "unrelated defects must not merge on line overlap alone"
         );
+        assert_eq!(output.decisions.len(), 2);
+        assert!(
+            output
+                .decisions
+                .iter()
+                .all(|d| d.decision == IntegratorDecision::PassThrough),
+            "both should pass through untouched"
+        );
+        assert!(output.suppressed.is_empty());
+        let titles: Vec<&str> = output.findings.iter().map(|f| f.title.as_str()).collect();
+        assert!(titles.iter().any(|t| t.contains("API key")));
+        assert!(titles.iter().any(|t| t.contains("TLS")));
     }
 
     #[test]
@@ -1069,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn two_findings_same_file_different_kind_not_merged() {
+    fn two_findings_same_file_unrelated_titles_not_merged() {
         let f1 = FindingBuilder::new()
             .id("F001")
             .title("SQL Injection")
@@ -1091,7 +1539,11 @@ mod tests {
             &config,
         );
 
-        assert_eq!(output.findings.len(), 2, "different kinds should not merge");
+        assert_eq!(
+            output.findings.len(),
+            2,
+            "unrelated titles should not merge"
+        );
     }
 
     #[test]
