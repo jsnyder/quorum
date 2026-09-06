@@ -93,7 +93,12 @@ raw=$(curl -sS --fail-with-body \
 #
 # Built into a temp file and moved into place only on success, so a jq failure
 # or a rejected redaction cannot destroy a cassette that was already there.
-tmp_out="$(mktemp "${TMPDIR:-/tmp}/quorum-cassette.XXXXXX")"
+#
+# The temp file lives in out_dir, NOT $TMPDIR: `mv` is only atomic within a
+# single filesystem, and $TMPDIR is frequently on a different one. Across
+# filesystems mv degrades to copy-then-remove, so an interruption would leave
+# exactly the truncated cassette this pattern exists to prevent.
+tmp_out="$(mktemp "$out_dir/.quorum-cassette.XXXXXX")"
 trap 'rm -f "$tmp_out"' EXIT
 
 printf '%s' "$raw" | jq '
@@ -106,8 +111,14 @@ printf '%s' "$raw" | jq '
 # rather than at `cargo test` time, where the failure is far less obvious.
 if ! jq -e '.choices[0].message.content | strings' "$tmp_out" >/dev/null; then
     echo "error: response has no choices[0].message.content; not a usable cassette." >&2
-    echo "       Raw response was:" >&2
-    printf '%s\n' "$raw" | head -c 2000 >&2
+    # The raw body is deliberately NOT printed. This point is reached before
+    # the redaction and key checks below have run, and the body can carry
+    # echoed prompt data or credentials. In a script whose job is redaction,
+    # this is the last place to leak one. Only structural facts are safe here.
+    echo "       Response was $(printf '%s' "$raw" | wc -c | tr -d ' ') bytes with top-level keys:" >&2
+    printf '%s' "$raw" | jq -r 'if type == "object" then (keys | join(", ")) else type end' >&2 2>/dev/null \
+        || echo "       (unparseable as JSON)" >&2
+    echo "       Re-run with the endpoint directly if you need to inspect the body." >&2
     exit 1
 fi
 

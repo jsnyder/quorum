@@ -20,21 +20,55 @@ fn write_fixture(dir: &Path) -> std::path::PathBuf {
     path
 }
 
-/// Layer 1: the helper strips the key, so a review falls back to AST-only and
-/// exits cleanly. This is the property that makes `cargo test` free.
+/// Layer 1: the helper removes the whole network env surface from the child.
+///
+/// Asserts on the `Command` the helper builds rather than on the run's outcome.
+/// An earlier version only checked that a clean file exits 0, which passes on
+/// any machine with no `QUORUM_API_KEY` exported -- i.e. every CI runner -- so
+/// it would have stayed green if `sanitize` stopped stripping tomorrow. A
+/// vacuous assertion inside the guard against vacuous coverage.
+///
+/// `get_envs` yields `(key, None)` for a removal, which is exactly the
+/// instruction that protects a developer who *does* have a key exported.
 #[test]
-fn helper_strips_api_key_so_review_stays_ast_only() {
+fn helper_removes_every_network_env_var_from_the_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cmd = support::quorum(tmp.path());
+
+    let removed: Vec<String> = cmd
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+
+    for var in support::stripped_vars() {
+        // QUORUM_BASE_URL is set to the tripwire rather than removed.
+        if var == "QUORUM_BASE_URL" {
+            continue;
+        }
+        assert!(
+            removed.iter().any(|r| r == var),
+            "support::quorum must remove {var} from the child environment, \
+             so a developer with it exported cannot make a test spend money. \
+             Removed: {removed:?}"
+        );
+    }
+
+    assert!(
+        removed.iter().any(|r| r == "QUORUM_API_KEY"),
+        "QUORUM_API_KEY specifically -- this is the #501 bug"
+    );
+}
+
+/// The stripped child really does fall back to AST-only and exit cleanly.
+///
+/// The end-to-end companion to the assertion above: that one pins the
+/// instruction, this one pins that the instruction produces a working review.
+#[test]
+fn stripped_child_reviews_clean_file_via_ast_only() {
     let tmp = tempfile::tempdir().unwrap();
     let subject = write_fixture(tmp.path());
 
-    // On a machine with QUORUM_API_KEY exported -- the situation this whole
-    // issue is about -- this exercises the strip directly, because the child
-    // would otherwise inherit it. On a machine without one it degrades to a
-    // plain AST-only smoke test. Injecting a key into the parent's own
-    // environment to make it self-contained is not worth it: `set_var` is
-    // unsafe in edition 2024 and would race the other tests in this binary.
-    // `leaked_api_key_dies_in_the_base_url_validator` below covers the
-    // adversarial case without needing that.
     let out = support::quorum(tmp.path())
         .arg("review")
         .arg(&subject)
