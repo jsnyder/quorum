@@ -8,19 +8,14 @@
 //! * `context --help` lists every subcommand (guards against a forgotten
 //!   variant in `ContextCommand`).
 
-use assert_cmd::Command;
-use predicates::prelude::*;
-use tempfile::TempDir;
+mod support;
 
-fn quorum(home: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    // Pin HOME so `ProdDeps::from_env()` resolves against the tempdir and
-    // never pollutes the developer's real `~/.quorum`.
-    cmd.env("HOME", home);
-    cmd.env_remove("USERPROFILE");
-    cmd.env_remove("QUORUM_API_KEY");
-    cmd
-}
+use predicates::prelude::*;
+// `support::quorum` pins both HOME and USERPROFILE to the tempdir, so
+// `ProdDeps::from_env()` resolves there on either platform and never
+// pollutes the developer's real `~/.quorum`.
+use support::quorum;
+use tempfile::TempDir;
 
 #[test]
 fn context_init_creates_sources_toml() {

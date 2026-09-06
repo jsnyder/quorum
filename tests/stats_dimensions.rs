@@ -1,21 +1,11 @@
 //! Integration test: `quorum stats --by-repo / --by-caller / --rolling N` produce dimensional output.
 
-use assert_cmd::Command;
+mod support;
+
 use serde_json::Value;
 use std::path::Path;
+use support::quorum;
 use tempfile::TempDir;
-
-fn quorum(home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("HOME", home);
-    cmd.env_remove("CLAUDE_CODE")
-        .env_remove("CODEX_CI")
-        .env_remove("GEMINI_CLI")
-        .env_remove("AGENT")
-        .env_remove("QUORUM_HOME")
-        .env_remove("QUORUM_API_KEY");
-    cmd
-}
 
 /// Basename of the repo that contains the test fixtures — derived at test time
 /// so checkouts with a different directory name still work.

@@ -5,7 +5,8 @@
 // MCP equivalence is pinned separately in
 // src/mcp/handler.rs::tests::mcp_from_agent_writes_external_provenance.
 
-use assert_cmd::Command;
+mod support;
+
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -37,10 +38,7 @@ fn inbox_and_cli_paths_produce_equivalent_entries() {
         format!("{line}\n"),
     )
     .unwrap();
-    Command::cargo_bin("quorum")
-        .unwrap()
-        .env("QUORUM_HOME", &qhome_a)
-        .env_remove("QUORUM_API_KEY")
+    support::quorum_with_quorum_home(&qhome_a)
         .args(["stats"])
         .assert()
         .success();
@@ -51,10 +49,7 @@ fn inbox_and_cli_paths_produce_equivalent_entries() {
     let home_b = TempDir::new().unwrap();
     let qhome_b = home_b.path().to_path_buf();
     std::fs::create_dir_all(&qhome_b).unwrap();
-    Command::cargo_bin("quorum")
-        .unwrap()
-        .env("QUORUM_HOME", &qhome_b)
-        .env_remove("QUORUM_API_KEY")
+    support::quorum_with_quorum_home(&qhome_b)
         .args([
             "feedback",
             "--file",

@@ -11,7 +11,7 @@
 //! The "missing file -> Ok(empty)" semantic is preserved: `stats` with no
 //! prior data exits 0.
 
-use assert_cmd::Command;
+mod support;
 
 /// Build a HOME directory whose `.quorum/reviews.jsonl` is a *directory*.
 /// With the SQLite backend, this is silently skipped by migration. The
@@ -28,12 +28,12 @@ fn quirky_log_dir() -> tempfile::TempDir {
 /// Stats commands create a fresh quorum.db and report empty data.
 fn assert_stats_flag_succeeds_with_quirky_log(flag_args: &[&str]) {
     let tmp = quirky_log_dir();
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
+    let mut cmd = support::quorum(tmp.path());
     cmd.arg("stats");
     for arg in flag_args {
         cmd.arg(arg);
     }
-    let output = cmd.env("HOME", tmp.path()).output().unwrap();
+    let output = cmd.output().unwrap();
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -68,11 +68,9 @@ fn stats_succeeds_when_log_missing() {
     // Guard against an over-fix that promotes "missing file" to error.
     // An empty quorum.db (or no quorum.db) should return Ok(empty vec).
     let tmp = tempfile::tempdir().unwrap();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = support::quorum(tmp.path())
         .arg("stats")
         .arg("--by-repo")
-        .env("HOME", tmp.path())
         .output()
         .unwrap();
     assert_eq!(

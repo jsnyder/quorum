@@ -5,20 +5,11 @@
 //! this file kills the "forgot to wire helper" mutation by running the real
 //! binary and observing end-to-end behavior.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
-use tempfile::TempDir;
+mod support;
 
-fn quorum_bin() -> std::path::PathBuf {
-    // Same env var assert_cmd uses; cargo sets it for the integration target.
-    let mut path = std::path::PathBuf::from(env!("CARGO_BIN_EXE_quorum"));
-    if !path.exists() {
-        // Fall back to assert_cmd's lookup if the env var isn't honored on
-        // some toolchains.
-        path = assert_cmd::cargo::cargo_bin("quorum");
-    }
-    path
-}
+use std::io::Read;
+use std::process::Stdio;
+use tempfile::TempDir;
 
 /// Run `quorum context list` with stdout piped to a reader that closes
 /// immediately. This forces a `BrokenPipe` on the child's stdout, exercising
@@ -29,9 +20,7 @@ fn context_list_with_closed_stdout_exits_zero() {
     let qhome = home.path().join(".quorum");
     std::fs::create_dir_all(&qhome).expect("failed to create .quorum directory");
 
-    let mut child = Command::new(quorum_bin())
-        .env("QUORUM_HOME", qhome.as_os_str())
-        .env_remove("QUORUM_API_KEY")
+    let mut child = support::quorum_std_with_quorum_home(&qhome)
         .args(["context", "list"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -80,9 +69,7 @@ fn context_list_with_open_stdout_exits_zero_and_writes_to_stdout() {
     let qhome = home.path().join(".quorum");
     std::fs::create_dir_all(&qhome).expect("failed to create .quorum directory");
 
-    let mut child = Command::new(quorum_bin())
-        .env("QUORUM_HOME", qhome.as_os_str())
-        .env_remove("QUORUM_API_KEY")
+    let mut child = support::quorum_std_with_quorum_home(&qhome)
         .args(["context", "list"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

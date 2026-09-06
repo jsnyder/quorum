@@ -1,17 +1,16 @@
+mod support;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+/// Empty HOME so the calibrator has no data to load.
+///
+/// Issue #23 -- `review_unknown_extension_llm_only_fallback` asserting exit 0
+/// on the assumption that no LLM is configured -- was the first symptom of
+/// #501. The assumption is now enforced by `support::quorum` rather than by
+/// this file remembering one `env_remove`.
 fn quorum() -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    // Isolate from user feedback store — use empty HOME so calibrator has no data
-    cmd.env("HOME", "/tmp/quorum-test-home");
-    // Isolate from developer shell so tests don't invoke real LLM (see issue #23)
-    cmd.env_remove("QUORUM_API_KEY");
-    // Isolate from CI compact-mode triggers so piped output remains JSON
-    cmd.env_remove("GITHUB_ACTIONS");
-    cmd.env_remove("CLAUDE_CODE");
-    cmd.env_remove("CODEX_CI");
-    cmd
+    support::quorum(std::path::Path::new("/tmp/quorum-test-home"))
 }
 
 #[test]

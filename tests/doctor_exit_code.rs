@@ -7,6 +7,8 @@
 //! substring matcher) and as proof that the typed signal flows correctly
 //! all the way to `process::exit`.
 
+mod support;
+
 use assert_cmd::Command;
 
 fn home_with_no_sources_toml() -> tempfile::TempDir {
@@ -15,14 +17,14 @@ fn home_with_no_sources_toml() -> tempfile::TempDir {
     tmp
 }
 
-/// Build a `Command` with the home dir isolated to `tmp`. Sets BOTH
-/// `HOME` (Unix-canonical) and `USERPROFILE` (Windows-canonical, preferred
-/// by `ProdDeps::from_env` per src/context/cli.rs:170-171) so the test
-/// can't accidentally leak into the developer's real profile on Windows.
+/// Build a `Command` with the home dir isolated to `tmp`.
+///
+/// `support::quorum` sets BOTH `HOME` (Unix-canonical) and `USERPROFILE`
+/// (Windows-canonical, preferred by `ProdDeps::from_env` per
+/// src/context/cli.rs:170-171) so the test can't accidentally leak into the
+/// developer's real profile on Windows.
 fn quorum_cmd_with_home(tmp: &tempfile::TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("HOME", tmp.path()).env("USERPROFILE", tmp.path());
-    cmd
+    support::quorum(tmp.path())
 }
 
 #[test]

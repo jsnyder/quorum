@@ -1,4 +1,12 @@
-use assert_cmd::Command;
+//! Integration tests for `quorum review --parallel N`.
+//!
+//! Every spawn goes through `support::quorum`, which strips the LLM env
+//! surface. Before #501 these six tests spawned the binary directly and did a
+//! full paid LLM review each on any machine with `QUORUM_API_KEY` set: 694s
+//! here against 32s for the same test count in `stats_dimensions.rs`, whose
+//! only structural difference was env isolation.
+
+mod support;
 
 #[test]
 fn parallel_flag_accepted() {
@@ -6,8 +14,7 @@ fn parallel_flag_accepted() {
     let path = dir.path().join("test.rs");
     std::fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
 
-    Command::cargo_bin("quorum")
-        .unwrap()
+    support::quorum(dir.path())
         .arg("review")
         .arg("--parallel")
         .arg("4")
@@ -22,8 +29,7 @@ fn parallel_1_sequential() {
     let path = dir.path().join("test.py");
     std::fs::write(&path, "x = 1\n").unwrap();
 
-    Command::cargo_bin("quorum")
-        .unwrap()
+    support::quorum(dir.path())
         .arg("review")
         .arg("--parallel")
         .arg("1")
@@ -38,8 +44,7 @@ fn parallel_0_rejected() {
     let path = dir.path().join("test.rs");
     std::fs::write(&path, "fn main() {}\n").unwrap();
 
-    Command::cargo_bin("quorum")
-        .unwrap()
+    support::quorum(dir.path())
         .arg("review")
         .arg("--parallel")
         .arg("0")
@@ -57,8 +62,7 @@ fn parallel_json_output_valid() {
         std::fs::write(&path, format!("x = {}\n", i)).unwrap();
     }
 
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = support::quorum(dir.path())
         .arg("review")
         .arg("--parallel")
         .arg("2")
@@ -83,8 +87,7 @@ fn parallel_handles_missing_file() {
     std::fs::write(&good, "fn main() {}\n").unwrap();
     let bad = dir.path().join("nonexistent.rs");
 
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
+    let output = support::quorum(dir.path())
         .arg("review")
         .arg("--parallel")
         .arg("2")
@@ -103,14 +106,15 @@ fn parallel_handles_missing_file() {
 
 #[test]
 fn parallel_multiple_files_local_only() {
-    // Test parallel review of multiple files without API key (local AST only)
+    // AST-only is now guaranteed by the helper rather than assumed: this test
+    // previously carried a "without API key" comment that nothing enforced.
     let dir = tempfile::tempdir().unwrap();
     for i in 1..=5 {
         let path = dir.path().join(format!("mod{}.rs", i));
         std::fs::write(&path, format!("fn func{}() {{ let x = {}; }}\n", i, i)).unwrap();
     }
 
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
+    let mut cmd = support::quorum(dir.path());
     cmd.arg("review").arg("--parallel").arg("3");
     for i in 1..=5 {
         cmd.arg(dir.path().join(format!("mod{}.rs", i)));

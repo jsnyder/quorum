@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::thread;
@@ -27,10 +28,7 @@ fn unhealthy_daemon_is_reported_without_false_fallback_message() {
     let home = TempDir::new().unwrap();
     let file = home.path().join("input.rs");
     std::fs::write(&file, "fn main() {}\n").unwrap();
-    let output = Command::cargo_bin("quorum")
-        .unwrap()
-        .env("QUORUM_HOME", home.path())
-        .env_remove("QUORUM_API_KEY")
+    let output = support::quorum_with_quorum_home(home.path())
         .args([
             "review",
             "--daemon",

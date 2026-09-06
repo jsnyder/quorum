@@ -111,6 +111,33 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 - CLI design follows DESIGN.md (adapted from clig.dev principles)
 - Architecture documented in docs/ARCHITECTURE.md
 
+## Integration tests (#501)
+
+**Tests only spend money if explicitly asked.** No `cargo test` path makes a
+paid call, in any environment, with any combination of env vars set. A present
+`QUORUM_API_KEY` is deliberately not sufficient -- present-key-means-live was
+the bug (#501, and its first symptom #23, where one flaky test was the visible
+tip of a 694s-vs-32s runtime difference).
+
+Every integration test spawns the binary through `tests/support/mod.rs`:
+
+| helper | use for |
+|---|---|
+| `support::quorum(home)` | the default; `HOME`-isolated, AST-only |
+| `support::quorum_with_quorum_home(dir)` | `QUORUM_HOME`-isolated |
+| `support::quorum_std(home)` | needs `Stdio` config or `spawn` |
+| `support::with_cassette(home, name, f)` | exercises the LLM path off a recorded response (free) |
+| `support::quorum_live(home)` | real paid call; requires `QUORUM_TEST_LIVE=1` |
+
+`tests/spawn_helper_guard.rs` fails if a test reaches the binary any other way,
+so a new file that forgets goes red on its first run rather than quietly
+billing whoever has a dev setup. `tests/no_live_calls.rs` pins the
+deny-by-default property itself.
+
+Cassettes live in `tests/fixtures/llm/` and are re-recorded by hand with
+`scripts/record-llm-cassette.sh` (which spends money, and redacts before
+writing). There is no record mode in the harness on purpose.
+
 ## Feedback
 
 **After every quorum review, record a verdict for every finding before moving on.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Triage each finding into the appropriate verdict with `--reason` explaining the call. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.

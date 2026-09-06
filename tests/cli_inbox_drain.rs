@@ -2,15 +2,15 @@
 // inbox BEFORE loading the feedback store, and that the drained entry is
 // visible in the stats output (not just on disk).
 
+mod support;
+
 use assert_cmd::Command;
 use tempfile::TempDir;
 
+/// Never make a real LLM call from tests -- enforced by `support::quorum_*`
+/// rather than by this file remembering an `env_remove` (#501).
 fn quorum_home(qhome: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("QUORUM_HOME", qhome);
-    // Never make a real LLM call from tests.
-    cmd.env_remove("QUORUM_API_KEY");
-    cmd
+    support::quorum_with_quorum_home(qhome)
 }
 
 #[test]
@@ -87,11 +87,8 @@ fn concurrent_drain_archives_exactly_once() {
     let line = r#"{"file_path":"x.rs","finding_title":"Bug","finding_category":"security","verdict":"tp","reason":"r","agent":"pal","agent_model":null,"confidence":null}"#;
     std::fs::write(inbox.join("drop.jsonl"), format!("{line}\n")).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_quorum");
     let spawn = || {
-        std::process::Command::new(bin)
-            .env("QUORUM_HOME", &qhome)
-            .env_remove("QUORUM_API_KEY")
+        support::quorum_std_with_quorum_home(&qhome)
             .args(["stats"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
