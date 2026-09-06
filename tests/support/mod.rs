@@ -170,9 +170,11 @@ pub fn quorum(home: &Path) -> Command {
 /// `QUORUM_HOME` would leave the developer's real profile readable, so
 /// stripping the env var would not actually close that outbound path.
 pub fn quorum_with_quorum_home(home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").expect("quorum binary builds");
-    cmd.env("HOME", home).env("USERPROFILE", home);
-    sanitize(&mut cmd);
+    // Delegates rather than repeating the setup. The earlier version built its
+    // own Command and forgot to pin HOME, which left Context7's
+    // `~/.context7_key` fallback reading the developer's real profile. One
+    // constructor means one place that can be wrong.
+    let mut cmd = quorum(home);
     cmd.env("QUORUM_HOME", home); // after sanitize, which removes it
     cmd
 }
@@ -204,9 +206,8 @@ pub fn quorum_std(home: &Path) -> std::process::Command {
 ///
 /// Pins `HOME` for the same reason as [`quorum_with_quorum_home`].
 pub fn quorum_std_with_quorum_home(home: &Path) -> std::process::Command {
-    let mut cmd = quorum_std_bare();
-    cmd.env("HOME", home).env("USERPROFILE", home);
-    sanitize_std(&mut cmd);
+    // Delegates, for the same reason as `quorum_with_quorum_home`.
+    let mut cmd = quorum_std(home);
     cmd.env("QUORUM_HOME", home); // after sanitize, which removes it
     cmd
 }

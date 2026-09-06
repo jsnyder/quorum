@@ -54,9 +54,19 @@ fn helper_removes_every_network_env_var_from_the_child() {
         );
     }
 
+    // `stripped_vars()` is both the thing under test and the source of truth
+    // for the loop above, so deleting a var from that list would make the loop
+    // pass trivially. These two are named literally so that cannot happen to
+    // the vars that actually unlock a paid call.
     assert!(
         removed.iter().any(|r| r == "QUORUM_API_KEY"),
         "QUORUM_API_KEY specifically -- this is the #501 bug"
+    );
+    assert!(
+        removed.iter().any(|r| r == "QUORUM_JUDGE"),
+        "QUORUM_JUDGE specifically -- it triggers a SECOND paid call on top of \
+         the review, and is the var most likely to be dropped from \
+         stripped_vars() by someone who does not know why it is there"
     );
 }
 

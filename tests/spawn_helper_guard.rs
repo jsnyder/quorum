@@ -14,6 +14,17 @@
 //!
 //! Same shape as `every_telemetry_field_is_consumed_or_allowlisted` (#491):
 //! the guard fails until someone makes a deliberate decision.
+//!
+//! # Scope
+//!
+//! This is a tripwire, not a sandbox. It matches source text, so a launch form
+//! it does not recognise -- a path built at runtime, a shell indirection, a
+//! future `assert_cmd` spelling -- passes unnoticed. That is inherent to
+//! scanning source rather than intercepting execution, and it is an acceptable
+//! ceiling: the job is to catch the honest mistake of a test author who does
+//! not know the helper exists, not to stop someone determined to evade it.
+//! Layer 1 (stripping in the constructor) and layer 2 (the tripwire base_url)
+//! are what hold if this is bypassed.
 
 use std::path::Path;
 
@@ -113,7 +124,7 @@ fn no_integration_test_spawns_quorum_outside_the_support_helper() {
          has no key -- never sees it.\n\n\
          Offending sites:\n  {}\n\n\
          Fix: add `mod support;` and call `support::quorum(home)`. If you need a \
-         real endpoint, use `support::quorum_with_cassette()` (replays a recorded \
+         real endpoint, use `support::with_cassette()` (replays a recorded \
          response, costs nothing) or `support::quorum_live()` (requires \
          QUORUM_TEST_LIVE=1 and spends real money).",
         offenders.join("\n  ")

@@ -48,14 +48,50 @@ model="${QUORUM_MODEL:-gpt-5.6}"
 # to the same bar quorum's own validate_base_url does: https, or explicit
 # loopback for a local gateway. Without this, a stale QUORUM_BASE_URL sends the
 # key somewhere in cleartext.
+#
+# The host is PARSED, not glob-matched. A previous version tested
+# `http://127.0.0.1:*` against the whole URL, which `*` made trivially
+# bypassable: in `http://127.0.0.1:80@attacker.example` everything before the
+# `@` is RFC 3986 userinfo, so the real host is attacker.example -- and the
+# check meant to prevent cleartext key disclosure was admitting exactly that.
+# Glob-matching a URL cannot be made safe; authority parsing can.
+authority="${base_url#*://}"
+authority="${authority%%/*}"
+
+# Embedded credentials are rejected outright, mirroring the always-on rule in
+# validate_base_url (src/llm_client.rs). This kills the userinfo class rather
+# than special-casing it, and no legitimate endpoint needs them here.
+case "$authority" in
+    *@*)
+        echo "error: base_url must not contain embedded credentials (user@host)." >&2
+        echo "       Pass the API key via QUORUM_API_KEY instead." >&2
+        exit 2
+        ;;
+esac
+
+# Strip the port to get the bare host. Bracketed IPv6 literals keep their
+# brackets, so `[::1]:9` yields `[::1]` rather than `[`.
+case "$authority" in
+    \[*) host="${authority%%\]*}]" ;;
+    *) host="${authority%%:*}" ;;
+esac
+
 case "$base_url" in
     https://*) ;;
-    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|'http://[::1]'*)
-        echo "warning: recording over plaintext http to a local endpoint" >&2
+    http://*)
+        case "$host" in
+            127.0.0.1|localhost|'[::1]')
+                echo "warning: recording over plaintext http to a local endpoint" >&2
+                ;;
+            *)
+                echo "error: refusing to send QUORUM_API_KEY to '$host' over plaintext http." >&2
+                echo "       Use https, or a loopback address for a local gateway." >&2
+                exit 2
+                ;;
+        esac
         ;;
     *)
-        echo "error: refusing to send QUORUM_API_KEY to '$base_url'." >&2
-        echo "       Use https, or a loopback address for a local gateway." >&2
+        echo "error: base_url must use http or https, got '$base_url'." >&2
         exit 2
         ;;
 esac
