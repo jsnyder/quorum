@@ -2025,6 +2025,7 @@ mod tests {
                 finding_kind: "security".into(),
             },
             input_finding_ids: vec!["f1".into()],
+            input_titles: vec!["Test finding".into()],
             input_confidences: vec![0.8],
             input_severities: vec![pre.into()],
             calibrator_weights: Default::default(),

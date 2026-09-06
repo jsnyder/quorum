@@ -427,6 +427,12 @@ pub struct IntegratorDecisionRecord {
     pub decision: IntegratorDecision,
     pub cluster_key: ClusterKey,
     pub input_finding_ids: Vec<String>,
+    /// Titles of the clustered inputs, in the same order as
+    /// `input_finding_ids`. Without these a merge row names two ULIDs and
+    /// nothing else, so no one can tell a correct merge from a wrong one by
+    /// reading the log -- which is how #498 stayed invisible.
+    #[serde(default)]
+    pub input_titles: Vec<String>,
     pub input_confidences: Vec<f64>,
     pub input_severities: Vec<String>,
     pub calibrator_weights: HashMap<String, f64>,
@@ -651,6 +657,10 @@ mod tests {
                 finding_kind: "sql-injection".into(),
             },
             input_finding_ids: vec!["f1".into(), "f2".into()],
+            input_titles: vec![
+                "SQL injection in query builder".into(),
+                "Unsanitized input reaches SQL query".into(),
+            ],
             input_confidences: vec![0.85, 0.72],
             input_severities: vec!["high".into(), "medium".into()],
             calibrator_weights: HashMap::from([
