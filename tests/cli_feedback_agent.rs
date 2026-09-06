@@ -204,8 +204,12 @@ fn human_path_normalizes_blank_category() {
     .success();
     let fb = std::fs::read_to_string(home.path().join(".quorum/feedback.jsonl")).unwrap();
     assert!(
-        fb.contains(r#""finding_category":"manual""#),
-        "blank --category must collapse to manual default: {fb}"
+        fb.contains(r#""finding_category":"""#),
+        "whitespace --category must collapse to blank, not a placeholder (#499): {fb}"
+    );
+    assert!(
+        !fb.contains("manual"),
+        "must not write the old placeholder: {fb}"
     );
 }
 

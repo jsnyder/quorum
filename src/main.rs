@@ -3679,10 +3679,14 @@ fn run_feedback_inner(
         finding_title: finding.to_string(),
         // Mirror record_external/MCP normalization: trim and treat blank as
         // missing so analytics buckets don't fragment by ingestion path.
+        // #499: blank, never "manual". A placeholder that parses as a real
+        // category is worse than an absent one -- the precedent matcher can
+        // skip a blank, but it cannot tell a laundered default from a real
+        // Maintainability verdict.
         finding_category: category
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("manual")
+            .unwrap_or_default()
             .to_string(),
         verdict: verdict.clone(),
         reason: reason.to_string(),
@@ -4769,7 +4773,7 @@ mod feedback_tests {
     }
 
     #[test]
-    fn feedback_category_is_manual() {
+    fn feedback_category_defaults_to_blank_not_manual() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("feedback.jsonl");
         let (exit_code, _) = run_feedback_inner(
@@ -4789,7 +4793,11 @@ mod feedback_tests {
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("\"finding_category\":\"manual\""));
+        // #499: an omitted --category records blank. "manual" parsed as a
+        // real Maintainability category and false-matched every genuine
+        // Maintainability precedent; blank correctly matches nothing.
+        assert!(contents.contains("\"finding_category\":\"\""));
+        assert!(!contents.contains("manual"));
     }
 
     #[test]
