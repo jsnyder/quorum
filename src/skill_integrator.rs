@@ -501,6 +501,11 @@ fn form_line_clusters(group: &[TaggedFinding]) -> Vec<Vec<&TaggedFinding>> {
             .then_with(|| a.finding.id.cmp(&b.finding.id))
     });
 
+    // ponytail: O(n^2) in the group size, and #498 made groups bigger by
+    // widening the primary key to (file, rule_id). n is findings-per-file
+    // per review -- single digits in practice, 22 across four files in the
+    // measurement run. Index by line range if a file ever produces enough
+    // findings for this to show up in duration_ms.
     let mut clusters: Vec<Vec<&TaggedFinding>> = Vec::new();
 
     for tf in ordered {
