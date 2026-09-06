@@ -973,14 +973,7 @@ pub async fn review_file(
 
     let mut merged = merged;
     if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-        let repo_root = find_project_root(file_path);
-        let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-        let diff_lines: Vec<(u32, u32)> = diff_ranges
-            .iter()
-            .filter(|(path, _)| resolver.matches(path))
-            .flat_map(|(_, ranges)| ranges.clone())
-            .collect();
-        classify_in_diff(&mut merged, &diff_lines);
+        classify_findings_for_file(&mut merged, file_path, diff_ranges);
     }
 
     // Calibrate using feedback precedent (prefer FeedbackIndex for semantic matching)
@@ -1476,6 +1469,36 @@ fn lang_name_from_path(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_lowercase()
+}
+
+/// Resolve `diff_ranges` against one reviewed file and stamp its findings.
+///
+/// #486: this is the seam every finding must pass through, not just the ones
+/// `review_file` merges itself. The skill/integrator path in `main.rs` appends
+/// its findings to the `FileReviewResult` *after* `review_file` has returned,
+/// so before this existed those findings -- every LLM finding in a
+/// multi-axis review -- kept `in_diff: None` while AST and linter findings on
+/// the same run were stamped. `None` is not neutral downstream: human output
+/// and `compute_exit_code` both treat it as in-diff, while the GitHub reporter
+/// treats it as out-of-diff, so unstamped findings were being counted two
+/// different ways in the same run.
+///
+/// Path resolution lives here rather than at the call sites so the three
+/// callers cannot drift apart on how a diff path is matched to a review path.
+pub fn classify_findings_for_file(
+    findings: &mut [Finding],
+    file_path: &Path,
+    diff_ranges: &hydration::DiffRanges,
+) {
+    let file_str = file_path.to_string_lossy().to_string();
+    let repo_root = find_project_root(file_path);
+    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+    let diff_lines: Vec<(u32, u32)> = diff_ranges
+        .iter()
+        .filter(|(path, _)| resolver.matches(path))
+        .flat_map(|(_, ranges)| ranges.clone())
+        .collect();
+    classify_in_diff(findings, &diff_lines);
 }
 
 /// Stamp each finding with `in_diff` based on whether the finding's anchor
@@ -2940,6 +2963,88 @@ mod tests {
             candidates[0].entry.finding_title, "newer",
             "newer timestamp wins ties"
         );
+    }
+
+    // -- #486: classify_findings_for_file, the seam skill findings must use --
+
+    use crate::finding::FindingBuilder;
+    use crate::hydration::DiffRanges;
+
+    fn skill_finding(title: &str, line: u32) -> Finding {
+        let mut f = FindingBuilder::new().title(title).build();
+        f.line_start = line;
+        f.line_end = line;
+        f.source = crate::finding::Source::Llm("gpt-5.6".into());
+        f.originating_skill = Some("correctness".into());
+        f
+    }
+
+    /// A real on-disk repo so the path resolver has something to canonicalize.
+    /// Absolute review paths, so no `set_current_dir` and no dependency on the
+    /// process-wide CWD_LOCK (see #497 -- the per-module locks do not exclude
+    /// each other, so a test that mutates cwd is a hazard to every other test).
+    fn temp_repo_with(file: &str) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let full = tmp.path().join(file);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "").unwrap();
+        let abs = full.to_string_lossy().to_string();
+        (tmp, abs)
+    }
+
+    // The bug: findings appended after review_file (the skill/integrator path
+    // in main.rs) never reached classify_in_diff, so they stayed None while
+    // AST and linter findings on the same run were stamped.
+    #[test]
+    fn classify_findings_for_file_stamps_llm_findings() {
+        let (tmp, abs) = temp_repo_with("src/a.rs");
+        let mut findings = vec![skill_finding("inside the hunk", 12)];
+        let diff_ranges: DiffRanges = vec![("src/a.rs".into(), vec![(10, 20)])];
+        classify_findings_for_file(&mut findings, Path::new(&abs), &diff_ranges);
+        drop(tmp);
+        assert_eq!(
+            findings[0].in_diff,
+            Some(true),
+            "an LLM/skill finding inside a changed hunk must be stamped true"
+        );
+    }
+
+    // Correctness, not mere presence: a finding stamped true when it is
+    // outside the diff is worse than one left unstamped, because unstamped is
+    // visibly unknown while wrong is invisibly wrong.
+    #[test]
+    fn classify_findings_for_file_stamps_false_when_outside_the_hunk() {
+        let (tmp, abs) = temp_repo_with("src/a.rs");
+        let mut findings = vec![
+            skill_finding("inside", 12),
+            skill_finding("outside", 99),
+            skill_finding("boundary start", 10),
+            skill_finding("boundary end", 20),
+            skill_finding("just past the end", 21),
+        ];
+        let diff_ranges: DiffRanges = vec![("src/a.rs".into(), vec![(10, 20)])];
+        classify_findings_for_file(&mut findings, Path::new(&abs), &diff_ranges);
+        drop(tmp);
+        let got: Vec<_> = findings.iter().map(|f| f.in_diff).collect();
+        assert_eq!(
+            got,
+            vec![Some(true), Some(false), Some(true), Some(true), Some(false)],
+            "hunk boundaries are inclusive; everything else must be false, never true"
+        );
+    }
+
+    // A diff that does not mention this file must mark everything pre-existing,
+    // not leave it unknown. Guarded against passing for the wrong reason by the
+    // positive assertion above: if resolution were simply broken, that one fails.
+    #[test]
+    fn classify_findings_for_file_marks_all_false_when_file_absent_from_diff() {
+        let (tmp, abs) = temp_repo_with("src/a.rs");
+        let mut findings = vec![skill_finding("anything", 12)];
+        let diff_ranges: DiffRanges = vec![("src/other.rs".into(), vec![(10, 20)])];
+        classify_findings_for_file(&mut findings, Path::new(&abs), &diff_ranges);
+        drop(tmp);
+        assert_eq!(findings[0].in_diff, Some(false));
     }
 
     // -- classify_in_diff --
