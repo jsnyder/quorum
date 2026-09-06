@@ -1,3 +1,5 @@
+mod support;
+
 /// Integration test for `quorum calibrate --backfill-paths --dry-run`.
 #[test]
 fn calibrate_backfill_paths_dry_run() {
@@ -19,8 +21,7 @@ fn calibrate_backfill_paths_dry_run() {
     )
     .unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_quorum"))
-        .env("QUORUM_HOME", dir.path())
+    let output = support::quorum_with_quorum_home(dir.path())
         .args(["calibrate", "--backfill-paths", "--dry-run"])
         .output()
         .unwrap();
@@ -68,8 +69,7 @@ fn calibrate_backfill_paths_writes_file() {
     )
     .unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_quorum"))
-        .env("QUORUM_HOME", dir.path())
+    let output = support::quorum_with_quorum_home(dir.path())
         .args(["calibrate", "--backfill-paths"])
         .output()
         .unwrap();

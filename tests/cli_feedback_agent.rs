@@ -1,16 +1,14 @@
 // Task 7 (issue #32): `quorum feedback --from-agent <name>` writes an External
 // provenance entry; the default path still writes Human.
 
-use assert_cmd::Command;
+mod support;
+
 use tempfile::TempDir;
 
 fn run_feedback(home: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Assert {
     let qhome = home.join(".quorum");
     std::fs::create_dir_all(&qhome).unwrap();
-    Command::cargo_bin("quorum")
-        .unwrap()
-        .env("QUORUM_HOME", qhome.as_os_str())
-        .env_remove("QUORUM_API_KEY")
+    support::quorum_with_quorum_home(&qhome)
         .args(["feedback"])
         .args(args)
         .assert()

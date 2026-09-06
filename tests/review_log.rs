@@ -1,18 +1,10 @@
 //! Integration test: running `quorum review` writes a record to quorum.db.
 
-use assert_cmd::Command;
-use rusqlite::Connection;
-use tempfile::TempDir;
+mod support;
 
-fn quorum(home: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("HOME", home);
-    cmd.env_remove("CLAUDE_CODE")
-        .env_remove("CODEX_CI")
-        .env_remove("GEMINI_CLI")
-        .env_remove("AGENT");
-    cmd
-}
+use rusqlite::Connection;
+use support::quorum;
+use tempfile::TempDir;
 
 #[test]
 fn review_writes_review_to_sqlite() {

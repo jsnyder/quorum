@@ -2,23 +2,12 @@
 //! log (#491). The reader existed and was tested for months with no production
 //! caller; these tests pin the caller in place.
 
-use assert_cmd::Command;
+mod support;
+
 use serde_json::Value;
 use std::path::Path;
+use support::quorum;
 use tempfile::TempDir;
-
-fn quorum(home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("quorum").unwrap();
-    cmd.env("HOME", home);
-    cmd.env_remove("CLAUDE_CODE")
-        .env_remove("CODEX_CI")
-        .env_remove("GEMINI_CLI")
-        .env_remove("AGENT")
-        .env_remove("GITHUB_ACTIONS")
-        .env_remove("QUORUM_HOME")
-        .env_remove("QUORUM_API_KEY");
-    cmd
-}
 
 fn invocation(skill: &str, findings: u32, seq: u32, parse_error: Option<&str>) -> String {
     let parse = match parse_error {
