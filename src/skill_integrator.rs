@@ -85,32 +85,33 @@ pub struct IntegratorOutput {
 // Primary clustering key
 // ---------------------------------------------------------------------------
 
-/// Primary composite key for clustering: `(file_path, finding_kind)`.
+/// Primary composite key for clustering: `(file_path, rule_id)`.
 ///
-/// Two findings must share the same primary key to be considered for merging.
-/// Within a primary key group, the secondary line-overlap check determines
-/// whether they actually merge.
+/// Deliberately coarse. Findings from a rule engine group by that rule;
+/// every LLM finding in a file shares one bucket (`rule_id: None`) and is
+/// discriminated entirely by [`should_merge_into_cluster`].
+///
+/// #498 keyed this on the whole title slug, so no two axes ever shared a
+/// key. Keying it on `category` was no better: category is assigned BY the
+/// axis, so a security axis and a correctness axis describing one defect
+/// still land in different buckets. Anything axis-correlated in the primary
+/// key reproduces the bug. The line-overlap and title-topic checks are what
+/// discriminate.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PrimaryKey {
     file_path: String,
-    kind: String,
+    rule_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Public helpers
 // ---------------------------------------------------------------------------
 
-/// Extract the cluster kind key from a finding.
+/// Human-readable kind label for a finding, recorded on the audit row.
 ///
 /// Returns `rule_id` if present (AST/linter findings), otherwise the
-/// finding's `category`.
-///
-/// LLM skill findings carry no `rule_id`, and this used to fall back to a
-/// slug of the whole title (#498). Two axes describing one defect in
-/// different words then landed in different primary groups, so every group
-/// was size 1 and the merge path was unreachable. `category` is the coarse
-/// taxonomy the axes share; [`should_merge_into_cluster`] does the fine
-/// discrimination via line overlap plus title-topic overlap.
+/// finding's `category`. This is a LABEL, not the clustering key -- see
+/// [`PrimaryKey`] for why nothing axis-correlated may gate the merge.
 pub(crate) fn finding_kind(finding: &Finding) -> String {
     if let Some(ref rule_id) = finding.rule_id
         && !rule_id.is_empty()
@@ -390,13 +391,17 @@ pub fn integrate(
         };
     }
 
-    // Step 1: Group by primary key (file_path, finding_kind).
+    // Step 1: Group by primary key (file_path, rule_id).
     let mut primary_groups: BTreeMap<PrimaryKey, Vec<TaggedFinding>> = BTreeMap::new();
     for tf in tagged_findings {
-        let kind = finding_kind(&tf.finding);
         let key = PrimaryKey {
             file_path: tf.file_path.clone(),
-            kind,
+            rule_id: tf
+                .finding
+                .rule_id
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .cloned(),
         };
         primary_groups.entry(key).or_default().push(tf);
     }
@@ -709,9 +714,13 @@ fn process_cluster(
         cluster_key: ClusterKey {
             file_path: primary_key.file_path.clone(),
             line_range: (line_start, line_end),
-            finding_kind: primary_key.kind.clone(),
+            finding_kind: finding_kind(&output),
         },
         input_finding_ids: cluster.iter().map(|tf| tf.finding.id.clone()).collect(),
+        input_titles: cluster
+            .iter()
+            .map(|tf| sanitize_output(&tf.finding.title))
+            .collect(),
         input_confidences: cluster
             .iter()
             .map(|tf| confidence_of(&tf.finding))
@@ -1411,33 +1420,99 @@ mod tests {
     }
 
     #[test]
-    fn two_findings_different_category_not_merged() {
-        // A genuine different-primary-key case now that kind is category.
+    fn two_axes_with_different_categories_still_merge() {
+        // Observed shape from a real 3-axis review of src/dep_manifest.rs:
+        // the correctness axis reported [419,436] as Correctness and the
+        // simplicity axis reported [422,440] as Maintainability. Category
+        // is assigned BY the axis, so keying on it partitions by axis just
+        // as the title slug did -- the merge must not depend on it.
         let f1 = FindingBuilder::new()
             .id("F001")
-            .title("Missing bounds check on index")
-            .category(Category::Security)
-            .confidence(0.8)
-            .lines(10, 20)
+            .title("Manifest parse silently drops malformed entries")
+            .category(Category::Correctness)
+            .confidence(0.7)
+            .severity(Severity::Medium)
+            .lines(419, 436)
+            .originating_skill("correctness")
             .build();
         let f2 = FindingBuilder::new()
             .id("F002")
-            .title("Missing bounds check on index")
-            .category(Category::Performance)
-            .confidence(0.7)
-            .lines(10, 20)
+            .title("Malformed manifest entries are dropped without a warning")
+            .category(Category::Maintainability)
+            .confidence(0.6)
+            .severity(Severity::Low)
+            .lines(422, 440)
+            .originating_skill("simplicity")
             .build();
 
         let config = default_config();
         let output = integrate(
-            vec![tagged("src/main.rs", f1), tagged("src/main.rs", f2)],
+            vec![
+                tagged("src/dep_manifest.rs", f1),
+                tagged("src/dep_manifest.rs", f2),
+            ],
             &config,
         );
 
         assert_eq!(
             output.findings.len(),
-            2,
-            "different categories are different primary keys"
+            1,
+            "cross-category axes on one defect must merge"
+        );
+        assert_eq!(output.decisions[0].decision, IntegratorDecision::Merged);
+        assert_eq!(
+            output.findings[0].severity,
+            Severity::Medium,
+            "max severity"
+        );
+    }
+
+    #[test]
+    fn merged_decision_records_input_titles() {
+        // A merge row that names only two ULIDs cannot be audited. #498
+        // survived because nobody could tell a correct decision from a
+        // wrong one by reading the log.
+        let f1 = FindingBuilder::new()
+            .id("F001")
+            .title("Context7 response limits are not enforced for JSON content")
+            .category(Category::Security)
+            .confidence(0.6)
+            .lines(803, 830)
+            .originating_skill("security")
+            .build();
+        let f2 = FindingBuilder::new()
+            .id("F002")
+            .title("JSON responses bypass the requested maximum token budget")
+            .category(Category::Correctness)
+            .confidence(0.6)
+            .lines(815, 830)
+            .originating_skill("correctness")
+            .build();
+
+        let config = default_config();
+        let output = integrate(
+            vec![
+                tagged("src/context_enrichment.rs", f1),
+                tagged("src/context_enrichment.rs", f2),
+            ],
+            &config,
+        );
+
+        assert_eq!(output.decisions.len(), 1);
+        let d = &output.decisions[0];
+        assert_eq!(d.decision, IntegratorDecision::Merged);
+        assert_eq!(d.input_titles.len(), d.input_finding_ids.len());
+        assert!(
+            d.input_titles
+                .iter()
+                .any(|t| t.contains("response limits are not enforced")),
+            "audit row must carry the inputs' titles: {:?}",
+            d.input_titles
+        );
+        assert!(
+            d.input_titles
+                .iter()
+                .any(|t| t.contains("bypass the requested maximum token budget"))
         );
     }
 
