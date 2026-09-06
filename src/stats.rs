@@ -16,6 +16,132 @@ const HIGHLIGHT_TOP_N: usize = 3;
 const ROLLING_N: usize = 50;
 const ROLLING_WINDOWS: usize = 4;
 
+/// #491 guard: `TelemetryEntry` fields that `compute_report` actually reads
+/// back. Paired with `TELEMETRY_WRITE_ONLY_ALLOWLIST`; the guard test
+/// `every_telemetry_field_is_consumed_or_allowlisted` asserts the two lists
+/// together cover every serialized field. Adding a counter then forces a
+/// deliberate choice about who reads it instead of a silent omission.
+///
+/// ponytail: hand-maintained. The test proves every field is *accounted for*,
+/// not that `compute_report` truly touches the ones listed here — Rust has no
+/// field reflection, and a proc-macro tracking real reads would cost more than
+/// the bug it prevents.
+pub const TELEMETRY_CONSUMED_FIELDS: &[&str] = &[
+    "ts",       // load_since() window filter
+    "findings", // findings_per_review, tokens_per_finding, capture_total
+    "model",    // modal model + cost estimate
+    "tokens_in",
+    "tokens_out",
+    "suppressed",  // suppression_rate
+    "duration_ms", // Activity: avg duration
+    // Context7 block, emitted when any counter is non-zero.
+    "context7_resolved",
+    "context7_resolve_failed",
+    "context7_query_failed",
+    "context7_skipped_popular",
+    "context7_budget_reduced",
+    "fp_kind_utilization_rate", // Feedback Health: "FP kinds tagged"
+    // Judge block, emitted when the judge ran at all.
+    "judge_calls",
+    "judge_approved",
+    "judge_rejected",
+    "judge_uncertain",
+    "judge_skipped",
+    "judge_cache_hits",
+    "judge_latency_ms",
+];
+
+/// #491 debt ledger: fields written to `~/.quorum/telemetry.jsonl` that no
+/// stats view reads back, each with the reason that is acceptable. Every entry
+/// here is a metric whose silence is indistinguishable from health. Shrink
+/// this list; do not grow it.
+pub const TELEMETRY_WRITE_ONLY_ALLOWLIST: &[(&str, &str)] = &[(
+    "files",
+    "per-review path list, not an aggregate metric; file-level rollups come \
+     from feedback via `stats --by-file`",
+)];
+
+/// #491: aggregate of the `TelemetryEntry` counters that used to be written
+/// and never read. Summed over the same 7-day window as the rest of the
+/// Activity block.
+///
+/// Rendering follows the `suppressed` precedent — a block is printed only
+/// when something in it is non-zero, so a clean run stays quiet.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct TelemetryCounters {
+    pub context7_resolved: u64,
+    pub context7_resolve_failed: u64,
+    pub context7_query_failed: u64,
+    pub context7_skipped_popular: u64,
+    pub context7_budget_reduced: u64,
+    pub judge_calls: u64,
+    pub judge_approved: u64,
+    pub judge_rejected: u64,
+    pub judge_uncertain: u64,
+    pub judge_skipped: u64,
+    pub judge_cache_hits: u64,
+    pub judge_latency_ms: u64,
+    /// Mean review wall-clock over the window. 0 when no reviews.
+    pub avg_duration_ms: u64,
+    /// Mean of the per-review rate over entries that carry one. `None` when
+    /// no entry in the window had FP feedback to measure.
+    pub fp_kind_utilization_rate: Option<f64>,
+}
+
+impl TelemetryCounters {
+    /// True when any Context7 counter fired -- gates the Context7 block.
+    pub fn any_context7(&self) -> bool {
+        self.context7_resolved
+            | self.context7_resolve_failed
+            | self.context7_query_failed
+            | self.context7_skipped_popular
+            | self.context7_budget_reduced
+            != 0
+    }
+
+    /// True when the judge ran (or was deliberately skipped) at all.
+    pub fn any_judge(&self) -> bool {
+        self.judge_calls | self.judge_skipped | self.judge_cache_hits != 0
+    }
+
+    /// Fold a window of telemetry entries into one aggregate.
+    fn sum(entries: &[crate::telemetry::TelemetryEntry]) -> Self {
+        let mut c = Self::default();
+        let mut duration_total: u64 = 0;
+        let mut fp_kind_total: f64 = 0.0;
+        let mut fp_kind_n: usize = 0;
+
+        for e in entries {
+            c.context7_resolved += u64::from(e.context7_resolved);
+            c.context7_resolve_failed += u64::from(e.context7_resolve_failed);
+            c.context7_query_failed += u64::from(e.context7_query_failed);
+            c.context7_skipped_popular += u64::from(e.context7_skipped_popular);
+            c.context7_budget_reduced += u64::from(e.context7_budget_reduced);
+            c.judge_calls += u64::from(e.judge_calls);
+            c.judge_approved += u64::from(e.judge_approved);
+            c.judge_rejected += u64::from(e.judge_rejected);
+            c.judge_uncertain += u64::from(e.judge_uncertain);
+            c.judge_skipped += u64::from(e.judge_skipped);
+            c.judge_cache_hits += u64::from(e.judge_cache_hits);
+            c.judge_latency_ms = c.judge_latency_ms.saturating_add(e.judge_latency_ms);
+            duration_total = duration_total.saturating_add(e.duration_ms);
+            // NaN-safe: a corrupt row must not poison the mean.
+            if let Some(r) = e.fp_kind_utilization_rate.filter(|r| r.is_finite()) {
+                fp_kind_total += f64::from(r);
+                fp_kind_n += 1;
+            }
+        }
+
+        if !entries.is_empty() {
+            c.avg_duration_ms = duration_total / entries.len() as u64;
+        }
+        if fp_kind_n > 0 {
+            c.fp_kind_utilization_rate = Some(fp_kind_total / fp_kind_n as f64);
+        }
+        c
+    }
+}
+
 pub struct StatsReport {
     pub feedback_count: usize,
     pub precision: f64,
@@ -61,6 +187,10 @@ pub struct StatsReport {
     /// Per-finding precision trend (None when linkage rate is below the
     /// per-finding gate so renderers don't have to recompute the cutoff).
     pub precision_trend_per_finding: Vec<analytics::PrecisionWindow>,
+
+    /// #491: Context7 / judge / duration counters, summed over the same
+    /// 7-day window as the Activity block.
+    pub counters: TelemetryCounters,
 }
 
 /// Take top-N slices by review volume. Ties resolved by insertion order
@@ -115,6 +245,9 @@ pub fn compute_report(
         .map(|e| e.findings.values().sum::<usize>())
         .sum();
     let total_suppressed_7d: usize = recent.iter().map(|e| e.suppressed).sum();
+
+    // #491: the counters that used to be written and never read.
+    let counters = TelemetryCounters::sum(&recent);
 
     let findings_per_review = if reviews_7d > 0 {
         total_findings_7d as f64 / reviews_7d as f64
@@ -239,6 +372,7 @@ pub fn compute_report(
         headline_trend_uses_finding_id,
         external_overlap,
         precision_trend_per_finding,
+        counters,
     })
 }
 
@@ -475,6 +609,49 @@ fn format_highlight_block(
     out
 }
 
+/// #491: Context7 and judge counter blocks. Each is emitted only when
+/// something in it fired, so a clean run's dashboard is unchanged.
+fn format_counter_blocks(c: &TelemetryCounters, style: &Style) -> String {
+    let mut out = String::new();
+
+    if c.any_context7() {
+        out.push_str(&format!(
+            "\n{bold}Context7 (last 7 days){reset}\n",
+            bold = style.bold,
+            reset = style.reset
+        ));
+        out.push_str(&format!(
+            "  Resolved: {}  Resolve failed: {}  Query failed: {}\n",
+            c.context7_resolved, c.context7_resolve_failed, c.context7_query_failed,
+        ));
+        out.push_str(&format!(
+            "  Skipped (popular): {}  Budget reduced: {}\n",
+            c.context7_skipped_popular, c.context7_budget_reduced,
+        ));
+    }
+
+    if c.any_judge() {
+        out.push_str(&format!(
+            "\n{bold}Judge (last 7 days){reset}\n",
+            bold = style.bold,
+            reset = style.reset
+        ));
+        out.push_str(&format!(
+            "  Calls: {}  Approved: {}  Rejected: {}  Uncertain: {}\n",
+            c.judge_calls, c.judge_approved, c.judge_rejected, c.judge_uncertain,
+        ));
+        let avg_latency = c.judge_latency_ms.checked_div(c.judge_calls).unwrap_or(0);
+        out.push_str(&format!(
+            "  Skipped: {}  Cache hits: {}  Avg latency: {}\n",
+            c.judge_skipped,
+            c.judge_cache_hits,
+            formatting::format_duration(std::time::Duration::from_millis(avg_latency)),
+        ));
+    }
+
+    out
+}
+
 fn format_human_core(report: &StatsReport, style: &Style) -> String {
     let mut out = String::new();
 
@@ -492,6 +669,12 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         "  TP: {}  FP: {}  Partial: {}  Wontfix: {}\n",
         report.tp, report.fp, report.partial, report.wontfix,
     ));
+    if let Some(rate) = report.counters.fp_kind_utilization_rate {
+        out.push_str(&format!(
+            "  FP kinds tagged: {}\n",
+            formatting::format_pct(rate)
+        ));
+    }
 
     // Channel attribution table — counts only, no precision column.
     // Always rendered (even all-zero Human) so the dashboard shape is
@@ -514,11 +697,23 @@ fn format_human_core(report: &StatsReport, style: &Style) -> String {
         reset = style.reset
     ));
     out.push_str(&format!(
-        "  Reviews: {}  Findings/review: {:.1}  Suppression: {}\n",
+        "  Reviews: {}  Findings/review: {:.1}  Suppression: {}{}\n",
         report.reviews_7d,
         report.findings_per_review,
         formatting::format_pct(report.suppression_rate),
+        if report.counters.avg_duration_ms > 0 {
+            format!(
+                "  Avg duration: {}",
+                formatting::format_duration(std::time::Duration::from_millis(
+                    report.counters.avg_duration_ms
+                ))
+            )
+        } else {
+            String::new()
+        },
     ));
+
+    out.push_str(&format_counter_blocks(&report.counters, style));
 
     if report.tokens_in_7d > 0 || report.tokens_out_7d > 0 {
         out.push_str(&format!(
@@ -781,6 +976,31 @@ pub fn format_compact(report: &StatsReport) -> String {
         parts.push(format!("external:{}", agent_parts.join(",")));
     }
 
+    // #491: only non-zero counters, so the compact line stays short on
+    // clean runs but a failure spike is impossible to miss.
+    let c = &report.counters;
+    for (name, value) in [
+        ("context7_resolved", c.context7_resolved),
+        ("context7_resolve_failed", c.context7_resolve_failed),
+        ("context7_query_failed", c.context7_query_failed),
+        ("context7_skipped_popular", c.context7_skipped_popular),
+        ("context7_budget_reduced", c.context7_budget_reduced),
+        ("judge_calls", c.judge_calls),
+        ("judge_approved", c.judge_approved),
+        ("judge_rejected", c.judge_rejected),
+        ("judge_uncertain", c.judge_uncertain),
+        ("judge_skipped", c.judge_skipped),
+        ("judge_cache_hits", c.judge_cache_hits),
+        ("avg_duration_ms", c.avg_duration_ms),
+    ] {
+        if value > 0 {
+            parts.push(format!("{name}:{value}"));
+        }
+    }
+    if let Some(rate) = c.fp_kind_utilization_rate {
+        parts.push(format!("fp_kind_tagged:{}", formatting::format_pct(rate)));
+    }
+
     if !report.precision_trend_per_finding.is_empty() {
         let pf: Vec<String> = report
             .precision_trend_per_finding
@@ -970,6 +1190,7 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
                 })
             }).collect::<Vec<_>>()
         },
+        "counters": report.counters,
         "precision_trend_per_finding": report.precision_trend_per_finding.iter().map(|w| {
             serde_json::json!({
                 "week_start": w.week_start.to_rfc3339(),
@@ -979,6 +1200,290 @@ pub fn format_json(report: &StatsReport) -> anyhow::Result<String> {
         }).collect::<Vec<_>>(),
     });
     Ok(serde_json::to_string_pretty(&json)?)
+}
+
+/// #491: `stats --skills` -- per-axis rollup of `skill_invocations.jsonl`.
+///
+/// `read` carries the reader's own health: a corrupt audit log that silently
+/// returns fewer rows is the same bug one level down, so parse errors are
+/// printed even when every row aggregates cleanly.
+pub fn format_skill_table(
+    rows: &[dimensions::SkillAuditRow],
+    read: &crate::skill_audit::AuditReadStats,
+    style: &Style,
+    unicode: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: skills{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    out.push_str(&format!(
+        "  Rows: {} parsed, {} parse errors\n\n",
+        read.parsed_ok, read.parse_errors,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no skill invocations recorded)\n");
+        return out;
+    }
+
+    let name_width = rows
+        .iter()
+        .map(|r| r.skill.chars().count())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 30);
+    let max_findings = rows.iter().map(|r| r.findings_emitted).max().unwrap_or(0);
+
+    out.push_str(&format!(
+        "  {bold}{:<nw$}  {:>5}  {:>8}  {:>5}  {:>6}  {:>7}  {:>7}  {:>6}{reset}\n",
+        "Skill",
+        "Runs",
+        "Findings",
+        "Zero%",
+        "Streak",
+        "Clamped",
+        "Dropped",
+        "Errors",
+        bold = style.bold,
+        reset = style.reset,
+        nw = name_width,
+    ));
+
+    for r in rows {
+        let bar = glyphs::hbar(
+            r.findings_emitted as f64,
+            max_findings.max(1) as f64,
+            unicode,
+        );
+        out.push_str(&format!(
+            "  {:<nw$}  {:>5}  {:>8}  {:>4}%  {:>6}  {:>7}  {:>7}  {:>6}  {}{}\n",
+            truncate_key(&r.skill, name_width),
+            r.runs,
+            r.findings_emitted,
+            (r.zero_finding_rate() * 100.0).round() as u32,
+            r.zero_streak,
+            r.findings_clamped,
+            r.findings_dropped_invalid_json,
+            r.errors,
+            bar,
+            if r.low_sample { " *" } else { "" },
+            nw = name_width,
+        ));
+    }
+
+    // The loud part. A skill that has gone quiet is the failure this view
+    // exists to catch -- it must not be something you have to notice in a
+    // column of numbers.
+    for r in rows
+        .iter()
+        .filter(|r| r.zero_streak >= dimensions::MIN_SAMPLE)
+    {
+        out.push_str(&format!(
+            "\n  warning: {} emitted zero findings across its last {} run(s)\n",
+            r.skill, r.zero_streak,
+        ));
+    }
+
+    let parse_errors = merge_histograms(rows.iter().map(|r| &r.parse_error_classes));
+    if !parse_errors.is_empty() {
+        out.push_str(&format!(
+            "\n  Parse errors: {}\n",
+            join_histogram(&parse_errors)
+        ));
+    }
+    let failures = merge_histograms(rows.iter().map(|r| &r.failure_reasons));
+    if !failures.is_empty() {
+        out.push_str(&format!("  Failures: {}\n", join_histogram(&failures)));
+    }
+    let fallbacks: u32 = rows.iter().map(|r| r.model_fallbacks).sum();
+    if fallbacks > 0 {
+        out.push_str(&format!("  Model fallbacks: {fallbacks}\n"));
+    }
+
+    if rows.iter().any(|r| r.low_sample) {
+        out.push_str(&format!(
+            "\n  * = low sample (<{} runs)\n",
+            dimensions::MIN_SAMPLE
+        ));
+    }
+    out
+}
+
+/// #491: `stats --integrator` -- decision-kind rollup of
+/// `integrator_decisions.jsonl`, with the severity-transition histogram that
+/// would have shown the v0.28.0 severity collapse the week it shipped.
+pub fn format_integrator_table(
+    rows: &[dimensions::IntegratorAuditRow],
+    transitions: &std::collections::BTreeMap<String, u32>,
+    read: &crate::skill_audit::AuditReadStats,
+    style: &Style,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{bold}~ Stats: integrator{reset}\n\n",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    out.push_str(&format!(
+        "  Rows: {} parsed, {} parse errors\n\n",
+        read.parsed_ok, read.parse_errors,
+    ));
+
+    if rows.is_empty() {
+        out.push_str("  (no integrator decisions recorded)\n");
+        return out;
+    }
+
+    out.push_str(&format!(
+        "  {bold}{:<14}  {:>6}  {:>6}  {:>10}  {:>12}{reset}\n",
+        "Decision",
+        "Count",
+        "Share",
+        "Avg conf",
+        "Sev changed",
+        bold = style.bold,
+        reset = style.reset,
+    ));
+    for r in rows {
+        out.push_str(&format!(
+            "  {:<14}  {:>6}  {:>5}%  {:>10.2}  {:>12}{}\n",
+            r.decision,
+            r.count,
+            (r.share * 100.0).round() as u32,
+            r.avg_output_confidence,
+            r.severity_changed,
+            if r.low_sample { " *" } else { "" },
+        ));
+    }
+
+    if !transitions.is_empty() {
+        out.push_str(&format!(
+            "\n  Severity transitions: {}\n",
+            join_histogram(transitions)
+        ));
+    }
+
+    // Loud cases. A run where the integrator ate everything, or downgraded
+    // most of what it saw, is the shape both prior incidents took.
+    let total: u32 = rows.iter().map(|r| r.count).sum();
+    if total >= dimensions::MIN_SAMPLE {
+        if let Some(sup) = rows.iter().find(|r| r.decision == "suppressed")
+            && sup.count == total
+        {
+            out.push_str(&format!(
+                "\n  warning: the integrator suppressed all {total} decision(s) -- \
+                 no finding reached output\n"
+            ));
+        }
+        let changed: u32 = rows.iter().map(|r| r.severity_changed).sum();
+        if changed * 2 > total {
+            out.push_str(&format!(
+                "\n  warning: {changed} of {total} decision(s) changed severity -- \
+                 check for a clamp regression\n"
+            ));
+        }
+    }
+
+    let reasons = merge_histograms(rows.iter().map(|r| &r.reasons));
+    if !reasons.is_empty() {
+        let mut top: Vec<_> = reasons.iter().collect();
+        top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let rendered: Vec<String> = top
+            .iter()
+            .take(5)
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect();
+        out.push_str(&format!("\n  Top reasons: {}\n", rendered.join(", ")));
+    }
+
+    if rows.iter().any(|r| r.low_sample) {
+        out.push_str(&format!(
+            "\n  * = low sample (<{} decisions)\n",
+            dimensions::MIN_SAMPLE
+        ));
+    }
+    out
+}
+
+/// Single-line `--integrator` output, including the severity-transition
+/// histogram when any clamp fired.
+pub fn format_integrator_compact(
+    rows: &[dimensions::IntegratorAuditRow],
+    transitions: &std::collections::BTreeMap<String, u32>,
+    read: &crate::skill_audit::AuditReadStats,
+) -> String {
+    if rows.is_empty() {
+        return format!("integrator: (no data) parse_errors:{}", read.parse_errors);
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{}={},sev_changed={}",
+                r.decision, r.count, r.severity_changed
+            )
+        })
+        .collect();
+    let mut line = format!(
+        "integrator: {} | parsed:{} parse_errors:{}",
+        parts.join(" | "),
+        read.parsed_ok,
+        read.parse_errors
+    );
+    if !transitions.is_empty() {
+        line.push_str(&format!(" | transitions:{}", join_histogram(transitions)));
+    }
+    line
+}
+
+/// Sum a set of per-row histograms into one, for the table footers.
+fn merge_histograms<'a>(
+    maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u32>>,
+) -> std::collections::BTreeMap<String, u32> {
+    let mut merged = std::collections::BTreeMap::new();
+    for m in maps {
+        for (k, v) in m {
+            *merged.entry(k.clone()).or_insert(0) += v;
+        }
+    }
+    merged
+}
+
+/// Render a histogram as `key count, key count` in key order.
+fn join_histogram(hist: &std::collections::BTreeMap<String, u32>) -> String {
+    hist.iter()
+        .map(|(k, v)| format!("{k} {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Single-line `--skills` output for LLM/CI consumption. Carries the same
+/// blackout signal (`zero_streak`) as the table.
+pub fn format_skill_compact(
+    rows: &[dimensions::SkillAuditRow],
+    read: &crate::skill_audit::AuditReadStats,
+) -> String {
+    if rows.is_empty() {
+        return format!("skills: (no data) parse_errors:{}", read.parse_errors);
+    }
+    let parts: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:runs={},findings={},zero_streak={},errors={}",
+                r.skill, r.runs, r.findings_emitted, r.zero_streak, r.errors
+            )
+        })
+        .collect();
+    format!(
+        "skills: {} | parsed:{} parse_errors:{}",
+        parts.join(" | "),
+        read.parsed_ok,
+        read.parse_errors
+    )
 }
 
 pub fn format_file_hotspots(rows: &[FileHotspotRow], style: &Style, unicode: bool) -> String {
@@ -1121,6 +1626,398 @@ mod tests {
         }
     }
 
+    // ─── #491: failure counters surfaced in stats ───
+
+    /// All-zero telemetry entry; tests set the one or two fields they care
+    /// about. Mirrors what `run_review` writes for a clean, judge-less run.
+    fn tentry() -> crate::telemetry::TelemetryEntry {
+        crate::telemetry::TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: vec!["src/main.rs".into()],
+            findings: std::collections::HashMap::from([("high".to_string(), 1usize)]),
+            model: "gpt-5.6".into(),
+            tokens_in: 100,
+            tokens_out: 50,
+            duration_ms: 0,
+            suppressed: 0,
+            context7_resolved: 0,
+            context7_resolve_failed: 0,
+            context7_query_failed: 0,
+            context7_skipped_popular: 0,
+            context7_budget_reduced: 0,
+            fp_kind_utilization_rate: None,
+            judge_calls: 0,
+            judge_approved: 0,
+            judge_rejected: 0,
+            judge_uncertain: 0,
+            judge_skipped: 0,
+            judge_cache_hits: 0,
+            judge_latency_ms: 0,
+        }
+    }
+
+    fn report_from(entries: &[crate::telemetry::TelemetryEntry]) -> (TempDir, StatsReport) {
+        let dir = TempDir::new().unwrap();
+        let fb = FeedbackStore::new(dir.path().join("fb.jsonl"));
+        let tl = TelemetryStore::new(dir.path().join("tl.jsonl"));
+        for e in entries {
+            tl.record(e).unwrap();
+        }
+        let rl = make_review_log(&dir, &[]);
+        let report = compute_report(&fb, &tl, &rl).unwrap();
+        (dir, report)
+    }
+
+    #[test]
+    fn context7_failures_are_surfaced() {
+        // The bug in #491: a review where every dep resolution failed reads
+        // identically to one where all succeeded.
+        let mut a = tentry();
+        a.context7_resolved = 4;
+        a.context7_resolve_failed = 3;
+        let mut b = tentry();
+        b.context7_query_failed = 1;
+        b.context7_skipped_popular = 2;
+        b.context7_budget_reduced = 5;
+
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.context7_resolved, 4);
+        assert_eq!(report.counters.context7_resolve_failed, 3);
+        assert_eq!(report.counters.context7_query_failed, 1);
+        assert_eq!(report.counters.context7_skipped_popular, 2);
+        assert_eq!(report.counters.context7_budget_reduced, 5);
+
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Context7"), "expected Context7 block: {out}");
+        assert!(
+            out.contains("Resolve failed: 3"),
+            "expected resolve failures: {out}"
+        );
+        assert!(
+            out.contains("Query failed: 1"),
+            "expected query failures: {out}"
+        );
+    }
+
+    #[test]
+    fn context7_block_hidden_when_all_counters_zero() {
+        // Follows the `suppressed` precedent: quiet runs stay quiet.
+        let (_dir, report) = report_from(&[tentry()]);
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("Context7"),
+            "clean run should not print a Context7 block: {out}"
+        );
+    }
+
+    #[test]
+    fn judge_counters_are_surfaced() {
+        let mut a = tentry();
+        a.judge_calls = 10;
+        a.judge_approved = 6;
+        a.judge_rejected = 3;
+        a.judge_uncertain = 1;
+        a.judge_skipped = 2;
+        a.judge_cache_hits = 4;
+        a.judge_latency_ms = 2000;
+
+        let (_dir, report) = report_from(&[a]);
+        assert_eq!(report.counters.judge_calls, 10);
+        assert_eq!(report.counters.judge_rejected, 3);
+
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Judge"), "expected Judge block: {out}");
+        assert!(out.contains("Rejected: 3"), "expected rejections: {out}");
+        assert!(out.contains("Uncertain: 1"), "expected uncertain: {out}");
+    }
+
+    #[test]
+    fn judge_block_hidden_when_judge_never_ran() {
+        let (_dir, report) = report_from(&[tentry()]);
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            !out.contains("Judge"),
+            "judge-less run should not print a Judge block: {out}"
+        );
+    }
+
+    #[test]
+    fn fp_kind_utilization_is_surfaced_when_present() {
+        // CLAUDE.md documented this as reported for months while nothing
+        // read it (#491). It is averaged over entries that carry it.
+        let mut a = tentry();
+        a.fp_kind_utilization_rate = Some(0.5);
+        let mut b = tentry();
+        b.fp_kind_utilization_rate = Some(1.0);
+
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.fp_kind_utilization_rate, Some(0.75));
+        let out = format_human(&report, &Style::plain());
+        assert!(
+            out.contains("FP kinds tagged"),
+            "expected fp_kind utilization line: {out}"
+        );
+    }
+
+    #[test]
+    fn fp_kind_utilization_absent_when_untagged() {
+        let (_dir, report) = report_from(&[tentry()]);
+        assert_eq!(report.counters.fp_kind_utilization_rate, None);
+        assert!(!format_human(&report, &Style::plain()).contains("FP kinds tagged"));
+    }
+
+    #[test]
+    fn avg_duration_is_surfaced() {
+        let mut a = tentry();
+        a.duration_ms = 4000;
+        let mut b = tentry();
+        b.duration_ms = 2000;
+        let (_dir, report) = report_from(&[a, b]);
+        assert_eq!(report.counters.avg_duration_ms, 3000);
+        let out = format_human(&report, &Style::plain());
+        assert!(out.contains("Avg duration"), "expected duration: {out}");
+    }
+
+    #[test]
+    fn counters_appear_in_json_and_compact() {
+        let mut a = tentry();
+        a.context7_resolve_failed = 2;
+        a.judge_rejected = 1;
+        let (_dir, report) = report_from(&[a]);
+
+        let json: serde_json::Value = serde_json::from_str(&format_json(&report).unwrap()).unwrap();
+        assert_eq!(json["counters"]["context7_resolve_failed"], 2);
+        assert_eq!(json["counters"]["judge_rejected"], 1);
+
+        let compact = format_compact(&report);
+        assert!(
+            compact.contains("context7_resolve_failed:2"),
+            "compact should carry non-zero counters: {compact}"
+        );
+        assert!(
+            !compact.contains("judge_uncertain"),
+            "compact should omit zero counters: {compact}"
+        );
+    }
+
+    // ─── #491: --skills human rendering ───
+
+    fn skill_row(skill: &str, runs: u32, findings: u64, streak: u32) -> dimensions::SkillAuditRow {
+        dimensions::SkillAuditRow {
+            skill: skill.into(),
+            runs,
+            findings_emitted: findings,
+            zero_finding_runs: streak,
+            zero_streak: streak,
+            findings_clamped: 0,
+            findings_dropped_invalid_json: 0,
+            errors: 0,
+            model_fallbacks: 0,
+            avg_duration_ms: 1000,
+            tokens_in: 0,
+            tokens_out: 0,
+            parse_error_classes: Default::default(),
+            failure_reasons: Default::default(),
+            low_sample: runs < dimensions::MIN_SAMPLE,
+        }
+    }
+
+    #[test]
+    fn skill_table_shouts_about_a_zero_finding_streak() {
+        let mut row = skill_row("axis", 440, 0, 440);
+        row.parse_error_classes.insert("wrong_schema".into(), 213);
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 440,
+            parsed_ok: 440,
+            parse_errors: 0,
+        };
+        let out = format_skill_table(&[row], &read, &Style::plain(), false);
+        assert!(
+            out.contains("warning: axis emitted zero findings across its last 440 run(s)"),
+            "a blackout must be loud, not a column of zeros: {out}"
+        );
+        assert!(
+            out.contains("wrong_schema 213"),
+            "parse error classes belong in the view: {out}"
+        );
+    }
+
+    #[test]
+    fn skill_table_stays_quiet_for_healthy_skills() {
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 10,
+            parsed_ok: 10,
+            parse_errors: 0,
+        };
+        let out = format_skill_table(
+            &[skill_row("security", 10, 25, 0)],
+            &read,
+            &Style::plain(),
+            false,
+        );
+        assert!(!out.contains("warning:"), "no warning expected: {out}");
+        assert!(out.contains("Rows: 10 parsed, 0 parse errors"), "{out}");
+    }
+
+    #[test]
+    fn skill_table_reports_parse_errors_on_an_empty_read() {
+        // A corrupt log that parses to zero rows must not look like an
+        // idle install.
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 7,
+            parsed_ok: 0,
+            parse_errors: 7,
+        };
+        let out = format_skill_table(&[], &read, &Style::plain(), false);
+        assert!(out.contains("0 parsed, 7 parse errors"), "{out}");
+        assert!(out.contains("(no skill invocations recorded)"), "{out}");
+    }
+
+    // ─── #491 T4: --integrator human rendering ───
+
+    fn int_row(
+        decision: &str,
+        count: u32,
+        share: f64,
+        severity_changed: u32,
+    ) -> dimensions::IntegratorAuditRow {
+        dimensions::IntegratorAuditRow {
+            decision: decision.into(),
+            count,
+            share,
+            avg_output_confidence: 0.7,
+            severity_changed,
+            reasons: Default::default(),
+            low_sample: count < dimensions::MIN_SAMPLE,
+        }
+    }
+
+    fn read_stats(n: usize) -> crate::skill_audit::AuditReadStats {
+        crate::skill_audit::AuditReadStats {
+            total_lines: n,
+            parsed_ok: n,
+            parse_errors: 0,
+        }
+    }
+
+    #[test]
+    fn integrator_table_warns_when_everything_is_suppressed() {
+        let rows = vec![int_row("suppressed", 20, 1.0, 0)];
+        let out =
+            format_integrator_table(&rows, &Default::default(), &read_stats(20), &Style::plain());
+        assert!(
+            out.contains("suppressed all 20 decision(s)"),
+            "an integrator that ate every finding must say so: {out}"
+        );
+    }
+
+    #[test]
+    fn integrator_table_warns_on_widespread_severity_clamping() {
+        let rows = vec![int_row("merged", 10, 1.0, 8)];
+        let transitions = std::collections::BTreeMap::from([("high->medium".to_string(), 8u32)]);
+        let out = format_integrator_table(&rows, &transitions, &read_stats(10), &Style::plain());
+        assert!(
+            out.contains("8 of 10 decision(s) changed severity"),
+            "{out}"
+        );
+        assert!(out.contains("high->medium 8"), "{out}");
+    }
+
+    #[test]
+    fn integrator_table_stays_quiet_on_healthy_output() {
+        let rows = vec![
+            int_row("pass_through", 10, 0.8, 0),
+            int_row("merged", 2, 0.2, 1),
+        ];
+        let out =
+            format_integrator_table(&rows, &Default::default(), &read_stats(12), &Style::plain());
+        assert!(!out.contains("warning:"), "no warning expected: {out}");
+    }
+
+    // ─── #491: write-only observability guard ───
+
+    /// Every `TelemetryEntry` field must be either consumed by
+    /// `compute_report` or explicitly booked as debt with a reason. This is
+    /// the only thing in #491 that stops the *next* write-only counter
+    /// rather than clearing the current backlog: adding a field to
+    /// `TelemetryEntry` fails this test until someone decides who reads it.
+    #[test]
+    fn every_telemetry_field_is_consumed_or_allowlisted() {
+        use std::collections::BTreeSet;
+
+        // Fully populated: any `Option` left `None` would be hidden by
+        // `skip_serializing_if` and silently escape the check.
+        let entry = crate::telemetry::TelemetryEntry {
+            ts: chrono::Utc::now(),
+            files: vec!["src/main.rs".into()],
+            findings: std::collections::HashMap::from([("high".to_string(), 1usize)]),
+            model: "gpt-5.6".into(),
+            tokens_in: 1,
+            tokens_out: 1,
+            duration_ms: 1,
+            suppressed: 1,
+            context7_resolved: 1,
+            context7_resolve_failed: 1,
+            context7_query_failed: 1,
+            context7_skipped_popular: 1,
+            context7_budget_reduced: 1,
+            fp_kind_utilization_rate: Some(0.5),
+            judge_calls: 1,
+            judge_approved: 1,
+            judge_rejected: 1,
+            judge_uncertain: 1,
+            judge_skipped: 1,
+            judge_cache_hits: 1,
+            judge_latency_ms: 1,
+        };
+
+        let value = serde_json::to_value(&entry).expect("TelemetryEntry serializes");
+        let serialized: BTreeSet<String> = value
+            .as_object()
+            .expect("TelemetryEntry is a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+
+        let mut accounted: BTreeSet<String> = BTreeSet::new();
+        for field in TELEMETRY_CONSUMED_FIELDS {
+            assert!(
+                accounted.insert((*field).to_string()),
+                "`{field}` appears twice in TELEMETRY_CONSUMED_FIELDS"
+            );
+        }
+        for (field, reason) in TELEMETRY_WRITE_ONLY_ALLOWLIST {
+            assert!(
+                !reason.trim().is_empty(),
+                "allowlist entry `{field}` needs a one-line reason"
+            );
+            assert!(
+                accounted.insert((*field).to_string()),
+                "`{field}` is in both TELEMETRY_CONSUMED_FIELDS and \
+                 TELEMETRY_WRITE_ONLY_ALLOWLIST (or listed twice)"
+            );
+        }
+
+        let unaccounted: Vec<&String> = serialized.difference(&accounted).collect();
+        assert!(
+            unaccounted.is_empty(),
+            "TelemetryEntry field(s) {unaccounted:?} are written but neither \
+             consumed by compute_report nor booked as debt. Either surface \
+             them (add to TELEMETRY_CONSUMED_FIELDS and read them) or add \
+             them to TELEMETRY_WRITE_ONLY_ALLOWLIST with a reason. See #491: \
+             instrumentation nothing reads back is indistinguishable from \
+             health."
+        );
+
+        let stale: Vec<&String> = accounted.difference(&serialized).collect();
+        assert!(
+            stale.is_empty(),
+            "field(s) {stale:?} are listed in TELEMETRY_CONSUMED_FIELDS or \
+             TELEMETRY_WRITE_ONLY_ALLOWLIST but no longer exist on \
+             TelemetryEntry — remove the stale entries"
+        );
+    }
+
     // ─── Stats redesign Task 11: section label normalization ───
 
     #[test]
@@ -1233,6 +2130,7 @@ mod tests {
             headline_trend_uses_finding_id: uses_finding_id,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: trend_per_finding,
+            counters: Default::default(),
         }
     }
 
@@ -1537,6 +2435,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_compact(&report);
         assert!(out.contains("feedback:100"));
@@ -1586,6 +2485,7 @@ mod tests {
                 }],
             },
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_compact(&report);
         assert!(out.contains("linkage:92%"));
@@ -1624,6 +2524,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Feedback Health"));
@@ -1784,6 +2685,7 @@ mod tests {
             headline_trend_uses_finding_id: false,
             external_overlap: analytics::ExternalOverlap::default(),
             precision_trend_per_finding: Vec::new(),
+            counters: Default::default(),
         };
         let json = format_json(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
