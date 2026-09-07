@@ -1533,10 +1533,40 @@ pub fn tokenize_title(title: &str) -> Vec<String> {
 // Fold-local feature extraction (logistic calibrator infrastructure)
 // ---------------------------------------------------------------------------
 
+/// Which tier of the join produced a sample (#459).
+///
+/// `Id` is the tier-0 exact-ULID join; `Text` is the pre-existing six-tier
+/// title/path cascade. Reported per run so the cascade's drain is visible --
+/// without it there is no way to tell whether tier-0 is taking over or is
+/// silently doing nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JoinTier {
+    Id,
+    #[default]
+    Text,
+}
+
+/// Count how many samples each join tier produced (#459).
+///
+/// Returned as `(id, text)`. This is the number the issue asks to surface:
+/// without it the text cascade's drain is invisible and nobody can tell
+/// whether tier-0 is taking over or silently doing nothing. Expect `id` to
+/// start near zero -- the ~17k historical traces predate the field and can
+/// never be backfilled, so tier-0 yield only grows with new reviews.
+pub fn join_tier_counts(samples: &[JoinedSample]) -> (usize, usize) {
+    let id = samples
+        .iter()
+        .filter(|s| s.join_tier == JoinTier::Id)
+        .count();
+    (id, samples.len() - id)
+}
+
 /// Intermediate representation of a joined sample before feature extraction.
 /// Contains all metadata needed to compute expanded features.
 #[derive(Debug, Clone)]
 pub struct JoinedSample {
+    /// Which join tier matched this sample (#459).
+    pub join_tier: JoinTier,
     pub title: String,
     pub category: String,
     pub severity: String,
@@ -1981,6 +2011,12 @@ pub fn extract_joined_samples(
     let mut raw_title_only_ambiguous: HashSet<String> = HashSet::new();
     let mut norm_titles_with_file_scoped: HashSet<String> = HashSet::new();
     let mut raw_titles_with_file_scoped: HashSet<String> = HashSet::new();
+    // #459 tier-0: exact ULID -> decision. Ambiguous ids are dropped rather
+    // than resolved arbitrarily, matching what the text tiers already do --
+    // attributing one human verdict to an arbitrary one of two decisions is
+    // worse than not joining, because a wrong join is invisible.
+    let mut id_map: HashMap<String, TraceInfoExpanded> = HashMap::new();
+    let mut id_ambiguous: HashSet<String> = HashSet::new();
 
     for t in &filtered_traces {
         let title = t["finding_title"].as_str().unwrap_or("").to_string();
@@ -2027,6 +2063,17 @@ pub fn extract_joined_samples(
             model: model_name,
             finding_span_lines: span_lines,
         };
+
+        if let Some(id) = t["finding_id"].as_str().filter(|v| !v.is_empty()) {
+            match id_map.entry(id.to_string()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    id_ambiguous.insert(id.to_string());
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(info.clone());
+                }
+            }
+        }
 
         if fp.is_empty() {
             match raw_title_only.entry(title.clone()) {
@@ -2118,6 +2165,10 @@ pub fn extract_joined_samples(
         norm_title_only.remove(norm);
     }
 
+    for id in &id_ambiguous {
+        id_map.remove(id);
+    }
+
     let mut samples = Vec::new();
 
     for f in feedback {
@@ -2135,8 +2186,22 @@ pub fn extract_joined_samples(
         let norm = normalize_title(&title);
         let deep_fp = normalize_file_path_deep(&fp);
 
-        let matched = raw_map
-            .get(&(title.clone(), fp.clone()))
+        // #459 tier-0: exact id equality, no normalization and no fuzzy
+        // fallback. Only reached when BOTH sides carry an id; a feedback row
+        // with an id and a legacy trace without one still falls through to
+        // the text cascade, so adding ids never loses a join that works now.
+        let id_match = f["finding_id"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .and_then(|id| id_map.get(id));
+        let join_tier = if id_match.is_some() {
+            JoinTier::Id
+        } else {
+            JoinTier::Text
+        };
+
+        let matched = id_match
+            .or_else(|| raw_map.get(&(title.clone(), fp.clone())))
             .or_else(|| {
                 if !disable_fuzzy && !norm.is_empty() {
                     norm_map.get(&(norm.clone(), fp.clone()))
@@ -2209,6 +2274,7 @@ pub fn extract_joined_samples(
             let family = CalibratorModel::title_family(&title);
             let source_is_ast = info.model == "unknown" || info.category == "ast-pattern";
             samples.push(JoinedSample {
+                join_tier,
                 title,
                 category: info.category.clone(),
                 severity: info.severity.clone(),
@@ -4340,6 +4406,7 @@ mod tests {
                 file_path: "src/some_file.rs".to_string(),
                 source_is_ast: false,
                 finding_span_lines: 3,
+                join_tier: JoinTier::Text,
             })
             .collect();
         let refs: Vec<&JoinedSample> = samples.iter().collect();
@@ -4378,6 +4445,7 @@ mod tests {
             file_path: "src/some_file.rs".to_string(),
             source_is_ast: false,
             finding_span_lines: 3,
+            join_tier: JoinTier::Text,
         };
         let stats = FoldLocalStats {
             category_fp_rates: HashMap::from([("security".to_string(), 0.15)]),
@@ -4530,6 +4598,184 @@ mod tests {
         assert_eq!(s.precedent_count, 2);
         assert!((s.max_similarity - 0.85).abs() < 1e-9);
         assert!((s.mean_similarity - 0.72).abs() < 1e-9);
+    }
+
+    // ── #459: tier-0 exact-id join ──────────────────────────────────────
+
+    #[test]
+    fn join_tier_counts_splits_id_from_text() {
+        let mk = |tier| JoinedSample {
+            join_tier: tier,
+            title: "t".into(),
+            category: "c".into(),
+            severity: "medium".into(),
+            model: "m".into(),
+            tp_weight: 0.0,
+            fp_weight: 0.0,
+            soft_fp_weight: 0.0,
+            full_suppress_weight: 0.0,
+            wontfix_weight: 0.0,
+            precedent_count: 0,
+            max_similarity: 0.0,
+            mean_similarity: 0.0,
+            is_fp: false,
+            family: "f".into(),
+            file_path: "p".into(),
+            source_is_ast: false,
+            finding_span_lines: 1,
+        };
+        let samples = vec![
+            mk(JoinTier::Id),
+            mk(JoinTier::Text),
+            mk(JoinTier::Id),
+            mk(JoinTier::Text),
+            mk(JoinTier::Text),
+        ];
+        assert_eq!(join_tier_counts(&samples), (2, 3));
+        assert_eq!(join_tier_counts(&[]), (0, 0));
+    }
+
+    /// Titles deliberately share no tokens, so every text tier must miss.
+    /// If this joins, it joined on the id.
+    #[test]
+    fn tier0_joins_on_id_when_titles_are_unrelated() {
+        let trace = serde_json::json!({
+            "finding_id": "01JQBX7WK3ZZZZZZZZZZZZZZZZ",
+            "finding_title": "Unbounded allocation in the parser loop",
+            "file_path": "src/parse.rs",
+            "tp_weight": 1.0,
+            "fp_weight": 0.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_id": "01JQBX7WK3ZZZZZZZZZZZZZZZZ",
+            "finding_title": "totally different words here friend",
+            "file_path": "src/parse.rs",
+            "verdict": "tp",
+        });
+        let samples = extract_joined_samples(
+            &[feedback_entry],
+            &[trace],
+            &make_test_model(),
+            &JoinFilter::default(),
+            false,
+        );
+        assert_eq!(samples.len(), 1, "id-equal pair must join despite titles");
+        assert_eq!(samples[0].join_tier, JoinTier::Id);
+    }
+
+    /// The mutation test. One character differs, so the ids are not equal and
+    /// tier-0 must not fire. Titles are unrelated, so no text tier can rescue
+    /// it either -- the join must simply not happen. If someone replaces the
+    /// id equality with a prefix or fuzzy comparison, this fails.
+    #[test]
+    fn tier0_never_fuzzy_matches_a_near_miss_id() {
+        let trace = serde_json::json!({
+            "finding_id": "01JQBX7WK3AAAAAAAAAAAAAAAA",
+            "finding_title": "Unbounded allocation in the parser loop",
+            "file_path": "src/parse.rs",
+            "tp_weight": 1.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_id": "01JQBX7WK3AAAAAAAAAAAAAAAB",
+            "finding_title": "totally different words here friend",
+            "file_path": "src/parse.rs",
+            "verdict": "tp",
+        });
+        let samples = extract_joined_samples(
+            &[feedback_entry],
+            &[trace],
+            &make_test_model(),
+            &JoinFilter::default(),
+            false,
+        );
+        assert!(
+            samples.is_empty(),
+            "ids differing by one character must not join, got {samples:?}"
+        );
+    }
+
+    /// Zero historical regression: a legacy trace with no id still joins by
+    /// text exactly as before, and is reported as a text join.
+    #[test]
+    fn legacy_traces_without_an_id_still_join_by_text() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "verdict": "tp",
+        });
+        let samples = extract_joined_samples(
+            &[feedback_entry],
+            &[trace],
+            &make_test_model(),
+            &JoinFilter::default(),
+            false,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].join_tier, JoinTier::Text);
+    }
+
+    /// Feedback carrying an id must still reach the text cascade when the
+    /// trace side is legacy. Otherwise adding ids to feedback would *lose*
+    /// joins that work today.
+    #[test]
+    fn feedback_with_id_still_text_joins_against_a_legacy_trace() {
+        let trace = serde_json::json!({
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "tp_weight": 1.0,
+        });
+        let feedback_entry = serde_json::json!({
+            "finding_id": "01JQBX7WK3CCCCCCCCCCCCCCCC",
+            "finding_title": "SQL injection risk",
+            "file_path": "src/db.rs",
+            "verdict": "tp",
+        });
+        let samples = extract_joined_samples(
+            &[feedback_entry],
+            &[trace],
+            &make_test_model(),
+            &JoinFilter::default(),
+            false,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].join_tier, JoinTier::Text);
+    }
+
+    /// A duplicated id is ambiguous. Joining it would silently attribute one
+    /// human verdict to an arbitrary one of two decisions, so it must not
+    /// join at tier-0 -- same rule the text tiers already apply.
+    #[test]
+    fn tier0_refuses_an_ambiguous_duplicated_id() {
+        let mk = |title: &str| {
+            serde_json::json!({
+                "finding_id": "01JQBX7WK3DDDDDDDDDDDDDDDD",
+                "finding_title": title,
+                "file_path": "src/a.rs",
+                "tp_weight": 1.0,
+            })
+        };
+        let feedback_entry = serde_json::json!({
+            "finding_id": "01JQBX7WK3DDDDDDDDDDDDDDDD",
+            "finding_title": "nothing alike at all here",
+            "file_path": "src/a.rs",
+            "verdict": "tp",
+        });
+        let samples = extract_joined_samples(
+            &[feedback_entry],
+            &[mk("first decision"), mk("second decision")],
+            &make_test_model(),
+            &JoinFilter::default(),
+            false,
+        );
+        assert!(
+            samples.is_empty(),
+            "a duplicated trace id is ambiguous and must not join"
+        );
     }
 
     #[test]
@@ -4704,6 +4950,7 @@ mod tests {
                 file_path: "src/some_file.rs".to_string(),
                 source_is_ast: false,
                 finding_span_lines: 3,
+                join_tier: JoinTier::Text,
             })
             .collect();
         assert!(learn_logistic(&samples, 5).is_none());
@@ -4731,6 +4978,7 @@ mod tests {
                 file_path: "src/some_file.rs".to_string(),
                 source_is_ast: false,
                 finding_span_lines: 3,
+                join_tier: JoinTier::Text,
             })
             .collect();
         assert!(learn_logistic(&samples, 5).is_none());
@@ -4768,6 +5016,7 @@ mod tests {
                     file_path: "src/some_file.rs".to_string(),
                     source_is_ast: false,
                     finding_span_lines: 3,
+                    join_tier: JoinTier::Text,
                 }
             })
             .collect();
@@ -4853,6 +5102,7 @@ mod tests {
                     file_path: "src/some_file.rs".to_string(),
                     source_is_ast: false,
                     finding_span_lines: 3,
+                    join_tier: JoinTier::Text,
                 }
             })
             .collect()
@@ -4974,6 +5224,7 @@ mod tests {
                 file_path: "./src/db.rs".to_string(),
                 source_is_ast: false,
                 finding_span_lines: 5,
+                join_tier: JoinTier::Text,
             },
             JoinedSample {
                 title: "Buffer overflow".to_string(),
@@ -4993,6 +5244,7 @@ mod tests {
                 file_path: "./src/db.rs".to_string(),
                 source_is_ast: true,
                 finding_span_lines: 10,
+                join_tier: JoinTier::Text,
             },
         ];
         let refs: Vec<&JoinedSample> = samples.iter().collect();

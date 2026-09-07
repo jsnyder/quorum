@@ -4517,6 +4517,20 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         );
         let (prior_suppress, prior_boost) = prior_thresholds(prior_model.as_ref());
 
+        // #459: the id-vs-text split. Reported unconditionally, including
+        // when it is 0 -- a silent zero is exactly what this issue exists to
+        // make visible.
+        let (id_joins, text_joins) = quorum::calibrate::join_tier_counts(&joined);
+        let id_pct = if joined.is_empty() {
+            0.0
+        } else {
+            100.0 * id_joins as f64 / joined.len() as f64
+        };
+        eprintln!(
+            "\nTraining join tiers: {} by id ({:.1}%), {} by text cascade",
+            id_joins, id_pct, text_joins
+        );
+
         match quorum::calibrate::learn_logistic(&joined, 5) {
             Some(result) => {
                 eprintln!(
