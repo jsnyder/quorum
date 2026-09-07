@@ -11,9 +11,32 @@ use std::path::Path;
 
 const CACHE_TTL_DAYS: i64 = 7;
 
+/// A hash of the source the judge was shown, computed once per file.
+///
+/// Quorum's own review of the #538 fix caught the naive version: the key took
+/// `&str` and hashed the whole file for every finding, which is O(findings x
+/// file size). On `src/calibrator.rs` -- 245 KB, 31 findings -- that is 7.6 MB
+/// of SHA-256 to answer 31 cache lookups. The source component is identical
+/// across those lookups, so it is hashed once here.
+pub struct SourceDigest(String);
+
+impl SourceDigest {
+    pub fn of(source_code: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(source_code.as_bytes());
+        let hash = hasher.finalize();
+        let mut hex = String::with_capacity(hash.len() * 2);
+        for byte in hash {
+            use std::fmt::Write;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self(hex)
+    }
+}
+
 /// Compute a deterministic cache key from a rule ID, the source the judge saw,
-/// and the evidence snippet. Null byte separators prevent prefix collisions
-/// between the three.
+/// the finding's location, and the evidence snippet. Null byte separators
+/// prevent prefix collisions between the parts.
 ///
 /// #538: the key used to be `(rule_id, evidence)` only. But `build_judge_prompt`
 /// sends the whole file and asks the model to decide "based on the surrounding
@@ -28,11 +51,26 @@ const CACHE_TTL_DAYS: i64 = 7;
 /// invalidates that file's verdicts, which is correct: the judge's answer
 /// depends on the file. The case the cache was built for -- re-reviewing an
 /// unchanged file, as the daemon does -- still hits.
-pub fn verdict_cache_key(rule_id: &str, source_code: &str, evidence: &str) -> String {
+///
+/// The line range is in the key for the same reason the source is. Quorum's
+/// review of the first version of this fix pointed out that two findings of
+/// one rule with byte-identical evidence in the same file would still share a
+/// verdict -- and the judge is told each finding's line range, so its answer
+/// can legitimately differ between them (`let _ = tx.send(())` in a shutdown
+/// path versus in a write path).
+pub fn verdict_cache_key(
+    rule_id: &str,
+    source_digest: &SourceDigest,
+    line_start: u32,
+    line_end: u32,
+    evidence: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(rule_id.as_bytes());
     hasher.update(b"\0");
-    hasher.update(source_code.as_bytes());
+    hasher.update(source_digest.0.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(format!("{line_start}-{line_end}").as_bytes());
     hasher.update(b"\0");
     hasher.update(evidence.as_bytes());
     let hash = hasher.finalize();
@@ -287,6 +325,7 @@ pub async fn judge_findings<J: JudgeLlm>(
 ) -> JudgeResult {
     let start = std::time::Instant::now();
     let mut result = JudgeResult::default();
+    let source_digest = SourceDigest::of(source_code);
 
     // Phase 1: Check cache and categorize
     let mut to_judge: Vec<usize> = Vec::new();
@@ -306,7 +345,7 @@ pub async fn judge_findings<J: JudgeLlm>(
 
         let evidence = f.evidence.first().map(|s| s.as_str()).unwrap_or("");
         let rule_id = f.rule_id.as_deref().unwrap_or("");
-        let key = verdict_cache_key(rule_id, source_code, evidence);
+        let key = verdict_cache_key(rule_id, &source_digest, f.line_start, f.line_end, evidence);
 
         if let Some(cached) = cache.get(&key) {
             f.judge_verdict = Some(cached.verdict.clone());
@@ -335,7 +374,16 @@ pub async fn judge_findings<J: JudgeLlm>(
         && let Some(llm) = llm
     {
         for batch in to_judge.chunks(JUDGE_BATCH_SIZE) {
-            judge_one_batch(batch, findings, source_code, cache_path, llm, &mut result).await;
+            judge_one_batch(
+                batch,
+                findings,
+                source_code,
+                &source_digest,
+                cache_path,
+                llm,
+                &mut result,
+            )
+            .await;
         }
     }
 
@@ -386,6 +434,7 @@ async fn judge_one_batch<J: JudgeLlm>(
     batch: &[usize],
     findings: &mut [Finding],
     source_code: &str,
+    source_digest: &SourceDigest,
     cache_path: &Path,
     llm: &J,
     result: &mut JudgeResult,
@@ -465,7 +514,13 @@ async fn judge_one_batch<J: JudgeLlm>(
             .map(|s| s.as_str())
             .unwrap_or("");
         let canonical_rule_id = findings[i].rule_id.as_deref().unwrap_or("");
-        let key = verdict_cache_key(canonical_rule_id, source_code, evidence);
+        let key = verdict_cache_key(
+            canonical_rule_id,
+            source_digest,
+            findings[i].line_start,
+            findings[i].line_end,
+            evidence,
+        );
         if let Err(e) = write_cache_entry(
             cache_path,
             &CacheEntry {
@@ -589,17 +644,36 @@ mod tests {
 
     #[test]
     fn cache_key_deterministic() {
+        let d = SourceDigest::of("src");
         let k1 = verdict_cache_key(
             "ast-grep:python/bare-except-pass",
-            "src",
+            &d,
+            1,
+            2,
             "except:\n    pass",
         );
         let k2 = verdict_cache_key(
             "ast-grep:python/bare-except-pass",
-            "src",
+            &d,
+            1,
+            2,
             "except:\n    pass",
         );
         assert_eq!(k1, k2);
+    }
+
+    /// Quorum's review of the first #538 fix: two findings of one rule with
+    /// byte-identical evidence in the SAME file still shared a verdict. The
+    /// judge is told each finding's line range, so its answer can legitimately
+    /// differ between them -- `let _ = tx.send(())` in a shutdown path versus
+    /// in a write path -- and one cached answer would have covered both.
+    #[test]
+    fn cache_key_differs_for_the_same_evidence_at_different_lines() {
+        let d =
+            SourceDigest::of("fn a() { let _ = tx.send(()); }\nfn b() { let _ = tx.send(()); }");
+        let k1 = verdict_cache_key("ast-grep:rust/r", &d, 1, 1, "let _ = tx.send(());");
+        let k2 = verdict_cache_key("ast-grep:rust/r", &d, 2, 2, "let _ = tx.send(());");
+        assert_ne!(k1, k2);
     }
 
     /// #538: the judge decides on surrounding context, so the context must be
@@ -611,12 +685,16 @@ mod tests {
         let hot_path = "fn persist(tx: Sender<Row>) { let _ = tx.send(row); }";
         let k1 = verdict_cache_key(
             "ast-grep:rust/discarded-result",
-            shutdown,
+            &SourceDigest::of(shutdown),
+            1,
+            1,
             "let _ = tx.send(());",
         );
         let k2 = verdict_cache_key(
             "ast-grep:rust/discarded-result",
-            hot_path,
+            &SourceDigest::of(hot_path),
+            1,
+            1,
             "let _ = tx.send(());",
         );
         assert_ne!(
@@ -627,15 +705,17 @@ mod tests {
 
     #[test]
     fn cache_key_differs_for_different_evidence() {
-        let k1 = verdict_cache_key("rule-a", "src", "code1");
-        let k2 = verdict_cache_key("rule-a", "src", "code2");
+        let d = SourceDigest::of("src");
+        let k1 = verdict_cache_key("rule-a", &d, 1, 1, "code1");
+        let k2 = verdict_cache_key("rule-a", &d, 1, 1, "code2");
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn cache_key_differs_for_different_rules() {
-        let k1 = verdict_cache_key("rule-a", "src", "code");
-        let k2 = verdict_cache_key("rule-b", "src", "code");
+        let d = SourceDigest::of("src");
+        let k1 = verdict_cache_key("rule-a", &d, 1, 1, "code");
+        let k2 = verdict_cache_key("rule-b", &d, 1, 1, "code");
         assert_ne!(k1, k2);
     }
 
@@ -958,7 +1038,15 @@ mod tests {
         );
         // #538: the key now includes the source the judge saw, so it must be
         // built from the same string judge_findings is called with below.
-        let key = verdict_cache_key("ast-grep:python/test", "source", "test code");
+        // Built from the same (source, location, evidence) the lookup will
+        // use, now that the key carries all three (#538).
+        let key = verdict_cache_key(
+            "ast-grep:python/test",
+            &SourceDigest::of("source"),
+            findings[0].line_start,
+            findings[0].line_end,
+            "test code",
+        );
         let mut cache = HashMap::new();
         cache.insert(
             key,

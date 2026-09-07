@@ -2321,10 +2321,19 @@ mod tests {
     fn judge_model_help_names_the_actual_default() {
         use clap::CommandFactory;
         let help = format!("{}", super::ReviewOpts::command().render_long_help());
+        // Bounded by the next option rather than a byte count. Quorum's review
+        // pointed out that a fixed 400-byte window moves out from under this
+        // test whenever help formatting or a neighbouring description changes,
+        // which would fail on correct help.
         let idx = help
             .find("--judge-model")
             .expect("--judge-model must appear in help");
-        let window = &help[idx..(idx + 400).min(help.len())];
+        let rest = &help[idx..];
+        let end = rest[1..]
+            .find("\n      --")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let window = &rest[..end];
         assert!(
             window.contains(super::DEFAULT_JUDGE_MODEL),
             "--judge-model help does not name the actual default \
