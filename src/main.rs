@@ -3724,28 +3724,50 @@ mod daemon_review_tests {
     /// not find it.
     #[derive(Debug, Default)]
     struct ServerLog {
-        /// Responses actually written to a client.
+        /// Loop iterations that accepted a connection and ran to the end.
+        ///
+        /// Distinct from `responses_served` on purpose. An iteration can
+        /// complete without a single byte reaching the client -- that is the
+        /// normal outcome when the peer has hung up, and it is what the
+        /// hung-up-client regression test below deliberately produces.
+        iterations_completed: usize,
+        /// Responses whose body actually reached the client.
+        ///
+        /// Counted from `write_response`'s return value rather than
+        /// incremented per iteration. An earlier version incremented
+        /// unconditionally after a fully best-effort write, so it measured
+        /// iterations while reading as deliveries -- which silently weakened
+        /// every assertion built on it, including the two added to catch a
+        /// client that never reaches the review request.
         responses_served: usize,
         /// Why the server stopped before serving every queued response.
         stopped_early: Option<String>,
     }
 
-    /// Write one response. Best-effort throughout: a closed peer means the
-    /// client already gave up, which for several cases here is the behaviour
-    /// under test rather than a failure.
-    fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
+    /// Write one response, returning whether the body actually reached the
+    /// client.
+    ///
+    /// Best-effort throughout: a closed peer means the client already gave up,
+    /// which for several cases here is the behaviour under test rather than a
+    /// failure. The return value is what `ServerLog::responses_served` counts,
+    /// so a silently-dropped write cannot be mistaken for a delivered one.
+    fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> bool {
         let reason = match status {
             200 => "OK",
             500 => "Internal Server Error",
             _ => "Response",
         };
-        let _ = write!(
+        let written = write!(
             stream,
             "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
-        );
-        let _ = stream.flush();
+        )
+        .is_ok();
+        let flushed = stream.flush().is_ok();
+        // A failed shutdown does not un-send a body that already went out, so
+        // it is not part of the delivery verdict.
         let _ = stream.shutdown(Shutdown::Write);
+        written && flushed
     }
 
     fn daemon_server(responses: Vec<(u16, String)>) -> (u16, JoinHandle<ServerLog>) {
@@ -3783,8 +3805,10 @@ mod daemon_review_tests {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
                 let mut request = [0_u8; 4096];
                 let _ = stream.read(&mut request);
-                write_response(&mut stream, status, &body);
-                log.responses_served += 1;
+                if write_response(&mut stream, status, &body) {
+                    log.responses_served += 1;
+                }
+                log.iterations_completed += 1;
             }
 
             log
@@ -3855,10 +3879,17 @@ mod daemon_review_tests {
         // The assertion is that joining does not panic.
         let log = join_server(server);
         assert_eq!(
-            log.responses_served, 1,
+            log.iterations_completed, 1,
             "the server should complete its iteration against a dead peer \
              rather than abort; stopped_early={:?}",
             log.stopped_early
+        );
+        // And it must not claim delivery. The oversized body is chosen so the
+        // write cannot complete -- if this is ever 1, either the premise of
+        // this test has quietly stopped holding or the counter is lying again.
+        assert_eq!(
+            log.responses_served, 0,
+            "an 8 MB body to a dropped peer cannot have been delivered"
         );
     }
 
