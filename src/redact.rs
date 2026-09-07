@@ -52,7 +52,14 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'((?:\\.|[^\n'])+)'"#).unwrap(),
          "$1$2'[REDACTED]'"),
         // OpenAI-style keys
-        (Regex::new(r"sk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
+        // `\b` left-anchor matters (#530): without it, any word CONTAINING
+        // "sk-" matched. `flask-debug-true` became `fla[REDACTED]` and
+        // `flask-sqlalchemy` became `fla[REDACTED]`, so Python source
+        // mentioning Flask was corrupted before the reviewer ever saw it.
+        // A boundary exists before `sk-` in `"sk-proj-..."` (quote is a
+        // non-word char) but not inside `flask-` (`a` and `s` are both word
+        // chars), which is exactly the distinction wanted.
+        (Regex::new(r"\bsk-[a-zA-Z0-9\-]{6,}").unwrap(), "[REDACTED]"),
         // URLs with passwords: protocol://user:password@host.
         // Floor at 1 char: short passwords are rare in practice, but the
         // surrounding `://USER:` ... `@` context anchors the match well
@@ -79,6 +86,42 @@ mod tests {
         let output = redact_secrets(input);
         assert!(!output.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn does_not_redact_words_merely_containing_sk_dash() {
+        // #530: the `sk-` pattern had no left anchor, so any word CONTAINING
+        // it matched. Real corpus damage, not hypothetical -- this repo's own
+        // sources had `flask-debug-true` rewritten to `fla[REDACTED]` and
+        // `flask-sqlalchemy` to `fla[REDACTED]`, corrupting Python source
+        // before the reviewer saw it. Routing the skills path through
+        // redaction (#530) would have spread that to every --axes review.
+        for input in [
+            "rules/python/tests/flask-debug-true.py",
+            "https://pypistats.org/api/packages/flask-sqlalchemy/recent",
+        ] {
+            assert_eq!(
+                redact_secrets(input),
+                input,
+                "must not redact inside a larger word: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn still_redacts_a_genuine_sk_key_at_a_boundary() {
+        // The other half: anchoring must not stop real keys being caught.
+        for input in [
+            "API_KEY = \"sk-proj-abc123def456\"",
+            "Bearer sk-live-0123456789abcdef",
+            "sk-CANARY1234567890abcdefghijklmnop",
+        ] {
+            let out = redact_secrets(input);
+            assert!(
+                out.contains("[REDACTED]"),
+                "genuine key must still be redacted: {input} -> {out}"
+            );
+        }
     }
 
     #[test]

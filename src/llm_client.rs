@@ -631,6 +631,42 @@ pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 /// upstream gateway returning a large error page (intentional or
 /// misconfigured) before `sanitize_error_body` truncates to 200 codepoints.
 /// Decodes as UTF-8 lossy — error bodies are display-only, never parsed.
+/// Redact every string value in an outbound request body, recursively.
+///
+/// Key-agnostic on purpose. The request shapes put user content under
+/// different keys -- `messages[].content` for chat completions, `instructions`
+/// and `input` for the Responses API, tool call arguments for the agent loop
+/// -- and a key allowlist would need updating for a fifth shape. Needing to
+/// remember is exactly the failure mode #530 was.
+///
+/// Redacting a non-secret is a no-op, so model names, roles, reasoning-effort
+/// levels and tool schemas pass through unchanged.
+///
+/// Note this covers the BODY only. The `Authorization` header carries our own
+/// API key and must survive intact, which is why `post_json` adds it after
+/// this runs rather than including it in the redacted value.
+pub(crate) fn redact_request_body(body: &mut serde_json::Value) {
+    match body {
+        serde_json::Value::String(s) => {
+            let safe = crate::redact::redact_secrets(s);
+            if safe != *s {
+                *s = safe;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_request_body(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_k, v) in map.iter_mut() {
+                redact_request_body(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) async fn read_capped_error_body(mut resp: reqwest::Response) -> String {
     let mut buf: Vec<u8> = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(8192));
     loop {
@@ -798,13 +834,18 @@ impl OpenAiClient {
                 model
             );
         }
-        let safe_prompt = crate::redact::redact_secrets(prompt);
-        let safe_system = crate::redact::redact_secrets(system_prompt);
+        // Redaction is applied by `post_json`, the chokepoint every path
+        // crosses. The inline `redact_secrets` calls that used to be here were
+        // removed with #530: they sat at the same layer as the chokepoint, so
+        // keeping them would be duplication rather than defence in depth, and
+        // duplicated redaction at one layer is what let the skills path look
+        // covered while it was not. `pipeline.rs`'s upstream redaction is a
+        // genuinely different layer and stays.
         let mut body = serde_json::json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": safe_system},
-                {"role": "user", "content": safe_prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
             ],
             "max_tokens": 2048
         });
@@ -813,12 +854,7 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let req = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let req = self.post_json(&url, body);
         let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
@@ -850,6 +886,31 @@ impl OpenAiClient {
             content: content.to_string(),
             usage,
         })
+    }
+
+    /// The single point where a request body becomes an outbound request.
+    ///
+    /// Every LLM path must cross this to reach the network, and redaction
+    /// happens HERE rather than at each call site.
+    ///
+    /// #530: redaction previously lived in two unrelated places -- upstream in
+    /// `pipeline.rs` for the main reviewer, and inline in `judge_completion`
+    /// for the judge -- and the skills/axes path went through neither. Secrets
+    /// in reviewed source reached the endpoint verbatim on every `--axes`
+    /// review, while CLAUDE.md promised redaction was always-on. Both safe
+    /// paths were safe for *different* reasons, which is why an audit of
+    /// either one generalised to the wrong conclusion.
+    ///
+    /// A new call site cannot opt out: there is no unredacted way to build the
+    /// request, because this function owns both the redaction and the auth
+    /// header.
+    fn post_json(&self, url: &str, mut body: serde_json::Value) -> reqwest::RequestBuilder {
+        redact_request_body(&mut body);
+        self.http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
     }
 
     /// #117: send a request with retry on transient 429/5xx + bounded by
@@ -988,12 +1049,7 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let req = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let req = self.post_json(&url, body);
         let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
@@ -1054,12 +1110,7 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/responses", self.base_url);
-        let req = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let req = self.post_json(&url, body);
         let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
@@ -1130,12 +1181,7 @@ impl OpenAiClient {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let req = self
-            .http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let req = self.post_json(&url, body);
         let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();

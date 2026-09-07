@@ -103,7 +103,12 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 
 ## Constraints
 
-- All secrets redacted before LLM calls (always-on)
+- All secrets redacted before LLM calls (always-on), at a single chokepoint:
+  `OpenAiClient::post_json` (`src/llm_client.rs`) redacts every string in the
+  request body before it becomes an HTTP request, so no path can opt out. #530
+  fixed the case where this claim was false: redaction used to live in two
+  unrelated places and the skills/axes path went through neither.
+  `tests/no_secret_egress.rs` enforces it at the wire across every path.
 - Provider-agnostic: single OpenAI-compatible client, no provider-specific code paths
 - JSON output grouped by file when piped, human output when TTY
 - Exit codes: 0 = clean, 1 = warnings, 2 = critical, 3 = tool error
