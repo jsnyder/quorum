@@ -424,19 +424,37 @@ pub async fn judge_findings<J: JudgeLlm>(
         }
     }
 
-    // Enforce `judge: required`.
-    //
-    // Previously a finding was dropped only on an explicit `Rejected` verdict,
-    // so when no judge ran (`--judge` is opt-in) `judge_verdict` stayed `None`
-    // and the finding was KEPT -- a rule declaring that it requires judgment
-    // emitted completely unjudged. That is how the speculative rules reached
-    // users raw: `missing-await` at ~40 findings per async Python file,
-    // `jinja-loop-variable-scoping` at 0/8 precision, `string-byte-slice-broad`
-    // 0/9, `discarded-result` 1/10. Those rules are not bad; they were running
-    // without their mandatory filter.
-    //
-    // `Uncertain` is deliberately kept: the judge looked and did not rule it
-    // out, which is different from never having looked.
+    result.withheld_unjudged = enforce_judge_required(findings, metadata);
+
+    result.latency_ms = start.elapsed().as_millis() as u64;
+    result
+}
+
+/// Enforce `judge: required`, dropping findings from rules that declare they
+/// need judgment but did not get it. Returns the number withheld for lack of
+/// a judgment (as opposed to an explicit rejection).
+///
+/// A finding is dropped only on an explicit `Rejected` verdict, or when no
+/// judgment happened at all. `Uncertain` is deliberately kept: the judge
+/// looked and did not rule it out, which is different from never looking.
+///
+/// This used to live at the tail of [`judge_findings`], which runs only when
+/// `--judge` is passed (#520). So a rule declaring that it requires judgment
+/// emitted completely unjudged on every default review -- the guard sat
+/// downstream of the very flag whose absence it exists to compensate for.
+/// That is how the speculative rules reached users raw: `missing-await` at
+/// ~40 findings per async Python file, `jinja-loop-variable-scoping` at 0/8
+/// precision, `string-byte-slice-broad` 0/28, `discarded-result` 3/46. Those
+/// rules are not bad; they were running without their mandatory filter.
+///
+/// It is now a free function so the no-judge path in `pipeline::review_file`
+/// can call it too. Callers must invoke it exactly once per finding set --
+/// it is idempotent on the findings but the returned count is not additive
+/// across calls.
+pub fn enforce_judge_required(
+    findings: &mut Vec<Finding>,
+    metadata: &HashMap<String, RuleMetadata>,
+) -> u32 {
     let mut withheld_unjudged = 0usize;
     findings.retain(|f| {
         let meta = f
@@ -457,10 +475,7 @@ pub async fn judge_findings<J: JudgeLlm>(
             _ => true,
         }
     });
-    result.withheld_unjudged = withheld_unjudged as u32;
-
-    result.latency_ms = start.elapsed().as_millis() as u64;
-    result
+    withheld_unjudged as u32
 }
 
 #[cfg(test)]
