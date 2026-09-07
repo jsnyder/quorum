@@ -184,6 +184,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         }
     }
 

@@ -97,6 +97,15 @@ pub struct CalibratorTraceEntry {
     /// Number of lines the finding spans (line_end - line_start + 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finding_span_lines: Option<u32>,
+    /// ULID of the finding this decision was made about (#459).
+    ///
+    /// Single-sourced from `Finding.id` -- never re-derived or re-minted,
+    /// because the tier-0 join is exact equality and a silently different id
+    /// would mis-join rather than fail. `None` on the ~17k legacy trace lines
+    /// written before this field existed; those keep joining via the text
+    /// cascade exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finding_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -134,6 +143,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"tp_weight\":2.5"));
@@ -162,6 +172,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"matched_precedents\":[]"));
@@ -209,6 +220,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -254,6 +266,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"file_path\":\"src/main.rs\""));
@@ -333,6 +346,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"same_file_precedent_count\":2"));
@@ -397,6 +411,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -441,6 +456,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(
@@ -471,6 +487,7 @@ mod tests {
             composite_score: None,
             logistic_p_fp: None,
             finding_span_lines: None,
+            finding_id: None,
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(

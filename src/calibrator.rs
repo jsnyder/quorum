@@ -132,6 +132,7 @@ fn make_no_match_trace(
         composite_score: None,
         logistic_p_fp: None,
         finding_span_lines: Some(finding.line_end.saturating_sub(finding.line_start) + 1),
+        finding_id: Some(finding.id.clone()),
     }
 }
 
@@ -176,6 +177,7 @@ fn make_trace_entry(
         composite_score: None,
         logistic_p_fp: None,
         finding_span_lines: Some(finding.line_end.saturating_sub(finding.line_start) + 1),
+        finding_id: Some(finding.id.clone()),
     }
 }
 
@@ -3347,6 +3349,70 @@ mod tests {
             result.findings[0].severity,
             Severity::Medium,
             "wontfix is inert — must not downgrade severity"
+        );
+    }
+
+    // ── #459: traces must carry the finding's id ────────────────────────
+
+    /// The id is single-sourced from `Finding.id`. Anything that re-derives
+    /// or re-mints it would break the tier-0 join silently, so assert the
+    /// trace value IS the finding's own id, not merely non-empty.
+    #[test]
+    fn trace_entry_carries_the_findings_own_id() {
+        let finding = FindingBuilder::new()
+            .title("Unused import")
+            .category("style".into())
+            .severity(Severity::Low)
+            .build();
+        let expected = finding.id.clone();
+
+        let feedback = vec![
+            fb("Unused import", "style", Verdict::Fp),
+            fb("Unused import os", "style", Verdict::Fp),
+        ];
+        let result = calibrate(
+            vec![finding],
+            &feedback,
+            &CalibratorConfig::default(),
+            "src/a.rs",
+        );
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].finding_id.as_deref(),
+            Some(expected.as_str()),
+            "trace finding_id must be the Finding.id verbatim"
+        );
+    }
+
+    /// The no-precedent path builds its trace through a different constructor
+    /// (`make_no_match_trace`). It is the majority path on a clean corpus, so
+    /// missing the id there would mean almost no traces carry one.
+    #[test]
+    fn no_match_trace_also_carries_the_findings_own_id() {
+        let finding = FindingBuilder::new().title("Something novel").build();
+        let expected = finding.id.clone();
+        let result = calibrate(vec![finding], &[], &CalibratorConfig::default(), "src/a.rs");
+        assert_eq!(result.traces.len(), 1);
+        assert_eq!(
+            result.traces[0].finding_id.as_deref(),
+            Some(expected.as_str()),
+            "the no-match path must carry the id too"
+        );
+    }
+
+    /// Legacy trace lines have no `finding_id` key at all. Deserializing one
+    /// must yield None rather than failing, and re-serializing must not
+    /// introduce the key.
+    #[test]
+    fn legacy_trace_json_without_finding_id_round_trips_as_none() {
+        let json = r#"{"finding_title":"x","finding_category":"y","tp_weight":1.0,"fp_weight":0.5,"wontfix_weight":0.0,"full_suppress_weight":0.5,"soft_fp_weight":0.5,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}"#;
+        let entry: crate::calibrator_trace::CalibratorTraceEntry =
+            serde_json::from_str(json).expect("legacy trace must still parse");
+        assert_eq!(entry.finding_id, None);
+        let out = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !out.contains("finding_id"),
+            "absent id must stay absent on re-serialization, got {out}"
         );
     }
 
