@@ -1017,8 +1017,24 @@ rule:
 
     // ── Parity: all bundled rules match their test fixtures ──
 
+    /// #536: each fixture must be matched by ITS OWN rule.
+    ///
+    /// This used to assert only that a fixture produced *some* finding, which
+    /// any unrelated bundled rule could satisfy. The gap is not theoretical:
+    /// #520 part 2 deleted six rules, orphaning their six fixtures, and only
+    /// one of the six went red -- the other five kept passing on neighbouring
+    /// rules while the rule each was written for no longer existed at all.
+    ///
+    /// The more interesting case it now catches is a rule edit that stops the
+    /// pattern matching its own fixture while a neighbour keeps the assertion
+    /// green.
+    ///
+    /// The convention is `rules/<lang>/tests/<rule-id>.<ext>`. Verified: all
+    /// 75 fixtures follow it and every stem maps to a rule of the same name.
+    /// Matching on the `/<stem>` suffix rather than the full id keeps this
+    /// independent of how the language prefix is derived.
     #[test]
-    fn all_bundled_rules_match_fixtures() {
+    fn all_bundled_rules_match_their_own_fixtures() {
         let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let rules_dir = project_dir.join("rules");
         let fake_home = tempfile::tempdir().unwrap();
@@ -1051,12 +1067,30 @@ rule:
                 if fixture_path.extension().and_then(|e| e.to_str()) == Some("txt") {
                     continue;
                 }
+                let stem = fixture_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .expect("fixture has a stem");
+                assert!(
+                    lang_dir.join(format!("{stem}.yml")).is_file(),
+                    "orphaned fixture: {} has no rules/{lang_name}/{stem}.yml",
+                    fixture_path.display()
+                );
+
                 let source = std::fs::read_to_string(&fixture_path).unwrap();
                 let findings = scan_file(&source, ext, &rules, &metadata, "src/lib.rs");
+                let suffix = format!("/{stem}");
                 assert!(
-                    !findings.is_empty(),
-                    "bundled rule should match fixture: {}",
-                    fixture_path.display()
+                    findings
+                        .iter()
+                        .any(|f| f.rule_id.as_deref().is_some_and(|r| r.ends_with(&suffix))),
+                    "fixture {} matched no finding from its own rule `{stem}`; \
+                     it produced {:?}",
+                    fixture_path.display(),
+                    findings
+                        .iter()
+                        .filter_map(|f| f.rule_id.as_deref())
+                        .collect::<Vec<_>>()
                 );
                 tested += 1;
             }

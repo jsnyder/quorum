@@ -552,6 +552,15 @@ pub struct DaemonOpts {
     pub port: u16,
 }
 
+/// Default model for judge calls when neither `--judge-model` nor
+/// `QUORUM_JUDGE_MODEL` is set.
+///
+/// #535: the default lived as a bare literal in `main.rs` while the flag's
+/// help text named a different model entirely. Both now read from here, and
+/// `judge_model_help_names_the_actual_default` fails if the help text drifts
+/// away from it again.
+pub const DEFAULT_JUDGE_MODEL: &str = "gpt-4.1-mini";
+
 #[derive(Parser)]
 pub struct ReviewOpts {
     /// Files to review
@@ -663,7 +672,13 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub judge: bool,
 
-    /// Model for judge calls (default: gpt-5-nano, also: QUORUM_JUDGE_MODEL)
+    // #535: this said `gpt-5-nano` -- the value from the original design doc,
+    // never the value the code used. Cost and quality claims about the judge
+    // depend on knowing which model actually ran, so a help text naming a
+    // different model is worse than naming none. Kept as a plain comment, not
+    // a doc comment: doc comments here are rendered into `--help`, and the
+    // reader of `--help` wants the default, not this note.
+    /// Model for judge calls (default: gpt-4.1-mini, also: QUORUM_JUDGE_MODEL)
     #[arg(long)]
     pub judge_model: Option<String>,
 
@@ -2295,5 +2310,26 @@ mod tests {
             "not-a-ulid",
         ]);
         assert!(res.is_err(), "invalid ULID must be rejected at parse time");
+    }
+    /// #535: the help text and the code default must name the same model.
+    ///
+    /// They disagreed for the life of the flag -- the help repeated a value
+    /// from the design doc that the implementation never adopted. Anyone
+    /// reasoning about judge cost or quality from `--help` was reasoning about
+    /// the wrong model.
+    #[test]
+    fn judge_model_help_names_the_actual_default() {
+        use clap::CommandFactory;
+        let help = format!("{}", super::ReviewOpts::command().render_long_help());
+        let idx = help
+            .find("--judge-model")
+            .expect("--judge-model must appear in help");
+        let window = &help[idx..(idx + 400).min(help.len())];
+        assert!(
+            window.contains(super::DEFAULT_JUDGE_MODEL),
+            "--judge-model help does not name the actual default \
+             ({}): {window}",
+            super::DEFAULT_JUDGE_MODEL
+        );
     }
 }

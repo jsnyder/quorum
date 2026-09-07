@@ -2456,7 +2456,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     .ok()
                     .filter(|s| !s.is_empty())
             })
-            .unwrap_or_else(|| "gpt-4.1-mini".into()),
+            .unwrap_or_else(|| crate::cli::DEFAULT_JUDGE_MODEL.to_string()),
         judge_client: llm_client.clone(),
         ..Default::default()
     };
@@ -3107,36 +3107,70 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     {
         let total_suppressed: usize = file_results.iter().map(|r| r.suppressed).sum();
         let total_findings = all_findings.len();
-        // Name the model. A stale `QUORUM_MODEL` export silently downgraded a
-        // real review and the only way to notice was grepping a shell config:
-        // nothing in the output said which model ran. PR comments have always
-        // carried it; the CLI did not.
-        let model_label = if pipeline_cfg.models.len() > 1 {
-            pipeline_cfg.models.join(",")
-        } else {
-            pipeline_cfg
-                .models
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "none".to_string())
-        };
-        let withheld: u32 = file_results
+        // Name the model, but only when one was actually called.
+        //
+        // A stale `QUORUM_MODEL` export silently downgraded a real review and
+        // the only way to notice was grepping a shell config: nothing in the
+        // output said which model ran. PR comments have always carried it; the
+        // CLI did not.
+        //
+        // #531: the first version of this named `pipeline_cfg.models` whether
+        // or not a request was made, so `env -u QUORUM_API_KEY quorum review`
+        // reported `in 0.1s using gpt-5.6` -- what would have run, printed as
+        // what did. Token usage is the honest signal: it is evidence of
+        // execution rather than of configuration.
+        let llm_ran = file_results
             .iter()
-            .map(|r| r.judge_metrics.withheld_unjudged)
+            .any(|r| r.usage.prompt_tokens > 0 || r.usage.completion_tokens > 0);
+        let engine_label = if !llm_ran {
+            "AST-only".to_string()
+        } else if pipeline_cfg.models.len() > 1 {
+            format!("using {}", pipeline_cfg.models.join(","))
+        } else {
+            format!(
+                "using {}",
+                pipeline_cfg
+                    .models
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "none".to_string())
+            )
+        };
+        let withheld_no_judge: u32 = file_results
+            .iter()
+            .map(|r| r.judge_metrics.withheld_no_judge)
+            .sum();
+        let withheld_judge_failed: u32 = file_results
+            .iter()
+            .map(|r| r.judge_metrics.withheld_judge_failed)
             .sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
-            model_label,
+            engine_label,
             total_findings,
             if total_suppressed > 0 {
                 format!(", {} suppressed", total_suppressed)
             } else {
                 String::new()
             },
-            if withheld > 0 {
-                format!(", {withheld} speculative withheld (run with --judge to evaluate them)")
+            if withheld_no_judge > 0 {
+                format!(
+                    ", {withheld_no_judge} speculative withheld (run with --judge to evaluate them)"
+                )
+            } else {
+                String::new()
+            },
+            // #533: a judge that ran and returned nothing is a different state
+            // from no judge at all, and needs different advice -- this user
+            // already passed --judge. Telling them to pass it again is the
+            // same failure as a scanner that could not run reporting an empty
+            // file.
+            if withheld_judge_failed > 0 {
+                format!(
+                    ", {withheld_judge_failed} speculative withheld (the judge ran but returned no verdict for them)"
+                )
             } else {
                 String::new()
             }

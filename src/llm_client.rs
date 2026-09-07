@@ -906,6 +906,20 @@ impl OpenAiClient {
     /// header.
     fn post_json(&self, url: &str, mut body: serde_json::Value) -> reqwest::RequestBuilder {
         redact_request_body(&mut body);
+        if self.bypass_proxy_cache {
+            // LiteLLM-style hint: bypass the proxy's response cache so each
+            // call reaches the upstream provider. Lets upstream prompt cache
+            // (and its `cached_tokens` telemetry) take effect; harmless when
+            // the proxy doesn't recognize this field.
+            //
+            // #534: this used to be set in each of the three body builders,
+            // and `judge_completion` -- the fourth -- did not set it. So a
+            // judge A/B run with QUORUM_BYPASS_PROXY_CACHE=1, exactly as
+            // CLAUDE.md instructs, silently compared cached replays. Same
+            // shape as #530's redaction: a property that must hold for every
+            // outbound request belongs at the one place they all cross.
+            body["cache"] = serde_json::json!({ "no-cache": true });
+        }
         self.http
             .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -1040,13 +1054,6 @@ impl OpenAiClient {
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
         }
-        if self.bypass_proxy_cache {
-            // LiteLLM-style hint: bypass the proxy's response cache so each
-            // call reaches the upstream provider. Lets upstream prompt cache
-            // (and its `cached_tokens` telemetry) take effect; harmless when
-            // the proxy doesn't recognize this field.
-            body["cache"] = serde_json::json!({ "no-cache": true });
-        }
 
         let url = format!("{}/chat/completions", self.base_url);
         let req = self.post_json(&url, body);
@@ -1098,9 +1105,6 @@ impl OpenAiClient {
             "max_output_tokens": 16384,
             "store": false
         });
-        if self.bypass_proxy_cache {
-            body["cache"] = serde_json::json!({ "no-cache": true });
-        }
         if supports_temperature(model) {
             body["temperature"] = serde_json::json!(0.3);
         }
@@ -1175,9 +1179,6 @@ impl OpenAiClient {
         }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
-        }
-        if self.bypass_proxy_cache {
-            body["cache"] = serde_json::json!({ "no-cache": true });
         }
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -3136,6 +3137,63 @@ mod tests {
              Current length: {} chars",
             prompt.len()
         );
+    }
+
+    /// #534: every outbound path must honor `--no-cache`.
+    ///
+    /// `judge_completion` was the one that did not. The other three set
+    /// `cache: {no-cache: true}` in their own body builders, so an audit of
+    /// any of them generalised to the wrong conclusion -- the same shape as
+    /// #530, where redaction lived at three call sites and the fourth path
+    /// went through none of them.
+    ///
+    /// This matters because CLAUDE.md tells you to set
+    /// `QUORUM_BYPASS_PROXY_CACHE=1` precisely when A/B-ing. A judge A/B run
+    /// through the documented procedure was comparing cached replays, and it
+    /// looked like a legitimate run.
+    #[tokio::test]
+    async fn every_request_path_honors_bypass_proxy_cache() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "output": [{"content": [{"text": "ok"}]}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri()).with_bypass_proxy_cache(true);
+        let responses_model = RESPONSES_API_MODELS[0];
+
+        let _ = client.chat_completion("gpt-4o", "p", "s").await;
+        let _ = client.responses_api(responses_model, "p", "s").await;
+        let _ = client
+            .chat_with_tools(
+                &[serde_json::json!({"role": "user", "content": "p"})],
+                &serde_json::json!([]),
+                "gpt-4o",
+            )
+            .await;
+        let _ = client.judge_completion("gpt-4o", "p", "s").await;
+
+        let received = server
+            .received_requests()
+            .await
+            .expect("wiremock failed to record received requests");
+        assert_eq!(received.len(), 4, "expected one request per path");
+        for (i, req) in received.iter().enumerate() {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(
+                body["cache"],
+                serde_json::json!({"no-cache": true}),
+                "request {i} did not carry the no-cache hint; a path that \
+                 builds its own body can silently skip it -- put it in \
+                 post_json, not at the call site"
+            );
+        }
     }
 
     #[tokio::test]

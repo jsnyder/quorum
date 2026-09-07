@@ -11,11 +11,28 @@ use std::path::Path;
 
 const CACHE_TTL_DAYS: i64 = 7;
 
-/// Compute a deterministic cache key from a rule ID and its evidence snippet.
-/// The null byte separator prevents prefix collisions between rule and evidence.
-pub fn verdict_cache_key(rule_id: &str, evidence: &str) -> String {
+/// Compute a deterministic cache key from a rule ID, the source the judge saw,
+/// and the evidence snippet. Null byte separators prevent prefix collisions
+/// between the three.
+///
+/// #538: the key used to be `(rule_id, evidence)` only. But `build_judge_prompt`
+/// sends the whole file and asks the model to decide "based on the surrounding
+/// code context" -- so the thing being decided on was not in the key, and a
+/// verdict earned in one context was replayed in every other context with the
+/// same evidence string. `let _ = tx.send(());` judged fp in a shutdown path
+/// came back fp where dropping that error loses data. Evidence strings for
+/// speculative rules are short and repetitive by construction, so collisions
+/// were the normal case, and the 7-day TTL kept each wrong answer for a week.
+///
+/// Including the source makes this a per-(file version, finding) memo. An edit
+/// invalidates that file's verdicts, which is correct: the judge's answer
+/// depends on the file. The case the cache was built for -- re-reviewing an
+/// unchanged file, as the daemon does -- still hits.
+pub fn verdict_cache_key(rule_id: &str, source_code: &str, evidence: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(source_code.as_bytes());
     hasher.update(b"\0");
     hasher.update(evidence.as_bytes());
     let hash = hasher.finalize();
@@ -214,6 +231,21 @@ pub fn build_judge_prompt(
 // Judge orchestrator
 // ---------------------------------------------------------------------------
 
+/// Findings per judge call.
+///
+/// #533: `judge_findings` used to send a file's entire finding set in one
+/// call, and `judge_completion` caps the response at 2048 tokens. Measured on
+/// `src/calibrator.rs`: 31 findings in, `finish_reason: "length"`, zero
+/// verdicts out -- and `judge: required` then withheld all 31, so the judge
+/// deleted findings on exactly the files that had the most.
+///
+/// A verdict runs about 65 tokens of `{index, rule_id, verdict, confidence,
+/// reason}`, so 12 leaves roughly 2.5x headroom in the 2048-token budget.
+/// ponytail: a fixed size rather than a token estimate -- an estimator would
+/// need its own calibration, and the failure it prevents is now visible in the
+/// output rather than silent. If reasons get more verbose, this is the knob.
+pub const JUDGE_BATCH_SIZE: usize = 12;
+
 /// Aggregate counters for a single `judge_findings` invocation.
 #[derive(Debug, Default)]
 pub struct JudgeResult {
@@ -221,10 +253,18 @@ pub struct JudgeResult {
     pub rejected: u32,
     pub uncertain: u32,
     pub skipped: u32,
-    /// Findings dropped because their rule declares `judge: required` but no
-    /// judge ran. Surfaced to the user -- withholding silently would repeat the
-    /// failure this enforcement exists to fix.
-    pub withheld_unjudged: u32,
+    /// Findings dropped because their rule declares `judge: required` and no
+    /// judge ran at all. Fixable by the user: pass `--judge`.
+    pub withheld_no_judge: u32,
+    /// Findings dropped because a judge ran and returned no verdict for them --
+    /// the call failed, the response would not parse, or the model omitted the
+    /// item. NOT fixable by passing `--judge`; it already was.
+    ///
+    /// #533: both states used to be one counter, so a user whose judge had just
+    /// errored was told to "run with --judge to evaluate them". A judge that
+    /// returns nothing on a token cap is indistinguishable from a judge that
+    /// examined and abstained unless the output says which happened.
+    pub withheld_judge_failed: u32,
     pub cache_hits: u32,
     pub calls: u32,
     pub latency_ms: u64,
@@ -266,7 +306,7 @@ pub async fn judge_findings<J: JudgeLlm>(
 
         let evidence = f.evidence.first().map(|s| s.as_str()).unwrap_or("");
         let rule_id = f.rule_id.as_deref().unwrap_or("");
-        let key = verdict_cache_key(rule_id, evidence);
+        let key = verdict_cache_key(rule_id, source_code, evidence);
 
         if let Some(cached) = cache.get(&key) {
             f.judge_verdict = Some(cached.verdict.clone());
@@ -283,137 +323,19 @@ pub async fn judge_findings<J: JudgeLlm>(
         to_judge.push(i);
     }
 
-    // Phase 2: Batch LLM call for uncached findings
-    if !to_judge.is_empty() {
-        if let Some(llm) = llm {
-            if to_judge.len() > 50 {
-                tracing::warn!(
-                    count = to_judge.len(),
-                    "large batch of speculative findings for judge"
-                );
-            }
-            let items: Vec<_> = to_judge
-                .iter()
-                .map(|&i| {
-                    let f = &findings[i];
-                    (
-                        f.rule_id.clone().unwrap_or_default(),
-                        f.title.clone(),
-                        f.line_start,
-                        f.line_end,
-                        f.evidence.first().cloned().unwrap_or_default(),
-                    )
-                })
-                .collect();
-
-            let prompt = build_judge_prompt(source_code, &items);
-            result.calls += 1;
-
-            let raw_response = llm.call(&prompt).await;
-            if let Some(response) = raw_response {
-                let json_extracted = extract_json_array(&response);
-                if json_extracted.is_none() {
-                    tracing::warn!(
-                        response_len = response.len(),
-                        response_prefix = %truncate_chars(&response, 200),
-                        "judge: no JSON array found in LLM response"
-                    );
-                }
-                if let Some(json_str) = json_extracted {
-                    match serde_json::from_str::<Vec<JudgeResponseItem>>(json_str) {
-                        Ok(verdicts) => {
-                            let mut used = vec![false; to_judge.len()];
-                            for v in &verdicts {
-                                let batch_pos = v
-                                    .index
-                                    .filter(|&idx| {
-                                        idx < to_judge.len()
-                                            && !used[idx]
-                                            && findings[to_judge[idx]].rule_id.as_deref()
-                                                == Some(&v.rule_id)
-                                    })
-                                    .or_else(|| {
-                                        to_judge.iter().enumerate().position(|(pos, &i)| {
-                                            !used[pos]
-                                                && findings[i].rule_id.as_deref()
-                                                    == Some(&v.rule_id)
-                                        })
-                                    });
-                                if let Some(pos) = batch_pos {
-                                    used[pos] = true;
-                                    let i = to_judge[pos];
-                                    let verdict = parse_verdict(&v.verdict);
-                                    let confidence = v.confidence.clamp(0.0, 1.0);
-                                    findings[i].judge_verdict = Some(verdict.clone());
-                                    findings[i].judge_confidence = Some(confidence);
-
-                                    let evidence = findings[i]
-                                        .evidence
-                                        .first()
-                                        .map(|s| s.as_str())
-                                        .unwrap_or("");
-                                    let canonical_rule_id =
-                                        findings[i].rule_id.as_deref().unwrap_or("");
-                                    let key = verdict_cache_key(canonical_rule_id, evidence);
-                                    if let Err(e) = write_cache_entry(
-                                        cache_path,
-                                        &CacheEntry {
-                                            cache_key: key,
-                                            rule_id: canonical_rule_id.to_string(),
-                                            verdict: verdict.clone(),
-                                            confidence,
-                                            reason: v.reason.clone(),
-                                            timestamp: Utc::now(),
-                                        },
-                                    ) {
-                                        tracing::warn!(
-                                            path = %cache_path.display(),
-                                            error = %e,
-                                            "failed to persist judge cache entry"
-                                        );
-                                    }
-
-                                    match verdict {
-                                        JudgeVerdict::Approved => result.approved += 1,
-                                        JudgeVerdict::Rejected => result.rejected += 1,
-                                        _ => result.uncertain += 1,
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                json_prefix = %truncate_chars(json_str, 200),
-                                "judge: failed to parse JSON response"
-                            );
-                        }
-                    }
-                }
-            } else {
-                tracing::warn!("judge LLM returned no response");
-            }
-
-            // Deliberately leave unresolved findings at `None`.
-            //
-            // If the call returned nothing, returned malformed JSON, or simply
-            // omitted an item, no judgment occurred -- which is the same state
-            // as having no judge at all, and must not be recorded as
-            // `Uncertain`. `Uncertain` means the judge looked and could not
-            // decide; only a real verdict may set it. The retain below then
-            // withholds `judge: required` findings and counts them, instead of
-            // emitting them as if they had been examined.
-            //
-            // Found by quorum reviewing this very change: the no-judge branch
-            // was fixed first and this one kept the original conflation.
-        } else {
-            // No LLM available. Deliberately leave the verdict as `None`.
-            //
-            // This used to mark them `Uncertain`, which conflates two very
-            // different states: "the judge looked and could not rule it out"
-            // (worth keeping) and "no judge ever looked" (not worth showing for
-            // a rule that declares it requires one). The retain below drops the
-            // latter for `judge: required` rules and reports the count.
+    // Phase 2: LLM calls for uncached findings, in bounded batches (#533).
+    //
+    // With no LLM the loop simply does not run, and verdicts stay `None`.
+    // That is deliberate: marking them `Uncertain` conflates two very
+    // different states -- "the judge looked and could not rule it out" (worth
+    // keeping) and "no judge ever looked" (not worth showing for a rule that
+    // declares it requires one). `enforce_judge_required` below drops the
+    // latter and the caller reports which state produced the count.
+    if !to_judge.is_empty()
+        && let Some(llm) = llm
+    {
+        for batch in to_judge.chunks(JUDGE_BATCH_SIZE) {
+            judge_one_batch(batch, findings, source_code, cache_path, llm, &mut result).await;
         }
     }
 
@@ -433,10 +355,141 @@ pub async fn judge_findings<J: JudgeLlm>(
         }
     }
 
-    result.withheld_unjudged = enforce_judge_required(findings, metadata);
+    // Attribute the withholding to the state that caused it. Only the caller
+    // knows which happened, so `enforce_judge_required` stays a plain count.
+    let withheld = enforce_judge_required(findings, metadata);
+    if llm.is_some() {
+        result.withheld_judge_failed = withheld;
+    } else {
+        result.withheld_no_judge = withheld;
+    }
 
     result.latency_ms = start.elapsed().as_millis() as u64;
     result
+}
+
+/// Judge one bounded batch of findings, writing verdicts and cache entries.
+///
+/// Split out of `judge_findings` when batching arrived (#533): the per-batch
+/// work is the same, only now it runs more than once, and `judge_findings` was
+/// already at complexity 28 before adding a loop around it.
+///
+/// Findings this batch does not resolve are deliberately left at `None`. If
+/// the call returned nothing, returned malformed JSON, or simply omitted an
+/// item, no judgment occurred -- which is the same state as having no judge at
+/// all, and must not be recorded as `Uncertain`. `Uncertain` means the judge
+/// looked and could not decide; only a real verdict may set it.
+///
+/// A batch that fails does not affect the batches that succeeded: their
+/// verdicts are already written to `findings` and to the cache.
+async fn judge_one_batch<J: JudgeLlm>(
+    batch: &[usize],
+    findings: &mut [Finding],
+    source_code: &str,
+    cache_path: &Path,
+    llm: &J,
+    result: &mut JudgeResult,
+) {
+    let items: Vec<_> = batch
+        .iter()
+        .map(|&i| {
+            let f = &findings[i];
+            (
+                f.rule_id.clone().unwrap_or_default(),
+                f.title.clone(),
+                f.line_start,
+                f.line_end,
+                f.evidence.first().cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+
+    let prompt = build_judge_prompt(source_code, &items);
+    result.calls += 1;
+
+    let Some(response) = llm.call(&prompt).await else {
+        tracing::warn!(
+            batch_size = batch.len(),
+            "judge LLM returned no response for this batch"
+        );
+        return;
+    };
+
+    let Some(json_str) = extract_json_array(&response) else {
+        tracing::warn!(
+            response_len = response.len(),
+            response_prefix = %truncate_chars(&response, 200),
+            "judge: no JSON array found in LLM response"
+        );
+        return;
+    };
+
+    let verdicts = match serde_json::from_str::<Vec<JudgeResponseItem>>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                json_prefix = %truncate_chars(json_str, 200),
+                "judge: failed to parse JSON response"
+            );
+            return;
+        }
+    };
+
+    let mut used = vec![false; batch.len()];
+    for v in &verdicts {
+        let batch_pos = v
+            .index
+            .filter(|&idx| {
+                idx < batch.len()
+                    && !used[idx]
+                    && findings[batch[idx]].rule_id.as_deref() == Some(&v.rule_id)
+            })
+            .or_else(|| {
+                batch.iter().enumerate().position(|(pos, &i)| {
+                    !used[pos] && findings[i].rule_id.as_deref() == Some(&v.rule_id)
+                })
+            });
+        let Some(pos) = batch_pos else { continue };
+
+        used[pos] = true;
+        let i = batch[pos];
+        let verdict = parse_verdict(&v.verdict);
+        let confidence = v.confidence.clamp(0.0, 1.0);
+        findings[i].judge_verdict = Some(verdict.clone());
+        findings[i].judge_confidence = Some(confidence);
+
+        let evidence = findings[i]
+            .evidence
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let canonical_rule_id = findings[i].rule_id.as_deref().unwrap_or("");
+        let key = verdict_cache_key(canonical_rule_id, source_code, evidence);
+        if let Err(e) = write_cache_entry(
+            cache_path,
+            &CacheEntry {
+                cache_key: key,
+                rule_id: canonical_rule_id.to_string(),
+                verdict: verdict.clone(),
+                confidence,
+                reason: v.reason.clone(),
+                timestamp: Utc::now(),
+            },
+        ) {
+            tracing::warn!(
+                path = %cache_path.display(),
+                error = %e,
+                "failed to persist judge cache entry"
+            );
+        }
+
+        match verdict {
+            JudgeVerdict::Approved => result.approved += 1,
+            JudgeVerdict::Rejected => result.rejected += 1,
+            _ => result.uncertain += 1,
+        }
+    }
 }
 
 /// Enforce `judge: required`, dropping findings from rules that declare they
@@ -502,24 +555,87 @@ mod tests {
         }
     }
 
+    /// Answers every finding in whatever batch it is handed, and records how
+    /// big each batch was. Lets a test assert on chunking without hardcoding
+    /// the response.
+    #[derive(Default)]
+    struct EchoJudge {
+        batches: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl JudgeLlm for EchoJudge {
+        async fn call(&self, prompt: &str) -> Option<String> {
+            let start = prompt.find("Findings to judge:\n")? + "Findings to judge:\n".len();
+            let arr = &prompt[start..];
+            let end = arr.rfind(']')?;
+            let items: Vec<serde_json::Value> = serde_json::from_str(&arr[..=end]).ok()?;
+            self.batches.lock().unwrap().push(items.len());
+            let out: Vec<serde_json::Value> = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| {
+                    serde_json::json!({
+                        "index": i,
+                        "rule_id": it["rule_id"],
+                        "verdict": "tp",
+                        "confidence": 0.9,
+                        "reason": "ok",
+                    })
+                })
+                .collect();
+            Some(serde_json::to_string(&out).unwrap())
+        }
+    }
+
     #[test]
     fn cache_key_deterministic() {
-        let k1 = verdict_cache_key("ast-grep:python/bare-except-pass", "except:\n    pass");
-        let k2 = verdict_cache_key("ast-grep:python/bare-except-pass", "except:\n    pass");
+        let k1 = verdict_cache_key(
+            "ast-grep:python/bare-except-pass",
+            "src",
+            "except:\n    pass",
+        );
+        let k2 = verdict_cache_key(
+            "ast-grep:python/bare-except-pass",
+            "src",
+            "except:\n    pass",
+        );
         assert_eq!(k1, k2);
+    }
+
+    /// #538: the judge decides on surrounding context, so the context must be
+    /// in the key. Identical evidence in two different files is the normal
+    /// case for speculative rules, not the edge case.
+    #[test]
+    fn cache_key_differs_when_the_surrounding_source_differs() {
+        let shutdown = "fn stop(tx: Sender<()>) { let _ = tx.send(()); }";
+        let hot_path = "fn persist(tx: Sender<Row>) { let _ = tx.send(row); }";
+        let k1 = verdict_cache_key(
+            "ast-grep:rust/discarded-result",
+            shutdown,
+            "let _ = tx.send(());",
+        );
+        let k2 = verdict_cache_key(
+            "ast-grep:rust/discarded-result",
+            hot_path,
+            "let _ = tx.send(());",
+        );
+        assert_ne!(
+            k1, k2,
+            "a verdict earned in one file must not be replayed in another"
+        );
     }
 
     #[test]
     fn cache_key_differs_for_different_evidence() {
-        let k1 = verdict_cache_key("rule-a", "code1");
-        let k2 = verdict_cache_key("rule-a", "code2");
+        let k1 = verdict_cache_key("rule-a", "src", "code1");
+        let k2 = verdict_cache_key("rule-a", "src", "code2");
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn cache_key_differs_for_different_rules() {
-        let k1 = verdict_cache_key("rule-a", "code");
-        let k2 = verdict_cache_key("rule-b", "code");
+        let k1 = verdict_cache_key("rule-a", "src", "code");
+        let k2 = verdict_cache_key("rule-b", "src", "code");
         assert_ne!(k1, k2);
     }
 
@@ -840,7 +956,9 @@ mod tests {
                 skip_test_files: false,
             },
         );
-        let key = verdict_cache_key("ast-grep:python/test", "test code");
+        // #538: the key now includes the source the judge saw, so it must be
+        // built from the same string judge_findings is called with below.
+        let key = verdict_cache_key("ast-grep:python/test", "source", "test code");
         let mut cache = HashMap::new();
         cache.insert(
             key,
@@ -1052,7 +1170,7 @@ mod tests {
         // flagged when reviewing the enforcement change.
         assert_eq!(result.calls, 1, "the call is still attempted and counted");
         assert_eq!(result.uncertain, 0, "a failed call yields no verdict");
-        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(result.withheld_judge_failed, 1);
         assert!(findings.is_empty(), "required findings must not survive");
     }
 
@@ -1121,7 +1239,7 @@ mod tests {
         // emitted as `Uncertain`.
         assert_eq!(result.approved, 1);
         assert_eq!(result.uncertain, 0, "an omitted item is not a verdict");
-        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(result.withheld_judge_failed, 1);
         assert_eq!(findings.len(), 1, "only the judged finding survives");
     }
 
@@ -1167,7 +1285,7 @@ mod tests {
         // withheld, not emitted with a fabricated `Uncertain`.
         assert_eq!(result.calls, 1, "malformed JSON must not panic");
         assert_eq!(result.uncertain, 0);
-        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(result.withheld_judge_failed, 1);
         assert!(findings.is_empty());
     }
 
@@ -1225,13 +1343,173 @@ mod tests {
             "a judge:required finding must not survive an unjudged run"
         );
         assert_eq!(
-            result.withheld_unjudged, 1,
+            result.withheld_no_judge, 1,
             "withholding must be counted so it can be reported, not silent"
         );
     }
 
     /// The second half of the enforcement, found by quorum reviewing the first
     /// half. When a judge IS configured but its call fails or omits an item,
+    /// #533: a batch big enough to overrun `max_tokens` must be split.
+    ///
+    /// `judge_findings` sent every one of a file's findings in a single call,
+    /// and `judge_completion` caps the response at 2048 tokens. Measured on
+    /// `src/calibrator.rs`: 31 findings, `finish_reason: "length"`, and not one
+    /// verdict came back. Under `judge: required` all 31 were then withheld --
+    /// so the judge silently deleted the findings on exactly the files with
+    /// the most of them.
+    #[tokio::test]
+    async fn large_finding_sets_are_split_into_bounded_batches() {
+        let rule = "ast-grep:python/some-speculative";
+        let n = JUDGE_BATCH_SIZE * 2 + 3;
+        let mut findings: Vec<Finding> = (0..n)
+            .map(|i| {
+                let mut f = speculative_finding(rule);
+                f.evidence = vec![format!("evidence number {i}")];
+                f
+            })
+            .collect();
+        let judge = EchoJudge::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &dir.path().join("cache.jsonl"),
+            Some(&judge),
+        )
+        .await;
+
+        let batches = judge.batches.lock().unwrap().clone();
+        assert!(
+            batches.iter().all(|&b| b <= JUDGE_BATCH_SIZE),
+            "no batch may exceed the size the response budget can answer: {batches:?}"
+        );
+        assert_eq!(
+            batches.iter().sum::<usize>(),
+            n,
+            "every finding must be sent"
+        );
+        assert_eq!(
+            result.calls,
+            batches.len() as u32,
+            "calls must be counted per batch"
+        );
+        assert_eq!(
+            result.approved as usize, n,
+            "every finding must come back judged"
+        );
+        assert_eq!(
+            result.withheld_judge_failed, 0,
+            "nothing should be withheld when the judge answered"
+        );
+    }
+
+    /// #533: one failed batch must not take the batches that succeeded.
+    #[tokio::test]
+    async fn a_failed_batch_does_not_discard_the_ones_that_answered() {
+        let rule = "ast-grep:python/some-speculative";
+        // Answers the first batch, then goes quiet -- the shape of a truncated
+        // or rate-limited call partway through a large file.
+        struct FlakyJudge {
+            seen: std::sync::Mutex<usize>,
+        }
+        impl JudgeLlm for FlakyJudge {
+            async fn call(&self, prompt: &str) -> Option<String> {
+                // Scoped so the guard is not live across the await below.
+                let first = {
+                    let mut seen = self.seen.lock().unwrap();
+                    *seen += 1;
+                    *seen == 1
+                };
+                if !first {
+                    return None;
+                }
+                EchoJudge::default().call(prompt).await
+            }
+        }
+
+        let n = JUDGE_BATCH_SIZE + 2;
+        let mut findings: Vec<Finding> = (0..n)
+            .map(|i| {
+                let mut f = speculative_finding(rule);
+                f.evidence = vec![format!("evidence number {i}")];
+                f
+            })
+            .collect();
+        let judge = FlakyJudge {
+            seen: std::sync::Mutex::new(0),
+        };
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = judge_findings(
+            &mut findings,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &dir.path().join("cache.jsonl"),
+            Some(&judge),
+        )
+        .await;
+
+        assert_eq!(
+            result.approved as usize, JUDGE_BATCH_SIZE,
+            "the batch that answered must keep its verdicts"
+        );
+        assert_eq!(
+            result.withheld_judge_failed, 2,
+            "only the findings in the failed batch are withheld"
+        );
+        assert_eq!(findings.len(), JUDGE_BATCH_SIZE);
+    }
+
+    /// #533: "no judge ran" and "the judge ran and failed" are different
+    /// states and must be counted separately.
+    ///
+    /// Both used to land in `withheld_unjudged`, so the summary line told a
+    /// user whose judge had just errored to "run with --judge to evaluate
+    /// them" -- advice they had already taken. Same shape as a scanner that
+    /// cannot run reporting an empty file.
+    #[tokio::test]
+    async fn a_judge_that_failed_is_not_reported_as_a_judge_that_never_ran() {
+        let rule = "ast-grep:python/some-speculative";
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.jsonl");
+
+        let mut no_judge = vec![speculative_finding(rule)];
+        let ran_none = judge_findings(
+            &mut no_judge,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &cache_path,
+            None::<&MockJudge>,
+        )
+        .await;
+
+        let mut failed = vec![speculative_finding(rule)];
+        let errored = judge_findings(
+            &mut failed,
+            "src",
+            &required_meta(rule),
+            &HashMap::new(),
+            &cache_path,
+            Some(&MockJudge { response: None }),
+        )
+        .await;
+
+        assert_eq!(
+            (ran_none.withheld_no_judge, ran_none.withheld_judge_failed),
+            (1, 0)
+        );
+        assert_eq!(
+            (errored.withheld_no_judge, errored.withheld_judge_failed),
+            (0, 1)
+        );
+    }
+
     /// the old code marked the finding `Uncertain` -- which the retain keeps --
     /// so a required rule still emitted unjudged. `Uncertain` must mean "the
     /// judge looked and could not decide", never "the call failed".
@@ -1257,7 +1535,7 @@ mod tests {
             findings.is_empty(),
             "a failed judge call must not be treated as an Uncertain verdict"
         );
-        assert_eq!(result.withheld_unjudged, 1);
+        assert_eq!(result.withheld_judge_failed, 1);
         assert_eq!(
             result.uncertain, 0,
             "no real verdict was returned, so nothing is genuinely Uncertain"
@@ -1293,6 +1571,6 @@ mod tests {
         .await;
 
         assert_eq!(findings.len(), 1, "judge:optional must still emit");
-        assert_eq!(result.withheld_unjudged, 0);
+        assert_eq!(result.withheld_no_judge, 0);
     }
 }
