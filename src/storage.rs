@@ -20,7 +20,7 @@ pub type StorageHandle = Arc<Mutex<Connection>>;
 
 /// Current schema version. Bumped by each `migrate_vN_to_vN+1` function.
 #[cfg(test)]
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// Open (or create) the quorum SQLite database and run any pending
 /// migrations. Returns a shared connection handle ready for use.
@@ -123,6 +123,10 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         migrate_v2_to_v3(conn).context("schema migration v2 -> v3 failed")?;
     }
 
+    if version < 4 {
+        migrate_v3_to_v4(conn).context("schema migration v3 -> v4 failed")?;
+    }
+
     Ok(())
 }
 
@@ -220,6 +224,22 @@ fn migrate_v2_to_v3(conn: &Connection) -> anyhow::Result<()> {
          ALTER TABLE review_finding_ids ADD COLUMN file_path TEXT NOT NULL DEFAULT '';",
     )?;
     tx.pragma_update(None, "user_version", 3)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Schema v4: add `rule_id` to `review_finding_ids` (#523).
+///
+/// Without it the feedback recording path had no way to learn which rule
+/// produced a finding, so `FeedbackEntry.rule_id` was written as `None` on
+/// every row and `stats --by-rule` returned an empty table by construction.
+/// Existing rows keep `''` and stay derivable from their title prefix.
+fn migrate_v3_to_v4(conn: &Connection) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "ALTER TABLE review_finding_ids ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';",
+    )?;
+    tx.pragma_update(None, "user_version", 4)?;
     tx.commit()?;
     Ok(())
 }

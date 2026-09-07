@@ -3,7 +3,7 @@
 //! Produces `DimensionSlice` rows for stats views: by-repo, by-caller,
 //! rolling N-run windows. Respects MIN_SAMPLE gate.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
@@ -665,19 +665,65 @@ pub struct RuleDimensionSlice {
     pub total: u32,
     pub precision: f64,
     pub low_sample: bool,
+    /// How many rows in this bucket had no recorded `rule_id` and were
+    /// attributed by title-prefix derivation (#523). `0` means every row was
+    /// authoritative. Surfaced in output so a derived table is never mistaken
+    /// for a recorded one.
+    pub derived: u32,
+}
+
+/// Recover a rule id from a finding title for rows recorded before #523.
+///
+/// Bundled ast-grep findings render as `"<rule-id>: <message>"`, so the id is
+/// recoverable from data already on disk. Two constraints keep this honest:
+///
+/// - The prefix must be a **declared** rule id. `god-object:` and
+///   `missing-await:` are LLM title conventions, not rules (33 rows in the
+///   live corpus); deriving from any kebab-case prefix would invent rules
+///   that do not exist.
+/// - The result is counted as `derived` rather than written back. #514, #480
+///   and #494 are all open against the feedback write path, and a heuristic
+///   must not be laundered into an authoritative field.
+fn derive_rule_id(title: &str, known_rule_ids: &HashSet<String>) -> Option<String> {
+    let t = title.trim();
+
+    // Three shapes observed in the live corpus, in decreasing specificity.
+    // Order matters: `": "` is tried before `" "` so that
+    // "some-rule: message" yields "some-rule" rather than "some-rule:".
+    let candidates = [
+        Some(t),                            // "string-byte-slice-broad"
+        t.split_once(": ").map(|(p, _)| p), // "discarded-result: Result discarded"
+        t.split_once(' ').map(|(p, _)| p),  // "silent-error-conversion in load_from"
+    ];
+
+    // Exact set membership on the whole candidate, never a prefix scan. That
+    // boundary is load-bearing: `string-byte-slice` and
+    // `string-byte-slice-broad` are both declared rules, and a prefix match
+    // would silently attribute 64 of the latter's rows to the former.
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|c| known_rule_ids.contains(*c))
+        .map(String::from)
 }
 
 pub fn group_by_rule(
     entries: &[FeedbackEntry],
     glob_filter: Option<&str>,
+    known_rule_ids: &HashSet<String>,
 ) -> Vec<RuleDimensionSlice> {
-    let mut buckets: HashMap<String, (u32, u32, u32, u32)> = HashMap::new();
+    // (tp, fp, partial, wontfix, derived)
+    let mut buckets: HashMap<String, (u32, u32, u32, u32, u32)> = HashMap::new();
 
     for entry in entries {
-        let rule_id = match &entry.rule_id {
-            Some(r) if !r.is_empty() => r,
-            _ => continue,
+        let (rule_id, was_derived) = match &entry.rule_id {
+            Some(r) if !r.is_empty() => (r.clone(), false),
+            _ => match derive_rule_id(&entry.finding_title, known_rule_ids) {
+                Some(r) => (r, true),
+                None => continue,
+            },
         };
+        let rule_id = &rule_id;
 
         if let Some(pattern) = glob_filter
             && !glob_match(pattern, rule_id)
@@ -686,6 +732,9 @@ pub fn group_by_rule(
         }
 
         let counts = buckets.entry(rule_id.clone()).or_default();
+        if was_derived {
+            counts.4 += 1;
+        }
         match &entry.verdict {
             Verdict::Tp => counts.0 += 1,
             Verdict::Fp => counts.1 += 1,
@@ -697,7 +746,7 @@ pub fn group_by_rule(
 
     let mut slices: Vec<RuleDimensionSlice> = buckets
         .into_iter()
-        .map(|(key, (tp, fp, partial, wontfix))| {
+        .map(|(key, (tp, fp, partial, wontfix, derived))| {
             let total = tp + fp + partial + wontfix;
             let precision = if tp + fp > 0 {
                 tp as f64 / (tp + fp) as f64
@@ -713,6 +762,7 @@ pub fn group_by_rule(
                 total,
                 precision,
                 low_sample: total < MIN_SAMPLE,
+                derived,
             }
         })
         .collect();
@@ -1815,6 +1865,14 @@ mod tests {
 
     // ── group_by_rule tests ──
 
+    /// Like `feedback_entry_with_rule` but with a settable title, so the
+    /// #523 derivation path can be exercised.
+    fn fb_rule(rule_id: Option<&str>, title: &str, verdict: Verdict) -> FeedbackEntry {
+        let mut e = feedback_entry_with_rule(rule_id, verdict);
+        e.finding_title = title.into();
+        e
+    }
+
     fn feedback_entry_with_rule(rule_id: Option<&str>, verdict: Verdict) -> FeedbackEntry {
         FeedbackEntry {
             file_path: "test.py".into(),
@@ -1835,6 +1893,149 @@ mod tests {
         }
     }
 
+    // ── #523: --by-rule was empty by construction ───────────────────────
+
+    /// The bug: `rule_id` is absent on all 5,521 recorded feedback rows, so
+    /// this view has always returned []. Derivation reads the rule name off
+    /// the title prefix that bundled ast-grep findings already render
+    /// ("<rule-id>: <message>"), which makes months of held data legible
+    /// without rewriting the file -- #514, #480 and #494 are all open against
+    /// that write path.
+    #[test]
+    fn derives_rule_id_from_title_prefix_for_legacy_rows() {
+        let known: HashSet<String> = ["string-byte-slice-broad".into(), "discarded-result".into()]
+            .into_iter()
+            .collect();
+        let entries = vec![
+            fb_rule(
+                None,
+                "string-byte-slice-broad: byte slicing panics",
+                Verdict::Fp,
+            ),
+            fb_rule(None, "string-byte-slice-broad: another one", Verdict::Fp),
+            fb_rule(None, "discarded-result: Result discarded", Verdict::Tp),
+        ];
+        let slices = group_by_rule(&entries, None, &known);
+        let keys: Vec<_> = slices.iter().map(|s| s.key.as_str()).collect();
+        assert!(
+            keys.contains(&"string-byte-slice-broad") && keys.contains(&"discarded-result"),
+            "legacy rows must be derivable, got {keys:?}"
+        );
+        let sbs = slices
+            .iter()
+            .find(|s| s.key == "string-byte-slice-broad")
+            .unwrap();
+        assert_eq!((sbs.fp, sbs.tp), (2, 0));
+        assert_eq!(sbs.derived, 2, "both rows are derived, not authoritative");
+    }
+
+    /// The precision guard. "god-object:" and "missing-await:" are LLM title
+    /// conventions, not rule ids -- 33 rows in the live corpus. Deriving from
+    /// any kebab-case prefix would fabricate rules that do not exist, which is
+    /// the #530 lesson: do not reason confidently from the wrong layer.
+    #[test]
+    fn derivation_rejects_prefixes_that_are_not_declared_rules() {
+        let known: HashSet<String> = ["discarded-result".into()].into_iter().collect();
+        let entries = vec![
+            fb_rule(
+                None,
+                "god-object: run_review centralizes everything",
+                Verdict::Fp,
+            ),
+            fb_rule(None, "missing-await: forgot to await", Verdict::Fp),
+            fb_rule(None, "discarded-result: Result discarded", Verdict::Tp),
+        ];
+        let slices = group_by_rule(&entries, None, &known);
+        let keys: Vec<_> = slices.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["discarded-result"],
+            "only declared rule ids may be derived; got {keys:?}"
+        );
+    }
+
+    /// The corpus records these three shapes. Missing the bare and
+    /// space-separated forms dropped 30 legitimate rows across two rules --
+    /// found by cross-checking the derived table against numbers computed
+    /// independently by hand.
+    #[test]
+    fn derives_from_bare_and_space_separated_titles_too() {
+        let known: HashSet<String> = [
+            "string-byte-slice-broad".into(),
+            "silent-error-conversion".into(),
+        ]
+        .into_iter()
+        .collect();
+        let entries = vec![
+            fb_rule(None, "string-byte-slice-broad", Verdict::Fp),
+            fb_rule(None, "silent-error-conversion in load_from", Verdict::Fp),
+            fb_rule(
+                None,
+                "silent-error-conversion: .ok() on a fallible call",
+                Verdict::Fp,
+            ),
+        ];
+        let slices = group_by_rule(&entries, None, &known);
+        let by: HashMap<&str, u32> = slices.iter().map(|s| (s.key.as_str(), s.fp)).collect();
+        assert_eq!(by.get("string-byte-slice-broad"), Some(&1));
+        assert_eq!(by.get("silent-error-conversion"), Some(&2));
+    }
+
+    /// Boundary discipline. `string-byte-slice` and `string-byte-slice-broad`
+    /// are both declared rules; a prefix scan rather than exact membership
+    /// would attribute the longer rule's rows to the shorter one.
+    #[test]
+    fn derivation_does_not_let_a_shorter_rule_swallow_a_longer_one() {
+        let known: HashSet<String> = ["string-byte-slice".into(), "string-byte-slice-broad".into()]
+            .into_iter()
+            .collect();
+        let entries = vec![
+            fb_rule(None, "string-byte-slice-broad: panics", Verdict::Fp),
+            fb_rule(None, "string-byte-slice-broad", Verdict::Fp),
+        ];
+        let slices = group_by_rule(&entries, None, &known);
+        assert_eq!(
+            slices.len(),
+            1,
+            "got {:?}",
+            slices.iter().map(|s| &s.key).collect::<Vec<_>>()
+        );
+        assert_eq!(slices[0].key, "string-byte-slice-broad");
+        assert_eq!(slices[0].fp, 2);
+    }
+
+    /// An authoritative `rule_id` must win over derivation, and must not be
+    /// counted as derived.
+    #[test]
+    fn recorded_rule_id_beats_derivation_and_is_not_marked_derived() {
+        let known: HashSet<String> = ["discarded-result".into()].into_iter().collect();
+        let entries = vec![fb_rule(
+            Some("rust/ignored-io-result"),
+            "discarded-result: Result discarded",
+            Verdict::Tp,
+        )];
+        let slices = group_by_rule(&entries, None, &known);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].key, "rust/ignored-io-result");
+        assert_eq!(slices[0].derived, 0);
+    }
+
+    /// `--rule <glob>` filtered an always-empty set, so it was inert. It must
+    /// filter derived keys too, or it stays inert for the historical corpus.
+    #[test]
+    fn glob_filter_applies_to_derived_keys() {
+        let known: HashSet<String> = ["string-byte-slice-broad".into(), "discarded-result".into()]
+            .into_iter()
+            .collect();
+        let entries = vec![
+            fb_rule(None, "string-byte-slice-broad: x", Verdict::Fp),
+            fb_rule(None, "discarded-result: y", Verdict::Tp),
+        ];
+        let slices = group_by_rule(&entries, Some("string-*"), &known);
+        let keys: Vec<_> = slices.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, vec!["string-byte-slice-broad"]);
+    }
+
     #[test]
     fn group_by_rule_buckets_by_rule_id() {
         let entries = vec![
@@ -1843,7 +2044,7 @@ mod tests {
             feedback_entry_with_rule(Some("ast-grep:python/bare-except-pass"), Verdict::Tp),
             feedback_entry_with_rule(None, Verdict::Tp),
         ];
-        let slices = group_by_rule(&entries, None);
+        let slices = group_by_rule(&entries, None, &HashSet::new());
         assert_eq!(slices.len(), 2, "None entries should be excluded");
         let eval_slice = slices
             .iter()
@@ -1860,21 +2061,21 @@ mod tests {
             feedback_entry_with_rule(Some("local-ast:python/eval-exec"), Verdict::Tp),
             feedback_entry_with_rule(Some("ast-grep:typescript/as-any-cast"), Verdict::Tp),
         ];
-        let slices = group_by_rule(&entries, Some("local-ast:python/*"));
+        let slices = group_by_rule(&entries, Some("local-ast:python/*"), &HashSet::new());
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].key, "local-ast:python/eval-exec");
     }
 
     #[test]
     fn group_by_rule_empty_input() {
-        let slices = group_by_rule(&[], None);
+        let slices = group_by_rule(&[], None, &HashSet::new());
         assert!(slices.is_empty());
     }
 
     #[test]
     fn group_by_rule_low_sample_flag() {
         let entries = vec![feedback_entry_with_rule(Some("rule-a"), Verdict::Tp)];
-        let slices = group_by_rule(&entries, None);
+        let slices = group_by_rule(&entries, None, &HashSet::new());
         assert!(
             slices[0].low_sample,
             "1 entry < MIN_SAMPLE should be flagged"
