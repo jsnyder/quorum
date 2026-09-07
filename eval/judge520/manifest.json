@@ -1,0 +1,362 @@
+{
+  "_note": "Evaluation set for #520 part 2. label_source records how each label was derived; see docs/judge-eval-520.md for what each source can and cannot support.",
+  "rule_context": {
+    "ast-grep:rust/string-byte-slice-broad": "matches any &x[..n]. In 72 recorded human verdicts on this codebase it has been correct 0 times. A narrower sibling rule (string-byte-slice) covers the real panic case.",
+    "ast-grep:rust/discarded-result": "matches any `let _ = ...`. In 51 recorded human verdicts it was correct 3 times. `let _ =` is the idiomatic way to say 'this Result is deliberately ignored'.",
+    "ast-grep:typescript/string-format-sql": "matches any template literal containing a SQL keyword, including ones with no interpolation at all.",
+    "ast-grep:typescript/nullish-coalescing-broad": "matches every `||` outside an if-condition, including plain boolean disjunction.",
+    "ast-grep:yaml/jinja-loop-variable-scoping": "matches any Jinja scalar containing for ... set ... endfor, including the correct namespace() idiom and sets that are only read inside the loop. 8 recorded verdicts, correct 0 times."
+  },
+  "files": [
+    {
+      "path": "eval/judge520/fixtures/rust_cases.rs",
+      "label_source": "synthetic",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "labels": {
+        "string-byte-slice-broad:15": "tp",
+        "string-byte-slice-broad:23": "tp",
+        "string-byte-slice-broad:30": "fp",
+        "string-byte-slice-broad:36": "fp",
+        "string-byte-slice-broad:43": "fp",
+        "discarded-result:51": "tp",
+        "discarded-result:59": "tp",
+        "discarded-result:68": "fp",
+        "discarded-result:74": "fp",
+        "discarded-result:79": "fp"
+      }
+    },
+    {
+      "path": "eval/judge520/fixtures/ts_cases.ts",
+      "label_source": "synthetic",
+      "rules": [
+        "string-format-sql",
+        "nullish-coalescing-broad"
+      ],
+      "labels": {
+        "string-format-sql:10": "tp",
+        "string-format-sql:16": "tp",
+        "string-format-sql:23": "fp",
+        "string-format-sql:29": "fp",
+        "nullish-coalescing-broad:37": "tp",
+        "nullish-coalescing-broad:43": "tp",
+        "nullish-coalescing-broad:51": "fp",
+        "nullish-coalescing-broad:56": "fp",
+        "nullish-coalescing-broad:62": "fp"
+      }
+    },
+    {
+      "path": "eval/judge520/fixtures/yaml_cases.yaml",
+      "label_source": "synthetic",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "labels": {
+        "jinja-loop-variable-scoping:8": "tp",
+        "jinja-loop-variable-scoping:19": "tp",
+        "jinja-loop-variable-scoping:29": "fp",
+        "jinja-loop-variable-scoping:40": "fp",
+        "jinja-loop-variable-scoping:50": "fp"
+      }
+    },
+    {
+      "path": "src/calibrator.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp"
+      }
+    },
+    {
+      "path": "src/dimensions.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp"
+      }
+    },
+    {
+      "path": "src/skill_integrator.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp"
+      }
+    },
+    {
+      "path": "src/skill_audit.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp"
+      }
+    },
+    {
+      "path": "tests/llm_path_replay.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp"
+      }
+    },
+    {
+      "path": "src/github_report.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp",
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "src/mcp/handler.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp",
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "src/judge.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "string-byte-slice-broad": "fp",
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "src/main.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "src/skill_executor.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "tests/daemon_health.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "src/finding.rs",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "string-byte-slice-broad",
+        "discarded-result"
+      ],
+      "rule_default_label": {
+        "discarded-result": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/comfort_suggestions.yaml",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "rule_default_label": {
+        "jinja-loop-variable-scoping": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/system_aggregates.yaml",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "rule_default_label": {
+        "jinja-loop-variable-scoping": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/plant_intelligence.yaml",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "rule_default_label": {
+        "jinja-loop-variable-scoping": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/plant_watering_monitoring.yaml",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "rule_default_label": {
+        "jinja-loop-variable-scoping": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/home_assistant/packages/daily_digest_notifications.yaml",
+      "label_source": "corpus_file_level",
+      "rules": [
+        "jinja-loop-variable-scoping"
+      ],
+      "rule_default_label": {
+        "jinja-loop-variable-scoping": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/observation.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/observation-enrichment.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/pg-graph-client.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/knowledge.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/dedup.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/camera-event.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/session-queue.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "string-format-sql",
+        "nullish-coalescing-broad"
+      ],
+      "rule_default_label": {
+        "string-format-sql": "fp",
+        "nullish-coalescing-broad": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/memory.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "nullish-coalescing-broad"
+      ],
+      "rule_default_label": {
+        "nullish-coalescing-broad": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/sparse-embedder.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "nullish-coalescing-broad"
+      ],
+      "rule_default_label": {
+        "nullish-coalescing-broad": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/house_memory/src/services/claude-session.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "nullish-coalescing-broad"
+      ],
+      "rule_default_label": {
+        "nullish-coalescing-broad": "fp"
+      }
+    },
+    {
+      "path": "/Users/jsnyder/Sources/github.com/jsnyder/third-opinion/src/tools/review.ts",
+      "label_source": "manual_verified",
+      "rules": [
+        "nullish-coalescing-broad"
+      ],
+      "rule_default_label": {
+        "nullish-coalescing-broad": "fp"
+      }
+    }
+  ]
+}

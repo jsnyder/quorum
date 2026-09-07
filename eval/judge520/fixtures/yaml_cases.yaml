@@ -1,0 +1,54 @@
+# Synthetic eval fixture for #520 part 2. NOT production config.
+
+template:
+  # TP: `total` is set inside the for-loop and read after {% endfor %}. Jinja2
+  # scoping discards the loop-body assignment, so this always renders 0.
+  - sensor:
+      - name: "Broken Total"
+        state: >
+          {% set total = 0 %}
+          {% for s in states.sensor if s.attributes.power is defined %}
+            {% set total = total + s.attributes.power | float(0) %}
+          {% endfor %}
+          {{ total }}
+
+  # TP: `found` is used as a post-loop flag. Same scoping bug -- the condition
+  # after the loop never sees the assignment.
+  - sensor:
+      - name: "Broken Flag"
+        state: >
+          {% set found = false %}
+          {% for d in states.binary_sensor %}
+            {% set found = true %}
+          {% endfor %}
+          {{ 'yes' if found else 'no' }}
+
+  # FP: the correct namespace() idiom. The assignment survives the loop.
+  - sensor:
+      - name: "Correct Namespace Total"
+        state: >
+          {% set ns = namespace(total=0) %}
+          {% for s in states.sensor if s.attributes.power is defined %}
+            {% set ns.total = ns.total + s.attributes.power | float(0) %}
+          {% endfor %}
+          {{ ns.total }}
+
+  # FP: `label` is set and consumed entirely inside the loop body. Nothing is
+  # read after {% endfor %}, so loop scoping is irrelevant.
+  - sensor:
+      - name: "Loop Local Only"
+        state: >
+          {% for s in states.sensor %}
+            {% set label = s.name | upper %}
+            {{ label }},
+          {% endfor %}
+
+  # FP: a rejectseq/selectattr accumulation that never assigns across the loop
+  # boundary; the set is a per-iteration alias used immediately.
+  - sensor:
+      - name: "Per Iteration Alias"
+        state: >
+          {% for z in states.climate %}
+            {% set temp = z.attributes.current_temperature | float(0) %}
+            {{ z.name }}={{ temp }}
+          {% endfor %}

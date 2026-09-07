@@ -85,15 +85,15 @@ The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS b
 | Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
 
-### ast-grep custom rules (71 bundled)
+### ast-grep custom rules (84 bundled)
 
 Bundled rules live in `rules/<language>/`. Users can add custom rules to `~/.quorum/rules/<language>/` (e.g. `~/.quorum/rules/typescript/my-rule.yml`). Both directories are scanned automatically when ast-grep is in PATH.
 
 Bundled rules by language:
-- **Python** (21): assert-in-prod-code, bare-except-pass, bind-all-interfaces, blocking-call-in-async, broad-exception-catch, eval-exec-non-literal, fastapi-unbounded-pagination, flask-debug-true, insecure-file-permissions, md5-usage, mutation-during-iteration, naive-url-blacklist, non-threadsafe-singleton, open-no-encoding, re-compile-in-loop, requests-verify-false, resource-no-context-manager, sqlalchemy-raw-query, subprocess-no-check, subprocess-shell-true, urlopen-no-context-manager
-- **TypeScript** (15): as-any-cast, bare-catch, cors-wildcard-origin, eval-non-literal, json-parse-as-type, non-literal-regexp, non-null-assertion, nullish-coalescing-preferred, path-traversal-join, promise-async-executor, sql-template-injection, sync-in-async, tautological-length, tls-reject-unauthorized-false, unsafe-url-concat
-- **JavaScript** (3): bind-all-interfaces, bind-in-event-listener (covers add+remove), console-log-artifact
-- **Rust** (5): block-on-in-async, expect-empty-message, ignored-io-result, silent-error-conversion, string-byte-slice
+- **Python** (25): assert-in-prod-code, bare-except-pass, bare-except-with-logic, bind-all-interfaces, blocking-call-in-async, broad-exception-catch, db-connection-no-context-manager, eval-exec-non-literal, fastapi-unbounded-pagination, flask-debug-true, flask-unsafe-form-access, insecure-file-permissions, md5-usage, mutation-during-iteration, naive-url-blacklist, non-threadsafe-singleton, open-no-encoding, re-compile-in-loop, requests-verify-false, resource-no-context-manager, sqlalchemy-raw-query, subprocess-no-check, subprocess-shell-true, urlopen-no-context-manager, use-sys-exit
+- **TypeScript** (19): as-any-cast, bare-catch, console-log-non-test, cors-wildcard-origin, eval-non-literal, json-parse-as-type, non-literal-regexp, non-null-assertion, nullish-coalescing-preferred, path-traversal-join, promise-async-executor, sql-template-injection, sync-in-async, tautological-length, tls-reject-unauthorized-false, ts-regex-word-merge, ts-test-fixed-wait, ts-weak-crypto-random, unsafe-url-concat
+- **JavaScript** (3): bind-all-interfaces, bind-in-event-listener, console-log-artifact
+- **Rust** (10): block-on-in-async, builder-unwrap-or-default, discarded-fallible-result, expect-empty-message, handle-block-on-no-flavor-check, ignored-io-result, silent-error-conversion, string-byte-slice, unwrap-after-infallible, unwrap-on-duration-since
 - **Bash** (4): predictable-tmp, toctou-lock-touch, unquoted-variable, unsafe-grep-variable
 - **YAML** (3): float-zero-fallback, ha-jinja-loop-scoped-reassignment, ha-template-none-fallback
 - **Go** (18): bare-error-format, bind-all-interfaces, defer-in-loop, empty-error-check, error-sprintf, errors-new-fmt, exec-command-variable, http-body-not-closed, ignored-error-return, init-side-effects, mutex-copy, nil-map-assign, range-loop-variable-capture, sql-string-concat, string-byte-slice-in-loop, sync-pool-non-pointer, tls-insecure-skip, waitgroup-add-in-goroutine
