@@ -70,25 +70,21 @@ fn trace_finding_id_matches_the_json_finding_id_for_the_same_run() {
     )
     .unwrap();
 
+    // Exactly one invocation. An earlier draft retried with a different
+    // argument shape when the first parse failed, which was a real bug the
+    // review caught: the first run can write traces and *then* produce
+    // unparseable stdout, after which the trace file holds ids from two runs
+    // while only the second run's ids are compared -- a nondeterministic
+    // failure. One run, no fallback, so the trace file has exactly one
+    // review's worth of ids in it.
     let out = quorum(home.path())
-        .args([src.to_str().unwrap(), "--json"])
+        .args(["review", src.to_str().unwrap(), "--json"])
         .output()
         .expect("review runs");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: Value = match serde_json::from_str(stdout.trim()) {
-        Ok(v) => v,
-        Err(_) => {
-            // `review` is the default subcommand in some builds; retry explicitly
-            // rather than assert on a shape the CLI may not use.
-            let out2 = quorum(home.path())
-                .args(["review", src.to_str().unwrap(), "--json"])
-                .output()
-                .expect("review runs");
-            serde_json::from_str(String::from_utf8_lossy(&out2.stdout).trim())
-                .expect("review --json must emit JSON")
-        }
-    };
+    let parsed: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("review --json must emit JSON ({e}); got: {stdout}"));
 
     let mut json_ids = HashSet::new();
     collect_ids(&parsed, &mut json_ids);
