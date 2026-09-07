@@ -36,7 +36,47 @@ const SCHEMA_VERSION: u32 = 4;
 ///
 /// Returns an error if the directory cannot be created, or if a fresh
 /// database cannot be created after corruption recovery.
+/// Refuse to open the developer's real `~/.quorum` from a test (#503).
+///
+/// This is the function that actually opens the SQLite mapping, so it is the
+/// right place to guard: there are several independent `$HOME` resolvers
+/// (`main.rs::quorum_dir`, `mcp/handler.rs`, the `QUORUM_TRACE` path) and
+/// guarding each would be the same "remember to" discipline that failed.
+///
+/// Why it matters: tests in a target run as threads in ONE process, so two
+/// tests opening the same `~/.quorum/quorum.db` share a WAL mapping. A `-shm`
+/// remap under that concurrency is the textbook cause of the SIGBUS seen in
+/// CI -- a hard fault with no panic, no `test result:` line, passing on
+/// re-run.
+///
+/// NOTE ON COVERAGE: `cfg(test)` is per-crate. When the *binary's* test target
+/// is built, this library is compiled as an ordinary dependency with
+/// `cfg(test)` OFF, so this guard does NOT fire for bin tests. The bin has its
+/// own guard in `quorum_dir()`. Neither one covers the other; both are needed.
+#[cfg(test)]
+fn refuse_real_home(quorum_home: &Path) {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let real = std::path::Path::new(&home).join(".quorum");
+    let same = quorum_home == real
+        || matches!(
+            (quorum_home.canonicalize(), real.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        );
+    assert!(
+        !same,
+        "storage::initialize() was pointed at the real {} inside a test \
+         (#503). Tests share one process, so concurrent access to the same \
+         quorum.db can SIGBUS. Use a tempdir.",
+        real.display()
+    );
+}
+
 pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
+    #[cfg(test)]
+    refuse_real_home(quorum_home);
+
     std::fs::create_dir_all(quorum_home)
         .with_context(|| format!("failed to create quorum home: {}", quorum_home.display()))?;
 
@@ -617,6 +657,24 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
+    /// The #503 guard must actually fire. Deterministic: reads `HOME` rather
+    /// than mutating it, so it does not race other tests in this process
+    /// (which is the #497 hazard) and does not depend on argv or cwd.
+    #[test]
+    #[should_panic(expected = "#503")]
+    fn refuse_real_home_rejects_the_developers_quorum_dir() {
+        let home = std::env::var("HOME").expect("HOME is set in a test run");
+        super::refuse_real_home(&std::path::Path::new(&home).join(".quorum"));
+    }
+
+    /// The other half: a guard that rejected everything would also pass the
+    /// test above while breaking every legitimate caller.
+    #[test]
+    fn refuse_real_home_allows_a_tempdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        super::refuse_real_home(tmp.path());
+    }
+
     use super::*;
     use tempfile::TempDir;
 
