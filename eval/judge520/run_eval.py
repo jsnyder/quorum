@@ -134,14 +134,6 @@ RULE_FILES = {
     "string-format-sql": "typescript/string-format-sql.yml",
     "jinja-loop-variable-scoping": "yaml/jinja-loop-variable-scoping.yml",
 }
-RULE_LANG = {
-    "discarded-result": "rust",
-    "string-byte-slice-broad": "rust",
-    "logging-debug-leak": "python",
-    "nullish-coalescing-broad": "typescript",
-    "string-format-sql": "typescript",
-    "jinja-loop-variable-scoping": "yaml",
-}
 
 
 def scan(path: str, rule: str) -> list:
@@ -151,16 +143,25 @@ def scan(path: str, rule: str) -> list:
         ["ast-grep", "scan", "--rule", ry, "--json=compact", path],
         capture_output=True, text=True,
     )
-    if out.returncode not in (0, 1) or not out.stdout.strip():
+    if out.returncode not in (0, 1):
+        # A scanner that cannot run is not a file with no findings. Silently
+        # conflating the two yields an evaluation that looks complete and is
+        # not -- the exact failure this harness exists to avoid.
+        raise RuntimeError(
+            f"ast-grep failed on {path} with {ry} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    if not out.stdout.strip():
         return []
     matches = json.loads(out.stdout)
     msg = None
-    with open(ry) as fh:
+    with open(ry, encoding="utf8") as fh:
         for line in fh:
             if line.startswith("message:"):
                 msg = line.split(":", 1)[1].strip().strip('"')
                 break
-    rid = f"ast-grep:{RULE_LANG[rule]}/{rule}"          # src/ast_grep.rs
+    lang = RULE_FILES[rule].split("/", 1)[0]
+    rid = f"ast-grep:{lang}/{rule}"                     # src/ast_grep.rs
     title = f"{rule}: {msg}"                             # src/ast_grep.rs:358
     return [
         (rid, title, m["range"]["start"]["line"] + 1, m["range"]["end"]["line"] + 1,
@@ -174,6 +175,10 @@ def scan(path: str, rule: str) -> list:
 
 def call_judge(prompt: str, model: str) -> tuple:
     base = os.environ["QUORUM_BASE_URL"].rstrip("/")
+    if not base.startswith("https://"):
+        # llm_client::validate_base_url requires HTTPS in production; this
+        # request carries the same bearer key and the same source code.
+        raise SystemExit(f"QUORUM_BASE_URL must be https, got {base!r}")
     body = {
         "model": model,
         "messages": [
@@ -225,12 +230,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--out")
-    ap.add_argument("--variant", default="baseline")
+    ap.add_argument("--variant", default="baseline",
+                    choices=["baseline"] + sorted(VARIANTS))
     ap.add_argument("--model", default=os.environ.get("QUORUM_JUDGE_MODEL", "gpt-4.1-mini"))
     ap.add_argument("--dump-prompt", help="write the first prompt here and exit (no API calls)")
     args = ap.parse_args()
 
-    with open(args.manifest) as fh:
+    with open(args.manifest, encoding="utf8") as fh:
         manifest = json.load(fh)
     rule_ctx = manifest.get("rule_context", {}) if args.variant != "baseline" else {}
 
@@ -254,7 +260,8 @@ def main():
 
         prompt = build_prompt(source, items, args.variant, rule_ctx)
         if args.dump_prompt:
-            open(args.dump_prompt, "w").write(prompt)
+            with open(args.dump_prompt, "w", encoding="utf8") as fh:
+                fh.write(prompt)
             print(f"wrote prompt for {entry['path']} ({len(items)} findings) "
                   f"-> {args.dump_prompt}")
             return
@@ -291,8 +298,9 @@ def main():
               f"{tin}+{tout} tok, finish={finish}", file=sys.stderr)
 
     if args.out:
-        os.makedirs(os.path.dirname(args.out), exist_ok=True)
-        with open(args.out, "w") as fh:
+        if os.path.dirname(args.out):
+            os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, "w", encoding="utf8") as fh:
             for r in results:
                 fh.write(json.dumps(r) + "\n")
             fh.write(json.dumps({"_totals": totals, "_variant": args.variant,

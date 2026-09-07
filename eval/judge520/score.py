@@ -13,7 +13,7 @@ import sys
 
 def load(path):
     rows, totals = [], None
-    for line in open(path):
+    for line in open(path, encoding="utf8"):
         d = json.loads(line)
         if "_totals" in d:
             totals = d
@@ -40,10 +40,8 @@ def score(path, title):
                                            "tp_rej": 0, "fp_rej": 0})
     for (rule, src), rs in sorted(by.items()):
         lab = [r for r in rs if r["label"] in ("tp", "fp")]
-        a = sum(r["judge"] == "approved" for r in rs)
-        u = sum(r["judge"] == "uncertain" for r in rs)
-        j = sum(r["judge"] == "rejected" for r in rs)
-        n = sum(r["judge"] == "unjudged" for r in rs)
+        c = collections.Counter(r["judge"] for r in rs)
+        a, u, j, n = c["approved"], c["uncertain"], c["rejected"], c["unjudged"]
         # judge:required keeps approved + uncertain; rejected and unjudged both drop.
         surv = [r for r in lab if r["judge"] in ("approved", "uncertain")]
         stp = sum(r["label"] == "tp" for r in surv)
@@ -72,13 +70,12 @@ def score(path, title):
 
     # unjudged: response truncation or a missing index leaves a finding with no
     # verdict, which `judge: required` then drops.
-    miss = [r for r in rows if r["judge"] == "unjudged" or r["confidence"] is None]
+    miss = [r for r in rows if r["judge"] == "unjudged"]
     if miss:
         c = collections.Counter((r["file"], r["rule"]) for r in miss)
         print(f"\nfindings with NO verdict returned (dropped by judge:required): {len(miss)}")
         for (f, rule), n in c.most_common(8):
             print(f"  {n:>3}  {rule:<30} {f}")
-    return rows
 
 
 if __name__ == "__main__":
