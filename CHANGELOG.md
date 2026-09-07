@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **All six `judge: required` rules** — `logging-debug-leak`, `discarded-result`, `string-byte-slice-broad`, `nullish-coalescing-broad`, `string-format-sql`, `jinja-loop-variable-scoping` (#520 part 2).
+
+  0.31.0 said "they were not bad rules; they were running without their mandatory filter." That was a hypothesis, and part 2 tested it. It was wrong. Over 187 labelled findings — 162 from real code in four repositories, 25 constructed — a judge good enough to do the job rejects **161 of 162 real-code findings, and the one survivor is a false positive**. A rule whose entire real-world output a working judge deletes does not need a judge; it has nothing to say.
+
+  Each one turned out to be a strictly worse duplicate of a narrow rule that already ships and puts the discriminator in the pattern, deterministically and for free: `string-byte-slice`, `ignored-io-result`, `nullish-coalescing-preferred`, `sql-template-injection`, `ha-jinja-loop-scoped-reassignment`. Those carry the confirmed true positives and none of them is `judge: required`.
+
+  `logging-debug-leak` is a separate case: `logging.debug($$$ARGS)` matches the bare module-level call, which produced **0 findings across 1,602 real Python files**. Real code uses a named logger.
+
+  Keeping them cost ~$0.24, 567k tokens of source shipped to an external model, and ~38s per full `src/*.rs` review, to adjudicate 216 findings of which none are true positives.
+
+  Full methodology, limitations and per-rule evidence: `docs/judge-eval-520.md`. Evidence for future rule authors: `rules/README-removed-rules.md`.
+
+### Changed
+
+- **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
+
+  It now names the speculative provenance, asks for a concrete runtime failure, and makes fp the default that tp must be earned against. Measured on the same 187 findings, survivor precision went 12% -> 100% (`discarded-result`), 15% -> 100% (`nullish-coalescing-broad`), 33% -> 100% (`jinja-loop-variable-scoping`), with every constructed true positive still approved. The improvement is from the framing alone: a variant that additionally fed the judge each rule's recorded track record did no better.
+
+
 ## [0.31.0] - 2026-08-23
 
 ### Fixed

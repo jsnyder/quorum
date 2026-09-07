@@ -2901,10 +2901,31 @@ mod tests {
     /// exists to compensate for. This test exercises `review_file` with
     /// the default config (judge off), which is the path that was broken;
     /// a unit test on the retain itself passes either way.
+    ///
+    /// The rule is created here rather than borrowed from the bundled set.
+    /// It used to lean on `rules/rust/string-byte-slice-broad.yml`, and when
+    /// part 2 deleted every bundled `judge: required` rule the test went red
+    /// even though the mechanism it guards was untouched. A test of the
+    /// enforcement should not depend on the rule inventory.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn judge_required_findings_are_withheld_when_no_judge_ran() {
-        // Trips rules/rust/string-byte-slice-broad.yml (judge: required).
-        let source = "fn preview(s: &str) -> &str {\n    &s[..10]\n}\n";
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let rule_dir = tmp.path().join("rules").join("rust");
+        std::fs::create_dir_all(&rule_dir).unwrap();
+        std::fs::write(
+            rule_dir.join("needs-judge.yml"),
+            "id: needs-judge\nlanguage: Rust\nseverity: warning\n\
+             message: \"speculative, must be judged\"\n\
+             rule:\n  pattern: dangerous($$$A)\n\
+             metadata:\n  precision: speculative\n  judge: required\n",
+        )
+        .unwrap();
+
+        let source = "fn main() {\n    dangerous(1);\n}\n";
+        let file = tmp.path().join("test.rs");
+        std::fs::write(&file, source).unwrap();
+
         let tree = parser::parse(source, Language::Rust).unwrap();
         let config = PipelineConfig::default();
         assert!(!config.judge_enabled, "default must be judge-off");
@@ -2912,34 +2933,33 @@ mod tests {
             tree: &tree,
             language: Language::Rust,
         };
-        let result = review_file(Path::new("test.rs"), source, Some(ast_ctx), None, &config)
+        let result = review_file(&file, source, Some(ast_ctx), None, &config)
             .await
             .unwrap();
 
         let leaked: Vec<&Finding> = result
             .findings
             .iter()
-            .filter(|f| f.rule_id.as_deref() == Some("ast-grep:rust/string-byte-slice-broad"))
+            .filter(|f| f.rule_id.as_deref() == Some("ast-grep:rust/needs-judge"))
             .collect();
         assert!(
             leaked.is_empty(),
             "a judge: required rule must not emit unjudged: {leaked:#?}"
         );
-        assert!(
-            result.judge_metrics.withheld_unjudged >= 1,
-            "the withholding must be counted so it is visible, got {}",
-            result.judge_metrics.withheld_unjudged
+        assert_eq!(
+            result.judge_metrics.withheld_unjudged, 1,
+            "the withholding must be counted so it is visible"
         );
     }
 
-    /// #520 recall guard: withholding the speculative rules must not take
-    /// the narrow rules with them.
+    /// #520 recall guard: the narrow rules carry the true positives.
     ///
-    /// `string-byte-slice-broad` is `judge: required` and measures 0 tp /
-    /// 81 fp across the feedback corpus. The real UTF-8 slicing bug it is
-    /// named for (#197, `line[6..]` on a non-ASCII `+++ b/` prefix) is
-    /// caught by the NARROW `string-byte-slice` rule, which is not
-    /// `judge: required` (3 tp / 2 fp) and must keep emitting by default.
+    /// The #197 bug -- `line[6..]` on a non-ASCII `+++ b/` prefix -- is caught
+    /// by `string-byte-slice`, which is NOT `judge: required` (3 tp / 2 fp in
+    /// the feedback corpus) and must keep emitting by default. Its speculative
+    /// sibling `string-byte-slice-broad` was deleted in part 2 (0 tp / 72 fp;
+    /// see rules/README-removed-rules.md), so this test now guards the half
+    /// that was always doing the work.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn narrow_rules_still_emit_when_the_speculative_ones_are_withheld() {
         // The #197 shape: byte-index slice on a &str.
@@ -2963,11 +2983,6 @@ mod tests {
             rules.contains(&"ast-grep:rust/string-byte-slice"),
             "the narrow rule carries the true positives and must survive: {rules:?}"
         );
-        assert!(
-            !rules.contains(&"ast-grep:rust/string-byte-slice-broad"),
-            "the speculative rule must still be withheld: {rules:?}"
-        );
-        assert!(result.judge_metrics.withheld_unjudged >= 1);
     }
 
     /// Code mode still produces local AST findings (control for the prose test).

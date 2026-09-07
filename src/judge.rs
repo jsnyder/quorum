@@ -165,9 +165,18 @@ pub fn build_judge_prompt(
     findings: &[(String, String, u32, u32, String)],
 ) -> String {
     let mut prompt = String::from(
-        "You are a code review judge. For each AST-detected finding below, \
-         determine if it is a true positive (tp), false positive (fp), or \
-         uncertain based on the surrounding code context.\n\n",
+        "You are a code review judge. Each finding below was emitted by a \
+         SPECULATIVE pattern rule -- a rule that matches syntax and cannot see \
+         intent. Most of what these rules emit is noise.\n\n\
+         For each finding, answer one question: does the surrounding code show \
+         a concrete way this goes wrong at runtime?\n\n\
+         \x20 \"tp\"  -- you can name the input or state that makes it fail.\n\
+         \x20 \"fp\"  -- the pattern matched but the context makes it safe or \
+         intended.\n\
+         \x20 \"uncertain\" -- the file does not contain enough to tell.\n\n\
+         Do not answer tp merely because the pattern is a real category of \
+         bug. The default answer is fp; tp must be earned by evidence in this \
+         file.\n\n",
     );
     let fence = pick_fence_for(source_code);
     prompt.push_str("Source code:\n");
@@ -555,6 +564,40 @@ mod tests {
         assert_eq!(parse_verdict("fp"), JudgeVerdict::Rejected);
         assert_eq!(parse_verdict("uncertain"), JudgeVerdict::Uncertain);
         assert_eq!(parse_verdict("garbage"), JudgeVerdict::Uncertain);
+    }
+
+    #[test]
+    fn judge_prompt_states_the_bar_instead_of_asking_neutrally() {
+        // #520 part 2. The original wording -- "determine if it is a true
+        // positive (tp), false positive (fp), or uncertain based on the
+        // surrounding code context" -- sets no bar, and an LLM asked neutrally
+        // about a plausible finding says yes. Measured over 187 labelled
+        // findings (docs/judge-eval-520.md): the judge approved 14 of 15
+        // `discarded-result` findings a human had already recorded as false.
+        //
+        // Naming the speculative provenance and making fp the default answer
+        // moved survivor precision from 12% to 100% on that rule, and cost
+        // nothing in recall -- all 11 constructed true positives still passed.
+        // This test exists so a neutral rewrite fails loudly rather than
+        // quietly restoring an approve-everything judge.
+        let findings = vec![(
+            "ast-grep:rust/some-rule".to_string(),
+            "some-rule: something might be wrong".to_string(),
+            1u32,
+            2u32,
+            "let _ = x();".to_string(),
+        )];
+        let prompt = build_judge_prompt("fn main() {}", &findings);
+        assert!(
+            prompt.to_lowercase().contains("speculative"),
+            "prompt must tell the judge these findings come from a speculative \
+             pattern rule; without that it treats them as vetted"
+        );
+        assert!(
+            prompt.contains("default answer is fp"),
+            "prompt must make fp the default so tp has to be earned by \
+             evidence in the file"
+        );
     }
 
     #[test]
