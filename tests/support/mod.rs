@@ -269,6 +269,15 @@ pub fn with_cassette<T>(
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
+            .mount(&server)
+            .await;
+        // The Responses API is a second egress shape, used for codex models
+        // (`RESPONSES_API_MODELS`). Mounted so a secret-egress guard can reach
+        // it -- an endpoint the mock does not serve is an endpoint the guard
+        // silently never inspects.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&server)
             .await;
