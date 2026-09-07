@@ -23,6 +23,10 @@ pub struct FindingMeta {
     pub id: String,
     pub title: String,
     pub file_path: String,
+    /// Rule that produced the finding, when it came from ast-grep or a linter
+    /// (#523). Carried here so the feedback recording path can resolve it and
+    /// write an authoritative `FeedbackEntry.rule_id` instead of `None`.
+    pub rule_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -616,6 +620,29 @@ impl ReviewLog {
 
     // ── Finding-ID resolution ──────────────────────────────────────────
 
+    /// Resolve the rule that produced a finding, by the same match the id
+    /// resolution uses (#523).
+    ///
+    /// Returns `None` for legacy rows (schema < v4 stored `''`) and for
+    /// findings that came from the LLM rather than a rule. Callers must not
+    /// substitute a guess: an invented rule id would make `stats --by-rule`
+    /// confidently wrong, which is worse than the empty table it replaces.
+    pub fn resolve_rule_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
+        let fid = self.resolve_finding_id(file_path, finding_title)?;
+        let Backend::Sqlite(handle) = &self.backend else {
+            return None;
+        };
+        let conn = handle.lock().ok()?;
+        let rule: String = conn
+            .query_row(
+                "SELECT rule_id FROM review_finding_ids WHERE finding_id = ?1 LIMIT 1",
+                rusqlite::params![fid],
+                |row| row.get(0),
+            )
+            .ok()?;
+        if rule.is_empty() { None } else { Some(rule) }
+    }
+
     pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
         use std::sync::LazyLock;
         static STOP_WORDS: LazyLock<std::collections::HashSet<&'static str>> =
@@ -889,8 +916,14 @@ impl ReviewLog {
 
         for fm in meta {
             tx.execute(
-                "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path) VALUES (?1, ?2, ?3, ?4)",
-                params![entry.run_id, fm.id, fm.title, fm.file_path],
+                "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path, rule_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    entry.run_id,
+                    fm.id,
+                    fm.title,
+                    fm.file_path,
+                    fm.rule_id.clone().unwrap_or_default()
+                ],
             )?;
         }
 
@@ -2395,11 +2428,13 @@ mod tests {
                 id: "F1".into(),
                 title: "SQL injection".into(),
                 file_path: "src/auth.rs".into(),
+                rule_id: None,
             },
             FindingMeta {
                 id: "F2".into(),
                 title: "XSS risk".into(),
                 file_path: "src/web.rs".into(),
+                rule_id: None,
             },
         ];
         log.record_with_meta(&record, &meta).unwrap();
@@ -2455,6 +2490,7 @@ mod tests {
             id: "FA".into(),
             title: "Buffer overflow".into(),
             file_path: "src/lib.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
 
@@ -2464,6 +2500,46 @@ mod tests {
     }
 
     // ── resolve_finding_id tests ─────────────────────────────────────
+
+    /// #523: the rule must survive the round trip through the review log.
+    /// Before this, `FeedbackEntry.rule_id` was `None` on all 5,521 rows and
+    /// `stats --by-rule` returned [] by construction.
+    #[test]
+    fn resolve_rule_id_round_trips_through_the_review_log() {
+        let dir = TempDir::new().unwrap();
+        let log = sqlite_review_log(&dir);
+        let mut record = sample_record();
+        record.finding_ids = vec!["F1".into(), "F2".into()];
+        let meta = vec![
+            FindingMeta {
+                id: "F1".into(),
+                title: "string-byte-slice-broad: byte slicing panics".into(),
+                file_path: "src/a.rs".into(),
+                rule_id: Some("rust/string-byte-slice-broad".into()),
+            },
+            FindingMeta {
+                id: "F2".into(),
+                title: "An LLM finding with no rule".into(),
+                file_path: "src/a.rs".into(),
+                rule_id: None,
+            },
+        ];
+        log.record_with_meta(&record, &meta).unwrap();
+
+        assert_eq!(
+            log.resolve_rule_id("src/a.rs", "string-byte-slice-broad: byte slicing panics"),
+            Some("rust/string-byte-slice-broad".to_string()),
+        );
+        // A finding with no rule must resolve to None, never to a guess: an
+        // invented rule id makes --by-rule confidently wrong, which is worse
+        // than the empty table it replaces.
+        assert_eq!(
+            log.resolve_rule_id("src/a.rs", "An LLM finding with no rule"),
+            None
+        );
+        // And an unknown finding resolves to nothing at all.
+        assert_eq!(log.resolve_rule_id("src/a.rs", "never seen this"), None);
+    }
 
     #[test]
     fn resolve_finding_id_exact_match() {
@@ -2475,6 +2551,7 @@ mod tests {
             id: "F1".into(),
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection risk");
@@ -2491,6 +2568,7 @@ mod tests {
             id: "F1".into(),
             title: "SQL injection vulnerability in auth module".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
@@ -2507,6 +2585,7 @@ mod tests {
             id: "F1".into(),
             title: "SQL injection".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/other.rs", "SQL injection");
@@ -2523,6 +2602,7 @@ mod tests {
             id: "F1".into(),
             title: "SQL injection vulnerability".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result =
@@ -2551,6 +2631,7 @@ mod tests {
             id: "F1".into(),
             title: "`predict_one` trusts inconsistent public `LogisticFit` field lengths".into(),
             file_path: "src/logistic.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id(
@@ -2585,6 +2666,7 @@ mod tests {
             title: "SQL injection vulnerability in authentication module via unsanitized input"
                 .into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
@@ -2601,6 +2683,7 @@ mod tests {
             id: "F1".into(),
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("./src/auth.rs", "SQL injection risk");
@@ -2617,6 +2700,7 @@ mod tests {
             id: "F1".into(),
             title: "Function main has cyclomatic complexity 60".into(),
             file_path: "src/main.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id(
@@ -2636,6 +2720,7 @@ mod tests {
             id: "F1".into(),
             title: "The missing validation of the input is a risk to the system".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "missing input validation");

@@ -326,7 +326,30 @@ async fn main() -> anyhow::Result<()> {
                         std::process::exit(3);
                     }
                 };
-                let slices = dimensions::group_by_rule(&entries, opts.rule.as_deref());
+                // #523: `rule_id` was never written, so every row on disk is
+                // legacy and the view returned [] by construction. Derivation
+                // recovers the id from the title prefix bundled ast-grep
+                // findings already render, but only for ids that are actually
+                // declared -- see `derive_rule_id`.
+                //
+                // Degrades to today's behaviour rather than failing: if the
+                // rules directory is unreadable (an installed binary whose
+                // CARGO_MANIFEST_DIR no longer exists), the set is empty,
+                // nothing is derived, and only recorded rule_ids are grouped.
+                let known_rule_ids: std::collections::HashSet<String> = {
+                    let cwd =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let home = std::env::var("HOME")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let (_, meta) = quorum::ast_grep::load_rules(&cwd, &home);
+                    meta.keys()
+                        .filter_map(|k| k.rsplit('/').next())
+                        .map(String::from)
+                        .collect()
+                };
+                let slices =
+                    dimensions::group_by_rule(&entries, opts.rule.as_deref(), &known_rule_ids);
 
                 let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
                 let use_compact = output::should_use_compact(opts.compact);
@@ -3287,6 +3310,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     id: f.id.clone(),
                     title: f.title.clone(),
                     file_path: fr.file_path.clone(),
+                    // #523: carried so `quorum feedback` can resolve it later.
+                    rule_id: f.rule_id.clone(),
                 })
             })
             .collect();
@@ -4017,12 +4042,21 @@ fn run_feedback_inner(
     }
 
     // Auto-resolve finding_id from the review log when not explicitly provided.
-    let finding_id = finding_id_override.or_else(|| {
-        let quorum_home = quorum_dir()?;
-        let handle = crate::storage::initialize(&quorum_home).ok()?;
-        let log = review_log::ReviewLog::with_storage(handle);
-        log.resolve_finding_id(file, finding)
-    });
+    // #523: resolve rule_id from the same match. It was written as None on
+    // every row, which is why `stats --by-rule` was empty by construction.
+    let (finding_id, rule_id) = {
+        let resolved = (|| {
+            let quorum_home = quorum_dir()?;
+            let handle = crate::storage::initialize(&quorum_home).ok()?;
+            let log = review_log::ReviewLog::with_storage(handle);
+            let rid = log.resolve_rule_id(file, finding);
+            Some((log.resolve_finding_id(file, finding), rid))
+        })();
+        match resolved {
+            Some((fid, rid)) => (finding_id_override.or(fid), rid),
+            None => (finding_id_override, None),
+        }
+    };
 
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
@@ -4045,7 +4079,7 @@ fn run_feedback_inner(
         provenance: provenance.unwrap_or(feedback::Provenance::Human),
         fp_kind,
         finding_id,
-        rule_id: None,
+        rule_id,
         in_diff,
         skill_name: None,
         skill_version: None,
@@ -5562,6 +5596,7 @@ mod backfill_linkage_tests {
             id: "FIND1".into(),
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
+            rule_id: None,
         }];
         log.record_with_meta(&record, &meta).unwrap();
 
