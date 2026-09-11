@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The judge silently deleted findings on the files with the most of them** (#533). `judge_findings` sent a file's entire finding set in one call and `judge_completion` caps the response at 2048 tokens. Measured on `src/calibrator.rs`: 31 findings in, `finish_reason: "length"`, zero verdicts out -- and `judge: required` then withheld all 31. Findings are now sent in batches of 12 (~2.5x headroom), and a batch that fails no longer costs the batches that succeeded.
+
+  Verified on the wire: 30 findings, cache writes clustering at exactly 12 / 24 / 30, all 30 judged. Before this, that run produced no verdicts at all.
+
+- **"No judge ran" and "the judge ran and returned nothing" are now different states** (#533). Both landed in one counter, so a user whose judge had just errored was told to "run with `--judge` to evaluate them" -- advice they had already taken. A judge that returns nothing on a token cap is indistinguishable from a judge that examined and abstained unless the output says which happened.
+
+- **`QUORUM_BYPASS_PROXY_CACHE` never reached the judge** (#534). Three request builders set the no-cache field; `judge_completion` did not. Any judge A/B run through the procedure CLAUDE.md documents was comparing cached replays, and looked like a legitimate run. The field now lives in `post_json` -- the one place every outbound request already crosses for redaction -- and the three duplicates are gone. Same shape as #530, one layer up.
+
+- **The judge verdict cache replayed verdicts across unrelated files** (#538). The key was `(rule_id, evidence)`, but the judge decides on the whole file: `let _ = tx.send(());` judged fp in a shutdown path came back fp where dropping that error loses data. Evidence strings for speculative rules are short and repetitive by construction, so collisions were the normal case, and the 7-day TTL kept each wrong answer for a week. The key now includes the source, making it a per-(file version, finding) memo -- the case it was built for.
+
+- **`--judge-model` help named a model the code never used** (#535). It said `gpt-5-nano`, a value carried over from the design doc; `main.rs` used `gpt-4.1-mini`. Both now read one const, and a test fails if the help text drifts from it again.
+
+- **Reviews named components that never ran** (#531). `Reviewed 1 file(s) in 0.1s using gpt-5.6` on a run with no API key named what *would* have been used as what *was*; it now reads `AST-only`, keyed on token usage, which is evidence of execution rather than of configuration. `"enabled": ["clippy"]` and `clippy=on` became `installed_and_configured` and `clippy=configured`: `run_linter` has no production caller and never has, so nothing named there has ever run.
+
 ### Removed
 
 - **All six `judge: required` rules** — `logging-debug-leak`, `discarded-result`, `string-byte-slice-broad`, `nullish-coalescing-broad`, `string-format-sql`, `jinja-loop-variable-scoping` (#520 part 2).
@@ -17,6 +33,8 @@
   Full methodology, limitations and per-rule evidence: `docs/judge-eval-520.md`. Evidence for future rule authors: `rules/README-removed-rules.md`.
 
 ### Changed
+
+- `all_bundled_rules_match_fixtures` asserted a fixture matched *some* rule, not its own (#536). #520 part 2 orphaned six fixtures by deleting six rules and only one went red -- the other five kept passing on neighbouring rules. It now checks each fixture against its own rule and rejects orphans; both failure modes were confirmed by construction before the fix was accepted.
 
 - **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
 

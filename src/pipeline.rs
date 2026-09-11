@@ -150,10 +150,15 @@ pub struct JudgeMetrics {
     pub rejected: u32,
     pub uncertain: u32,
     pub skipped: u32,
-    /// Speculative findings withheld because no judge ran. Non-zero means the
-    /// user is seeing fewer findings than the rules produced, which must be
-    /// stated rather than silently applied.
-    pub withheld_unjudged: u32,
+    /// Speculative findings withheld because no judge ran at all. Non-zero
+    /// means the user is seeing fewer findings than the rules produced, which
+    /// must be stated rather than silently applied. Fixable with `--judge`.
+    pub withheld_no_judge: u32,
+    /// Speculative findings withheld because a judge ran and returned no
+    /// verdict for them. Kept separate from `withheld_no_judge` (#533) because
+    /// the two need different advice: this one is already running with
+    /// `--judge`, so telling the user to pass it is worse than saying nothing.
+    pub withheld_judge_failed: u32,
     pub cache_hits: u32,
     pub calls: u32,
     pub latency_ms: u64,
@@ -798,7 +803,7 @@ pub async fn review_file(
         // (#520). Withhold the unjudged findings and count them, so the
         // summary line can say so instead of the reviewer just going quiet.
         for source_findings in all_sources.iter_mut().skip(1) {
-            judge_metrics.withheld_unjudged +=
+            judge_metrics.withheld_no_judge +=
                 crate::judge::enforce_judge_required(source_findings, &rule_metadata);
         }
     }
@@ -834,7 +839,8 @@ pub async fn review_file(
                 judge_metrics.rejected += result.rejected;
                 judge_metrics.uncertain += result.uncertain;
                 judge_metrics.skipped += result.skipped;
-                judge_metrics.withheld_unjudged += result.withheld_unjudged;
+                judge_metrics.withheld_no_judge += result.withheld_no_judge;
+                judge_metrics.withheld_judge_failed += result.withheld_judge_failed;
                 judge_metrics.cache_hits += result.cache_hits;
                 judge_metrics.calls += result.calls;
                 judge_metrics.latency_ms += result.latency_ms;
@@ -846,6 +852,8 @@ pub async fn review_file(
             rejected = judge_metrics.rejected,
             uncertain = judge_metrics.uncertain,
             skipped = judge_metrics.skipped,
+            withheld_no_judge = judge_metrics.withheld_no_judge,
+            withheld_judge_failed = judge_metrics.withheld_judge_failed,
             cache_hits = judge_metrics.cache_hits,
             calls = judge_metrics.calls,
             latency_ms = judge_metrics.latency_ms,
@@ -2947,7 +2955,7 @@ mod tests {
             "a judge: required rule must not emit unjudged: {leaked:#?}"
         );
         assert_eq!(
-            result.judge_metrics.withheld_unjudged, 1,
+            result.judge_metrics.withheld_no_judge, 1,
             "the withholding must be counted so it is visible"
         );
     }

@@ -2483,7 +2483,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     .ok()
                     .filter(|s| !s.is_empty())
             })
-            .unwrap_or_else(|| "gpt-4.1-mini".into()),
+            .unwrap_or_else(|| crate::cli::DEFAULT_JUDGE_MODEL.to_string()),
         judge_client: llm_client.clone(),
         ..Default::default()
     };
@@ -2524,6 +2524,29 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Shared across the sequential and parallel review paths; folded into the
     // exit status so a review whose skill axes all failed cannot exit 0.
     let skill_cells_failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // #531 follow-up (CodeRabbit on #547): `llm_ran` is derived from
+    // `FileReviewResult.usage`, and neither `--deep` path records any. The
+    // sequential path never pushes a result at all (#481); the parallel path
+    // builds one with `usage: Default::default()`. So a deep review -- which
+    // always calls the model through `agent_loop` -- was being labelled
+    // `AST-only`, inverting the goal of the change that introduced the label.
+    //
+    // `agent_loop` returns `Result<Vec<Finding>>` with no usage to propagate.
+    // Plumbing usage through it is the real fix and belongs with #481, where
+    // the missing result is already tracked; this flag is the honest signal
+    // available without that surgery.
+    //
+    // Set on success, deliberately not before the call. CodeRabbit asked for
+    // the latter on #547; it would invert #531 again in the other direction.
+    // When `agent_loop` fails both deep paths warn and fall through to the
+    // standard reviewer, which records real usage -- so `llm_ran` is already
+    // true wherever the model produced anything. The only case the two differ
+    // is deep failing AND the fallback reviewer failing, and there every
+    // finding came from AST analysis. Printing `using <model>` for a run the
+    // model contributed nothing to is the same defect as printing it for a run
+    // with no API key. The attempt is not lost either way: both paths print
+    // "Warning: Deep review failed: ... Falling back."
+    let deep_llm_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Linter coverage discovery, scoped to whichever project the first
     // reviewed file lives in. Nothing here runs the linters -- only reports
@@ -2645,6 +2668,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             );
                         }
                         all_findings.extend(findings);
+                        deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
                     Err(e) => {
@@ -2851,6 +2875,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let integrator_audit_writer = integrator_audit_writer_arc.clone();
             let run_id = run_id.clone();
             let skill_cells_failed = skill_cells_failed.clone();
+            let deep_llm_ran = deep_llm_ran.clone();
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
@@ -2902,12 +2927,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             let result = pipeline::FileReviewResult {
                                 file_path: file_display,
                                 findings: sup_result.kept,
+                                // No usage to record: `agent_loop` does not
+                                // return any. See `deep_llm_ran` below.
                                 usage: Default::default(),
                                 suppressed: sup_result.suppressed.len(),
                                 context_telemetry: None,
                                 enrichment_metrics: Default::default(),
                                 judge_metrics: Default::default(),
                             };
+                            deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                             return (idx, Ok((result, sup_result.suppressed)));
                         }
                         Err(e) => {
@@ -3134,36 +3162,71 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     {
         let total_suppressed: usize = file_results.iter().map(|r| r.suppressed).sum();
         let total_findings = all_findings.len();
-        // Name the model. A stale `QUORUM_MODEL` export silently downgraded a
-        // real review and the only way to notice was grepping a shell config:
-        // nothing in the output said which model ran. PR comments have always
-        // carried it; the CLI did not.
-        let model_label = if pipeline_cfg.models.len() > 1 {
-            pipeline_cfg.models.join(",")
+        // Name the model, but only when one was actually called.
+        //
+        // A stale `QUORUM_MODEL` export silently downgraded a real review and
+        // the only way to notice was grepping a shell config: nothing in the
+        // output said which model ran. PR comments have always carried it; the
+        // CLI did not.
+        //
+        // #531: the first version of this named `pipeline_cfg.models` whether
+        // or not a request was made, so `env -u QUORUM_API_KEY quorum review`
+        // reported `in 0.1s using gpt-5.6` -- what would have run, printed as
+        // what did. Token usage is the honest signal: it is evidence of
+        // execution rather than of configuration.
+        let llm_ran = deep_llm_ran.load(std::sync::atomic::Ordering::Relaxed)
+            || file_results
+                .iter()
+                .any(|r| r.usage.prompt_tokens > 0 || r.usage.completion_tokens > 0);
+        let engine_label = if !llm_ran {
+            "AST-only".to_string()
+        } else if pipeline_cfg.models.len() > 1 {
+            format!("using {}", pipeline_cfg.models.join(","))
         } else {
-            pipeline_cfg
-                .models
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "none".to_string())
+            format!(
+                "using {}",
+                pipeline_cfg
+                    .models
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "none".to_string())
+            )
         };
-        let withheld: u32 = file_results
+        let withheld_no_judge: u32 = file_results
             .iter()
-            .map(|r| r.judge_metrics.withheld_unjudged)
+            .map(|r| r.judge_metrics.withheld_no_judge)
+            .sum();
+        let withheld_judge_failed: u32 = file_results
+            .iter()
+            .map(|r| r.judge_metrics.withheld_judge_failed)
             .sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s using {}: {} finding(s){}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
-            model_label,
+            engine_label,
             total_findings,
             if total_suppressed > 0 {
                 format!(", {} suppressed", total_suppressed)
             } else {
                 String::new()
             },
-            if withheld > 0 {
-                format!(", {withheld} speculative withheld (run with --judge to evaluate them)")
+            if withheld_no_judge > 0 {
+                format!(
+                    ", {withheld_no_judge} speculative withheld (run with --judge to evaluate them)"
+                )
+            } else {
+                String::new()
+            },
+            // #533: a judge that ran and returned nothing is a different state
+            // from no judge at all, and needs different advice -- this user
+            // already passed --judge. Telling them to pass it again is the
+            // same failure as a scanner that could not run reporting an empty
+            // file.
+            if withheld_judge_failed > 0 {
+                format!(
+                    ", {withheld_judge_failed} speculative withheld (the judge ran but returned no verdict for them)"
+                )
             } else {
                 String::new()
             }
