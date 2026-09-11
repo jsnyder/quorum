@@ -2403,31 +2403,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     }
 
-    // Phase 2: live registry lookups for popularity-tier token-budget assignment.
-    // Gated behind --live-registry CLI flag or QUORUM_CONTEXT7_LIVE_REGISTRY=1.
-    let live_registry = opts.live_registry
-        || std::env::var("QUORUM_CONTEXT7_LIVE_REGISTRY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-    let registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>> =
-        if live_registry && !opts.skip_context7 && !context7_disabled {
-            match crate::enrichment_policy::HttpRegistryClient::new() {
-                Ok(http) => {
-                    let cached = crate::enrichment_policy::OwnedCachedRegistryClient::new(
-                        Box::new(http),
-                        128,
-                    );
-                    Some(std::sync::Arc::new(cached))
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to initialize registry client: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
     let pipeline_cfg = PipelineConfig {
         models,
         feedback: feedback_entries,
@@ -2443,7 +2418,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         context7_disabled,
         calibrator_config,
         mode: opts.mode,
-        registry_client,
         judge_enabled: opts.judge
             || std::env::var("QUORUM_JUDGE")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -3184,10 +3158,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             context7_skipped_popular: file_results
                 .iter()
                 .map(|r| r.enrichment_metrics.context7_skipped_popular)
-                .sum(),
-            context7_budget_reduced: file_results
-                .iter()
-                .map(|r| r.enrichment_metrics.context7_budget_reduced)
                 .sum(),
             // #123 Layer 1 (Task 10): adoption telemetry for the FpKind
             // taxonomy. Computed over the loaded feedback store (same one

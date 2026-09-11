@@ -536,7 +536,6 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
         let context7_resolve_failed = v["context7_resolve_failed"].as_i64().unwrap_or(0);
         let context7_query_failed = v["context7_query_failed"].as_i64().unwrap_or(0);
         let context7_skipped_popular = v["context7_skipped_popular"].as_i64().unwrap_or(0);
-        let context7_budget_reduced = v["context7_budget_reduced"].as_i64().unwrap_or(0);
 
         let fp_kind_utilization_rate: Option<f64> = v["fp_kind_utilization_rate"].as_f64();
 
@@ -553,7 +552,7 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
                 ts, files, findings, model,
                 tokens_in, tokens_out, duration_ms, suppressed,
                 context7_resolved, context7_resolve_failed, context7_query_failed,
-                context7_skipped_popular, context7_budget_reduced,
+                context7_skipped_popular,
                 fp_kind_utilization_rate,
                 judge_calls, judge_approved, judge_rejected,
                 judge_uncertain, judge_skipped, judge_cache_hits,
@@ -562,11 +561,11 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11,
-                ?12, ?13,
-                ?14,
-                ?15, ?16, ?17,
-                ?18, ?19, ?20,
-                ?21
+                ?12,
+                ?13,
+                ?14, ?15, ?16,
+                ?17, ?18, ?19,
+                ?20
             )",
             params![
                 ts,
@@ -581,7 +580,6 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
                 context7_resolve_failed,
                 context7_query_failed,
                 context7_skipped_popular,
-                context7_budget_reduced,
                 fp_kind_utilization_rate,
                 judge_calls,
                 judge_approved,

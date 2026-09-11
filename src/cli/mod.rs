@@ -615,11 +615,6 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub skip_context7: bool,
 
-    /// Enable live registry lookups (crates.io / npm / PyPI) for popularity-tier
-    /// token-budget assignment. Also enabled by QUORUM_CONTEXT7_LIVE_REGISTRY=1.
-    #[arg(long)]
-    pub live_registry: bool,
-
     /// Max concurrent LLM calls (default: 4, range: 1..=64)
     #[arg(long, default_value = "4", value_parser = validate_parallel)]
     pub parallel: usize,

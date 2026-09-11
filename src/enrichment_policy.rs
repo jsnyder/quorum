@@ -100,230 +100,6 @@ pub fn is_mainstream(dep_name: &str, language: &str) -> bool {
     list.contains(&normalized.as_str())
 }
 
-// ── Component 2: Popularity Tiers ────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopularityTier {
-    VeryHigh,
-    High,
-    Medium,
-    Low,
-    Unknown,
-}
-
-impl PopularityTier {
-    pub fn from_downloads(monthly: u64, language: &str) -> Self {
-        // All thresholds are monthly downloads (crates.io 90-day is ÷3 in parse_downloads).
-        let (very_high, high, medium) = match language {
-            "rust" => (300_000, 30_000, 3_000),
-            "typescript" | "javascript" => (10_000_000, 1_000_000, 100_000),
-            "python" => (5_000_000, 500_000, 50_000),
-            _ => (300_000, 30_000, 3_000),
-        };
-        if monthly >= very_high {
-            Self::VeryHigh
-        } else if monthly >= high {
-            Self::High
-        } else if monthly >= medium {
-            Self::Medium
-        } else {
-            Self::Low
-        }
-    }
-
-    pub fn token_budget(self, benchmark: f64, snippets: u32) -> usize {
-        let quality_ok = benchmark >= 50.0 && snippets >= 5;
-        if !quality_ok {
-            return 0;
-        }
-
-        let quality_multiplier = if benchmark >= 80.0 && snippets >= 50 {
-            1.0
-        } else if benchmark >= 65.0 && snippets >= 20 {
-            0.6
-        } else {
-            0.3
-        };
-
-        let base = match self {
-            Self::VeryHigh => 0,
-            Self::High => 0,
-            Self::Medium => 1500,
-            Self::Low => 3000,
-            Self::Unknown => 1000,
-        };
-        (base as f64 * quality_multiplier) as usize
-    }
-}
-
-// ── Component 3: Registry Client ─────────────────────────────────────────────
-
-pub trait RegistryClient: Send + Sync {
-    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64>;
-}
-
-pub struct HttpRegistryClient {
-    http: reqwest::Client,
-}
-
-impl HttpRegistryClient {
-    pub fn new() -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .user_agent("quorum-code-review/1.0")
-            .build()?;
-        Ok(Self { http })
-    }
-
-    pub fn registry_url(name: &str, language: &str) -> Option<String> {
-        match language {
-            "rust" => Some(format!("https://crates.io/api/v1/crates/{name}")),
-            "typescript" | "javascript" => Some(format!(
-                "https://api.npmjs.org/downloads/point/last-month/{name}"
-            )),
-            "python" => {
-                // PEP 503: collapse runs of `.`, `-`, `_` to a single `-`, lowercase.
-                let mut normalized = String::with_capacity(name.len());
-                let mut prev_sep = false;
-                for c in name.to_lowercase().chars() {
-                    if matches!(c, '.' | '-' | '_') {
-                        if !prev_sep {
-                            normalized.push('-');
-                            prev_sep = true;
-                        }
-                    } else {
-                        normalized.push(c);
-                        prev_sep = false;
-                    }
-                }
-                Some(format!(
-                    "https://pypistats.org/api/packages/{normalized}/recent"
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    /// Parse download count from registry JSON. Normalizes to approximate monthly:
-    /// crates.io `recent_downloads` is 90-day, so we divide by 3.
-    pub fn parse_downloads(json: &serde_json::Value, language: &str) -> Option<u64> {
-        match language {
-            "rust" => json["crate"]["recent_downloads"]
-                .as_u64()
-                .or_else(|| json["crate"]["downloads"].as_u64())
-                .map(|d| d / 3),
-            "typescript" | "javascript" => json["downloads"].as_u64(),
-            "python" => json["data"]["last_month"].as_u64(),
-            _ => None,
-        }
-    }
-}
-
-impl RegistryClient for HttpRegistryClient {
-    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
-        let url = Self::registry_url(name, language)?;
-        let resp = crate::llm_client::block_on_async(self.http.get(&url).send()).ok()?;
-        if !resp.status().is_success() {
-            tracing::debug!(
-                name,
-                language,
-                status = %resp.status(),
-                "registry download lookup failed"
-            );
-            return None;
-        }
-        let json: serde_json::Value = crate::llm_client::block_on_async(resp.json()).ok()?;
-        Self::parse_downloads(&json, language)
-    }
-}
-
-// ── Component 4: Cached Registry ─────────────────────────────────────────────
-
-struct RegistryCacheEntry {
-    downloads: Option<u64>,
-    cached_at: std::time::Instant,
-}
-
-const REGISTRY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
-
-pub struct CachedRegistryClient<'a> {
-    inner: &'a dyn RegistryClient,
-    cache: std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
-    ttl: std::time::Duration,
-}
-
-impl<'a> CachedRegistryClient<'a> {
-    pub fn new(inner: &'a dyn RegistryClient, max_entries: usize) -> Self {
-        let cap = std::num::NonZeroUsize::new(max_entries.max(1)).unwrap();
-        Self {
-            inner,
-            cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
-            ttl: REGISTRY_CACHE_TTL,
-        }
-    }
-}
-
-fn cached_lookup(
-    cache: &std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
-    ttl: std::time::Duration,
-    inner: &dyn RegistryClient,
-    name: &str,
-    language: &str,
-) -> Option<u64> {
-    let key = (name.to_string(), language.to_string());
-    {
-        let mut c = cache.lock().unwrap();
-        if let Some(entry) = c.get(&key)
-            && entry.cached_at.elapsed() < ttl
-        {
-            return entry.downloads;
-        }
-    }
-    let downloads = inner.monthly_downloads(name, language);
-    {
-        let mut c = cache.lock().unwrap();
-        c.put(
-            key,
-            RegistryCacheEntry {
-                downloads,
-                cached_at: std::time::Instant::now(),
-            },
-        );
-    }
-    downloads
-}
-
-impl RegistryClient for CachedRegistryClient<'_> {
-    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
-        cached_lookup(&self.cache, self.ttl, self.inner, name, language)
-    }
-}
-
-/// Owned variant of `CachedRegistryClient` for pipeline use where the inner
-/// client lives inside an `Arc`.
-pub struct OwnedCachedRegistryClient {
-    inner: Box<dyn RegistryClient>,
-    cache: std::sync::Mutex<lru::LruCache<(String, String), RegistryCacheEntry>>,
-    ttl: std::time::Duration,
-}
-
-impl OwnedCachedRegistryClient {
-    pub fn new(inner: Box<dyn RegistryClient>, max_entries: usize) -> Self {
-        let cap = std::num::NonZeroUsize::new(max_entries.max(1)).unwrap();
-        Self {
-            inner,
-            cache: std::sync::Mutex::new(lru::LruCache::new(cap)),
-            ttl: REGISTRY_CACHE_TTL,
-        }
-    }
-}
-
-impl RegistryClient for OwnedCachedRegistryClient {
-    fn monthly_downloads(&self, name: &str, language: &str) -> Option<u64> {
-        cached_lookup(&self.cache, self.ttl, self.inner.as_ref(), name, language)
-    }
-}
-
 // ── Component 5: Usage Relevance Gate ────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,12 +140,36 @@ impl UsageLevel {
 
 // ── EnrichmentPolicy ─────────────────────────────────────────────────────────
 
-#[derive(Default)]
-pub struct EnrichmentPolicy<'a> {
-    pub registry: Option<&'a dyn RegistryClient>,
+/// Budget for a dep that passed layers 1 and 2, scaled by Context7's own
+/// quality signals.
+///
+/// #522: this was `PopularityTier::token_budget` with the tier always
+/// `Unknown`, because the registry that would have assigned a real tier was
+/// opt-in and never enabled -- `context7_budget_reduced` was 0 across 1,697
+/// recorded reviews. The tiers, the registry client and its 7-day cache are
+/// deleted; the `Unknown` base of 1000 is inlined here so the budget this
+/// returns is byte-for-byte what shipped.
+fn quality_scaled_budget(benchmark: f64, snippets: u32) -> usize {
+    const BASE_BUDGET: f64 = 1000.0;
+
+    if benchmark < 50.0 || snippets < 5 {
+        return 0;
+    }
+
+    let quality_multiplier = if benchmark >= 80.0 && snippets >= 50 {
+        1.0
+    } else if benchmark >= 65.0 && snippets >= 20 {
+        0.6
+    } else {
+        0.3
+    };
+
+    (BASE_BUDGET * quality_multiplier) as usize
 }
 
-impl EnrichmentPolicy<'_> {
+pub struct EnrichmentPolicy;
+
+impl EnrichmentPolicy {
     /// Cheap local-only check: returns true if this dep would definitely get
     /// budget=0 without needing a Context7 resolve or registry lookup.
     pub fn would_skip_locally(&self, dep_name: &str, language: &str, imports: &[String]) -> bool {
@@ -396,17 +196,9 @@ impl EnrichmentPolicy<'_> {
             return 0;
         }
 
-        let tier = match &self.registry {
-            Some(reg) => match reg.monthly_downloads(dep_name, language) {
-                Some(count) => PopularityTier::from_downloads(count, language),
-                None => PopularityTier::Unknown,
-            },
-            None => PopularityTier::Unknown,
-        };
-
         let benchmark = resolve.benchmark_score.unwrap_or(0.0);
         let snippets = resolve.snippet_count.unwrap_or(0);
-        let base_budget = tier.token_budget(benchmark, snippets);
+        let base_budget = quality_scaled_budget(benchmark, snippets);
 
         (base_budget as f64 * usage.budget_multiplier()) as usize
     }
@@ -452,167 +244,36 @@ mod tests {
         assert!(!is_mainstream("serde", "unknown"));
     }
 
-    // Popularity tier tests
+    // Budget tests
+    //
+    // #522 deleted the popularity tiers and the registry that assigned them.
+    // These port the assertions that still describe live behaviour: the
+    // registry was never enabled, so every dep took the `Unknown` base of
+    // 1000, and the quality gate and multipliers are unchanged.
+
     #[test]
-    fn popularity_tier_from_downloads() {
-        // Thresholds for Rust are monthly: 300k/30k/3k
-        assert_eq!(
-            PopularityTier::from_downloads(500_000, "rust"),
-            PopularityTier::VeryHigh
-        );
-        assert_eq!(
-            PopularityTier::from_downloads(100_000, "rust"),
-            PopularityTier::High
-        );
-        assert_eq!(
-            PopularityTier::from_downloads(10_000, "rust"),
-            PopularityTier::Medium
-        );
-        assert_eq!(
-            PopularityTier::from_downloads(1_000, "rust"),
-            PopularityTier::Low
-        );
-        assert_eq!(
-            PopularityTier::from_downloads(0, "rust"),
-            PopularityTier::Low
-        );
+    fn budget_is_zero_for_poor_quality_docs() {
+        // Gate: benchmark >= 50 AND snippets >= 5, else nothing is worth sending.
+        assert_eq!(quality_scaled_budget(30.0, 200), 0);
+        assert_eq!(quality_scaled_budget(80.0, 2), 0);
     }
 
     #[test]
-    fn npm_thresholds_are_higher_than_crates_io() {
-        // 50k/month is High for Rust but only Low for npm
-        assert_eq!(
-            PopularityTier::from_downloads(50_000, "rust"),
-            PopularityTier::High
-        );
-        assert_eq!(
-            PopularityTier::from_downloads(50_000, "typescript"),
-            PopularityTier::Low
-        );
+    fn budget_scales_with_doc_quality() {
+        // Same three multipliers (1.0 / 0.6 / 0.3) that PopularityTier applied,
+        // against the Unknown base of 1000. The first line is the old
+        // `unknown_tier_budget` assertion, preserved verbatim in value.
+        assert_eq!(quality_scaled_budget(80.0, 100), 1000);
+        assert_eq!(quality_scaled_budget(70.0, 30), 600);
+        assert_eq!(quality_scaled_budget(55.0, 10), 300);
     }
 
     #[test]
-    fn budget_zero_for_popular_deps() {
-        assert_eq!(PopularityTier::VeryHigh.token_budget(95.0, 5000), 0);
-        assert_eq!(PopularityTier::High.token_budget(90.0, 200), 0);
-    }
-
-    #[test]
-    fn budget_scales_with_quality() {
-        assert_eq!(PopularityTier::Low.token_budget(85.0, 100), 3000);
-        assert_eq!(PopularityTier::Low.token_budget(70.0, 30), 1800);
-        assert_eq!(PopularityTier::Low.token_budget(55.0, 10), 900);
-    }
-
-    #[test]
-    fn budget_zero_for_bad_docs() {
-        assert_eq!(PopularityTier::Low.token_budget(30.0, 200), 0);
-        assert_eq!(PopularityTier::Low.token_budget(80.0, 2), 0);
-    }
-
-    #[test]
-    fn medium_popularity_gets_reduced_budget() {
-        assert_eq!(PopularityTier::Medium.token_budget(85.0, 100), 1500);
-    }
-
-    #[test]
-    fn unknown_tier_budget() {
-        assert_eq!(PopularityTier::Unknown.token_budget(80.0, 100), 1000);
-    }
-
-    // Registry client tests
-    #[test]
-    fn crates_io_url_is_correct() {
-        assert_eq!(
-            HttpRegistryClient::registry_url("serde", "rust"),
-            Some("https://crates.io/api/v1/crates/serde".into())
-        );
-    }
-
-    #[test]
-    fn npm_url_is_correct() {
-        assert_eq!(
-            HttpRegistryClient::registry_url("react", "typescript"),
-            Some("https://api.npmjs.org/downloads/point/last-month/react".into())
-        );
-    }
-
-    #[test]
-    fn pypi_url_is_correct() {
-        assert_eq!(
-            HttpRegistryClient::registry_url("django", "python"),
-            Some("https://pypistats.org/api/packages/django/recent".into())
-        );
-        // PEP 503: dashes and underscores normalize to single dash
-        assert_eq!(
-            HttpRegistryClient::registry_url("python-dateutil", "python"),
-            Some("https://pypistats.org/api/packages/python-dateutil/recent".into())
-        );
-        assert_eq!(
-            HttpRegistryClient::registry_url("Flask_SQLAlchemy", "python"),
-            Some("https://pypistats.org/api/packages/flask-sqlalchemy/recent".into())
-        );
-    }
-
-    #[test]
-    fn unknown_language_has_no_url() {
-        assert!(HttpRegistryClient::registry_url("foo", "haskell").is_none());
-    }
-
-    #[test]
-    fn parse_crates_io_downloads() {
-        // crates.io recent_downloads is 90-day; parse_downloads normalizes to monthly (÷3)
-        let json = serde_json::json!({"crate": {"recent_downloads": 1_200_000u64}});
-        assert_eq!(
-            HttpRegistryClient::parse_downloads(&json, "rust"),
-            Some(400_000)
-        );
-    }
-
-    #[test]
-    fn parse_npm_downloads() {
-        let json = serde_json::json!({"downloads": 9_876_543u64});
-        assert_eq!(
-            HttpRegistryClient::parse_downloads(&json, "typescript"),
-            Some(9_876_543)
-        );
-    }
-
-    #[test]
-    fn parse_pypi_downloads() {
-        let json = serde_json::json!({"data": {"last_month": 456_789u64}});
-        assert_eq!(
-            HttpRegistryClient::parse_downloads(&json, "python"),
-            Some(456_789)
-        );
-    }
-
-    // Cached registry tests
-    struct MockRegistry {
-        downloads: u64,
-    }
-    impl RegistryClient for MockRegistry {
-        fn monthly_downloads(&self, _: &str, _: &str) -> Option<u64> {
-            Some(self.downloads)
-        }
-    }
-
-    #[test]
-    fn cached_registry_returns_same_result() {
-        let inner = MockRegistry { downloads: 42_000 };
-        let cached = CachedRegistryClient::new(&inner, 32);
-        let first = cached.monthly_downloads("foo", "rust");
-        let second = cached.monthly_downloads("foo", "rust");
-        assert_eq!(first, Some(42_000));
-        assert_eq!(second, Some(42_000));
-    }
-
-    #[test]
-    fn owned_cached_registry_works() {
-        let inner = Box::new(MockRegistry { downloads: 77_000 });
-        let cached = OwnedCachedRegistryClient::new(inner, 32);
-        assert_eq!(cached.monthly_downloads("foo", "rust"), Some(77_000));
-        assert_eq!(cached.monthly_downloads("foo", "rust"), Some(77_000));
+    fn budget_boundaries_are_inclusive() {
+        // Exactly on each threshold, so an accidental `>` for `>=` is caught.
+        assert_eq!(quality_scaled_budget(50.0, 5), 300);
+        assert_eq!(quality_scaled_budget(65.0, 20), 600);
+        assert_eq!(quality_scaled_budget(80.0, 50), 1000);
     }
 
     // Usage relevance tests
@@ -649,7 +310,7 @@ mod tests {
     // EnrichmentPolicy integration tests
     #[test]
     fn policy_skips_mainstream_dep() {
-        let policy = EnrichmentPolicy::default();
+        let policy = EnrichmentPolicy;
         let resolve = crate::context_enrichment::ResolveResult {
             library_id: "/serde-rs/serde".into(),
             benchmark_score: Some(83.7),
@@ -665,7 +326,7 @@ mod tests {
 
     #[test]
     fn policy_enriches_niche_dep() {
-        let policy = EnrichmentPolicy::default();
+        let policy = EnrichmentPolicy;
         let resolve = crate::context_enrichment::ResolveResult {
             library_id: "/qdrant/fastembed".into(),
             benchmark_score: Some(79.5),
@@ -682,7 +343,7 @@ mod tests {
 
     #[test]
     fn policy_skips_no_usage() {
-        let policy = EnrichmentPolicy::default();
+        let policy = EnrichmentPolicy;
         let resolve = crate::context_enrichment::ResolveResult {
             library_id: "/foo/bar".into(),
             benchmark_score: Some(90.0),

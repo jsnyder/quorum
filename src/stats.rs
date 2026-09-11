@@ -39,7 +39,6 @@ pub const TELEMETRY_CONSUMED_FIELDS: &[&str] = &[
     "context7_resolve_failed",
     "context7_query_failed",
     "context7_skipped_popular",
-    "context7_budget_reduced",
     "fp_kind_utilization_rate", // Feedback Health: "FP kinds tagged"
     // Judge block, emitted when the judge ran at all.
     "judge_calls",
@@ -73,7 +72,6 @@ pub struct TelemetryCounters {
     pub context7_resolve_failed: u64,
     pub context7_query_failed: u64,
     pub context7_skipped_popular: u64,
-    pub context7_budget_reduced: u64,
     pub judge_calls: u64,
     pub judge_approved: u64,
     pub judge_rejected: u64,
@@ -95,7 +93,6 @@ impl TelemetryCounters {
             | self.context7_resolve_failed
             | self.context7_query_failed
             | self.context7_skipped_popular
-            | self.context7_budget_reduced
             != 0
     }
 
@@ -116,7 +113,6 @@ impl TelemetryCounters {
             c.context7_resolve_failed += u64::from(e.context7_resolve_failed);
             c.context7_query_failed += u64::from(e.context7_query_failed);
             c.context7_skipped_popular += u64::from(e.context7_skipped_popular);
-            c.context7_budget_reduced += u64::from(e.context7_budget_reduced);
             c.judge_calls += u64::from(e.judge_calls);
             c.judge_approved += u64::from(e.judge_approved);
             c.judge_rejected += u64::from(e.judge_rejected);
@@ -625,8 +621,8 @@ fn format_counter_blocks(c: &TelemetryCounters, style: &Style) -> String {
             c.context7_resolved, c.context7_resolve_failed, c.context7_query_failed,
         ));
         out.push_str(&format!(
-            "  Skipped (popular): {}  Budget reduced: {}\n",
-            c.context7_skipped_popular, c.context7_budget_reduced,
+            "  Skipped (popular): {}\n",
+            c.context7_skipped_popular,
         ));
     }
 
@@ -984,7 +980,6 @@ pub fn format_compact(report: &StatsReport) -> String {
         ("context7_resolve_failed", c.context7_resolve_failed),
         ("context7_query_failed", c.context7_query_failed),
         ("context7_skipped_popular", c.context7_skipped_popular),
-        ("context7_budget_reduced", c.context7_budget_reduced),
         ("judge_calls", c.judge_calls),
         ("judge_approved", c.judge_approved),
         ("judge_rejected", c.judge_rejected),
@@ -1644,7 +1639,6 @@ mod tests {
             context7_resolve_failed: 0,
             context7_query_failed: 0,
             context7_skipped_popular: 0,
-            context7_budget_reduced: 0,
             fp_kind_utilization_rate: None,
             judge_calls: 0,
             judge_approved: 0,
@@ -1678,14 +1672,12 @@ mod tests {
         let mut b = tentry();
         b.context7_query_failed = 1;
         b.context7_skipped_popular = 2;
-        b.context7_budget_reduced = 5;
 
         let (_dir, report) = report_from(&[a, b]);
         assert_eq!(report.counters.context7_resolved, 4);
         assert_eq!(report.counters.context7_resolve_failed, 3);
         assert_eq!(report.counters.context7_query_failed, 1);
         assert_eq!(report.counters.context7_skipped_popular, 2);
-        assert_eq!(report.counters.context7_budget_reduced, 5);
 
         let out = format_human(&report, &Style::plain());
         assert!(out.contains("Context7"), "expected Context7 block: {out}");
@@ -1960,7 +1952,6 @@ mod tests {
             context7_resolve_failed: 1,
             context7_query_failed: 1,
             context7_skipped_popular: 1,
-            context7_budget_reduced: 1,
             fp_kind_utilization_rate: Some(0.5),
             judge_calls: 1,
             judge_approved: 1,

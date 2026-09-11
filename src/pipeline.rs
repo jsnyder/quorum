@@ -231,10 +231,6 @@ pub struct PipelineConfig {
     /// Review mode governing prompt selection, severity rubric, and
     /// AST/linter applicability. Default: `Code`.
     pub mode: crate::review_mode::ReviewMode,
-    /// Optional registry client for Phase 2 popularity-tier lookups.
-    /// When `None` (default / Phase 1), the policy relies on the skip-list
-    /// and quality gate only — no network calls to crates.io / npm / PyPI.
-    pub registry_client: Option<std::sync::Arc<dyn crate::enrichment_policy::RegistryClient>>,
     /// Enable LLM micro-judge for speculative AST rules (--judge / QUORUM_JUDGE=1)
     pub judge_enabled: bool,
     /// Model for judge calls (--judge-model / QUORUM_JUDGE_MODEL / default gpt-4.1-mini)
@@ -267,7 +263,6 @@ impl Default for PipelineConfig {
             focus: None,
             calibrator_config: CalibratorConfig::default(),
             mode: crate::review_mode::ReviewMode::Code,
-            registry_client: None,
             judge_enabled: false,
             judge_model: "gpt-4.1-mini".into(),
             judge_client: None,
@@ -1174,12 +1169,7 @@ pub(crate) async fn build_file_context(
         }
         let ctx7_t0 = std::time::Instant::now();
         let _span = tracing::info_span!("phase.context7", file = %file_str).entered();
-        let policy = crate::enrichment_policy::EnrichmentPolicy {
-            registry: pipeline_config
-                .registry_client
-                .as_ref()
-                .map(|r| r.as_ref() as &dyn crate::enrichment_policy::RegistryClient),
-        };
+        let policy = crate::enrichment_policy::EnrichmentPolicy;
         let result = if let Some(shared) = pipeline_config.context7_fetcher.as_ref() {
             crate::context_enrichment::enrich_for_review_in_project(
                 &project_root,
@@ -1210,7 +1200,6 @@ pub(crate) async fn build_file_context(
             resolve_failed = enrichment_metrics.context7_resolve_failed,
             query_failed = enrichment_metrics.context7_query_failed,
             skipped_popular = enrichment_metrics.context7_skipped_popular,
-            budget_reduced = enrichment_metrics.context7_budget_reduced,
             "phase complete"
         );
         if !docs.is_empty() {

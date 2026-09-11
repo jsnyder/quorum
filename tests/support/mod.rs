@@ -40,7 +40,6 @@ use std::path::Path;
 /// |---|---|---|
 /// | LLM client (src/llm_client.rs) | `QUORUM_BASE_URL` | `QUORUM_API_KEY` |
 /// | Context7 (src/context_enrichment.rs:691) | context7.com | `CONTEXT7_API_KEY` or `~/.context7_key` |
-/// | registry popularity (src/enrichment_policy.rs:171) | crates.io, npm, PyPI | `QUORUM_CONTEXT7_LIVE_REGISTRY` or `--live-registry` |
 /// | GitHub PR post (src/main.rs:1001, :3347) | api.github.com | `GITHUB_TOKEN` + an explicit subcommand |
 ///
 /// Only the first is covered by [`TRIPWIRE_BASE_URL`]; the rest build their
@@ -65,7 +64,6 @@ const NETWORK_ENV_VARS: &[&str] = &[
     "QUORUM_ALLOWED_BASE_URL_HOSTS",
     // Non-LLM outbound paths, per the table above.
     "CONTEXT7_API_KEY",
-    "QUORUM_CONTEXT7_LIVE_REGISTRY",
     "GITHUB_TOKEN",
     "GITHUB_REPOSITORY",
 ];

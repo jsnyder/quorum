@@ -30,7 +30,6 @@ pub struct EnrichmentMetrics {
     pub context7_resolve_failed: u32,
     pub context7_query_failed: u32,
     pub context7_skipped_popular: u32,
-    pub context7_budget_reduced: u32,
 }
 
 /// Result of enrich_for_review: docs to splice into the prompt + telemetry counters.
@@ -348,10 +347,6 @@ pub fn enrich_for_review_with_policy(
             metrics.context7_skipped_popular += 1;
             continue;
         }
-        if budget < 5000 {
-            metrics.context7_budget_reduced += 1;
-        }
-
         let query = curated_query_for(&dep.name)
             .unwrap_or_else(|| generic_query_for_language(&dep.language).into());
         let enriched = build_code_aware_query(&query, imports);
@@ -1458,7 +1453,7 @@ axum = "0.7"
 
         let spy = CapturingSpy::new();
         let imports = vec!["tokio::sync::Mutex".into(), "serde::Serialize".into()];
-        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+        let policy = crate::enrichment_policy::EnrichmentPolicy;
         let result = enrich_for_review_in_project(dir.path(), &imports, &[], &spy, &policy);
 
         let libs: Vec<_> = result.docs.iter().map(|d| d.library.clone()).collect();
@@ -1485,7 +1480,7 @@ axum = "0.7"
         }];
         let imports = vec!["Deserialize: use serde::Deserialize;".into()];
         let fetcher = test_support::Spy;
-        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+        let policy = crate::enrichment_policy::EnrichmentPolicy;
 
         let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
         assert!(result.docs.is_empty(), "serde should be skipped");
@@ -1507,7 +1502,7 @@ axum = "0.7"
             "EmbeddingModel: use fastembed::EmbeddingModel;".into(),
         ];
         let fetcher = test_support::Spy;
-        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+        let policy = crate::enrichment_policy::EnrichmentPolicy;
 
         let result = enrich_for_review_with_policy(&deps, &[], &imports, &fetcher, &policy);
         assert_eq!(result.docs.len(), 1);
@@ -1519,7 +1514,7 @@ axum = "0.7"
         let deps = vec![];
         let imports = vec![];
         let fetcher = test_support::Spy;
-        let policy = crate::enrichment_policy::EnrichmentPolicy::default();
+        let policy = crate::enrichment_policy::EnrichmentPolicy;
 
         let result = enrich_for_review_with_policy(
             &deps,
