@@ -10,8 +10,9 @@ git config core.hooksPath .githooks    # enable pre-commit hooks (fmt, clippy, c
 
 ```bash
 cargo build                    # compile
-cargo test --bin quorum        # run unit tests (1729 tests)
-cargo test                     # run all tests (includes CLI integration)
+cargo test                     # run everything: lib + bin unit tests + CLI integration (~25s)
+cargo test --lib               # lib target only: ast_grep, calibrator, feedback, parser, redact, storage, context, ... (~1,300 tests)
+cargo test --bin quorum        # bin target only: main.rs, cli, pipeline, judge, output, review_log (~1,800 tests). Does NOT run lib tests (#545)
 cargo build --release          # release build (31MB binary)
 cargo run -- version           # check version
 cargo run -- review src/main.rs              # review a file
