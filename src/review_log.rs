@@ -629,6 +629,14 @@ impl ReviewLog {
     /// confidently wrong, which is worse than the empty table it replaces.
     pub fn resolve_rule_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
         let fid = self.resolve_finding_id(file_path, finding_title)?;
+        self.rule_id_for(&fid)
+    }
+
+    /// Rule id recorded for an already-resolved finding id, if any.
+    ///
+    /// #553: split out so a caller that already holds the finding id does
+    /// not pay for a second title resolution.
+    pub fn rule_id_for(&self, finding_id: &str) -> Option<String> {
         let Backend::Sqlite(handle) = &self.backend else {
             return None;
         };
@@ -636,7 +644,7 @@ impl ReviewLog {
         let rule: String = conn
             .query_row(
                 "SELECT rule_id FROM review_finding_ids WHERE finding_id = ?1 LIMIT 1",
-                rusqlite::params![fid],
+                rusqlite::params![finding_id],
                 |row| row.get(0),
             )
             .ok()?;

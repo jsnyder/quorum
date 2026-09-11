@@ -4141,16 +4141,22 @@ fn run_feedback_inner(
     // Auto-resolve finding_id from the review log when not explicitly provided.
     // #523: resolve rule_id from the same match. It was written as None on
     // every row, which is why `stats --by-rule` was empty by construction.
+    // #553: resolve once. This used to resolve the title three times per
+    // verdict (resolve_rule_id resolved it internally, then this block did
+    // it again), each a full scan of review_finding_ids.
     let (finding_id, rule_id) = {
         let resolved = (|| {
             let quorum_home = quorum_home?;
             let handle = crate::storage::initialize(quorum_home).ok()?;
             let log = review_log::ReviewLog::with_storage(handle);
-            let rid = log.resolve_rule_id(file, finding);
-            Some((log.resolve_finding_id(file, finding), rid))
+            let fid = finding_id_override
+                .clone()
+                .or_else(|| log.resolve_finding_id(file, finding));
+            let rid = fid.as_deref().and_then(|f| log.rule_id_for(f));
+            Some((fid, rid))
         })();
         match resolved {
-            Some((fid, rid)) => (finding_id_override.or(fid), rid),
+            Some(pair) => pair,
             None => (finding_id_override, None),
         }
     };
