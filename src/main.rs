@@ -96,6 +96,28 @@ fn quorum_dir() -> Option<std::path::PathBuf> {
     {
         return Some(std::path::PathBuf::from(override_path));
     }
+    // #503: under test, refuse the $HOME fallback rather than silently
+    // resolving to the developer's real `~/.quorum`.
+    //
+    // Bin tests run as threads in ONE process, so every test that reached
+    // this fallback opened the same `~/.quorum/quorum.db` concurrently. That
+    // is a shared SQLite WAL mapping, and a `-shm` remap under concurrent
+    // access is the textbook cause of the SIGBUS jsnyder hit in CI: a hard
+    // fault with no panic and no `test result:` line, passing on re-run.
+    //
+    // A panic here is deliberately louder than the bug it replaces. Tests
+    // needing state should pass a path explicitly (as `run_feedback_inner`
+    // does) or set `QUORUM_HOME` to a tempdir.
+    #[cfg(test)]
+    {
+        panic!(
+            "quorum_dir() fell back to $HOME inside a test (#503). Tests must \
+             not touch the real ~/.quorum: bin tests share one process, so \
+             concurrent access to ~/.quorum/quorum.db can SIGBUS. Pass an \
+             explicit path, or set QUORUM_HOME to a tempdir."
+        );
+    }
+    #[cfg(not(test))]
     std::env::var("HOME")
         .ok()
         .map(|h| std::path::PathBuf::from(h).join(".quorum"))
@@ -1939,8 +1961,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .map(|v| v == "1")
             .unwrap_or(false);
     let _trace_guard = if trace_enabled {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let trace_path = std::path::PathBuf::from(&home).join(".quorum/trace.jsonl");
+        // #503: route through quorum_dir() so QUORUM_TRACE honours
+        // QUORUM_HOME. This read `$HOME` directly, so tracing wrote to the
+        // developer's real ~/.quorum even when QUORUM_HOME pointed elsewhere
+        // -- an isolation leak that only showed up when tracing was enabled.
+        let trace_path = quorum_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from(".quorum"))
+            .join("trace.jsonl");
         eprintln!("Tracing enabled: writing to {}", trace_path.display());
         trace_subscriber::init_trace_subscriber(Some(trace_path))
     } else {
@@ -4020,6 +4047,13 @@ fn run_feedback_inner(
     json: bool,
     feedback_path: &std::path::Path,
     finding_id_override: Option<String>,
+    // Quorum state directory used for finding-id/rule-id resolution.
+    //
+    // #503: injected rather than read from `quorum_dir()` inside. Reading it
+    // here made every unit test open the real `~/.quorum/quorum.db`, even
+    // though each already passed an isolated `feedback_path` -- the hidden
+    // second dependency was the one that actually shared state across tests.
+    quorum_home: Option<&std::path::Path>,
 ) -> (i32, String) {
     let mut verdict = match cli::parse_verdict(verdict_str) {
         Ok(v) => v,
@@ -4046,8 +4080,8 @@ fn run_feedback_inner(
     // every row, which is why `stats --by-rule` was empty by construction.
     let (finding_id, rule_id) = {
         let resolved = (|| {
-            let quorum_home = quorum_dir()?;
-            let handle = crate::storage::initialize(&quorum_home).ok()?;
+            let quorum_home = quorum_home?;
+            let handle = crate::storage::initialize(quorum_home).ok()?;
             let log = review_log::ReviewLog::with_storage(handle);
             let rid = log.resolve_rule_id(file, finding);
             Some((log.resolve_finding_id(file, finding), rid))
@@ -4279,6 +4313,7 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
             opts.json,
             &feedback_path,
             opts.finding_id.clone(),
+            quorum_dir().as_deref(),
         );
         if exit_code != 0 {
             eprintln!("{}", output);
@@ -5091,6 +5126,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5117,6 +5153,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 3);
         assert!(output.contains("Invalid verdict"));
@@ -5140,6 +5177,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5164,6 +5202,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5188,6 +5227,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5216,6 +5256,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert!(output.contains("tp"));
         assert!(output.contains("src/auth.rs"));
@@ -5240,6 +5281,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         // In test environment stdout is not a TTY, so output should be JSON
@@ -5270,6 +5312,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5294,6 +5337,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 0);
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -5347,6 +5391,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(exit_code, 3, "expected tool error on malformed chunk list");
         assert!(
@@ -5376,6 +5421,7 @@ mod feedback_tests {
             false,
             &path,
             None, // finding_id_override
+            Some(dir.path()),
         );
         assert_eq!(
             exit_code, 0,
