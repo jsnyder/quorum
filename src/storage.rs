@@ -20,7 +20,7 @@ pub type StorageHandle = Arc<Mutex<Connection>>;
 
 /// Current schema version. Bumped by each `migrate_vN_to_vN+1` function.
 #[cfg(test)]
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 /// Open (or create) the quorum SQLite database and run any pending
 /// migrations. Returns a shared connection handle ready for use.
@@ -167,6 +167,10 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         migrate_v3_to_v4(conn).context("schema migration v3 -> v4 failed")?;
     }
 
+    if version < 5 {
+        migrate_v4_to_v5(conn).context("schema migration v4 -> v5 failed")?;
+    }
+
     Ok(())
 }
 
@@ -280,6 +284,21 @@ fn migrate_v3_to_v4(conn: &Connection) -> anyhow::Result<()> {
         "ALTER TABLE review_finding_ids ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';",
     )?;
     tx.pragma_update(None, "user_version", 4)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v5: index `review_finding_ids.file_path` (#553).
+///
+/// `ReviewLog::resolve_finding_id` selects rows by `file_path` and nothing
+/// else, and it ran as a full scan: 3.6-4.7s of CPU per `quorum feedback`
+/// call on a 13k-row table, 0.5s with this index.
+fn migrate_v4_to_v5(conn: &Connection) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_rfi_file_path ON review_finding_ids(file_path);",
+    )?;
+    tx.pragma_update(None, "user_version", 5)?;
     tx.commit()?;
     Ok(())
 }
@@ -968,6 +987,23 @@ mod tests {
             .unwrap();
         assert_eq!(new_title, "SQL injection risk");
         assert_eq!(new_fp, "src/db.rs");
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_creates_file_path_index() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 5);
+
+        let idx_exists: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_rfi_file_path'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(
+            idx_exists,
+            "idx_rfi_file_path must exist after v5 migration (#553)"
+        );
     }
 
     #[test]
