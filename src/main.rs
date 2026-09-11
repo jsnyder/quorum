@@ -2508,6 +2508,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Plumbing usage through it is the real fix and belongs with #481, where
     // the missing result is already tracked; this flag is the honest signal
     // available without that surgery.
+    //
+    // Set on success, deliberately not before the call. CodeRabbit asked for
+    // the latter on #547; it would invert #531 again in the other direction.
+    // When `agent_loop` fails both deep paths warn and fall through to the
+    // standard reviewer, which records real usage -- so `llm_ran` is already
+    // true wherever the model produced anything. The only case the two differ
+    // is deep failing AND the fallback reviewer failing, and there every
+    // finding came from AST analysis. Printing `using <model>` for a run the
+    // model contributed nothing to is the same defect as printing it for a run
+    // with no API key. The attempt is not lost either way: both paths print
+    // "Warning: Deep review failed: ... Falling back."
     let deep_llm_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Linter coverage discovery, scoped to whichever project the first
