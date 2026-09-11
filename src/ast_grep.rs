@@ -1079,13 +1079,17 @@ rule:
 
                 let source = std::fs::read_to_string(&fixture_path).unwrap();
                 let findings = scan_file(&source, ext, &rules, &metadata, "src/lib.rs");
-                let suffix = format!("/{stem}");
+                // Exact, not a suffix: `compatible_languages("js")` returns
+                // both JavaScript and TypeScript, so a `.js` fixture is scanned
+                // with TypeScript rules too. No stem is shared across those two
+                // today, but a suffix match would silently accept the wrong
+                // language's rule the day one is.
+                let expected = format!("ast-grep:{lang_name}/{stem}");
                 assert!(
                     findings
                         .iter()
-                        .any(|f| f.rule_id.as_deref().is_some_and(|r| r.ends_with(&suffix))),
-                    "fixture {} matched no finding from its own rule `{stem}`; \
-                     it produced {:?}",
+                        .any(|f| f.rule_id.as_deref() == Some(expected.as_str())),
+                    "fixture {} matched no finding from `{expected}`; it produced {:?}",
                     fixture_path.display(),
                     findings
                         .iter()

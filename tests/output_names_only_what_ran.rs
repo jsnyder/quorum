@@ -113,8 +113,12 @@ fn linter_meta_does_not_claim_a_linter_ran() {
         "`enabled` reads as `ran`; nothing invokes these linters: {linters}"
     );
     assert!(
-        linters.get("installed_and_configured").is_some(),
+        linters.get("configured").is_some(),
         "the key should say what was actually determined: {linters}"
+    );
+    assert!(
+        linters.get("installed_and_configured").is_none(),
+        "`detect_linters` only reads manifests; it never checks installation: {linters}"
     );
 }
 

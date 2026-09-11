@@ -299,10 +299,16 @@ pub fn format_json_grouped_with_meta(
                 "linters": {
                     // #531: named `enabled` until it was pointed out that
                     // `enabled` reads as `ran`. Nothing invokes these linters
-                    // -- `run_linter` has no production caller and never has
-                    // -- so this is only what `detect_linters` determined was
-                    // installed and configured for the project.
-                    "installed_and_configured": enabled_names,
+                    // -- `run_linter` has no production caller and never has.
+                    //
+                    // Then named `installed_and_configured`, until CodeRabbit
+                    // pointed out on #547 that `detect_linters` only looks for
+                    // manifests: it pushes Clippy because `Cargo.toml` exists,
+                    // never checking that `cargo clippy` is present. That was
+                    // #531's own defect one size smaller -- an over-claim
+                    // replaced by a quieter over-claim. `configured` is what
+                    // was actually determined.
+                    "configured": enabled_names,
                     "available_unconfigured": unconfigured,
                 }
             }
@@ -634,9 +640,11 @@ mod tests {
         let arr = parsed.as_array().expect("top-level array");
         assert!(!arr.is_empty());
         let meta = &arr[0]["_meta"]["linters"];
-        // #531: the key states what was determined, not that anything ran.
-        assert_eq!(meta["installed_and_configured"][0], "clippy");
+        // #531: the key states what was determined, not that anything ran,
+        // and not that anything is installed.
+        assert_eq!(meta["configured"][0], "clippy");
         assert!(meta.get("enabled").is_none());
+        assert!(meta.get("installed_and_configured").is_none());
         assert_eq!(meta["available_unconfigured"][0]["name"], "ruff");
         assert!(
             meta["available_unconfigured"][0]["hint"]

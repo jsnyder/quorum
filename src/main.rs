@@ -2497,6 +2497,18 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Shared across the sequential and parallel review paths; folded into the
     // exit status so a review whose skill axes all failed cannot exit 0.
     let skill_cells_failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // #531 follow-up (CodeRabbit on #547): `llm_ran` is derived from
+    // `FileReviewResult.usage`, and neither `--deep` path records any. The
+    // sequential path never pushes a result at all (#481); the parallel path
+    // builds one with `usage: Default::default()`. So a deep review -- which
+    // always calls the model through `agent_loop` -- was being labelled
+    // `AST-only`, inverting the goal of the change that introduced the label.
+    //
+    // `agent_loop` returns `Result<Vec<Finding>>` with no usage to propagate.
+    // Plumbing usage through it is the real fix and belongs with #481, where
+    // the missing result is already tracked; this flag is the honest signal
+    // available without that surgery.
+    let deep_llm_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Linter coverage discovery, scoped to whichever project the first
     // reviewed file lives in. Nothing here runs the linters -- only reports
@@ -2618,6 +2630,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             );
                         }
                         all_findings.extend(findings);
+                        deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
                     Err(e) => {
@@ -2824,6 +2837,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let integrator_audit_writer = integrator_audit_writer_arc.clone();
             let run_id = run_id.clone();
             let skill_cells_failed = skill_cells_failed.clone();
+            let deep_llm_ran = deep_llm_ran.clone();
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
@@ -2875,12 +2889,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             let result = pipeline::FileReviewResult {
                                 file_path: file_display,
                                 findings: sup_result.kept,
+                                // No usage to record: `agent_loop` does not
+                                // return any. See `deep_llm_ran` below.
                                 usage: Default::default(),
                                 suppressed: sup_result.suppressed.len(),
                                 context_telemetry: None,
                                 enrichment_metrics: Default::default(),
                                 judge_metrics: Default::default(),
                             };
+                            deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                             return (idx, Ok((result, sup_result.suppressed)));
                         }
                         Err(e) => {
@@ -3119,9 +3136,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         // reported `in 0.1s using gpt-5.6` -- what would have run, printed as
         // what did. Token usage is the honest signal: it is evidence of
         // execution rather than of configuration.
-        let llm_ran = file_results
-            .iter()
-            .any(|r| r.usage.prompt_tokens > 0 || r.usage.completion_tokens > 0);
+        let llm_ran = deep_llm_ran.load(std::sync::atomic::Ordering::Relaxed)
+            || file_results
+                .iter()
+                .any(|r| r.usage.prompt_tokens > 0 || r.usage.completion_tokens > 0);
         let engine_label = if !llm_ran {
             "AST-only".to_string()
         } else if pipeline_cfg.models.len() > 1 {
