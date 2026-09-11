@@ -415,6 +415,15 @@ pub struct BackfillLinkageOpts {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Report what would change without writing anything (#526).
+    ///
+    /// This command rewrites `~/.quorum/feedback.jsonl`, which holds human
+    /// judgements that cannot be regenerated. `calibrate` has had a dry run
+    /// since it shipped and only writes model files, which are recomputable;
+    /// the command touching irreplaceable data needed one more.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Parser)]
