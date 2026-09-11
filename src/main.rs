@@ -4417,10 +4417,16 @@ fn backfill_linkage_with_options(quorum_home: &std::path::Path, dry_run: bool) -
     }
     let mut rows: Vec<Row> = Vec::new();
     for line in content.lines() {
+        // Every line counts, blank ones included. Skipping before the
+        // increment is what let blank lines vanish while `rows_in ==
+        // rows_out` still passed -- the guard cannot see what it never
+        // counted. A whitespace-only line is also evidence of a torn write,
+        // which is exactly the thing worth not destroying.
+        report.rows_in += 1;
         if line.trim().is_empty() {
+            rows.push(Row::Raw(line.to_string()));
             continue;
         }
-        report.rows_in += 1;
         match serde_json::from_str::<feedback::FeedbackEntry>(line) {
             Ok(e) => {
                 *report
@@ -5758,6 +5764,42 @@ mod backfill_linkage_tests {
             "unparseable line must survive the rewrite verbatim; got:\n{after}"
         );
         assert_eq!(report.unparseable, 1, "and be reported, not silently kept");
+    }
+
+    /// Found by the quorum review of this very branch: the blank-line skip
+    /// sat *before* `rows_in` was incremented, so blank lines were dropped on
+    /// rewrite and the `rows_in == rows_out` guard still passed -- it could
+    /// not see what it never counted. A refuse-to-shrink check blind to a
+    /// class of row is the same defect this branch exists to fix.
+    #[test]
+    fn backfill_preserves_blank_lines_and_counts_them() {
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+        let good = std::fs::read_to_string(&fb_path).unwrap();
+        // A blank line between two records, as a torn write can leave.
+        std::fs::write(&fb_path, format!("{good}\n{good}")).unwrap();
+
+        let before = std::fs::read_to_string(&fb_path).unwrap();
+        let before_lines: Vec<&str> = before.split('\n').collect();
+
+        let report = backfill_linkage_inner(&qhome);
+        assert_eq!(report.newly_linked, 2, "both records still link");
+        assert_eq!(
+            report.rows_in, 3,
+            "the blank line must be counted, not skipped before counting"
+        );
+        assert_eq!(report.rows_out, report.rows_in);
+        assert_eq!(
+            report.unparseable, 0,
+            "a blank line is not an unparseable verdict"
+        );
+
+        let after = std::fs::read_to_string(&fb_path).unwrap();
+        assert_eq!(
+            after.split('\n').count(),
+            before_lines.len(),
+            "line structure must survive the rewrite; got:\n{after}"
+        );
     }
 
     /// #526: the rewrite must never reduce the row count. A migration that
