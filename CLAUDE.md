@@ -70,7 +70,7 @@ The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS b
 
 ## Supported Languages
 
-| Language | Extensions | AST Analysis | Linter |
+| Language | Extensions | AST Analysis | Advises |
 |----------|-----------|-------------|--------|
 | Rust | .rs | complexity, unsafe, unwrap | clippy |
 | Python | .py | secrets, eval, SQL injection, mutable defaults, open() encoding, bare except:pass | ruff |
@@ -83,6 +83,8 @@ The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS b
 | Go | .go | error handling, concurrency, SQL injection, TLS, defer patterns | golangci-lint |
 | Multi-lang | .rs, .py, .ts, .js, .yaml, .sh, .tf, etc. | custom YAML rules via ast-grep | ast-grep |
 | Other | * | LLM-only review (no AST) | — |
+
+The **Advises** column is a coverage hint, not execution: quorum detects whether a linter is configured for the languages in a review and tells you when one is missing. It does not run linters or ingest their findings -- that path existed but had no caller and was deleted in #525. Run your linters from your own toolchain or CI.
 
 ### ast-grep custom rules (84 bundled)
 

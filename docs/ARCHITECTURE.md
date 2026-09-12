@@ -124,7 +124,7 @@ Honest assessment: 3-6 months of part-time work for core feature parity. During 
 - tree-sitter multi-language parsing (Rust, Python, TypeScript/TSX, YAML)
 - AST context hydration: callee sigs, type defs, caller blast radius
 - AST analysis as reviewer: complexity, dead code, insecure patterns
-- Linter orchestration: detect + run available linters, normalize output
+- Linter coverage hints: detect which linters a project has configured
 - Canonical finding format (source-tagged JSON)
 - **Can be called from the TS version via CLI subprocess** -- immediate value
 
@@ -132,7 +132,7 @@ Honest assessment: 3-6 months of part-time work for core feature parity. During 
 - DSRs `Predict<S>` for structured review output with `#[derive(Signature)]`
 - DSRs tool calling for deep review mode (read_file, search, etc.)
 - Multi-model cold-read ensemble (configurable model families)
-- Review pipeline: hydrate -> parallel reviewers (LLM + local + linters) -> merge -> calibrate
+- Review pipeline: hydrate -> parallel reviewers (LLM + local AST) -> merge -> calibrate
 - MIPROv2 optimizer replaces BootstrapFewShot for prompt optimization
 - Single binary, feature parity with `review` tool only
 - **Keep TS version alive** -- Rust version is opt-in
@@ -148,7 +148,7 @@ Honest assessment: 3-6 months of part-time work for core feature parity. During 
 - Persistent daemon with warm AST/embedding/feedback caches
 - Local embedding model for dynamic few-shot retrieval
 - File watcher for cache invalidation
-- Per-source (LLM/local/linter) TP/FP tracking and analytics
+- Per-source (LLM/local) TP/FP tracking and analytics
 - Continuous improvement: feedback loop grows the precedent store
 
 ## Key Rust Crates
@@ -285,23 +285,26 @@ The Rust tree-sitter layer produces a hydrated payload:
 
 This gives the cold reader what a human reviewer gets from their IDE. Not priming on what to find -- completing what they can see.
 
-### 3. Linter Orchestration
+### 3. Linter Coverage Hints
 
-External linters as first-class reviewers alongside LLMs and local AST analysis:
+Quorum detects which linters a project has configured and tells you which
+languages in a review have none. It does **not** run linters or ingest their
+findings.
 
-**Linked (compiled in)**:
-- `ruff` (Rust-native) -- can link as library crate for Python reviews
-- Custom tree-sitter rules for cross-language patterns
+Detection scans the project root for config files (`.eslintrc*` /
+`eslint.config.*`, `pyproject.toml [tool.ruff]` or `ruff.toml`, `Cargo.toml`,
+`.yamllint*`, `.hadolint.*` or a `Dockerfile`, `.tflint.hcl`, `.golangci.*` or
+`go.mod`). Where a language appears in the review and no linter is configured
+for it, the output carries a one-line hint naming the tool and how to enable
+it.
 
-**Opportunistic (subprocess, if available)**:
-- `clippy` for Rust projects
-- `eslint` / `biome` for JS/TS
-- `mypy` / `pyright` for Python type checking
-- `rubocop` for Ruby
-
-Detection: scan project for config files (`.eslintrc`, `pyproject.toml [tool.ruff]`, `clippy.toml`). Run available linters, normalize output to canonical finding format.
-
-The LLM calibrator adds value on top: assessing whether a linter finding is contextually relevant, and elevating low-severity linter warnings when broader code context makes them critical.
+**Historical note.** This section previously described linters as first-class
+reviewers, with subprocess execution and output normalized into the canonical
+finding format. That code existed (`run_linter` plus eight
+`normalize_*_output` functions) but had no caller: it was reachable only from
+itself, so no review ever ran a linter. It was deleted in #525 along with the
+documentation claims in README and CLAUDE.md. Run your linters from your own
+toolchain or CI; quorum will tell you when one is missing.
 
 ### 4. Feedback RAG for Calibration
 

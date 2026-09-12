@@ -1,6 +1,6 @@
 # quorum
 
-Multi-source code review: local AST analysis + LLM ensemble + linter orchestration + ast-grep rules + feedback-calibrated findings.
+Multi-source code review: local AST analysis + LLM ensemble + ast-grep rules + feedback-calibrated findings.
 
 Rust-native successor to [third-opinion](https://github.com/jsnyder/third-opinion). Single binary, 606 tests, 31MB.
 
@@ -10,7 +10,7 @@ quorum reviews code using four complementary sources:
 
 1. **Local AST analysis** (instant, free) -- tree-sitter patterns for 8 languages
 2. **LLM cold read** (12-20s) -- GPT-5.4/Claude/Gemini via any OpenAI-compatible endpoint
-3. **Linter orchestration** -- normalize ruff/clippy/eslint/yamllint/shellcheck/hadolint/tflint output into unified findings
+3. **Linter coverage hints** -- detect which linters a project has configured and flag the languages in a review that have none
 4. **ast-grep rules** (instant, extensible) -- 20 bundled + user-customizable YAML pattern rules
 
 Findings are merged, deduplicated, and calibrated using your feedback history. Each review automatically trains the calibrator for better future results.
@@ -67,7 +67,7 @@ quorum review src/auth.py --diff-file changes.patch
 
 ## Supported Languages
 
-| Language | Extensions | AST Patterns | Linter |
+| Language | Extensions | AST Patterns | Advises |
 |----------|-----------|-------------|--------|
 | Rust | .rs | complexity, unsafe, unwrap | clippy |
 | Python | .py | secrets, eval, SQL injection, mutable defaults, open() encoding, bare except:pass, blocking .result() in async | ruff |
@@ -78,6 +78,8 @@ quorum review src/auth.py --diff-file changes.patch
 | Dockerfile | Dockerfile* | FROM latest, no USER, no HEALTHCHECK, secrets in ENV, ADD vs COPY, curl\|bash | hadolint |
 | Terraform | .tf, .tfvars | secrets, wildcard IAM, open SGs, missing version pins | tflint |
 | Other | * | LLM-only review (no AST) | -- |
+
+The **Advises** column is a coverage hint, not execution: quorum detects whether a linter is configured for the languages in a review and tells you when one is missing. It does not run linters or ingest their findings -- that path existed but had no caller and was deleted in #525. Run your linters from your own toolchain or CI.
 
 ## ast-grep Custom Rules
 
@@ -325,7 +327,6 @@ Code -> Parse (tree-sitter, cached) -> Hydrate (callee sigs, type defs)
     |-- Local AST patterns (instant, 8 languages)
     |-- ast-grep rules (instant, 20 bundled + user rules)
     |-- LLM cold read (GPT-5.4 + Context7 docs + suggested fixes)
-    +-- Linters (ruff, clippy, eslint, yamllint, shellcheck, hadolint, tflint)
   -> Merge/dedup -> Calibrate (feedback, soft-suppress auto-only FPs)
   -> Project suppress (.quorum/suppress.toml)
   -> Auto-calibrate (o3 triage) -> Output (human/compact/JSON) -> Exit code
