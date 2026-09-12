@@ -76,13 +76,29 @@ fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
     assert_eq!(after, sentinel, "re-init must not clobber existing config");
 }
 
+use std::ffi::OsStr;
+
+#[test]
+#[cfg(unix)]
+fn quorum_root_accepts_a_non_utf8_home() {
+    // On Unix a path is arbitrary bytes. Reading HOME as a String rather than
+    // an OsString reports this home as unset -- the regression quorum's review
+    // of #497 caught in the first version of this refactor.
+    use super::cli::ProdDeps;
+    use std::os::unix::ffi::OsStrExt;
+    let raw = OsStr::from_bytes(b"/home/\xff\xfe");
+    let root = ProdDeps::quorum_root_from(Some(raw), None)
+        .expect("a non-UTF-8 HOME is still a valid absolute path");
+    assert!(root.ends_with(".quorum"));
+}
+
 #[test]
 fn quorum_root_rejects_empty_home() {
     // An empty HOME would yield a relative ".quorum" path resolving against
     // the cwd. Treat empty as missing.
     use super::cli::ProdDeps;
     assert!(
-        ProdDeps::quorum_root_from(Some(""), None).is_err(),
+        ProdDeps::quorum_root_from(Some(OsStr::new("")), None).is_err(),
         "empty HOME with no USERPROFILE must error rather than accept relative '.quorum'"
     );
 }
@@ -93,7 +109,7 @@ fn quorum_root_rejects_relative_home() {
     // it to "foo") would also yield a relative `.quorum`. from_env promises an
     // anchored state dir; reject relative values so the promise holds.
     use super::cli::ProdDeps;
-    let err = ProdDeps::quorum_root_from(Some("relative/path"), None)
+    let err = ProdDeps::quorum_root_from(Some(OsStr::new("relative/path")), None)
         .expect_err("relative HOME must be rejected");
     assert!(
         err.to_string().contains("absolute"),
@@ -106,7 +122,7 @@ fn quorum_root_accepts_an_absolute_home() {
     // The positive case, which the env-mutating version never covered: a
     // guard that rejected everything would have passed both tests above.
     use super::cli::ProdDeps;
-    let root = ProdDeps::quorum_root_from(Some("/home/someone"), None)
+    let root = ProdDeps::quorum_root_from(Some(OsStr::new("/home/someone")), None)
         .expect("absolute HOME must be accepted");
     assert!(root.ends_with(".quorum"));
     assert!(root.is_absolute());
@@ -117,10 +133,10 @@ fn quorum_root_falls_back_between_home_and_userprofile() {
     // Whichever is canonical for the platform, an empty one must fall through
     // to the other rather than being accepted as present-but-empty.
     use super::cli::ProdDeps;
-    assert!(ProdDeps::quorum_root_from(Some(""), Some("/profile")).is_ok());
-    assert!(ProdDeps::quorum_root_from(Some("/home"), Some("")).is_ok());
+    assert!(ProdDeps::quorum_root_from(Some(OsStr::new("")), Some(OsStr::new("/profile"))).is_ok());
+    assert!(ProdDeps::quorum_root_from(Some(OsStr::new("/home")), Some(OsStr::new(""))).is_ok());
     assert!(ProdDeps::quorum_root_from(None, None).is_err());
-    assert!(ProdDeps::quorum_root_from(Some(""), Some("")).is_err());
+    assert!(ProdDeps::quorum_root_from(Some(OsStr::new("")), Some(OsStr::new(""))).is_err());
 }
 
 #[test]

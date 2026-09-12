@@ -163,7 +163,10 @@ impl ProdDeps {
     }
 
     fn resolve_quorum_root() -> Result<PathBuf> {
-        let from = |k: &str| std::env::var(k).ok().filter(|v: &String| !v.is_empty());
+        // `var_os`, not `var`: on Unix a path is arbitrary bytes, and a
+        // non-UTF-8 HOME is legal. Reading it as a String would report such a
+        // home as unset.
+        let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
         Self::quorum_root_from(from("HOME").as_deref(), from("USERPROFILE").as_deref())
     }
 
@@ -177,13 +180,17 @@ impl ProdDeps {
     /// about the worst variable to race on, since any other test resolving a
     /// path could read it mid-write.
     ///
-    /// Empty values are treated as missing by the caller, matching the
-    /// previous `filter(|v| !v.is_empty())`.
+    /// Takes `OsStr` rather than `str` deliberately: `std::env::var_os`
+    /// preserves non-UTF-8 paths, which are legal on Unix. An earlier version
+    /// of this took `&str` and would have reported a non-UTF-8 HOME as unset.
+    ///
+    /// Empty values are treated as missing, matching the previous
+    /// `filter(|v| !v.is_empty())`.
     pub(crate) fn quorum_root_from(
-        home: Option<&str>,
-        userprofile: Option<&str>,
+        home: Option<&std::ffi::OsStr>,
+        userprofile: Option<&std::ffi::OsStr>,
     ) -> Result<PathBuf> {
-        fn pick(v: Option<&str>) -> Option<&str> {
+        fn pick(v: Option<&std::ffi::OsStr>) -> Option<&std::ffi::OsStr> {
             v.filter(|s| !s.is_empty())
         }
         // On Windows, `USERPROFILE` is the canonical user dir. `HOME` is
