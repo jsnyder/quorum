@@ -1502,12 +1502,22 @@ pub fn classify_findings_for_file(
     let file_str = file_path.to_string_lossy().to_string();
     let repo_root = find_project_root(file_path);
     let resolver = ReviewPathResolver::new(&file_str, &repo_root);
-    let diff_lines: Vec<(u32, u32)> = diff_ranges
+    let matching: Vec<&(String, Vec<(u32, u32)>)> = diff_ranges
         .iter()
         .filter(|(path, _)| resolver.matches(path))
+        .collect();
+    let diff_lines: Vec<(u32, u32)> = matching
+        .iter()
         .flat_map(|(_, ranges)| ranges.clone())
         .collect();
-    classify_in_diff(findings, &diff_lines);
+
+    // #562: the file appeared in the diff but contributed no post-image lines
+    // -- every hunk touching it was a pure deletion. Nothing can be attributed
+    // to a range that does not exist, so the honest answer is "unknown", not
+    // "outside the diff".
+    let deletion_only = !matching.is_empty() && diff_lines.is_empty();
+
+    classify_in_diff(findings, &diff_lines, deletion_only);
 }
 
 /// Stamp each finding with `in_diff` based on whether the finding's anchor
@@ -1519,9 +1529,21 @@ pub fn classify_findings_for_file(
 ///
 /// Only called when `--diff-file` was explicitly provided. Invalid findings
 /// (malformed line ranges) are skipped.
-fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)]) {
+///
+/// `deletion_only` means the file was in the diff but every hunk touching it
+/// removed lines without adding any. `in_diff` is left `None` in that case
+/// (#562): there is no post-image range for an anchor to fall inside, so
+/// `Some(false)` would assert something the diff cannot support. It also
+/// matters for calibration -- `verdict_weight` applies OUT_OF_DIFF_WEIGHT
+/// (0.7) to exactly `Some(false)`, so stamping it would discount every verdict
+/// recorded on a deletion PR for being outside a diff that had no inside.
+fn classify_in_diff(findings: &mut [Finding], changed_lines: &[(u32, u32)], deletion_only: bool) {
     for finding in findings {
         if !finding.is_valid() {
+            continue;
+        }
+        if deletion_only {
+            finding.in_diff = None;
             continue;
         }
         let anchor = finding.anchor_line();
@@ -3150,6 +3172,90 @@ mod tests {
 
     // -- classify_in_diff --
 
+    /// #562: a deletion-only hunk leaves `in_diff` unknown, not false.
+    ///
+    /// There is no post-image range for an anchor to fall inside, so
+    /// `Some(false)` asserts something the diff cannot support. On a pure
+    /// deletion PR every finding was stamped false -- including findings the
+    /// PR itself caused, like the orphaned test-section headers in #525.
+    #[test]
+    fn classify_in_diff_deletion_only_hunk_is_unknown() {
+        let mut findings = vec![
+            crate::finding::FindingBuilder::new()
+                .title("something")
+                .lines(10, 10)
+                .build(),
+        ];
+        classify_in_diff(&mut findings, &[], true);
+        assert_eq!(
+            findings[0].in_diff, None,
+            "a deletion-only diff cannot place a finding inside or outside it"
+        );
+    }
+
+    /// A file the diff never mentioned is still definitively out of diff.
+    /// Without this, the fix above would degrade every out-of-diff finding to
+    /// unknown and lose the distinction entirely.
+    #[test]
+    fn classify_in_diff_file_absent_from_diff_is_still_false() {
+        let mut findings = vec![
+            crate::finding::FindingBuilder::new()
+                .title("something")
+                .lines(10, 10)
+                .build(),
+        ];
+        classify_in_diff(&mut findings, &[], false);
+        assert_eq!(findings[0].in_diff, Some(false));
+    }
+
+    /// #562: a deletion-only file must survive parsing at all.
+    ///
+    /// `parse_unified_diff` used to drop a file whose hunks contributed no
+    /// post-image lines, which is what made "deletion-only" indistinguishable
+    /// from "not in the diff" downstream.
+    #[test]
+    fn parse_unified_diff_keeps_a_deletion_only_file() {
+        // Two deletion-only files, because the parser saves in two places: once
+        // mid-loop when the next `+++ b/` header appears, and once after the
+        // loop for the last file. A single-file diff exercises only the second,
+        // which is how the first version of this test stayed green while the
+        // mid-loop path still dropped empty files.
+        let diff = "--- a/src/first.rs\n\
+                    +++ b/src/first.rs\n\
+                    @@ -10,5 +9,0 @@\n\
+                    -removed one\n\
+                    --- a/src/last.rs\n\
+                    +++ b/src/last.rs\n\
+                    @@ -3,2 +2,0 @@\n\
+                    -removed two\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+
+        for name in ["src/first.rs", "src/last.rs"] {
+            let entry = ranges.iter().find(|(p, _)| p == name).unwrap_or_else(|| {
+                panic!("{name}: a deletion-only file must still appear in the diff ranges")
+            });
+            assert!(
+                entry.1.is_empty(),
+                "{name}: and it must contribute no post-image ranges"
+            );
+        }
+    }
+
+    /// The mixed case: a file with both kinds of hunk keeps normal semantics.
+    #[test]
+    fn parse_unified_diff_mixed_file_keeps_its_added_ranges() {
+        let diff = "--- a/src/mixed.rs\n\
+                    +++ b/src/mixed.rs\n\
+                    @@ -10,5 +9,0 @@\n\
+                    -removed\n\
+                    @@ -30,0 +31,2 @@\n\
+                    +added one\n\
+                    +added two\n";
+        let ranges = crate::hydration::parse_unified_diff(diff);
+        let entry = ranges.iter().find(|(p, _)| p == "src/mixed.rs").unwrap();
+        assert_eq!(entry.1, vec![(31, 32)]);
+    }
+
     #[test]
     fn classify_in_diff_anchor_inside_hunk() {
         use crate::finding::FindingBuilder;
@@ -3159,7 +3265,7 @@ mod tests {
             FindingBuilder::new().line_start(100).line_end(100).build(),
         ];
         let changed = vec![(15, 25)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(findings[0].in_diff, Some(true), "anchor 15 inside [15,25]");
         assert_eq!(
             findings[1].in_diff,
@@ -3177,7 +3283,7 @@ mod tests {
             FindingBuilder::new().line_start(30).line_end(40).build(),
         ];
         let changed = vec![(20, 30)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(
             findings[0].in_diff,
             Some(false),
@@ -3190,7 +3296,7 @@ mod tests {
     fn classify_in_diff_empty_changed_lines_marks_all_pre_existing() {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().build()];
-        classify_in_diff(&mut findings, &[]);
+        classify_in_diff(&mut findings, &[], false);
         assert_eq!(findings[0].in_diff, Some(false));
     }
 
@@ -3199,7 +3305,7 @@ mod tests {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().line_start(0).line_end(0).build()];
         let changed = vec![(1, 100)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(findings[0].in_diff, None);
     }
 
@@ -3208,7 +3314,7 @@ mod tests {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().line_start(1).line_end(500).build()];
         let changed = vec![(250, 260)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(
             findings[0].in_diff,
             Some(false),
@@ -3227,7 +3333,7 @@ mod tests {
                 .build(),
         ];
         let changed = vec![(250, 260)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(
             findings[0].in_diff,
             Some(true),
@@ -3245,7 +3351,7 @@ mod tests {
             FindingBuilder::new().line_start(80).line_end(85).build(),
         ];
         let changed = vec![(8, 12), (48, 60)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(
             findings[0].in_diff,
             Some(false),
@@ -3264,7 +3370,7 @@ mod tests {
             FindingBuilder::new().line_start(21).line_end(25).build(),
         ];
         let changed = vec![(20, 20)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(findings[0].in_diff, Some(false));
         assert_eq!(findings[1].in_diff, Some(false));
     }
@@ -3274,7 +3380,7 @@ mod tests {
         use crate::finding::FindingBuilder;
         let mut findings = vec![FindingBuilder::new().line_start(42).line_end(42).build()];
         let changed = vec![(42, 42)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(findings[0].in_diff, Some(true));
     }
 
@@ -3288,7 +3394,7 @@ mod tests {
             FindingBuilder::new().line_start(50).line_end(55).build(),
         ];
         let changed = vec![(1, 100)];
-        classify_in_diff(&mut findings, &changed);
+        classify_in_diff(&mut findings, &changed, false);
         assert_eq!(findings[0].in_diff, None);
         assert_eq!(findings[1].in_diff, Some(true));
         assert_eq!(findings[2].in_diff, None);
@@ -3444,7 +3550,7 @@ mod tests {
             FindingBuilder::new().line_start(30).line_end(35).build(),
             FindingBuilder::new().line_start(55).line_end(58).build(),
         ];
-        classify_in_diff(&mut findings, &diff_lines);
+        classify_in_diff(&mut findings, &diff_lines, false);
 
         assert_eq!(findings[0].in_diff, Some(true));
         assert_eq!(findings[1].in_diff, Some(false));
@@ -3479,7 +3585,7 @@ mod tests {
             .collect();
 
         let mut findings = vec![FindingBuilder::new().line_start(10).line_end(20).build()];
-        classify_in_diff(&mut findings, &diff_lines);
+        classify_in_diff(&mut findings, &diff_lines, false);
 
         assert_eq!(
             findings[0].in_diff,

@@ -653,10 +653,14 @@ pub fn parse_unified_diff(diff: &str) -> DiffRanges {
 
     for line in diff.lines() {
         if let Some(path) = line.strip_prefix("+++ b/") {
-            // Save previous file
-            if let Some(file) = current_file.take()
-                && !current_ranges.is_empty()
-            {
+            // Save previous file.
+            //
+            // #562: recorded even when it has no ranges. A deletion-only file
+            // legitimately contributes none, and dropping it here made it
+            // indistinguishable from a file the diff never mentioned --
+            // which is what let `classify_in_diff` stamp `Some(false)` on
+            // findings it could not possibly attribute.
+            if let Some(file) = current_file.take() {
                 results.push((file, std::mem::take(&mut current_ranges)));
             }
             current_file = Some(path.to_string());
@@ -683,10 +687,8 @@ pub fn parse_unified_diff(diff: &str) -> DiffRanges {
             }
         }
     }
-    // Save last file
-    if let Some(file) = current_file
-        && !current_ranges.is_empty()
-    {
+    // Save last file (see above: kept even with no ranges).
+    if let Some(file) = current_file {
         results.push((file, current_ranges));
     }
 
@@ -1424,15 +1426,27 @@ fn process(data: &str) {
     #[test]
     fn parse_unified_diff_handles_pure_deletion_hunk() {
         // +N,0 = pure deletion at line N. Must not produce a (N, N-1) garbage range.
+        //
+        // This asked the reader to "document and assert one" of two possible
+        // behaviours and then asserted neither: both its guards were
+        // conditional, so it ran zero assertions. Before #562 `first()` was
+        // None because the file was dropped; after #562 the file is kept and
+        // `ranges` is empty, so the loop body never runs. Vacuous either way.
+        //
+        // #562 settled the choice: the file is kept so that "deletion-only"
+        // can be told from "not in the diff", and it contributes no
+        // post-image range.
         let diff = "+++ b/y.rs\n@@ -10,3 +10,0 @@\n-a\n-b\n-c\n";
         let result = parse_unified_diff(diff);
-        // Either the hunk is filtered out entirely, OR the range collapses to (N, N).
-        // Author's choice; document and assert one.
-        if let Some((_, ranges)) = result.first() {
-            for &(s, e) in ranges {
-                assert!(s <= e, "saturating_sub produced inverted range ({s}, {e})");
-            }
-        }
+
+        let (path, ranges) = result
+            .first()
+            .expect("a deletion-only file is kept, not dropped");
+        assert_eq!(path, "y.rs");
+        assert!(
+            ranges.is_empty(),
+            "a +N,0 hunk contributes no post-image range; got {ranges:?}"
+        );
     }
 
     #[test]
@@ -1591,16 +1605,24 @@ fn uses_map() {
     fn parse_unified_diff_handles_pure_deletion_hunk_without_underflow() {
         // Hunk header "@@ -1 +0,0 @@" = full-file or single-line pure deletion.
         // count=0 must NOT push a (0, 0u32-1) underflow range, and must not panic.
+        // That is the property this test exists for, and it is unchanged.
         let diff = "+++ b/foo.rs\n@@ -1 +0,0 @@\n-only line\n";
         let result = parse_unified_diff(diff);
-        // Per fix at hydration.rs:535-543 (count > 0 guard), pure deletion drops
-        // foo.rs entirely (current_ranges stays empty, save-current-file block
-        // at line 519 only pushes when !is_empty()). Pin this exact behavior.
-        let foo = result.iter().find(|(p, _)| p == "foo.rs");
+
+        // #562 changed the incidental half. This used to assert foo.rs was
+        // dropped entirely, which was a consequence of the drop-empty
+        // condition rather than something anyone wanted: it made
+        // "deletion-only" indistinguishable from "not in the diff", so
+        // `classify_in_diff` stamped `Some(false)` on findings it could not
+        // attribute. The file is now kept with no ranges.
+        let foo = result
+            .iter()
+            .find(|(p, _)| p == "foo.rs")
+            .expect("a deletion-only file is kept so it can be told from an untouched one");
         assert!(
-            foo.is_none(),
-            "pure-deletion hunk should drop foo.rs entirely; got entry: {:?}",
-            foo,
+            foo.1.is_empty(),
+            "no post-image range may be emitted for a +0,0 hunk; got {:?}",
+            foo.1,
         );
     }
 
