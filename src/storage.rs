@@ -18,8 +18,39 @@ use rusqlite::params;
 /// and (later) passed into async tasks that need write access.
 pub type StorageHandle = Arc<Mutex<Connection>>;
 
+/// The on-disk schema is newer than this build understands.
+///
+/// A distinct type rather than a plain `anyhow!` so `initialize`'s corruption
+/// recovery can tell a version mismatch from a damaged file. Recovering from
+/// this would rename the user's database aside and create an empty one --
+/// data loss on a database that is perfectly intact.
+#[derive(Debug)]
+pub struct FutureSchemaVersion {
+    pub found: u32,
+    pub supported: u32,
+}
+
+impl std::fmt::Display for FutureSchemaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "database schema version {} is newer than this build supports ({}). \
+             It was written by a later version of quorum; upgrade, or point \
+             QUORUM_HOME at a different directory.",
+            self.found, self.supported
+        )
+    }
+}
+
+impl std::error::Error for FutureSchemaVersion {}
+
 /// Current schema version. Bumped by each `migrate_vN_to_vN+1` function.
-#[cfg(test)]
+///
+/// #551: this was `#[cfg(test)]`, so production had no single source of truth
+/// for the current version -- each migration hardcoded its own number and
+/// nothing could compare an on-disk version against "what this build knows".
+/// `run_migrations` needs exactly that comparison to reject a database written
+/// by a newer binary, so the constant is now real.
 const SCHEMA_VERSION: u32 = 5;
 
 /// Open (or create) the quorum SQLite database and run any pending
@@ -84,6 +115,10 @@ pub fn initialize(quorum_home: &Path) -> anyhow::Result<StorageHandle> {
 
     let conn = match open_and_migrate(&db_path) {
         Ok(conn) => conn,
+        // #551: a future schema version is NOT corruption. Falling through to
+        // the recovery below would rename an intact database aside and create
+        // an empty one, which is data loss on a version mismatch.
+        Err(e) if e.downcast_ref::<FutureSchemaVersion>().is_some() => return Err(e),
         Err(e) => {
             eprintln!(
                 "warning: could not open quorum.db: {}. Creating fresh database. \
@@ -121,6 +156,40 @@ pub fn in_memory_handle() -> StorageHandle {
 
 /// Open the database, configure pragmas, run an integrity check, and
 /// apply schema migrations. Returns the ready connection on success.
+/// Pick an archive path for a migrated JSONL file that does not overwrite an
+/// existing one.
+///
+/// #556: the archive name is fixed (`<name>.migrated`), and import now runs
+/// whenever the source file exists rather than only on first run. On a machine
+/// that has migrated before, the archive is already there and `std::fs::rename`
+/// would replace it -- silently discarding the earlier archive. Suffix with a
+/// counter when the plain name is taken.
+fn archive_path(quorum_home: &Path, file_name: &str) -> std::path::PathBuf {
+    let base = quorum_home.join(format!("{file_name}.migrated"));
+    if !base.exists() {
+        return base;
+    }
+    for n in 2..1000 {
+        let candidate = quorum_home.join(format!("{file_name}.migrated.{n}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // All the counter names are taken. Fall back to a timestamp rather than
+    // any existing name.
+    //
+    // The first version of this returned `base` here, which is the ORIGINAL
+    // archive -- the one this function exists to protect. Quorum's review of
+    // this branch caught it: the comment said "the thousandth", the code
+    // returned the first, and the code was the dangerous one. There is no
+    // acceptable name to overwrite, so pick one that cannot collide.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    quorum_home.join(format!("{file_name}.migrated.{nanos}"))
+}
+
 fn open_and_migrate(db_path: &Path) -> anyhow::Result<Connection> {
     let conn = Connection::open(db_path)
         .with_context(|| format!("failed to open database: {}", db_path.display()))?;
@@ -150,6 +219,19 @@ fn current_version(conn: &Connection) -> anyhow::Result<u32> {
 /// Dispatch pending migrations in order.
 fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     let version = current_version(conn)?;
+
+    // #551: the steps below are all `if version < N`, so a database written by
+    // a NEWER binary satisfies none of them and this function returns Ok --
+    // reporting "ready" for a schema it does not understand. The failure then
+    // surfaces on the first query touching a renamed or dropped column, where
+    // it reads as a query bug rather than a version mismatch.
+    if version > SCHEMA_VERSION {
+        return Err(FutureSchemaVersion {
+            found: version,
+            supported: SCHEMA_VERSION,
+        }
+        .into());
+    }
 
     if version < 1 {
         migrate_v0_to_v1(conn).context("schema migration v0 -> v1 failed")?;
@@ -303,7 +385,7 @@ fn migrate_v4_to_v5(conn: &Connection) -> anyhow::Result<()> {
     tx.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_rfi_file_path ON review_finding_ids(file_path);",
     )?;
-    tx.pragma_update(None, "user_version", 5)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
 }
@@ -326,15 +408,17 @@ fn migrate_reviews_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Resul
         return Ok(());
     }
 
-    // Guard against double-import: if the table already has data, skip.
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM reviews", [], |row| row.get(0))?;
-    if count > 0 {
-        eprintln!(
-            "warning: reviews table already contains {} rows; skipping JSONL migration",
-            count
-        );
-        return Ok(());
-    }
+    // #556: no row-count guard. It was written for the first-run case and
+    // turned the second-run case into permanent limbo: after the May 2026
+    // migration renamed the original file, an older binary wrote 25 more
+    // reviews to a fresh `reviews.jsonl`. The table already had rows, so the
+    // file was never imported, never renamed, and every command warned about
+    // it forever while those 25 reviews stayed out of the database.
+    //
+    // The guard was not protecting anything either way: the inserts below are
+    // `INSERT OR IGNORE`, so re-importing an already-imported file is a no-op.
+    // Import whenever the file exists, then rename it, so the condition
+    // clears itself.
 
     let file = std::fs::File::open(&jsonl_path)
         .with_context(|| format!("failed to open {}", jsonl_path.display()))?;
@@ -480,6 +564,20 @@ fn migrate_reviews_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Resul
             ],
         )?;
 
+        // #551: `INSERT OR IGNORE` above means a duplicate run_id leaves the
+        // existing row untouched. Inserting this line's children anyway would
+        // merge finding ids across the two lines, producing a review row that
+        // matches neither source record. If the parent changed nothing, the
+        // whole line is a duplicate -- skip it as a unit.
+        //
+        // This also makes the #556 change safe: re-importing a file whose rows
+        // are already present now genuinely no-ops, rather than re-attaching
+        // children on every run.
+        if tx.changes() == 0 {
+            skipped += 1;
+            continue;
+        }
+
         // finding_ids child table.
         if let Some(fids) = v["finding_ids"].as_array() {
             for fid_val in fids {
@@ -497,7 +595,7 @@ fn migrate_reviews_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Resul
 
     tx.commit()?;
 
-    let migrated_path = quorum_home.join("reviews.jsonl.migrated");
+    let migrated_path = archive_path(quorum_home, "reviews.jsonl");
     std::fs::rename(&jsonl_path, &migrated_path).with_context(|| {
         format!(
             "failed to rename {} to {}",
@@ -529,15 +627,10 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
         return Ok(());
     }
 
-    // Guard against double-import.
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))?;
-    if count > 0 {
-        eprintln!(
-            "warning: telemetry table already contains {} rows; skipping JSONL migration",
-            count
-        );
-        return Ok(());
-    }
+    // #556: no row-count guard, same reasoning as the reviews migration
+    // above -- the insert is `INSERT OR IGNORE`, so import is idempotent, and
+    // guarding on table population strands any file written after the first
+    // migration ran.
 
     let file = std::fs::File::open(&jsonl_path)
         .with_context(|| format!("failed to open {}", jsonl_path.display()))?;
@@ -660,7 +753,7 @@ fn migrate_telemetry_jsonl(conn: &Connection, quorum_home: &Path) -> anyhow::Res
 
     tx.commit()?;
 
-    let migrated_path = quorum_home.join("telemetry.jsonl.migrated");
+    let migrated_path = archive_path(quorum_home, "telemetry.jsonl");
     std::fs::rename(&jsonl_path, &migrated_path).with_context(|| {
         format!(
             "failed to rename {} to {}",
@@ -990,6 +1083,229 @@ mod tests {
             .unwrap();
         assert_eq!(new_title, "SQL injection risk");
         assert_eq!(new_fp, "src/db.rs");
+    }
+
+    /// #556: a JSONL file written *after* a migration must still be imported.
+    ///
+    /// The old row-count guard skipped import whenever the table had rows, so
+    /// a file created after the first migration was never imported and never
+    /// renamed -- warning on every command forever while its reviews stayed
+    /// out of the database. On this machine that stranded 25 reviews from
+    /// May 2026.
+    #[test]
+    fn populated_table_still_imports_a_later_jsonl_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+
+        // First run: one review, migrated and renamed.
+        std::fs::write(
+            home.join("reviews.jsonl"),
+            r#"{"run_id":"first","timestamp":"2026-05-14T01:00:00+00:00","files_reviewed":1}
+"#,
+        )
+        .unwrap();
+        let handle = initialize(home).unwrap();
+        drop(handle);
+        assert!(home.join("reviews.jsonl.migrated").is_file());
+        assert!(!home.join("reviews.jsonl").exists());
+
+        // Second run: an older binary writes a fresh file with a new run_id.
+        std::fs::write(
+            home.join("reviews.jsonl"),
+            r#"{"run_id":"stranded","timestamp":"2026-05-15T23:10:00+00:00","files_reviewed":1}
+"#,
+        )
+        .unwrap();
+        let handle = initialize(home).unwrap();
+
+        let found: i64 = {
+            let conn = handle.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM reviews WHERE run_id = 'stranded'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(found, 1, "the later file's review must reach the database");
+        assert!(
+            !home.join("reviews.jsonl").exists(),
+            "the file must be renamed so the condition clears itself"
+        );
+    }
+
+    /// #556: with every counter name taken, the fallback must still not
+    /// overwrite an existing archive.
+    ///
+    /// The first version returned the base name here -- the original archive,
+    /// the largest and oldest one, which is exactly what `archive_path`
+    /// exists to protect.
+    #[test]
+    fn archive_path_exhaustion_does_not_overwrite_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+
+        std::fs::write(home.join("reviews.jsonl.migrated"), "original").unwrap();
+        for n in 2..1000 {
+            std::fs::write(home.join(format!("reviews.jsonl.migrated.{n}")), "x").unwrap();
+        }
+
+        let picked = archive_path(home, "reviews.jsonl");
+        assert!(
+            !picked.exists(),
+            "the fallback picked an existing file ({}), which renaming onto \
+             would destroy",
+            picked.display()
+        );
+        assert_ne!(
+            picked,
+            home.join("reviews.jsonl.migrated"),
+            "the fallback must never be the original archive"
+        );
+    }
+
+    /// #556: a second migration must not overwrite the first one's archive.
+    ///
+    /// The archive name is fixed and `std::fs::rename` replaces its
+    /// destination, so removing the row-count guard without changing this
+    /// would discard the earlier archive. On the machine this was found on
+    /// that is 1.7 MB of pre-migration reviews replaced by a 46 KB file --
+    /// on the very run meant to demonstrate the fix.
+    #[test]
+    fn second_migration_preserves_the_first_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+
+        std::fs::write(
+            home.join("reviews.jsonl"),
+            "{\"run_id\":\"first\",\"timestamp\":\"2026-05-14T01:00:00+00:00\",\"files_reviewed\":1}\n",
+        )
+        .unwrap();
+        drop(initialize(home).unwrap());
+
+        let archive = home.join("reviews.jsonl.migrated");
+        let original = std::fs::read_to_string(&archive).unwrap();
+        assert!(original.contains("first"));
+
+        std::fs::write(
+            home.join("reviews.jsonl"),
+            "{\"run_id\":\"second\",\"timestamp\":\"2026-05-15T23:10:00+00:00\",\"files_reviewed\":1}\n",
+        )
+        .unwrap();
+        drop(initialize(home).unwrap());
+
+        assert_eq!(
+            std::fs::read_to_string(&archive).unwrap(),
+            original,
+            "the first archive must be untouched"
+        );
+        let second = std::fs::read_to_string(home.join("reviews.jsonl.migrated.2"))
+            .expect("the second file must be archived under a free name");
+        assert!(second.contains("second"));
+        assert!(!home.join("reviews.jsonl").exists());
+    }
+
+    /// #551: duplicate run_ids must be skipped as a unit, children included.
+    ///
+    /// The parent is `INSERT OR IGNORE`, so a duplicate leaves the existing
+    /// row untouched. Inserting the duplicate's children anyway merged finding
+    /// ids across both lines, producing a review row matching neither source
+    /// record.
+    #[test]
+    fn duplicate_run_id_does_not_merge_finding_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::write(
+            home.join("reviews.jsonl"),
+            concat!(
+                r#"{"run_id":"dup","timestamp":"2026-05-14T01:00:00+00:00","files_reviewed":1,"finding_ids":["a","b"]}"#,
+                "\n",
+                r#"{"run_id":"dup","timestamp":"2026-05-14T02:00:00+00:00","files_reviewed":1,"finding_ids":["c","d"]}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let handle = initialize(home).unwrap();
+        let conn = handle.lock().unwrap();
+
+        let reviews: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reviews WHERE run_id='dup'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(reviews, 1, "duplicate run_id must not create a second row");
+
+        let fids: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_finding_ids WHERE run_id='dup'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            fids, 2,
+            "only the first line's finding ids belong to the stored row; \
+             found {fids}, which means the duplicate's children were merged in"
+        );
+    }
+
+    /// #551: a database from a newer release must be refused, not opened.
+    #[test]
+    fn future_schema_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        {
+            let conn = rusqlite::Connection::open(home.join("quorum.db")).unwrap();
+            conn.pragma_update(None, "user_version", 99u32).unwrap();
+        }
+        let err = initialize(home).expect_err("a future schema version must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("99") && msg.contains(&SCHEMA_VERSION.to_string()),
+            "the error must name both versions so the cause is obvious; got: {msg}"
+        );
+
+        // The assertion that actually matters. The first version of this guard
+        // bailed inside `run_migrations`, which `initialize` wraps in
+        // corruption recovery -- so it returned an error AND renamed the
+        // database aside and created an empty one. Erroring is not enough; the
+        // user's intact database has to still be there.
+        assert!(
+            home.join("quorum.db").is_file(),
+            "the database must be left in place"
+        );
+        assert!(
+            !home.join("quorum.db.corrupt").exists(),
+            "a version mismatch must not be treated as corruption -- renaming \
+             an intact database aside is data loss"
+        );
+        let still_future: u32 = {
+            let conn = rusqlite::Connection::open(home.join("quorum.db")).unwrap();
+            conn.pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            still_future, 99,
+            "the database must be untouched, not migrated or recreated"
+        );
+    }
+
+    /// The other half: the current version still opens. A guard comparing the
+    /// wrong way round would pass the test above and reject every real
+    /// database.
+    #[test]
+    fn current_schema_version_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = initialize(dir.path()).expect("a fresh database must open");
+        let version: u32 = {
+            let conn = handle.lock().unwrap();
+            conn.pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(version, SCHEMA_VERSION);
+        // And re-opening it is fine, which is the common case.
+        initialize(dir.path()).expect("re-opening at the current version must work");
     }
 
     #[test]
