@@ -135,6 +135,16 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
 - CLI design follows DESIGN.md (adapted from clig.dev principles)
 - Architecture documented in docs/ARCHITECTURE.md
 
+## Quality gates (from the September 2026 sweep)
+
+Most defects found in the September sweep were not untested code. They were tested pieces that nothing ever ran (#491, #520, #522, #523, #525, #496), tests that could not fail (#511, ten instances), and claims in docs or commit messages that nothing checked (#545, #564). These gates exist so those classes cannot recur silently.
+
+- **Done means consumed.** A new CLI flag or env var needs one integration test through `tests/support` that sets it. A new `TelemetryEntry` field must appear in `stats::TELEMETRY_CONSUMED_FIELDS` or the allowlist with a reason (a test enforces this). A new documented command goes in the list above and runs in a cassette-backed integration test. A function with no production caller is deleted, not kept for later.
+- **Every new test gets mutated once.** Break the guarded code in the simplest way and confirm the test goes red; the red output goes in the PR body. Tests that stayed green under mutation this month: one that created the file it then asserted about, one that compared two helpers that could agree while the caller used neither, one whose assertion sat inside a `tracing` field that is never evaluated without a subscriber.
+- **Cross-cutting properties get a chokepoint and a source-scanning guard test, never a per-path fix.** Existing guards: `tests/no_secret_egress.rs` (redaction at `OpenAiClient::post_json`), `tests/no_env_mutation.rs` (no `set_var` anywhere in tests), `tests/no_raw_model_output_in_logs.rs` (model output reaches logs only via `redact::for_log`), `tests/spawn_helper_guard.rs` (the binary is spawned only through `tests/support`), and `every_telemetry_field_is_consumed_or_allowlisted`. A new property of this shape (sanitise at ingest, redirect policy on every HTTP client) gets the same treatment.
+- **Extraction, refactor, and deletion PRs carry a test for their claim.** "Behaviour-preserving" and "pure deletion" were both wrong this month: a NaN gate inverted in #522, a non-UTF-8 `HOME` in #497, orphaned section headers in #525. Pin the edges before claiming them, and run the quorum review on deletion branches too; `in_diff=false` is not evidence of pre-existence there (#562).
+- **The tool's own review is unreliable where its input is transformed.** Credential-shaped fixtures reach the reviewer as `[REDACTED]`, so findings on `src/redact.rs` and similar files are verified by running the code, not by reading the review (#579).
+
 ## Integration tests (#501)
 
 **Tests only spend money if explicitly asked.** No `cargo test` path makes a
@@ -164,7 +174,7 @@ writing). There is no record mode in the harness on purpose.
 
 ## Feedback
 
-**After every quorum review, record a verdict for every finding before moving on.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Triage each finding into the appropriate verdict with `--reason` explaining the call. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.
+**Every finding from a quorum review gets a verdict, recorded once, after triage is settled and before the branch merges.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Do not record at first sight: rows cannot be retracted (#514), and re-recording appends a second precedent at full weight rather than replacing the first. Seven wrong rows entered the corpus in one day from verdicts recorded before the discussion that changed the call. Triage each finding into the appropriate verdict with `--reason` explaining the call and an explicit `--category`. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.
 
 Feedback is stored at `~/.quorum/feedback.jsonl` and loaded automatically for calibration.
 Record feedback via CLI (`quorum feedback`), MCP `feedback` tool, or programmatically via the FeedbackStore API.
