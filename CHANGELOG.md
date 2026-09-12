@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`quorum version` reports what it was built from** (#517). A stale install and a fresh one both printed `quorum 0.31.0`, so a bug already fixed upstream was indistinguishable from one still present, and the first question on every report -- "which build is that?" -- had no answer the binary could give.
+
+  `build.rs` now bakes in the commit, its date, the build date, and whether the tree was dirty:
+
+  ```
+  quorum 0.31.0 (5d9150dca64d, committed 2026-09-12, dirty, built 2026-09-12)
+  ```
+
+  Two dates because they answer different questions: the commit date is how old the *code* is, the build date is how old the *binary* is. A recent build of an old commit is the case that looks fine and is not.
+
+  With no git checkout to read -- `cargo install` from a crates.io tarball -- it says so rather than falling back to a bare version string, since going quiet would reproduce the exact ambiguity the issue is about:
+
+  ```
+  quorum 0.31.0 (built 2026-09-12, commit unknown: built outside a git checkout)
+  ```
+
+  The tree state is three-valued, not two. `git status --porcelain` prints nothing for a clean tree, so a *failed* status probe and a clean tree looked identical and both reported clean -- quorum's own review of this branch caught it. An undetermined tree now says `tree state unknown`, because reporting it as clean is a claim rather than a measurement.
+
+  The dirty flag needed `rerun-if-changed` on `src` and the manifests, not just on `HEAD`: printing any `rerun-if-changed` opts the script into a narrow rerun set, so without them a tree edited after the last build-script run still reported itself clean. That was measured rather than assumed -- the first version had the bug. A change confined to `tests/` or `docs/` still reports clean, which is the known ceiling.
+
 ### Fixed
 
 - **The PR posting path could not run end to end** (#496). Three bugs, each sufficient on its own. `quorum report` could not parse `quorum review --json`: it accepted a bare finding array or an object with a `files` key, and `review` emits a top-level array whose first element is `{"_meta": ...}`. The report workflow derived the PR number from the head SHA, which returns nothing for fork PRs, and passed the resulting empty string to `--pr`; the analyze job now records the number it already knows and the report job refuses to post without a valid one. And **every GitHub request was missing a `User-Agent`**, which GitHub rejects with 403 — so the path could never have worked against the real API regardless of the other two.

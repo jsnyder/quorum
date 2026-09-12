@@ -291,6 +291,44 @@ fn run_integrator_view(quorum_home: &std::path::Path, opts: &cli::StatsOpts) -> 
     std::process::exit(0);
 }
 
+/// Render the `version` line from provenance baked in at build time (#517).
+///
+/// Pure in its inputs so the dirty and unavailable shapes are testable without
+/// having to dirty the tree or build from a tarball.
+///
+/// Two dates, because they answer different questions about a stale binary:
+/// the commit date is how old the *code* is, the build date is how old the
+/// *binary* is. A recent build of an old commit is the case that looks fine
+/// and is not.
+fn version_line(
+    version: &str,
+    sha: &str,
+    dirty: &str,
+    commit_date: &str,
+    build_date: &str,
+) -> String {
+    if sha == PROVENANCE_UNAVAILABLE {
+        // Visible, not silent. Printing a bare version here would be
+        // indistinguishable from a build that simply predates this feature,
+        // which is exactly the ambiguity #517 exists to remove.
+        return format!(
+            "quorum {version} (built {build_date}, commit unknown: built outside a git checkout)"
+        );
+    }
+    // Three states. A `git status` that failed tells us nothing about the
+    // tree, and reporting that as clean would be a claim rather than a
+    // measurement -- the same silent fallback this whole change removes.
+    let dirty = match dirty {
+        "1" => ", dirty",
+        "0" => "",
+        _ => ", tree state unknown",
+    };
+    format!("quorum {version} ({sha}, committed {commit_date}{dirty}, built {build_date})")
+}
+
+/// What `build.rs` emits when it cannot reach git. Must match `build.rs`.
+const PROVENANCE_UNAVAILABLE: &str = "unavailable";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
@@ -647,7 +685,16 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         cli::Command::Version => {
-            println!("quorum {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "{}",
+                version_line(
+                    env!("CARGO_PKG_VERSION"),
+                    env!("QUORUM_BUILD_SHA"),
+                    env!("QUORUM_BUILD_DIRTY"),
+                    env!("QUORUM_COMMIT_DATE"),
+                    env!("QUORUM_BUILD_DATE"),
+                )
+            );
         }
     }
     Ok(())
@@ -6193,5 +6240,72 @@ mod report_payload_tests {
         assert!(err.contains("failed to parse"), "{err}");
         let err = parse_findings_payload("{\"unexpected\": 1}").unwrap_err();
         assert!(err.contains("unsupported"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod version_line_tests {
+    use super::{PROVENANCE_UNAVAILABLE, version_line};
+
+    #[test]
+    fn a_clean_build_reports_its_commit_and_both_dates() {
+        assert_eq!(
+            version_line("0.31.0", "abc123def456", "0", "2026-09-01", "2026-09-12"),
+            "quorum 0.31.0 (abc123def456, committed 2026-09-01, built 2026-09-12)"
+        );
+    }
+
+    #[test]
+    fn a_dirty_build_says_so() {
+        let line = version_line("0.31.0", "abc123def456", "1", "2026-09-01", "2026-09-12");
+        assert!(line.contains("dirty"), "{line}");
+    }
+
+    #[test]
+    fn a_clean_build_does_not_claim_to_be_dirty() {
+        let line = version_line("0.31.0", "abc123def456", "0", "2026-09-01", "2026-09-12");
+        assert!(!line.contains("dirty"), "{line}");
+    }
+
+    /// Quorum's own review of this change caught the bug this pins: `git()`
+    /// returned `None` both when `git status` failed and when it succeeded
+    /// with no output, so a failed probe reported the tree as clean.
+    #[test]
+    fn an_undetermined_tree_state_is_not_reported_as_clean() {
+        let line = version_line(
+            "0.31.0",
+            "abc123def456",
+            "unknown",
+            "2026-09-01",
+            "2026-09-12",
+        );
+        assert!(line.contains("tree state unknown"), "{line}");
+        // Specifically must not read as a clean build, which is what the
+        // two-valued version claimed.
+        assert_ne!(
+            line,
+            version_line("0.31.0", "abc123def456", "0", "2026-09-01", "2026-09-12"),
+            "an unknown tree state renders identically to a clean one"
+        );
+    }
+
+    #[test]
+    fn a_build_without_git_says_the_commit_is_unknown_rather_than_going_quiet() {
+        let line = version_line(
+            "0.31.0",
+            PROVENANCE_UNAVAILABLE,
+            "unknown",
+            PROVENANCE_UNAVAILABLE,
+            "2026-09-12",
+        );
+        // The point of #517: a binary that cannot name its commit must say so.
+        // Falling back to a bare `quorum 0.31.0` would be indistinguishable
+        // from a build that predates this feature.
+        assert!(line.contains("commit unknown"), "{line}");
+        // And it must not print the sentinel as if it were a value: an id of
+        // "unavailable" reads like data rather than an absence.
+        assert!(!line.contains("(unavailable,"), "{line}");
+        // A tarball build still knows when it was compiled, so the date stays.
+        assert!(line.contains("built 2026-09-12"), "{line}");
     }
 }
