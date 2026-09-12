@@ -4515,21 +4515,6 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
 
 // ── backfill-linkage ──────────────────────────────────────────────────
 
-/// Re-run `resolve_finding_id` on every unlinked feedback entry and
-/// atomically rewrite `feedback.jsonl`. Returns `(newly_linked, candidates)`
-/// where `candidates = total - already_linked`.
-/// Sidecar lock path for a feedback log (#494).
-///
-/// POSIX advisory locks attach to the **inode**, not the path, and
-/// `backfill_linkage` replaces the data file by `rename`. Locking the data
-/// file itself means a blocked `FeedbackStore::record()` wakes holding a lock
-/// on an inode that no longer has a directory entry: its `write_all` returns
-/// `Ok`, and the verdict is gone. A sidecar that is never renamed keeps lock
-/// identity stable across the swap while leaving the rewrite atomic.
-pub fn feedback_lock_path(feedback_path: &std::path::Path) -> std::path::PathBuf {
-    quorum::file_util::sidecar_lock_path(feedback_path)
-}
-
 /// What a backfill did, or would do (#526).
 ///
 /// `rows_in` / `rows_out` exist so "nothing was dropped" is an assertion
@@ -4551,6 +4536,10 @@ pub struct BackfillReport {
     pub dry_run: bool,
 }
 
+/// Re-run `resolve_finding_id` on every unlinked feedback entry and
+/// atomically rewrite `feedback.jsonl`, preserving every input line.
+///
+/// See [`BackfillReport`] for what is counted and why.
 fn backfill_linkage_inner(quorum_home: &std::path::Path) -> BackfillReport {
     backfill_linkage_with_options(quorum_home, false)
 }
@@ -4576,7 +4565,7 @@ fn backfill_linkage_with_options(quorum_home: &std::path::Path, dry_run: bool) -
     // #494: lock the sidecar, never the data file. The rewrite renames a
     // replacement over `feedback_path`, and an advisory lock held on the old
     // inode does not protect the path afterwards.
-    let lock_path = feedback_lock_path(&feedback_path);
+    let lock_path = quorum::file_util::sidecar_lock_path(&feedback_path);
     let lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -6146,19 +6135,6 @@ mod backfill_linkage_tests {
         assert_eq!(report.by_provenance.get("human").copied().unwrap_or(0), 1);
     }
 
-    /// #494: the two lock-path helpers must agree. If `record()` locks one
-    /// path and the backfill locks another, both take a lock, neither
-    /// excludes the other, and the race is silently back with no test failing.
-    #[test]
-    fn writer_and_backfill_lock_the_same_sidecar() {
-        let p = std::path::Path::new("/tmp/q/feedback.jsonl");
-        assert_eq!(
-            feedback_lock_path(p),
-            feedback::FeedbackStore::lock_path(p),
-            "backfill and FeedbackStore::record must lock the same file"
-        );
-    }
-
     /// #494: POSIX advisory locks attach to the inode, not the path. Holding
     /// the lock on the data file and then renaming a replacement over it
     /// leaves a blocked writer appending to an unlinked inode -- its verdict
@@ -6174,7 +6150,7 @@ mod backfill_linkage_tests {
         use fs2::FileExt;
         let (_dir, qhome) = setup_backfill_env();
         let fb_path = qhome.join("feedback.jsonl");
-        let lock_path = feedback_lock_path(&fb_path);
+        let lock_path = quorum::file_util::sidecar_lock_path(&fb_path);
         assert_ne!(lock_path, fb_path, "the lock must not be the data file");
 
         let held = std::fs::OpenOptions::new()
