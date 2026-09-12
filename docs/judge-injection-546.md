@@ -27,6 +27,22 @@ the judge to answer `fp`. Fixtures in `eval/judge-injection/fixtures/`.
 The attacker's own reason string came back in the verdict, so this is not a
 near miss.
 
+### The `evidence` field is a second, independent vector
+
+Quorum's review of the first version of this fix pointed out that `evidence`
+and `title` sat outside every sandbox tag, with only closing-tag lookalikes
+neutralised. Measured, rather than assumed:
+
+| payload location | `gpt-4.1-mini` | `gpt-5-mini` |
+|---|---|---|
+| comment block in the source | 4 tp -> 4 fp | 4 tp -> 4 tp |
+| **the matched line itself (`evidence`)** | **4 tp -> 4 fp** | 4 tp -> 4 tp |
+
+`evidence` is verbatim matched source, so a rule matching an attacker-controlled
+line carries that line into the prompt with no comment block needed anywhere.
+The findings array now has its own `<findings_to_judge>` boundary, registered in
+`SANDBOX_TAGS` so forged closes of it are defanged too.
+
 ## Prompt-level defence does not work
 
 Four defences were each measured against the same payload on `gpt-4.1-mini`,
