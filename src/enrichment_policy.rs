@@ -152,7 +152,12 @@ impl UsageLevel {
 fn quality_scaled_budget(benchmark: f64, snippets: u32) -> usize {
     const BASE_BUDGET: f64 = 1000.0;
 
-    if benchmark < 50.0 || snippets < 5 {
+    // Kept in the original positive form (`>=`) rather than inverted to `<`.
+    // They are not equivalent: a NaN benchmark fails `>= 50.0` and returns 0,
+    // but also fails `< 50.0` and would fall through to a granted budget.
+    // Quorum's own review of #522 caught that inversion.
+    let quality_ok = benchmark >= 50.0 && snippets >= 5;
+    if !quality_ok {
         return 0;
     }
 
@@ -266,6 +271,17 @@ mod tests {
         assert_eq!(quality_scaled_budget(80.0, 100), 1000);
         assert_eq!(quality_scaled_budget(70.0, 30), 600);
         assert_eq!(quality_scaled_budget(55.0, 10), 300);
+    }
+
+    #[test]
+    fn budget_is_zero_for_a_non_finite_benchmark() {
+        // NaN must fail the gate. Writing the gate as `benchmark < 50.0`
+        // instead of `benchmark >= 50.0` silently grants a budget here,
+        // because every NaN comparison is false.
+        assert_eq!(quality_scaled_budget(f64::NAN, 100), 0);
+        assert_eq!(quality_scaled_budget(f64::NEG_INFINITY, 100), 0);
+        // Positive infinity legitimately clears the gate.
+        assert_eq!(quality_scaled_budget(f64::INFINITY, 100), 1000);
     }
 
     #[test]
