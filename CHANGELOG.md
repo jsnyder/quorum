@@ -1,7 +1,6 @@
 # Changelog
 
 ## [Unreleased]
-
 ### Security
 
 - **Untrusted model output could reach a log unredacted** (#574). Redaction is a chokepoint on the outbound path — `post_json` redacts every request body, so no LLM call can carry a secret out (#530). Logs are a different sink and nothing covered them: the judge logged a 200-char prefix of the raw response on two parse-failure paths, and #546 established that a model can be talked into echoing text straight out of the file it was shown. So a log line could carry a credential out of the source under review.
@@ -9,12 +8,20 @@
   `redact::for_log` is now the one way to put that text in a log. It redacts **before** truncating — the other order can cut a secret in half and emit the surviving half, which is still a secret — and neutralises control characters so an attacker-shaped response cannot rewrite a terminal.
 
   Three sites route through it: the judge's two response-parse warnings and the `raw_severity` field in `LlmFinding::into_finding`. A survey of all 37 `tracing` calls that interpolate a value found no others — notably `parse_llm_response`'s error does **not** embed the body, so the reviewer path was already clean. `tests/no_raw_model_output_in_logs.rs` scans `src/` and fails if a new site interpolates a raw response without the helper, and a behaviour test proves a secret in a malformed response never reaches the sink.
+
 - **Two credential shapes passed the redactor unredacted** (#578). `github_pat_...` — the fine-grained format GitHub now steers users toward; only the legacy `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` family was covered — and unquoted assignments like `PASSWORD=hunter2`, which the generic patterns missed because they required quotes. Unquoted is what `.env` files, `docker run -e`, CI variable blocks and shell exports all look like. Both reach the LLM through `post_json`, so this was live egress.
 
   The unquoted pattern is deliberately narrow and every restriction was measured over 685 files of real Rust, Python, TypeScript, YAML and shell, because this file carries a scar from widening a pattern on intuition (`sk-` once turned `flask-debug-true` into `fla[REDACTED]`). Reusing the quoted forms' case-insensitive keyword anchor matched **508** sites — `token: String,`, `api_key: Option<String>,` — and would have corrupted source far worse. Restricting to SCREAMING_CASE keys with `=`, a six-character floor, no `.` in the value, and a whole-token match took that to **5 matches with no false positives**.
 
   Two gaps are deliberate and tested as such: YAML's `password: hunter2` is out of scope (`:` is what `token: String,` uses), and a dotted value such as a JWT is excluded to spare `os.getenv` — the quoted patterns still cover its quoted form.
 
+- **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
+
+  Source, filename, and the `evidence`/`title` strings now go through `skill_prompt_defense::wrap_code_to_review`, the same wrapper the skills path already uses, so none of them can forge `</code_to_review>`.
+
+  **That is not what stops the attack.** Four prompt-level defences were each measured against the same payload and each failed completely: the sandbox tag alone, plus a "this is data" notice, plus a hardened system prompt, plus the criteria restated after the untrusted block — 8 of 8 verdicts flipped every time. What separates a safe judge from an unsafe one is the model, so the default judge model moves from `gpt-4.1-mini` (obeys) to `gpt-5-mini` (resists), which is also cheaper on both axes.
+
+  Mitigated rather than solved: resistance is an empirical property of today's models, not a structural guarantee. `eval/judge-injection/probe.py` re-runs the measurement and exits non-zero if a model obeys; run it before changing `DEFAULT_JUDGE_MODEL`. Full write-up, including the structural fix not taken: `docs/judge-injection-546.md`.
 
 ### Fixed
 
@@ -25,32 +32,17 @@
   Verified against a real judge before removing the fallback: 30 findings across three batches, all 30 correlated by index, none withheld.
 
 - **The judge verdict cache key omitted the file path** the judge is shown. #546 put `file_path` into the prompt via `wrap_code_to_review`'s metadata, so the judge can answer on it, but the key still covered only rule, source digest, line range and evidence — identical content vendored at two paths would share a verdict earned under a different prompt. Same lesson as #538: every input the judge is shown belongs in the key. Caught by quorum reviewing #566.
+
 - **The embedding model download could hang a run indefinitely, and tests could not stop it reaching the network** (#565). `LocalEmbedder::new` downloads BAAI/bge-small-en-v1.5 from HuggingFace when the cache is cold, and fastembed drives that through `ureq` with no connect, read or overall deadline — `InitOptions` exposes none. A transient DNS stall parked six test processes for 90 minutes with nothing to bound the wait.
 
   Two distinct problems, two fixes. `QUORUM_MODEL_INIT_TIMEOUT` (default 120s) bounds model init; on timeout the existing BM25+Jaccard fallback takes over instead of the caller hanging. And `QUORUM_DISABLE_EMBEDDINGS` turns the path off outright — `tests/support` sets it on every spawn, because this is the one outbound path gated on no credential, so there was nothing in `NETWORK_ENV_VARS` to strip. Stripping cannot disable a path that needs no key; setting the off switch can.
 
   The #501 outbound-path table now lists it as the fifth path, and `no_live_calls.rs` pins that every spawn sets the switch. Side effect: `cargo test` drops from ~160s to ~41s, because no test attempts the download any more.
 
-
-### Security
-
-- **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
-
-  Source, filename, and the `evidence`/`title` strings now go through `skill_prompt_defense::wrap_code_to_review`, the same wrapper the skills path already uses, so none of them can forge `</code_to_review>`.
-
-  **That is not what stops the attack.** Four prompt-level defences were each measured against the same payload and each failed completely: the sandbox tag alone, plus a "this is data" notice, plus a hardened system prompt, plus the criteria restated after the untrusted block — 8 of 8 verdicts flipped every time. What separates a safe judge from an unsafe one is the model, so the default judge model moves from `gpt-4.1-mini` (obeys) to `gpt-5-mini` (resists), which is also cheaper on both axes.
-
-  Mitigated rather than solved: resistance is an empirical property of today's models, not a structural guarantee. `eval/judge-injection/probe.py` re-runs the measurement and exits non-zero if a model obeys; run it before changing `DEFAULT_JUDGE_MODEL`. Full write-up, including the structural fix not taken: `docs/judge-injection-546.md`.
-
-### Changed
-
-- The default judge model is now `gpt-5-mini` (was `gpt-4.1-mini`). See #546 above for why; it is also 8x cheaper on input and 4x on output.
-
-
-### Fixed
-
 - `quorum feedback` spent 4-6s of CPU per verdict resolving the finding id: `review_finding_ids` had no index on `file_path`, so the resolver ran a full scan, and the inner path resolved the same title three times. Schema v5 adds the index and the verdict path resolves once (`#553`). Measured 4.7s -> 0.5s on the production corpus.
+
 - The precedent-selection log line byte-sliced the query at 100 and panicked when that fell inside a multi-byte character, taking the review down to emit a log line. Now char-bounded like its neighbours (`#539`). The regression test installs a tracing subscriber, because a tracing field expression is not evaluated without one and the first version of the test passed with the bug present.
+
 - **The judge silently deleted findings on the files with the most of them** (#533). `judge_findings` sent a file's entire finding set in one call and `judge_completion` caps the response at 2048 tokens. Measured on `src/calibrator.rs`: 31 findings in, `finish_reason: "length"`, zero verdicts out -- and `judge: required` then withheld all 31. Findings are now sent in batches of 12 (~2.5x headroom), and a batch that fails no longer costs the batches that succeeded.
 
   Verified on the wire: 30 findings, cache writes clustering at exactly 12 / 24 / 30, all 30 judged. Before this, that run produced no verdicts at all.
@@ -65,6 +57,16 @@
 
 - **Reviews named components that never ran** (#531). `Reviewed 1 file(s) in 0.1s using gpt-5.6` on a run with no API key named what *would* have been used as what *was*; it now reads `AST-only`, keyed on token usage, which is evidence of execution rather than of configuration. `"enabled": ["clippy"]` and `clippy=on` became `installed_and_configured` and `clippy=configured`: `run_linter` has no production caller and never has, so nothing named there has ever run.
 
+### Changed
+
+- The default judge model is now `gpt-5-mini` (was `gpt-4.1-mini`). See #546 above for why; it is also 8x cheaper on input and 4x on output.
+
+- `all_bundled_rules_match_fixtures` asserted a fixture matched *some* rule, not its own (#536). #520 part 2 orphaned six fixtures by deleting six rules and only one went red -- the other five kept passing on neighbouring rules. It now checks each fixture against its own rule and rejects orphans; both failure modes were confirmed by construction before the fix was accepted.
+
+- **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
+
+  It now names the speculative provenance, asks for a concrete runtime failure, and makes fp the default that tp must be earned against. Measured on the same 187 findings, survivor precision went 12% -> 100% (`discarded-result`), 15% -> 100% (`nullish-coalescing-broad`), 33% -> 100% (`jinja-loop-variable-scoping`), with every constructed true positive still approved. The improvement is from the framing alone: a variant that additionally fed the judge each rule's recorded track record did no better.
+
 ### Removed
 
 - **All six `judge: required` rules** — `logging-debug-leak`, `discarded-result`, `string-byte-slice-broad`, `nullish-coalescing-broad`, `string-format-sql`, `jinja-loop-variable-scoping` (#520 part 2).
@@ -78,15 +80,6 @@
   Keeping them cost ~$0.24, 567k tokens of source shipped to an external model, and ~38s per full `src/*.rs` review, to adjudicate 216 findings of which none are true positives.
 
   Full methodology, limitations and per-rule evidence: `docs/judge-eval-520.md`. Evidence for future rule authors: `rules/README-removed-rules.md`.
-
-### Changed
-
-- `all_bundled_rules_match_fixtures` asserted a fixture matched *some* rule, not its own (#536). #520 part 2 orphaned six fixtures by deleting six rules and only one went red -- the other five kept passing on neighbouring rules. It now checks each fixture against its own rule and rejects orphans; both failure modes were confirmed by construction before the fix was accepted.
-
-- **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
-
-  It now names the speculative provenance, asks for a concrete runtime failure, and makes fp the default that tp must be earned against. Measured on the same 187 findings, survivor precision went 12% -> 100% (`discarded-result`), 15% -> 100% (`nullish-coalescing-broad`), 33% -> 100% (`jinja-loop-variable-scoping`), with every constructed true positive still approved. The improvement is from the framing alone: a variant that additionally fed the judge each rule's recorded track record did no better.
-
 
 ## [0.31.0] - 2026-08-23
 
