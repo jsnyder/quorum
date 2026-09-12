@@ -982,6 +982,53 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
     pipeline::find_project_root(file_path)
 }
 
+/// Parse whatever `quorum review` wrote into a flat finding list.
+///
+/// #496: this accepted a bare `[Finding, ...]` and an object with a `files`
+/// key, and `quorum review --json` emits neither. Its actual output is a
+/// top-level ARRAY whose first element is `{"_meta": ...}` and whose remaining
+/// elements are `{"file": ..., "findings": [...]}` -- so `report` could not
+/// consume `review`, and the CI posting path had never worked end to end.
+///
+/// All three shapes are accepted now. The `_meta` entry is skipped rather than
+/// rejected: it carries linter coverage, not findings.
+fn parse_findings_payload(json_str: &str) -> Result<Vec<finding::Finding>, String> {
+    // Shape 1: a bare array of findings.
+    if let Ok(f) = serde_json::from_str::<Vec<finding::Finding>>(json_str) {
+        return Ok(f);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("failed to parse findings JSON: {e}"))?;
+
+    // Shape 2: `{"files": [{"findings": [...]}, ...]}`.
+    if let Some(files) = value.get("files").and_then(|x| x.as_array()) {
+        return collect_grouped(files);
+    }
+
+    // Shape 3: what `quorum review --json` actually writes.
+    if let Some(entries) = value.as_array() {
+        return collect_grouped(entries);
+    }
+
+    Err("unsupported findings JSON format".into())
+}
+
+/// Flatten `{"file": ..., "findings": [...]}` entries, ignoring any without a
+/// `findings` key (the `_meta` header is one such).
+fn collect_grouped(entries: &[serde_json::Value]) -> Result<Vec<finding::Finding>, String> {
+    let mut merged = Vec::new();
+    for entry in entries {
+        let Some(findings_val) = entry.get("findings") else {
+            continue;
+        };
+        let mut ff: Vec<finding::Finding> = serde_json::from_value(findings_val.clone())
+            .map_err(|e| format!("invalid grouped findings payload: {e}"))?;
+        merged.append(&mut ff);
+    }
+    Ok(merged)
+}
+
 async fn run_report(opts: cli::ReportOpts) -> i32 {
     let json_str = if opts.findings_file == "-" {
         use std::io::Read;
@@ -1001,36 +1048,12 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         }
     };
 
-    let findings: Vec<finding::Finding> = match serde_json::from_str(&json_str) {
+    let findings: Vec<finding::Finding> = match parse_findings_payload(&json_str) {
         Ok(f) => f,
-        Err(_) => match serde_json::from_str::<serde_json::Value>(&json_str) {
-            Ok(v) => {
-                let mut merged = Vec::new();
-                if let Some(files) = v.get("files").and_then(|x| x.as_array()) {
-                    for file_entry in files {
-                        if let Some(findings_val) = file_entry.get("findings") {
-                            match serde_json::from_value::<Vec<finding::Finding>>(
-                                findings_val.clone(),
-                            ) {
-                                Ok(mut ff) => merged.append(&mut ff),
-                                Err(e) => {
-                                    eprintln!("Error: invalid grouped findings payload: {}", e);
-                                    return 3;
-                                }
-                            }
-                        }
-                    }
-                    merged
-                } else {
-                    eprintln!("Error: unsupported findings JSON format");
-                    return 3;
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: failed to parse findings JSON: {}", e);
-                return 3;
-            }
-        },
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return 3;
+        }
     };
 
     let ctx = match github_report::resolve_github_context(
@@ -6101,5 +6124,74 @@ mod prior_thresholds_tests {
         let (suppress, boost) = prior_thresholds(None);
         assert_eq!(suppress, None);
         assert_eq!(boost, None);
+    }
+}
+
+#[cfg(test)]
+mod report_payload_tests {
+    use super::*;
+    // ── #496: `report` must consume what `review --json` produces ─────────
+
+    /// The payload is a real `quorum review --json` run, trimmed to two
+    /// findings. A hand-written fixture would have encoded my belief about the
+    /// shape, and a wrong belief about the shape is the bug (#496).
+    const REVIEW_JSON: &str = include_str!("../tests/fixtures/report/review_json_output.json");
+
+    #[test]
+    fn report_parses_what_review_actually_writes() {
+        let findings = parse_findings_payload(REVIEW_JSON)
+            .expect("review --json output must be consumable by report");
+        assert_eq!(
+            findings.len(),
+            2,
+            "both findings should survive the flatten"
+        );
+        assert!(
+            findings.iter().all(|f| !f.title.is_empty()),
+            "findings came through empty, so the shape matched but the contents did not"
+        );
+    }
+
+    /// The `_meta` entry carries linter coverage and has no `findings` key. It
+    /// must be skipped, not rejected -- rejecting it is one way this could
+    /// "work" on a stripped fixture and still fail on real output.
+    #[test]
+    fn the_meta_entry_is_skipped_not_rejected() {
+        let v: serde_json::Value = serde_json::from_str(REVIEW_JSON).unwrap();
+        assert!(
+            v[0].get("_meta").is_some(),
+            "fixture no longer starts with _meta; it is not real review output"
+        );
+        assert!(parse_findings_payload(REVIEW_JSON).is_ok());
+    }
+
+    #[test]
+    fn report_still_parses_the_two_older_shapes() {
+        // A bare array of findings.
+        let bare =
+            serde_json::to_string(&vec![finding::FindingBuilder::new().title("bare").build()])
+                .unwrap();
+        assert_eq!(parse_findings_payload(&bare).unwrap().len(), 1);
+
+        // `{"files": [...]}`.
+        let grouped = serde_json::json!({
+            "files": [{"findings": [finding::FindingBuilder::new().title("grouped").build()]}]
+        })
+        .to_string();
+        assert_eq!(parse_findings_payload(&grouped).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_empty_review_is_not_an_error() {
+        // What the analyze workflow writes when nothing reviewable changed.
+        assert!(parse_findings_payload("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn unparseable_input_is_an_error_with_a_reason() {
+        let err = parse_findings_payload("not json").unwrap_err();
+        assert!(err.contains("failed to parse"), "{err}");
+        let err = parse_findings_payload("{\"unexpected\": 1}").unwrap_err();
+        assert!(err.contains("unsupported"), "{err}");
     }
 }

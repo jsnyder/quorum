@@ -43,7 +43,18 @@ jobs:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}
           QUORUM_API_KEY: ${{ secrets.QUORUM_API_KEY }}
           QUORUM_MODEL: ${{ secrets.QUORUM_MODEL }}
+      # #496: record the PR number here, where it is known.
+      #
+      # The report job runs on `workflow_run` and has to work it out from the
+      # head SHA, which fails for fork PRs: the commit does not exist in the
+      # base repo, so `commits/{sha}/pulls` returns `[]` and the job posted
+      # with `--pr ""`. `workflow_run.pull_requests` is empty for forks too,
+      # so there is no lookup that works -- the number has to be carried.
+      - name: Record the PR number for the report job
+        run: echo "${{ github.event.pull_request.number }}" > pr-number.txt
       - uses: actions/upload-artifact@v7
         with:
           name: quorum-findings
-          path: findings.json
+          path: |
+            findings.json
+            pr-number.txt

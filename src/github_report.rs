@@ -590,6 +590,16 @@ fn github_client_headers(token: &str) -> Result<reqwest::header::HeaderMap, GitH
         "X-GitHub-Api-Version",
         HeaderValue::from_static(GITHUB_API_VERSION),
     );
+    // #496: GitHub REJECTS requests without a User-Agent -- 403 "Request
+    // forbidden by administrative rules". Every request this module makes was
+    // missing it, so the posting path could not have worked against the real
+    // API no matter what else was fixed. Neither the unit tests nor the
+    // wiremock ones could see it: mock servers do not enforce the header. It
+    // took actually posting to a PR (#496's acceptance) to surface it.
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_static(concat!("quorum/", env!("CARGO_PKG_VERSION"))),
+    );
     Ok(headers)
 }
 
@@ -1514,6 +1524,21 @@ mod integration_tests {
     fn a_well_formed_token_still_builds_headers() {
         let h = github_client_headers("ghp_aaaaaaaaaaaaaaaaaaaa").expect("valid token");
         assert!(h.contains_key(reqwest::header::AUTHORIZATION));
+    }
+
+    /// #496: GitHub answers 403 "Request forbidden by administrative rules" to
+    /// any request without a User-Agent. Every request this module made was
+    /// missing one, which no mock server could reveal -- only posting to the
+    /// real API did.
+    #[test]
+    fn every_request_carries_a_user_agent() {
+        let h = github_client_headers("ghp_aaaaaaaaaaaaaaaaaaaa").expect("valid token");
+        let ua = h
+            .get(reqwest::header::USER_AGENT)
+            .expect("GitHub rejects requests with no User-Agent")
+            .to_str()
+            .unwrap();
+        assert!(ua.starts_with("quorum/"), "unexpected User-Agent: {ua}");
     }
 
     /// #572: dismissal selected reviews by substring, so any contributor could
