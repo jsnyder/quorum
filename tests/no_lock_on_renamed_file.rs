@@ -14,13 +14,31 @@
 //! of CLAUDE.md, a property that has now been fixed at two paths gets a
 //! source-scanning guard rather than a third per-path fix.
 //!
-//! Scope and ceiling, stated plainly: this scans source text and pairs
-//! *within a file*. It catches the ordinary mistake — someone adds a rewrite
-//! next to an existing lock — not a determined evasion, and not a lock and a
-//! rename split across two modules. Same ceiling as
-//! `tests/no_env_mutation.rs` and `tests/spawn_helper_guard.rs`, and
-//! acceptable for the same reason: the mistake it catches is the one that
-//! actually happened, twice.
+//! Two properties are checked at every advisory-lock call site:
+//!
+//! 1. **Routed.** The chokepoint `file_util::sidecar_lock_path` appears in the
+//!    window above the lock.
+//! 2. **Ordered.** No data file is opened before the lock is taken. Swapping
+//!    *which* file is locked is not sufficient on its own: if the open comes
+//!    first, a rewriter can rename in between and the handle is already on an
+//!    orphaned inode when the lock is granted. That bug survived inside its
+//!    own fix at two of three call sites and was caught by the tool's review,
+//!    not by the first version of this guard.
+//!
+//! Scope and ceiling, stated plainly. This scans source text with a window,
+//! so it catches the two mistakes that actually happened — locking the data
+//! file, and locking after opening — and not a determined evasion. Known to
+//! escape: assigning the data path to a variable *named* `lock_path` while a
+//! correct helper call sits elsewhere in the window. That is a perverse edit
+//! rather than a plausible one, and chasing it made the guard fragile enough
+//! to produce false positives on every correct site, which is worse. Same
+//! ceiling as `tests/no_env_mutation.rs` and `tests/spawn_helper_guard.rs`.
+//!
+//! Deliberately not gated on the scanned file containing `fs::rename`: in both
+//! #494 and #549 the appender and the rewriter live in different modules, so a
+//! per-file pairing check excludes the exact shape it exists to catch. An
+//! earlier version had that gate and let the ordering bug in `pipeline.rs`
+//! through, because `pipeline.rs` renames nothing.
 
 use std::path::Path;
 
@@ -40,12 +58,23 @@ const SIDECAR_HELPER: &str = "sidecar_lock_path";
 ///
 /// An allowlist that grows without explanation is a guard that has stopped
 /// guarding, so every entry states why the pairing is benign.
-const ALLOWED: &[(&str, &str)] = &[(
-    "skill_audit.rs",
-    "The locked path and the renamed path are different files: the advisory \
-     lock is on the append-only audit JSONL, while the rename replaces \
-     skills.lock (TOML). No lock is ever held on the renamed path.",
-)];
+const ALLOWED: &[(&str, &str)] = &[
+    (
+        "skill_audit.rs",
+        "Append-only audit JSONL with no rewriter anywhere in the tree: \
+         nothing renames over skill_invocations.jsonl or \
+         integrator_decisions.jsonl, so there is no inode to orphan. The \
+         rename in this file replaces skills.lock (TOML), which is never \
+         locked. Revisit if a compaction or backfill command is added for \
+         these logs.",
+    ),
+    (
+        "judge.rs",
+        "Locks ~/.quorum/judge_cache.jsonl, which is append-only and has no \
+         rewriter. Same reasoning as skill_audit.rs, and the contents are a \
+         regenerable cache rather than ground truth.",
+    ),
+];
 
 fn rust_sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read src/") {
@@ -70,9 +99,13 @@ fn no_source_file_locks_and_renames_without_a_sidecar() {
         let text = std::fs::read_to_string(path).expect("read source");
         let name = path.file_name().unwrap().to_string_lossy().to_string();
 
-        if !text.contains("fs::rename") {
-            continue;
-        }
+        // Deliberately NOT gated on this file containing `fs::rename`. The
+        // hazard is cross-module by nature: in both #494 and #549 the
+        // appender and the rewriter live in different files, so a per-file
+        // pairing check excludes the exact shape it exists to catch. An
+        // earlier version of this guard had that gate and let the ordering
+        // bug in `pipeline.rs` through, because `pipeline.rs` renames
+        // nothing. Every advisory lock is in scope; exceptions are named.
         if ALLOWED.iter().any(|(f, _)| *f == name) {
             continue;
         }
@@ -92,13 +125,35 @@ fn no_source_file_locks_and_renames_without_a_sidecar() {
                 continue;
             }
             let lo = i.saturating_sub(WINDOW);
-            let routed = lines[lo..=i].iter().any(|l| l.contains(SIDECAR_HELPER));
+            let window = &lines[lo..=i];
+
+            let routed = window.iter().any(|l| l.contains(SIDECAR_HELPER));
             if !routed {
                 offenders.push(format!(
-                    "{}:{}  {}",
+                    "{}:{}  {}  (lock not routed through {SIDECAR_HELPER})",
                     path.strip_prefix(&src).unwrap_or(path).display(),
                     i + 1,
                     line.trim()
+                ));
+                continue;
+            }
+
+            // Ordering. Swapping *which* file is locked is not sufficient: if
+            // the data file is opened before the lock is granted, a rewriter
+            // can rename in between and the handle is already on an orphaned
+            // inode. So any `.open(` before the lock must be the sidecar's
+            // own. Found by the quorum review of #549 -- the bug survived
+            // inside its own fix at two of three call sites.
+            if let Some(bad) = window
+                .iter()
+                .find(|l| l.contains(".open(") && !l.contains("lock_path"))
+            {
+                offenders.push(format!(
+                    "{}:{}  {}  (data file opened before the lock: {})",
+                    path.strip_prefix(&src).unwrap_or(path).display(),
+                    i + 1,
+                    line.trim(),
+                    bad.trim()
                 ));
             }
         }
@@ -119,7 +174,7 @@ fn no_source_file_locks_and_renames_without_a_sidecar() {
 
 /// The allowlist must not outlive its subject.
 #[test]
-fn allowlist_entries_still_exist_and_still_lock_and_rename() {
+fn allowlist_entries_still_exist_and_still_lock() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_sources(&src, &mut files);
@@ -135,8 +190,8 @@ fn allowlist_entries_still_exist_and_still_lock_and_rename() {
         });
         let text = std::fs::read_to_string(path).expect("read source");
         assert!(
-            LOCKS.iter().any(|m| text.contains(m)) && text.contains("fs::rename"),
-            "{allowed} no longer both locks and renames; drop the allowlist entry \
+            LOCKS.iter().any(|m| text.contains(m)),
+            "{allowed} no longer takes an advisory lock; drop the allowlist entry \
              rather than leaving a permanent exemption behind"
         );
     }

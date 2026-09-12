@@ -543,17 +543,6 @@ impl FeedbackStore {
         use anyhow::Context;
         use fs2::FileExt;
         use std::io::Read;
-        let mut file = match std::fs::OpenOptions::new().read(true).open(&self.path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((vec![], LoadStats::default()));
-            }
-            Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("Failed to open feedback file: {}", self.path.display())
-                });
-            }
-        };
         // #549: the read lock goes on the sidecar too. Holding a shared lock
         // on the data file does not survive a rewrite that renames over the
         // path -- the reader keeps reading the orphaned inode and silently
@@ -574,6 +563,17 @@ impl FeedbackStore {
                 lock_path.display()
             )
         })?;
+        let mut file = match std::fs::OpenOptions::new().read(true).open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((vec![], LoadStats::default()));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to open feedback file: {}", self.path.display())
+                });
+            }
+        };
         let mut content = String::new();
         let read_result = file.read_to_string(&mut content);
         let unlock_result = FileExt::unlock(&lock_file);
