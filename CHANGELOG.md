@@ -1,6 +1,15 @@
 # Changelog
 
 ## [Unreleased]
+
+### Fixed
+
+- **Five correctness gaps in the GitHub PR posting path** (#572), in ~700 lines that had never run in CI (#496). Previous reviews were dismissed *before* the replacement was created, so any later failure left the PR with no active quorum review. Dismissal selected reviews by a public substring, so anyone able to submit a review containing it could have the bot's privileged token suppress their change request — it now requires a structurally valid marker **and** authorship by the authenticated identity, and dismisses nothing when identity cannot be established. An invalid token byte panicked the process instead of returning an error. The severity breakdown counted only body findings, so inline findings vanished from it. And a multiline comment could span lines the diff cannot anchor, which GitHub rejects — failing the whole review, since comments travel inside the create POST.
+
+  A sixth surfaced while testing the fifth: `start_line` was emitted whenever `line_start != line_end`, but a comment's end is `anchor_line()` — so a finding with no cited lines posted `start_line == line`, which GitHub rejects outright.
+
+  Three end-to-end tests now exercise create and dismiss together against a mock GitHub, which is what #496 was missing.
+
 ### Security
 
 - **Untrusted model output could reach a log unredacted** (#574). Redaction is a chokepoint on the outbound path — `post_json` redacts every request body, so no LLM call can carry a secret out (#530). Logs are a different sink and nothing covered them: the judge logged a 200-char prefix of the raw response on two parse-failure paths, and #546 established that a model can be talked into echoing text straight out of the file it was shown. So a log line could carry a credential out of the source under review.
