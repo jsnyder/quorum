@@ -969,9 +969,8 @@ pub async fn review_file(
     let merged = if pipeline_config.mode.is_prose() {
         merged
     } else {
-        let grounding_disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let raw = std::env::var("QUORUM_DISABLE_AST_GROUNDING").ok();
+        let grounding_disabled = grounding::grounding_disabled_by(raw.as_deref());
         let grounded =
             grounding::apply_grounding(merged, source, grounding_disabled, &hydration_text);
         let gc = grounding::count_grounding_outcomes(&grounded);

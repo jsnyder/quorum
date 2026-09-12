@@ -163,21 +163,50 @@ impl ProdDeps {
     }
 
     fn resolve_quorum_root() -> Result<PathBuf> {
+        // `var_os`, not `var`: on Unix a path is arbitrary bytes, and a
+        // non-UTF-8 HOME is legal. Reading it as a String would report such a
+        // home as unset.
         let from = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        Self::quorum_root_from(from("HOME").as_deref(), from("USERPROFILE").as_deref())
+    }
+
+    /// Pure form: resolve the state dir from the two candidate values.
+    ///
+    /// #497: this logic was only reachable through the environment, so the
+    /// tests for its two rejection branches mutated `HOME` and `USERPROFILE`
+    /// and restored them afterwards. `std::env::set_var` is `unsafe` in
+    /// edition 2024 because a concurrent `getenv` during `setenv` can fault --
+    /// the environ block may be reallocated under the reader -- and HOME is
+    /// about the worst variable to race on, since any other test resolving a
+    /// path could read it mid-write.
+    ///
+    /// Takes `OsStr` rather than `str` deliberately: `std::env::var_os`
+    /// preserves non-UTF-8 paths, which are legal on Unix. An earlier version
+    /// of this took `&str` and would have reported a non-UTF-8 HOME as unset.
+    ///
+    /// Empty values are treated as missing, matching the previous
+    /// `filter(|v| !v.is_empty())`.
+    pub(crate) fn quorum_root_from(
+        home: Option<&std::ffi::OsStr>,
+        userprofile: Option<&std::ffi::OsStr>,
+    ) -> Result<PathBuf> {
+        fn pick(v: Option<&std::ffi::OsStr>) -> Option<&std::ffi::OsStr> {
+            v.filter(|s| !s.is_empty())
+        }
         // On Windows, `USERPROFILE` is the canonical user dir. `HOME` is
         // often set by MSYS/Cygwin/Git Bash to an MSYS-mangled path that
         // doesn't match the profile CreateFile + Explorer see. Prefer
         // USERPROFILE there and fall back to HOME for non-standard envs.
         // Elsewhere (macOS/Linux), HOME is canonical.
         #[cfg(windows)]
-        let home = from("USERPROFILE")
-            .or_else(|| from("HOME"))
+        let home = pick(userprofile)
+            .or_else(|| pick(home))
             .ok_or_else(|| anyhow!("neither USERPROFILE nor HOME is set"))?;
         #[cfg(not(windows))]
-        let home = from("HOME")
-            .or_else(|| from("USERPROFILE"))
+        let home = pick(home)
+            .or_else(|| pick(userprofile))
             .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
-        let home_path = PathBuf::from(&home);
+        let home_path = PathBuf::from(home);
         if !home_path.is_absolute() {
             anyhow::bail!(
                 "HOME/USERPROFILE must be an absolute path, got {:?}",

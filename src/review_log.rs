@@ -1232,33 +1232,65 @@ impl Iterator for ReviewLogIter {
 /// Detect invocation context from env vars. Mirrors the detection used for
 /// compact-mode sniffing in telemetry.rs. Priority order matters: more specific
 /// signals beat generic `AGENT`.
-pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
+/// The ambient signals `detect_invoked_from` keys on.
+///
+/// #497: these used to be read inside the function, which meant the only way
+/// to test a branch was to mutate the process environment. `std::env::set_var`
+/// is `unsafe` in edition 2024 because a concurrent `getenv` during `setenv`
+/// can fault -- the environ block may be reallocated under the reader -- and
+/// that hazard does not depend on the two threads touching the *same*
+/// variable. Making the inputs explicit removes the need to mutate anything.
+#[derive(Debug, Default, Clone)]
+pub struct InvocationEnv<'a> {
+    pub claude_code: bool,
+    pub codex_ci: bool,
+    pub gemini_cli: bool,
+    pub agent: Option<&'a str>,
+    pub is_terminal: bool,
+}
+
+/// Pure form: every input explicit, no environment access.
+pub fn invoked_from(caller_override: Option<&str>, env: &InvocationEnv<'_>) -> String {
     if let Some(name) = caller_override
         && !name.is_empty()
     {
         return name.to_string();
     }
-    if std::env::var_os("CLAUDE_CODE").is_some() {
+    if env.claude_code {
         return "claude_code".to_string();
     }
-    if std::env::var_os("CODEX_CI").is_some() {
+    if env.codex_ci {
         return "codex_ci".to_string();
     }
-    if std::env::var_os("GEMINI_CLI").is_some() {
+    if env.gemini_cli {
         return "gemini_cli".to_string();
     }
-    if let Some(v) = std::env::var_os("AGENT")
-        && let Some(s) = v.to_str()
+    if let Some(s) = env.agent
         && !s.is_empty()
     {
         return s.to_string();
     }
-    use std::io::IsTerminal;
-    if std::io::stdout().is_terminal() {
+    if env.is_terminal {
         "tty".to_string()
     } else {
         "pipe".to_string()
     }
+}
+
+/// The one place that reads the environment for invocation detection.
+pub fn detect_invoked_from(caller_override: Option<&str>) -> String {
+    use std::io::IsTerminal;
+    let agent = std::env::var("AGENT").ok();
+    invoked_from(
+        caller_override,
+        &InvocationEnv {
+            claude_code: std::env::var_os("CLAUDE_CODE").is_some(),
+            codex_ci: std::env::var_os("CODEX_CI").is_some(),
+            gemini_cli: std::env::var_os("GEMINI_CLI").is_some(),
+            agent: agent.as_deref(),
+            is_terminal: std::io::stdout().is_terminal(),
+        },
+    )
 }
 
 /// Walk parents of the given path looking for a `.git` directory.
@@ -1444,49 +1476,99 @@ mod tests {
 
     #[test]
     fn invoked_from_claude_code_env() {
-        // Serialize env-var tests so concurrent tests don't race on env state.
-        let _guard = ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("CLAUDE_CODE");
-        unsafe { std::env::set_var("CLAUDE_CODE", "1") };
-        let got = detect_invoked_from(None);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("CLAUDE_CODE", v) },
-            None => unsafe { std::env::remove_var("CLAUDE_CODE") },
-        }
-        assert_eq!(got, "claude_code");
+        let env = InvocationEnv {
+            claude_code: true,
+            ..Default::default()
+        };
+        assert_eq!(invoked_from(None, &env), "claude_code");
     }
 
     #[test]
-    fn invoked_from_agent_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let prev_claude = std::env::var_os("CLAUDE_CODE");
-        let prev_codex = std::env::var_os("CODEX_CI");
-        let prev_gemini = std::env::var_os("GEMINI_CLI");
-        let prev_agent = std::env::var_os("AGENT");
-        unsafe {
-            std::env::remove_var("CLAUDE_CODE");
-            std::env::remove_var("CODEX_CI");
-            std::env::remove_var("GEMINI_CLI");
-            std::env::set_var("AGENT", "cursor");
-        }
-        let got = detect_invoked_from(None);
-        // Restore
-        unsafe {
-            if let Some(v) = prev_claude {
-                std::env::set_var("CLAUDE_CODE", v);
-            }
-            if let Some(v) = prev_codex {
-                std::env::set_var("CODEX_CI", v);
-            }
-            if let Some(v) = prev_gemini {
-                std::env::set_var("GEMINI_CLI", v);
-            }
-            match prev_agent {
-                Some(v) => std::env::set_var("AGENT", v),
-                None => std::env::remove_var("AGENT"),
-            }
-        }
-        assert_eq!(got, "cursor");
+    fn invoked_from_precedence_is_claude_codex_gemini_agent() {
+        // Every marker set at once: the first branch must win, and each
+        // subsequent one must win when the earlier are absent. Previously
+        // untestable without four env mutations per case.
+        let all = InvocationEnv {
+            claude_code: true,
+            codex_ci: true,
+            gemini_cli: true,
+            agent: Some("cursor"),
+            is_terminal: true,
+        };
+        assert_eq!(invoked_from(None, &all), "claude_code");
+        assert_eq!(
+            invoked_from(
+                None,
+                &InvocationEnv {
+                    claude_code: false,
+                    ..all.clone()
+                }
+            ),
+            "codex_ci"
+        );
+        assert_eq!(
+            invoked_from(
+                None,
+                &InvocationEnv {
+                    claude_code: false,
+                    codex_ci: false,
+                    ..all.clone()
+                }
+            ),
+            "gemini_cli"
+        );
+        assert_eq!(
+            invoked_from(
+                None,
+                &InvocationEnv {
+                    claude_code: false,
+                    codex_ci: false,
+                    gemini_cli: false,
+                    ..all.clone()
+                }
+            ),
+            "cursor"
+        );
+    }
+
+    #[test]
+    fn invoked_from_empty_agent_falls_through_to_stream_kind() {
+        // An exported-but-empty AGENT must not become the caller name.
+        let env = InvocationEnv {
+            agent: Some(""),
+            is_terminal: false,
+            ..Default::default()
+        };
+        assert_eq!(invoked_from(None, &env), "pipe");
+    }
+
+    #[test]
+    fn invoked_from_reports_stream_kind_with_no_markers() {
+        // The tty/pipe branch could not be exercised at all before: a test
+        // cannot change whether the harness's stdout is a terminal.
+        assert_eq!(
+            invoked_from(
+                None,
+                &InvocationEnv {
+                    is_terminal: true,
+                    ..Default::default()
+                }
+            ),
+            "tty"
+        );
+        assert_eq!(invoked_from(None, &InvocationEnv::default()), "pipe");
+    }
+
+    #[test]
+    fn invoked_from_override_beats_every_marker() {
+        let env = InvocationEnv {
+            claude_code: true,
+            agent: Some("cursor"),
+            ..Default::default()
+        };
+        assert_eq!(invoked_from(Some("my-script"), &env), "my-script");
+        // An empty override is ignored rather than returned.
+        assert_eq!(invoked_from(Some(""), &env), "claude_code");
     }
 
     #[test]
@@ -1517,9 +1599,6 @@ mod tests {
             got
         );
     }
-
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn iter_over_empty_path_yields_nothing() {

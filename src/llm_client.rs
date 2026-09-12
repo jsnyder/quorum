@@ -162,17 +162,23 @@ impl HttpTimeouts {
     /// certainly a misconfiguration; falling back to the production default
     /// is the safer surprise.
     pub(crate) fn from_env() -> Self {
-        let parse = |var: &str, default_secs: u64| -> std::time::Duration {
-            std::env::var(var)
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok())
+        Self::from_values(
+            std::env::var("QUORUM_HTTP_TIMEOUT").ok().as_deref(),
+            std::env::var("QUORUM_HTTP_READ_TIMEOUT").ok().as_deref(),
+        )
+    }
+
+    /// Pure form: same parse, no environment access (#497).
+    pub(crate) fn from_values(total: Option<&str>, per_read: Option<&str>) -> Self {
+        fn parse(raw: Option<&str>, default_secs: u64) -> std::time::Duration {
+            raw.and_then(|s| s.trim().parse::<u64>().ok())
                 .filter(|&n| n > 0)
                 .map(std::time::Duration::from_secs)
                 .unwrap_or_else(|| std::time::Duration::from_secs(default_secs))
-        };
+        }
         Self {
-            total: parse("QUORUM_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT_SECS),
-            per_read: parse("QUORUM_HTTP_READ_TIMEOUT", DEFAULT_HTTP_READ_TIMEOUT_SECS),
+            total: parse(total, DEFAULT_HTTP_TIMEOUT_SECS),
+            per_read: parse(per_read, DEFAULT_HTTP_READ_TIMEOUT_SECS),
         }
     }
 }
@@ -342,20 +348,31 @@ pub struct BaseUrlPolicy {
 impl BaseUrlPolicy {
     /// Build from env vars. Empty/missing = secure defaults.
     pub fn from_env() -> Self {
-        let additional_allowed_hosts = std::env::var("QUORUM_ALLOWED_BASE_URL_HOSTS")
-            .unwrap_or_default()
-            .split(',')
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let allow_private_ips =
-            matches_truthy(&std::env::var("QUORUM_ALLOW_PRIVATE_BASE_URL").unwrap_or_default());
-        let unsafe_bypass =
-            matches_truthy(&std::env::var("QUORUM_UNSAFE_BASE_URL").unwrap_or_default());
+        Self::from_values(
+            &std::env::var("QUORUM_ALLOWED_BASE_URL_HOSTS").unwrap_or_default(),
+            &std::env::var("QUORUM_ALLOW_PRIVATE_BASE_URL").unwrap_or_default(),
+            &std::env::var("QUORUM_UNSAFE_BASE_URL").unwrap_or_default(),
+        )
+    }
+
+    /// Pure form: parses the same three values without reading the
+    /// environment.
+    ///
+    /// #497: the parse was only reachable through `from_env`, so testing it
+    /// meant mutating the process environment -- `unsafe` in edition 2024,
+    /// because a concurrent `getenv` during `setenv` can fault when the
+    /// environ block is reallocated under the reader. The hazard is not
+    /// per-variable, so the module-local lock that guarded these tests did
+    /// not make them sound; it only made them not race each other.
+    pub fn from_values(allowed_hosts: &str, allow_private: &str, unsafe_bypass: &str) -> Self {
         Self {
-            additional_allowed_hosts,
-            allow_private_ips,
-            unsafe_bypass,
+            additional_allowed_hosts: allowed_hosts
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            allow_private_ips: matches_truthy(allow_private),
+            unsafe_bypass: matches_truthy(unsafe_bypass),
         }
     }
 }
@@ -1942,133 +1959,57 @@ mod tests {
     // runs don't trample each other. A poisoned mutex is recoverable for
     // our purpose (tests can't observe corrupt state).
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
-        // Panic-safe restoration via Drop (PAL review of #119 flagged that
-        // a panicking assertion inside `f()` would leak env state into
-        // subsequent tests if the restore code ran imperatively after `f()`).
-        struct Restore(Vec<(String, Option<String>)>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                for (k, v) in self.0.drain(..) {
-                    match v {
-                        Some(val) => unsafe { std::env::set_var(&k, val) },
-                        None => unsafe { std::env::remove_var(&k) },
-                    }
-                }
-            }
-        }
-
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let saved: Vec<(String, Option<String>)> = vars
-            .iter()
-            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
-            .collect();
-        let _restore = Restore(saved);
-        for (k, v) in vars {
-            match v {
-                Some(val) => unsafe { std::env::set_var(k, val) },
-                None => unsafe { std::env::remove_var(k) },
-            }
-        }
-        f();
-    }
-
     /// Builds an `OpenAiClient` configured to talk to a wiremock test
     /// server on 127.0.0.1. Sets the policy env vars (allow_private + 127
     /// allowlist) inside `with_env` so they're restored after construction —
     /// the resulting client doesn't depend on env state for subsequent calls.
     #[cfg(test)]
     fn build_test_client(server_uri: &str) -> OpenAiClient {
-        use std::cell::RefCell;
-        let cell: RefCell<Option<OpenAiClient>> = RefCell::new(None);
-        with_env(
-            &[
-                ("QUORUM_ALLOWED_BASE_URL_HOSTS", Some("127.0.0.1")),
-                ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some("1")),
-                ("QUORUM_UNSAFE_BASE_URL", None),
-                ("QUORUM_HTTP_TIMEOUT", None),
-                ("QUORUM_HTTP_READ_TIMEOUT", None),
-            ],
-            || {
-                *cell.borrow_mut() =
-                    Some(OpenAiClient::new(server_uri, "sk-test").expect("must construct"));
-            },
-        );
-        cell.into_inner().expect("client built")
+        // #497: the policy is passed explicitly rather than staged through
+        // five env vars and restored afterwards. `new_with_policy` already
+        // existed for exactly this, so the env round-trip bought nothing.
+        let policy = BaseUrlPolicy {
+            additional_allowed_hosts: vec!["127.0.0.1".to_string()],
+            allow_private_ips: true,
+            unsafe_bypass: false,
+        };
+        OpenAiClient::new_with_policy(server_uri, "sk-test", &policy).expect("must construct")
     }
 
     #[test]
-    fn from_env_parses_csv_allowlist_with_trim_and_lowercase() {
-        with_env(
-            &[
-                (
-                    "QUORUM_ALLOWED_BASE_URL_HOSTS",
-                    Some("Foo.Example.com, BAR.example.com ,, baz"),
-                ),
-                ("QUORUM_ALLOW_PRIVATE_BASE_URL", None),
-                ("QUORUM_UNSAFE_BASE_URL", None),
-            ],
-            || {
-                let p = BaseUrlPolicy::from_env();
-                assert_eq!(
-                    p.additional_allowed_hosts,
-                    vec!["foo.example.com", "bar.example.com", "baz"]
-                );
-                assert!(!p.allow_private_ips);
-                assert!(!p.unsafe_bypass);
-            },
+    fn policy_parses_csv_allowlist_with_trim_and_lowercase() {
+        let p = BaseUrlPolicy::from_values("Foo.Example.com, BAR.example.com ,, baz", "", "");
+        assert_eq!(
+            p.additional_allowed_hosts,
+            vec!["foo.example.com", "bar.example.com", "baz"]
         );
+        assert!(!p.allow_private_ips);
+        assert!(!p.unsafe_bypass);
     }
 
     #[test]
-    fn from_env_strict_truthy() {
+    fn policy_truthy_parsing_is_strict() {
         for truthy in ["1", "true", "yes", "on", "TRUE", "Yes"] {
-            with_env(
-                &[
-                    ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some(truthy)),
-                    ("QUORUM_UNSAFE_BASE_URL", Some(truthy)),
-                    ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
-                ],
-                || {
-                    let p = BaseUrlPolicy::from_env();
-                    assert!(p.allow_private_ips, "{truthy} must be truthy");
-                    assert!(p.unsafe_bypass, "{truthy} must be truthy");
-                },
-            );
+            let p = BaseUrlPolicy::from_values("", truthy, truthy);
+            assert!(p.allow_private_ips, "{truthy} must be truthy");
+            assert!(p.unsafe_bypass, "{truthy} must be truthy");
         }
+        // "0" and "false" mattering is the point: a loose parse that accepted
+        // any non-empty value would silently disable the SSRF guard for
+        // anyone who set the variable to turn it off.
         for falsy in ["0", "false", "", "no", "off", "  "] {
-            with_env(
-                &[
-                    ("QUORUM_ALLOW_PRIVATE_BASE_URL", Some(falsy)),
-                    ("QUORUM_UNSAFE_BASE_URL", Some(falsy)),
-                    ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
-                ],
-                || {
-                    let p = BaseUrlPolicy::from_env();
-                    assert!(!p.allow_private_ips, "{falsy:?} must be falsy");
-                    assert!(!p.unsafe_bypass, "{falsy:?} must be falsy");
-                },
-            );
+            let p = BaseUrlPolicy::from_values("", falsy, falsy);
+            assert!(!p.allow_private_ips, "{falsy:?} must be falsy");
+            assert!(!p.unsafe_bypass, "{falsy:?} must be falsy");
         }
     }
 
     #[test]
-    fn from_env_empty_yields_secure_default() {
-        with_env(
-            &[
-                ("QUORUM_ALLOWED_BASE_URL_HOSTS", None),
-                ("QUORUM_ALLOW_PRIVATE_BASE_URL", None),
-                ("QUORUM_UNSAFE_BASE_URL", None),
-            ],
-            || {
-                let p = BaseUrlPolicy::from_env();
-                assert!(p.additional_allowed_hosts.is_empty());
-                assert!(!p.allow_private_ips);
-                assert!(!p.unsafe_bypass);
-            },
-        );
+    fn policy_empty_yields_secure_default() {
+        let p = BaseUrlPolicy::from_values("", "", "");
+        assert!(p.additional_allowed_hosts.is_empty());
+        assert!(!p.allow_private_ips);
+        assert!(!p.unsafe_bypass);
     }
 
     // --- #119: sanitize_error_body ---
@@ -2626,63 +2567,36 @@ mod tests {
     }
 
     #[test]
-    fn http_timeout_defaults_to_300_120() {
-        with_env(
-            &[
-                ("QUORUM_HTTP_TIMEOUT", None),
-                ("QUORUM_HTTP_READ_TIMEOUT", None),
-            ],
-            || {
-                let cfg = HttpTimeouts::from_env();
-                assert_eq!(cfg.total, Duration::from_secs(300));
-                assert_eq!(cfg.per_read, Duration::from_secs(120));
-            },
-        );
-    }
+    fn http_timeouts_parse_values_and_fall_back() {
+        use std::time::Duration;
+        let d300 = Duration::from_secs(300);
+        let d120 = Duration::from_secs(120);
 
-    #[test]
-    fn http_timeout_env_override_total_and_read() {
-        with_env(
-            &[
-                ("QUORUM_HTTP_TIMEOUT", Some("600")),
-                ("QUORUM_HTTP_READ_TIMEOUT", Some("180")),
-            ],
-            || {
-                let cfg = HttpTimeouts::from_env();
-                assert_eq!(cfg.total, Duration::from_secs(600));
-                assert_eq!(cfg.per_read, Duration::from_secs(180));
-            },
-        );
-    }
+        // (total, per_read) -> (expected total, expected per_read)
+        let cases: &[(Option<&str>, Option<&str>, Duration, Duration)] = &[
+            // Absent: documented defaults.
+            (None, None, d300, d120),
+            // Valid overrides.
+            (
+                Some("600"),
+                Some("180"),
+                Duration::from_secs(600),
+                Duration::from_secs(180),
+            ),
+            // Unparseable and empty fall back rather than erroring.
+            (Some("not-a-number"), Some(""), d300, d120),
+            // Zero is rejected: a zero timeout would make every request fail
+            // instantly, which is worse than the default.
+            (Some("0"), Some("0"), d300, d120),
+            // Whitespace is trimmed, negatives do not parse as u64.
+            (Some("  90  "), Some("-5"), Duration::from_secs(90), d120),
+        ];
 
-    #[test]
-    fn http_timeout_env_invalid_falls_back_to_default() {
-        with_env(
-            &[
-                ("QUORUM_HTTP_TIMEOUT", Some("not-a-number")),
-                ("QUORUM_HTTP_READ_TIMEOUT", Some("")),
-            ],
-            || {
-                let cfg = HttpTimeouts::from_env();
-                assert_eq!(cfg.total, Duration::from_secs(300));
-                assert_eq!(cfg.per_read, Duration::from_secs(120));
-            },
-        );
-    }
-
-    #[test]
-    fn http_timeout_zero_rejected_falls_back_to_default() {
-        with_env(
-            &[
-                ("QUORUM_HTTP_TIMEOUT", Some("0")),
-                ("QUORUM_HTTP_READ_TIMEOUT", Some("0")),
-            ],
-            || {
-                let cfg = HttpTimeouts::from_env();
-                assert_eq!(cfg.total, Duration::from_secs(300));
-                assert_eq!(cfg.per_read, Duration::from_secs(120));
-            },
-        );
+        for (total, per_read, want_total, want_read) in cases {
+            let cfg = HttpTimeouts::from_values(*total, *per_read);
+            assert_eq!(cfg.total, *want_total, "total for {total:?}");
+            assert_eq!(cfg.per_read, *want_read, "per_read for {per_read:?}");
+        }
     }
 
     #[test]
