@@ -10,6 +10,8 @@
 
   Verified against a real judge before removing the fallback: 30 findings across three batches, all 30 correlated by index, none withheld.
 
+- **The judge verdict cache key omitted the file path** the judge is shown. #546 put `file_path` into the prompt via `wrap_code_to_review`'s metadata, so the judge can answer on it, but the key still covered only rule, source digest, line range and evidence — identical content vendored at two paths would share a verdict earned under a different prompt. Same lesson as #538: every input the judge is shown belongs in the key. Caught by quorum reviewing #566.
+
 
 ### Security
 

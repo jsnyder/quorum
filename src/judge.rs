@@ -65,8 +65,16 @@ impl SourceDigest {
 /// verdict -- and the judge is told each finding's line range, so its answer
 /// can legitimately differ between them (`let _ = tx.send(())` in a shutdown
 /// path versus in a write path).
+///
+/// The path joined the key for the same reason: #546 put `file_path` in the
+/// prompt via `wrap_code_to_review`'s metadata, so the judge sees it and can
+/// answer on it. Two files with identical content at different paths get
+/// different prompts, so they must not share a verdict. Every input the judge
+/// is shown belongs in the key -- that is the whole lesson of #538, and the
+/// #546 change quietly broke it again until quorum's review caught it.
 pub fn verdict_cache_key(
     rule_id: &str,
+    file_path: &str,
     source_digest: &SourceDigest,
     line_start: u32,
     line_end: u32,
@@ -74,6 +82,8 @@ pub fn verdict_cache_key(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file_path.as_bytes());
     hasher.update(b"\0");
     hasher.update(source_digest.0.as_bytes());
     hasher.update(b"\0");
@@ -381,7 +391,14 @@ pub async fn judge_findings<J: JudgeLlm>(
 
         let evidence = f.evidence.first().map(|s| s.as_str()).unwrap_or("");
         let rule_id = f.rule_id.as_deref().unwrap_or("");
-        let key = verdict_cache_key(rule_id, &source_digest, f.line_start, f.line_end, evidence);
+        let key = verdict_cache_key(
+            rule_id,
+            file_path,
+            &source_digest,
+            f.line_start,
+            f.line_end,
+            evidence,
+        );
 
         if let Some(cached) = cache.get(&key) {
             f.judge_verdict = Some(cached.verdict.clone());
@@ -572,6 +589,7 @@ async fn judge_one_batch<J: JudgeLlm>(
         let canonical_rule_id = findings[i].rule_id.as_deref().unwrap_or("");
         let key = verdict_cache_key(
             canonical_rule_id,
+            ctx.file_path,
             ctx.source_digest,
             findings[i].line_start,
             findings[i].line_end,
@@ -701,20 +719,8 @@ mod tests {
     #[test]
     fn cache_key_deterministic() {
         let d = SourceDigest::of("src");
-        let k1 = verdict_cache_key(
-            "ast-grep:python/bare-except-pass",
-            &d,
-            1,
-            2,
-            "except:\n    pass",
-        );
-        let k2 = verdict_cache_key(
-            "ast-grep:python/bare-except-pass",
-            &d,
-            1,
-            2,
-            "except:\n    pass",
-        );
+        let k1 = verdict_cache_key("ast-grep:python/bep", "a.rs", &d, 1, 2, "except:\n    pass");
+        let k2 = verdict_cache_key("ast-grep:python/bep", "a.rs", &d, 1, 2, "except:\n    pass");
         assert_eq!(k1, k2);
     }
 
@@ -727,8 +733,18 @@ mod tests {
     fn cache_key_differs_for_the_same_evidence_at_different_lines() {
         let d =
             SourceDigest::of("fn a() { let _ = tx.send(()); }\nfn b() { let _ = tx.send(()); }");
-        let k1 = verdict_cache_key("ast-grep:rust/r", &d, 1, 1, "let _ = tx.send(());");
-        let k2 = verdict_cache_key("ast-grep:rust/r", &d, 2, 2, "let _ = tx.send(());");
+        let k1 = verdict_cache_key("ast-grep:rust/r", "a.rs", &d, 1, 1, "let _ = tx.send(());");
+        let k2 = verdict_cache_key("ast-grep:rust/r", "a.rs", &d, 2, 2, "let _ = tx.send(());");
+        assert_ne!(k1, k2);
+    }
+
+    /// #546 put `file_path` in the prompt, so it belongs in the key too.
+    /// Identical content vendored at two paths gets two different prompts.
+    #[test]
+    fn cache_key_differs_for_identical_content_at_different_paths() {
+        let d = SourceDigest::of("fn f() {}");
+        let k1 = verdict_cache_key("ast-grep:rust/r", "src/a.rs", &d, 1, 1, "fn f() {}");
+        let k2 = verdict_cache_key("ast-grep:rust/r", "vendor/a.rs", &d, 1, 1, "fn f() {}");
         assert_ne!(k1, k2);
     }
 
@@ -741,6 +757,7 @@ mod tests {
         let hot_path = "fn persist(tx: Sender<Row>) { let _ = tx.send(row); }";
         let k1 = verdict_cache_key(
             "ast-grep:rust/discarded-result",
+            "a.rs",
             &SourceDigest::of(shutdown),
             1,
             1,
@@ -748,6 +765,7 @@ mod tests {
         );
         let k2 = verdict_cache_key(
             "ast-grep:rust/discarded-result",
+            "a.rs",
             &SourceDigest::of(hot_path),
             1,
             1,
@@ -762,16 +780,16 @@ mod tests {
     #[test]
     fn cache_key_differs_for_different_evidence() {
         let d = SourceDigest::of("src");
-        let k1 = verdict_cache_key("rule-a", &d, 1, 1, "code1");
-        let k2 = verdict_cache_key("rule-a", &d, 1, 1, "code2");
+        let k1 = verdict_cache_key("rule-a", "a.rs", &d, 1, 1, "code1");
+        let k2 = verdict_cache_key("rule-a", "a.rs", &d, 1, 1, "code2");
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn cache_key_differs_for_different_rules() {
         let d = SourceDigest::of("src");
-        let k1 = verdict_cache_key("rule-a", &d, 1, 1, "code");
-        let k2 = verdict_cache_key("rule-b", &d, 1, 1, "code");
+        let k1 = verdict_cache_key("rule-a", "a.rs", &d, 1, 1, "code");
+        let k2 = verdict_cache_key("rule-b", "a.rs", &d, 1, 1, "code");
         assert_ne!(k1, k2);
     }
 
@@ -1244,6 +1262,7 @@ mod tests {
         // use, now that the key carries all three (#538).
         let key = verdict_cache_key(
             "ast-grep:python/test",
+            "a.rs",
             &SourceDigest::of("source"),
             findings[0].line_start,
             findings[0].line_end,
