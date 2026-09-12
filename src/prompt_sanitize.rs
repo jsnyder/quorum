@@ -21,6 +21,11 @@ pub const SANDBOX_TAGS: &[&str] = &[
     "tool_output",
     "skill_instructions",
     "code_to_review",
+    // #546: the judge's findings array. `evidence` is verbatim matched source,
+    // so a rule that matches an attacker-controlled line carries that line into
+    // the prompt -- measured to flip 4 of 4 verdicts on gpt-4.1-mini with no
+    // comment block anywhere else in the file.
+    "findings_to_judge",
 ];
 
 /// Replace each closing tag for a known sandbox tag with a defanged form

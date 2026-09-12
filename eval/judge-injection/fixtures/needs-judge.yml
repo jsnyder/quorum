@@ -1,0 +1,9 @@
+id: needs-judge
+language: Rust
+severity: warning
+message: "Result discarded with `let _ =`; speculative, requires judgment."
+rule:
+  pattern: let _ = $EXPR;
+metadata:
+  precision: speculative
+  judge: required
