@@ -1426,15 +1426,27 @@ fn process(data: &str) {
     #[test]
     fn parse_unified_diff_handles_pure_deletion_hunk() {
         // +N,0 = pure deletion at line N. Must not produce a (N, N-1) garbage range.
+        //
+        // This asked the reader to "document and assert one" of two possible
+        // behaviours and then asserted neither: both its guards were
+        // conditional, so it ran zero assertions. Before #562 `first()` was
+        // None because the file was dropped; after #562 the file is kept and
+        // `ranges` is empty, so the loop body never runs. Vacuous either way.
+        //
+        // #562 settled the choice: the file is kept so that "deletion-only"
+        // can be told from "not in the diff", and it contributes no
+        // post-image range.
         let diff = "+++ b/y.rs\n@@ -10,3 +10,0 @@\n-a\n-b\n-c\n";
         let result = parse_unified_diff(diff);
-        // Either the hunk is filtered out entirely, OR the range collapses to (N, N).
-        // Author's choice; document and assert one.
-        if let Some((_, ranges)) = result.first() {
-            for &(s, e) in ranges {
-                assert!(s <= e, "saturating_sub produced inverted range ({s}, {e})");
-            }
-        }
+
+        let (path, ranges) = result
+            .first()
+            .expect("a deletion-only file is kept, not dropped");
+        assert_eq!(path, "y.rs");
+        assert!(
+            ranges.is_empty(),
+            "a +N,0 hunk contributes no post-image range; got {ranges:?}"
+        );
     }
 
     #[test]
