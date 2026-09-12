@@ -40,6 +40,7 @@ use std::path::Path;
 /// |---|---|---|
 /// | LLM client (src/llm_client.rs) | `QUORUM_BASE_URL` | `QUORUM_API_KEY` |
 /// | Context7 (src/context_enrichment.rs:691) | context7.com | `CONTEXT7_API_KEY` or `~/.context7_key` |
+/// | embeddings (src/embeddings.rs) | huggingface.co | *nothing* -- see `QUORUM_DISABLE_EMBEDDINGS` in `sanitize` |
 /// | GitHub PR post (src/main.rs:1001, :3347) | api.github.com | `GITHUB_TOKEN` + an explicit subcommand |
 ///
 /// Only the first is covered by [`TRIPWIRE_BASE_URL`]; the rest build their
@@ -144,6 +145,16 @@ fn sanitize(cmd: &mut Command) {
         cmd.env_remove(var);
     }
     cmd.env("QUORUM_BASE_URL", TRIPWIRE_BASE_URL);
+    // #565: the fifth outbound path. `LocalEmbedder::new` downloads
+    // BAAI/bge-small-en-v1.5 from HuggingFace when the cache is cold, and the
+    // cache is `$HOME/.quorum/models` -- which every helper here points at a
+    // fresh temp dir, so it is cold on every spawn. It is gated on no
+    // credential, so there was nothing in NETWORK_ENV_VARS to strip: stripping
+    // cannot disable a path that needs no key. Setting the off switch can.
+    //
+    // Found when a transient DNS stall parked six of these processes for 90
+    // minutes with no timeout anywhere in the stack.
+    cmd.env("QUORUM_DISABLE_EMBEDDINGS", "1");
 }
 
 /// The sanctioned way to spawn `quorum` in an integration test.
@@ -183,6 +194,16 @@ fn sanitize_std(cmd: &mut std::process::Command) {
         cmd.env_remove(var);
     }
     cmd.env("QUORUM_BASE_URL", TRIPWIRE_BASE_URL);
+    // #565: the fifth outbound path. `LocalEmbedder::new` downloads
+    // BAAI/bge-small-en-v1.5 from HuggingFace when the cache is cold, and the
+    // cache is `$HOME/.quorum/models` -- which every helper here points at a
+    // fresh temp dir, so it is cold on every spawn. It is gated on no
+    // credential, so there was nothing in NETWORK_ENV_VARS to strip: stripping
+    // cannot disable a path that needs no key. Setting the off switch can.
+    //
+    // Found when a transient DNS stall parked six of these processes for 90
+    // minutes with no timeout anywhere in the stack.
+    cmd.env("QUORUM_DISABLE_EMBEDDINGS", "1");
 }
 
 fn quorum_std_bare() -> std::process::Command {

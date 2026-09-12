@@ -11,6 +11,11 @@
   Verified against a real judge before removing the fallback: 30 findings across three batches, all 30 correlated by index, none withheld.
 
 - **The judge verdict cache key omitted the file path** the judge is shown. #546 put `file_path` into the prompt via `wrap_code_to_review`'s metadata, so the judge can answer on it, but the key still covered only rule, source digest, line range and evidence — identical content vendored at two paths would share a verdict earned under a different prompt. Same lesson as #538: every input the judge is shown belongs in the key. Caught by quorum reviewing #566.
+- **The embedding model download could hang a run indefinitely, and tests could not stop it reaching the network** (#565). `LocalEmbedder::new` downloads BAAI/bge-small-en-v1.5 from HuggingFace when the cache is cold, and fastembed drives that through `ureq` with no connect, read or overall deadline — `InitOptions` exposes none. A transient DNS stall parked six test processes for 90 minutes with nothing to bound the wait.
+
+  Two distinct problems, two fixes. `QUORUM_MODEL_INIT_TIMEOUT` (default 120s) bounds model init; on timeout the existing BM25+Jaccard fallback takes over instead of the caller hanging. And `QUORUM_DISABLE_EMBEDDINGS` turns the path off outright — `tests/support` sets it on every spawn, because this is the one outbound path gated on no credential, so there was nothing in `NETWORK_ENV_VARS` to strip. Stripping cannot disable a path that needs no key; setting the off switch can.
+
+  The #501 outbound-path table now lists it as the fifth path, and `no_live_calls.rs` pins that every spawn sets the switch. Side effect: `cargo test` drops from ~160s to ~41s, because no test attempts the download any more.
 
 
 ### Security
