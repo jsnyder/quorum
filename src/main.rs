@@ -1044,6 +1044,11 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
     };
 
     let client = match reqwest::Client::builder()
+        // #570: bounded and explicit. api.github.com legitimately redirects
+        // (renamed repos, resource moves), so `none()` would break real
+        // usage; the default's ten hops is more than that needs, and this
+        // request carries GITHUB_TOKEN.
+        .redirect(reqwest::redirect::Policy::limited(3))
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()
@@ -3477,6 +3482,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         };
 
         let client = match reqwest::Client::builder()
+            // #570: bounded and explicit, same reasoning as the other GitHub
+            // client above.
+            .redirect(reqwest::redirect::Policy::limited(3))
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
             .build()
@@ -3676,6 +3684,10 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
 
     // The daemon is always local. Bypass ambient system proxies so a proxy
     // cannot turn a healthy loopback daemon into a misleading 4xx/5xx result.
+    // #570: no redirect policy set, deliberately. This client talks only to
+    // the local daemon on 127.0.0.1, which never redirects, and it carries no
+    // credential. Reviewed with the other four clients; left on the default
+    // rather than overlooked.
     let client = match reqwest::blocking::Client::builder().no_proxy().build() {
         Ok(client) => client,
         Err(e) => {

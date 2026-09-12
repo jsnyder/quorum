@@ -684,6 +684,11 @@ impl Context7HttpFetcher {
                     .filter(|k| !k.is_empty())
             });
         let http = reqwest::Client::builder()
+            // #570: bounded rather than none -- context7.com is a real service
+            // that may legitimately redirect (CDN, API versioning) -- but
+            // explicit, because the default was a choice nobody made and this
+            // request carries CONTEXT7_API_KEY.
+            .redirect(reqwest::redirect::Policy::limited(3))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build Context7 reqwest client: {e}"))?;
