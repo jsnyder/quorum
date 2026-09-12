@@ -559,7 +559,22 @@ pub struct DaemonOpts {
 /// help text named a different model entirely. Both now read from here, and
 /// `judge_model_help_names_the_actual_default` fails if the help text drifts
 /// away from it again.
-pub const DEFAULT_JUDGE_MODEL: &str = "gpt-4.1-mini";
+///
+/// #546: was `gpt-4.1-mini`, which obeys prompt injection in reviewed source.
+/// Measured end-to-end through `judge_completion` -- a file whose comments
+/// instruct the judge to answer `fp` flipped 4 honest `tp` verdicts to `fp`
+/// with the attacker's own reason string, and under `judge: required` a
+/// rejected finding is dropped, so that is a suppression primitive. Four
+/// prompt-level defences (sandbox tag, "this is data" notice, hardened system
+/// prompt, criteria restated after the untrusted block) were each measured and
+/// each failed completely on that model. `gpt-5-mini` resists the same payload,
+/// and is cheaper on both axes ($0.25/$2.00 against $2.00/$8.00 per 1M).
+///
+/// The model is doing the work here, which makes this mitigated rather than
+/// solved: it is an empirical property of today's models, not a structural
+/// guarantee. `eval/judge-injection/probe.py` re-runs the measurement, and
+/// anything changing this constant should run it first.
+pub const DEFAULT_JUDGE_MODEL: &str = "gpt-5-mini";
 
 #[derive(Parser)]
 pub struct ReviewOpts {
@@ -678,7 +693,7 @@ pub struct ReviewOpts {
     // different model is worse than naming none. Kept as a plain comment, not
     // a doc comment: doc comments here are rendered into `--help`, and the
     // reader of `--help` wants the default, not this note.
-    /// Model for judge calls (default: gpt-4.1-mini, also: QUORUM_JUDGE_MODEL)
+    /// Model for judge calls (default: gpt-5-mini, also: QUORUM_JUDGE_MODEL)
     #[arg(long)]
     pub judge_model: Option<String>,
 

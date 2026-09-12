@@ -829,6 +829,7 @@ pub async fn review_file(
                 let result = crate::judge::judge_findings(
                     source_findings,
                     source,
+                    &file_str,
                     &rule_metadata,
                     &cache,
                     &cache_path,

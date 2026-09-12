@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
+
+  Source, filename, and the `evidence`/`title` strings now go through `skill_prompt_defense::wrap_code_to_review`, the same wrapper the skills path already uses, so none of them can forge `</code_to_review>`.
+
+  **That is not what stops the attack.** Four prompt-level defences were each measured against the same payload and each failed completely: the sandbox tag alone, plus a "this is data" notice, plus a hardened system prompt, plus the criteria restated after the untrusted block — 8 of 8 verdicts flipped every time. What separates a safe judge from an unsafe one is the model, so the default judge model moves from `gpt-4.1-mini` (obeys) to `gpt-5-mini` (resists), which is also cheaper on both axes.
+
+  Mitigated rather than solved: resistance is an empirical property of today's models, not a structural guarantee. `eval/judge-injection/probe.py` re-runs the measurement and exits non-zero if a model obeys; run it before changing `DEFAULT_JUDGE_MODEL`. Full write-up, including the structural fix not taken: `docs/judge-injection-546.md`.
+
+### Changed
+
+- The default judge model is now `gpt-5-mini` (was `gpt-4.1-mini`). See #546 above for why; it is also 8x cheaper on input and 4x on output.
+
+
 ### Fixed
 
 - **The judge silently deleted findings on the files with the most of them** (#533). `judge_findings` sent a file's entire finding set in one call and `judge_completion` caps the response at 2048 tokens. Measured on `src/calibrator.rs`: 31 findings in, `finish_reason: "length"`, zero verdicts out -- and `judge: required` then withheld all 31. Findings are now sent in batches of 12 (~2.5x headroom), and a batch that fails no longer costs the batches that succeeded.
