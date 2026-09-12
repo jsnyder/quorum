@@ -1023,9 +1023,6 @@ mod tests {
             mode: None,
             context: Default::default(),
             finding_ids: Vec::new(),
-            skills_used: Vec::new(),
-            skill_findings: None,
-            integrator_findings_out: None,
         }
     }
 

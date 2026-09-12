@@ -3410,9 +3410,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             },
             context: context_telem,
             finding_ids: quorum::finding::collect_finding_ids(&all_findings),
-            skills_used: Vec::new(),
-            skill_findings: None,
-            integrator_findings_out: None,
         };
         if let Err(e) = review_log.record_with_meta(&record, &finding_meta) {
             eprintln!("Warning: failed to write review log: {}", e);
@@ -5810,9 +5807,6 @@ mod backfill_linkage_tests {
             mode: None,
             context: review_log::ContextTelemetry::default(),
             finding_ids: vec!["FIND1".into()],
-            skills_used: vec![],
-            skill_findings: None,
-            integrator_findings_out: None,
         };
         let meta = vec![review_log::FindingMeta {
             id: "FIND1".into(),
