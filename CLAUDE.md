@@ -23,7 +23,6 @@ cargo run -- review src/*.rs --ensemble --model gpt-5.6,claude-opus-5  # overrid
 cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review
 cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
 cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
-cargo run -- review file.rs --live-registry  # enable download-count popularity lookups
 cargo run -- review file.rs --framework home-assistant  # override framework detection
 cargo run -- stats --by-repo                 # dimensional stats by repo
 cargo run -- stats --by-caller               # dimensional stats by caller
@@ -50,7 +49,6 @@ QUORUM_API_KEY=sk-...                          # enables LLM review
 QUORUM_MODEL=gpt-5.6                           # default model (v0.31.0+; was gpt-5.4)
 QUORUM_ENSEMBLE_MODELS=gpt-5.4,gemini-2.5-pro  # for --ensemble
 # Precedence for the reviewer model: --model > QUORUM_ENSEMBLE_MODELS (ensemble only) > QUORUM_MODEL
-QUORUM_CONTEXT7_LIVE_REGISTRY=1                # enable live registry lookups (alt: --live-registry flag)
 QUORUM_BYPASS_PROXY_CACHE=1                    # (or `--no-cache`) bypass the proxy's response cache so every call reaches
                                                # the provider. Required when A/B-ing models or validating
                                                # a new build against a fixture -- otherwise a cached replay
@@ -174,7 +172,9 @@ The recency weight is `exp(-age_days / τ)` so half-life ≈ τ × ln 2. `fp_kin
 
 **pyproject.toml precedence:** `[project].dependencies` (PEP 621) wins over `[tool.poetry.dependencies]`. Either section *present but with the wrong TOML type* (e.g. a string instead of an array/table) is treated as "explicitly empty" — we do **not** fall back to `requirements.txt`, since the user clearly intended to declare deps in pyproject. A warning is logged via `tracing::warn` so the malformed manifest is visible. Falling through would silently surface stale or unrelated deps.
 
-**Precision targeting (v0.21.0+, #287):** three-layer decision pipeline filters enrichment to reduce noise. Layer 1: usage gate (dep must appear in the file's imports). Layer 2: skip-list for ~70 mainstream libs (React, lodash, etc.) whose docs add bulk without novelty. Layer 3: popularity-tier token budgets (niche libs get full budget, popular libs get reduced). `--live-registry` or `QUORUM_CONTEXT7_LIVE_REGISTRY=1` enables download-count lookups (crates.io/npm/PyPI, cached 7d) for data-driven tier assignment. New telemetry: `context7_skipped_popular`, `context7_budget_reduced`.
+**Precision targeting (v0.21.0+, #287):** two-layer decision pipeline filters enrichment to reduce noise. Layer 1: usage gate (dep must appear in the file's imports). Layer 2: skip-list for ~70 mainstream libs (React, lodash, etc.) whose docs add bulk without novelty. Deps that pass both get a token budget scaled by Context7's own quality signals (`quality_scaled_budget` in `src/enrichment_policy.rs`): benchmark score and snippet count, gated at 50.0/5. Telemetry: `context7_skipped_popular`.
+
+A third layer -- popularity-tier budgets driven by live crates.io/npm/PyPI download counts -- was removed in #522. It was gated behind an opt-in flag that nothing set, so `context7_budget_reduced` was 0 across 1,697 recorded reviews and every dep fell to the `Unknown` tier. The documentation described behaviour the tool never exercised.
 
 **Bootstrap failure (CR8):** when `Context7HttpFetcher::new()` fails at `run_review` start, `PipelineConfig.context7_disabled` is set to `true` and per-file enrichment is skipped cleanly via the `context7_skip_reason` predicate in `src/pipeline.rs`. Without this, each file would re-fail `Context7HttpFetcher::new()?` and abort the whole review.
 

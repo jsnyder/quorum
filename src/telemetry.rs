@@ -25,8 +25,6 @@ pub struct TelemetryEntry {
     pub context7_query_failed: u32,
     #[serde(default)]
     pub context7_skipped_popular: u32,
-    #[serde(default)]
-    pub context7_budget_reduced: u32,
     /// #123 Layer 1 (Task 10): fraction of `Verdict::Fp` feedback entries
     /// that carry a `fp_kind` discriminator. Range [0.0, 1.0]. `None` when
     /// the loaded feedback store has no FP entries (denominator zero).
@@ -99,7 +97,6 @@ struct RawTelemetryRow {
     context7_resolve_failed: i64,
     context7_query_failed: i64,
     context7_skipped_popular: i64,
-    context7_budget_reduced: i64,
     fp_kind_utilization_rate: Option<f64>,
     judge_calls: i64,
     judge_approved: i64,
@@ -144,7 +141,6 @@ impl RawTelemetryRow {
             context7_resolve_failed: self.context7_resolve_failed as u32,
             context7_query_failed: self.context7_query_failed as u32,
             context7_skipped_popular: self.context7_skipped_popular as u32,
-            context7_budget_reduced: self.context7_budget_reduced as u32,
             fp_kind_utilization_rate: self.fp_kind_utilization_rate.map(|v| v as f32),
             judge_calls: self.judge_calls as u32,
             judge_approved: self.judge_approved as u32,
@@ -419,7 +415,7 @@ impl TelemetryStore {
                 ts, files, findings, model,
                 tokens_in, tokens_out, duration_ms, suppressed,
                 context7_resolved, context7_resolve_failed, context7_query_failed,
-                context7_skipped_popular, context7_budget_reduced,
+                context7_skipped_popular,
                 fp_kind_utilization_rate,
                 judge_calls, judge_approved, judge_rejected,
                 judge_uncertain, judge_skipped, judge_cache_hits,
@@ -428,11 +424,11 @@ impl TelemetryStore {
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11,
-                ?12, ?13,
-                ?14,
-                ?15, ?16, ?17,
-                ?18, ?19, ?20,
-                ?21
+                ?12,
+                ?13,
+                ?14, ?15, ?16,
+                ?17, ?18, ?19,
+                ?20
             )",
             params![
                 ts,
@@ -447,7 +443,6 @@ impl TelemetryStore {
                 i64::from(entry.context7_resolve_failed),
                 i64::from(entry.context7_query_failed),
                 i64::from(entry.context7_skipped_popular),
-                i64::from(entry.context7_budget_reduced),
                 entry.fp_kind_utilization_rate.map(f64::from),
                 i64::from(entry.judge_calls),
                 i64::from(entry.judge_approved),
@@ -493,7 +488,7 @@ impl TelemetryStore {
                 ts, files, findings, model,
                 tokens_in, tokens_out, duration_ms, suppressed,
                 context7_resolved, context7_resolve_failed, context7_query_failed,
-                context7_skipped_popular, context7_budget_reduced,
+                context7_skipped_popular,
                 fp_kind_utilization_rate,
                 judge_calls, judge_approved, judge_rejected,
                 judge_uncertain, judge_skipped, judge_cache_hits,
@@ -517,15 +512,14 @@ impl TelemetryStore {
                     context7_resolve_failed: row.get(9)?,
                     context7_query_failed: row.get(10)?,
                     context7_skipped_popular: row.get(11)?,
-                    context7_budget_reduced: row.get(12)?,
-                    fp_kind_utilization_rate: row.get(13)?,
-                    judge_calls: row.get(14)?,
-                    judge_approved: row.get(15)?,
-                    judge_rejected: row.get(16)?,
-                    judge_uncertain: row.get(17)?,
-                    judge_skipped: row.get(18)?,
-                    judge_cache_hits: row.get(19)?,
-                    judge_latency_ms: row.get(20)?,
+                    fp_kind_utilization_rate: row.get(12)?,
+                    judge_calls: row.get(13)?,
+                    judge_approved: row.get(14)?,
+                    judge_rejected: row.get(15)?,
+                    judge_uncertain: row.get(16)?,
+                    judge_skipped: row.get(17)?,
+                    judge_cache_hits: row.get(18)?,
+                    judge_latency_ms: row.get(19)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -551,7 +545,7 @@ impl TelemetryStore {
                 ts, files, findings, model,
                 tokens_in, tokens_out, duration_ms, suppressed,
                 context7_resolved, context7_resolve_failed, context7_query_failed,
-                context7_skipped_popular, context7_budget_reduced,
+                context7_skipped_popular,
                 fp_kind_utilization_rate,
                 judge_calls, judge_approved, judge_rejected,
                 judge_uncertain, judge_skipped, judge_cache_hits,
@@ -576,15 +570,14 @@ impl TelemetryStore {
                     context7_resolve_failed: row.get(9)?,
                     context7_query_failed: row.get(10)?,
                     context7_skipped_popular: row.get(11)?,
-                    context7_budget_reduced: row.get(12)?,
-                    fp_kind_utilization_rate: row.get(13)?,
-                    judge_calls: row.get(14)?,
-                    judge_approved: row.get(15)?,
-                    judge_rejected: row.get(16)?,
-                    judge_uncertain: row.get(17)?,
-                    judge_skipped: row.get(18)?,
-                    judge_cache_hits: row.get(19)?,
-                    judge_latency_ms: row.get(20)?,
+                    fp_kind_utilization_rate: row.get(12)?,
+                    judge_calls: row.get(13)?,
+                    judge_approved: row.get(14)?,
+                    judge_rejected: row.get(15)?,
+                    judge_uncertain: row.get(16)?,
+                    judge_skipped: row.get(17)?,
+                    judge_cache_hits: row.get(18)?,
+                    judge_latency_ms: row.get(19)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -619,7 +612,6 @@ mod tests {
             context7_resolve_failed: 0,
             context7_query_failed: 0,
             context7_skipped_popular: 0,
-            context7_budget_reduced: 0,
             fp_kind_utilization_rate: None,
             judge_calls: 0,
             judge_approved: 0,
@@ -660,7 +652,6 @@ mod tests {
         assert_eq!(entry.context7_resolve_failed, 0);
         assert_eq!(entry.context7_query_failed, 0);
         assert_eq!(entry.context7_skipped_popular, 0);
-        assert_eq!(entry.context7_budget_reduced, 0);
         assert_eq!(entry.judge_calls, 0);
         assert_eq!(entry.judge_approved, 0);
         assert_eq!(entry.judge_rejected, 0);
@@ -1013,7 +1004,6 @@ mod tests {
             context7_resolve_failed: 0,
             context7_query_failed: 0,
             context7_skipped_popular: 0,
-            context7_budget_reduced: 0,
             fp_kind_utilization_rate: None,
             judge_calls: 0,
             judge_approved: 0,
@@ -1062,7 +1052,6 @@ mod tests {
             context7_resolve_failed: 1,
             context7_query_failed: 2,
             context7_skipped_popular: 4,
-            context7_budget_reduced: 6,
             fp_kind_utilization_rate: Some(0.42),
             judge_calls: 10,
             judge_approved: 7,
@@ -1094,7 +1083,6 @@ mod tests {
         assert_eq!(got.context7_resolve_failed, entry.context7_resolve_failed);
         assert_eq!(got.context7_query_failed, entry.context7_query_failed);
         assert_eq!(got.context7_skipped_popular, entry.context7_skipped_popular);
-        assert_eq!(got.context7_budget_reduced, entry.context7_budget_reduced);
         assert_eq!(got.fp_kind_utilization_rate, entry.fp_kind_utilization_rate);
         assert_eq!(got.judge_calls, entry.judge_calls);
         assert_eq!(got.judge_approved, entry.judge_approved);
