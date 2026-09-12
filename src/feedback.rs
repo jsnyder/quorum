@@ -443,9 +443,7 @@ impl FeedbackStore {
     /// Sidecar lock path for this store (#494). Must match
     /// `main::feedback_lock_path`; a test pins the two together.
     pub fn lock_path(path: &std::path::Path) -> std::path::PathBuf {
-        let mut p = path.as_os_str().to_os_string();
-        p.push(".lock");
-        std::path::PathBuf::from(p)
+        crate::file_util::sidecar_lock_path(path)
     }
 
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {

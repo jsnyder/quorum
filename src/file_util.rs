@@ -175,3 +175,46 @@ mod tests {
         ));
     }
 }
+
+/// Advisory-lock sidecar for an append-only JSONL data file (#494, #549).
+///
+/// POSIX advisory locks attach to the **inode**, not the path. Any writer that
+/// replaces a file by `rename` therefore defeats a lock held on the file
+/// itself: a blocked appender wakes holding a lock on an inode with no
+/// directory entry, writes successfully, and the data is gone. Locking a
+/// sidecar that is never renamed keeps lock identity stable across the swap
+/// while leaving the rewrite atomic.
+///
+/// Single definition on purpose. This existed as two copies -- one in
+/// `FeedbackStore`, one in `main` -- and the only thing stopping them drifting
+/// was a test asserting they were equal. Two helpers that agree with each
+/// other can still both be wrong, and neither is what a writer actually calls.
+pub fn sidecar_lock_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut p = path.as_os_str().to_os_string();
+    p.push(".lock");
+    std::path::PathBuf::from(p)
+}
+
+#[cfg(test)]
+mod sidecar_lock_tests {
+    use super::sidecar_lock_path;
+    use std::path::Path;
+
+    #[test]
+    fn appends_lock_suffix_without_replacing_the_extension() {
+        assert_eq!(
+            sidecar_lock_path(Path::new("/q/feedback.jsonl")),
+            Path::new("/q/feedback.jsonl.lock")
+        );
+        // `with_extension` would produce feedback.lock and collide across
+        // files that differ only by extension.
+        assert_eq!(
+            sidecar_lock_path(Path::new("/q/calibrator_traces.jsonl")),
+            Path::new("/q/calibrator_traces.jsonl.lock")
+        );
+        assert_ne!(
+            sidecar_lock_path(Path::new("/q/a.jsonl")),
+            sidecar_lock_path(Path::new("/q/a.json"))
+        );
+    }
+}
