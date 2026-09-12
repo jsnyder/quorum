@@ -1150,6 +1150,10 @@ mod integration_tests {
 
     #[tokio::test]
     async fn post_review_creates_review_with_inline_comments() {
+        // #569: every response below carries `Connection: close`. This mock
+        // drops the socket after one exchange, and without that header the
+        // client pools the connection and may reuse the dead socket for the
+        // POST, which is not retried. Flaked on CI and under local load.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let base_url = format!("http://127.0.0.1:{}", port);
@@ -1167,7 +1171,7 @@ mod integration_tests {
                 if req_str.starts_with("GET") {
                     let body = "[]";
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -1175,7 +1179,7 @@ mod integration_tests {
                 } else {
                     let body = r#"{"id": 42}"#;
                     let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
                         body.len(),
                         body
                     );
