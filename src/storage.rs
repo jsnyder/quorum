@@ -175,9 +175,19 @@ fn archive_path(quorum_home: &Path, file_name: &str) -> std::path::PathBuf {
             return candidate;
         }
     }
-    // Vanishingly unlikely; better to overwrite the thousandth archive than to
-    // fail the migration and strand the source file again.
-    base
+    // All the counter names are taken. Fall back to a timestamp rather than
+    // any existing name.
+    //
+    // The first version of this returned `base` here, which is the ORIGINAL
+    // archive -- the one this function exists to protect. Quorum's review of
+    // this branch caught it: the comment said "the thousandth", the code
+    // returned the first, and the code was the dangerous one. There is no
+    // acceptable name to overwrite, so pick one that cannot collide.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    quorum_home.join(format!("{file_name}.migrated.{nanos}"))
 }
 
 fn open_and_migrate(db_path: &Path) -> anyhow::Result<Connection> {
@@ -1121,6 +1131,36 @@ mod tests {
         assert!(
             !home.join("reviews.jsonl").exists(),
             "the file must be renamed so the condition clears itself"
+        );
+    }
+
+    /// #556: with every counter name taken, the fallback must still not
+    /// overwrite an existing archive.
+    ///
+    /// The first version returned the base name here -- the original archive,
+    /// the largest and oldest one, which is exactly what `archive_path`
+    /// exists to protect.
+    #[test]
+    fn archive_path_exhaustion_does_not_overwrite_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+
+        std::fs::write(home.join("reviews.jsonl.migrated"), "original").unwrap();
+        for n in 2..1000 {
+            std::fs::write(home.join(format!("reviews.jsonl.migrated.{n}")), "x").unwrap();
+        }
+
+        let picked = archive_path(home, "reviews.jsonl");
+        assert!(
+            !picked.exists(),
+            "the fallback picked an existing file ({}), which renaming onto \
+             would destroy",
+            picked.display()
+        );
+        assert_ne!(
+            picked,
+            home.join("reviews.jsonl.migrated"),
+            "the fallback must never be the original archive"
         );
     }
 
