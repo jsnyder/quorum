@@ -305,11 +305,19 @@ pub fn apply_grounding(
     findings
 }
 
+/// Whether a `QUORUM_DISABLE_AST_GROUNDING` value means "disabled".
+///
+/// #497: the parse lived inline in `pipeline.rs` and was only ever exercised
+/// by a test that set the variable and read it straight back -- which tested
+/// `std::env`, not this rule, and needed an unsafe env mutation to do it.
+/// Naming it makes the accepted spellings testable directly.
+pub fn grounding_disabled_by(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn extracts_backtick_identifiers_from_title() {
@@ -859,8 +867,38 @@ mod tests {
     }
 
     #[test]
-    fn apply_grounding_env_var_true_also_disables() {
-        let _guard = ENV_LOCK.lock().unwrap();
+    fn grounding_disable_flag_accepts_1_and_case_insensitive_true() {
+        for val in ["1", "true", "TRUE", "True", "tRuE"] {
+            assert!(
+                grounding_disabled_by(Some(val)),
+                "{val} should disable grounding"
+            );
+        }
+    }
+
+    #[test]
+    fn grounding_disable_flag_rejects_everything_else() {
+        // Absent, empty, and the near-misses that would be easy to accept by
+        // accident. "0" and "false" mattering is the point: a truthy-ish parse
+        // that accepted any non-empty value would silently disable grounding
+        // for anyone who set the variable to "0".
+        for val in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("yes"),
+            Some("true "),
+        ] {
+            assert!(
+                !grounding_disabled_by(val),
+                "{val:?} should not disable grounding"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_grounding_respects_the_disabled_flag() {
         let source = "fn foo() {}\n";
         let findings = vec![
             FindingBuilder::new()
@@ -870,17 +908,9 @@ mod tests {
                 .severity(Severity::High)
                 .build(),
         ];
-        for val in ["1", "true", "TRUE", "True"] {
-            unsafe { std::env::set_var("QUORUM_DISABLE_AST_GROUNDING", val) };
-            let disabled = std::env::var("QUORUM_DISABLE_AST_GROUNDING")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            assert!(disabled, "Should be disabled for value: {val}");
-            let result = apply_grounding(findings.clone(), source, disabled, "");
-            assert!(result[0].grounding_status.is_none());
-            assert_eq!(result[0].severity, Severity::High);
-        }
-        unsafe { std::env::remove_var("QUORUM_DISABLE_AST_GROUNDING") };
+        let result = apply_grounding(findings, source, true, "");
+        assert!(result[0].grounding_status.is_none());
+        assert_eq!(result[0].severity, Severity::High);
     }
 
     #[test]

@@ -432,12 +432,27 @@ pub fn compute_exit_code(findings: &[Finding]) -> i32 {
 /// - CODEX_CI: Codex CLI (OpenAI)
 /// - AGENT: Generic agent identifier (proposed Codex standard)
 pub fn should_use_compact(compact_flag: bool) -> bool {
-    compact_flag
-        || is_env_set("CLAUDE_CODE")
-        || is_env_set("GEMINI_CLI")
-        || is_env_set("CODEX_CI")
-        || is_env_set("AGENT")
-        || is_env_set("GITHUB_ACTIONS")
+    compact_flag || any_agent_env_set(&COMPACT_ENV_VARS.map(is_env_set))
+}
+
+/// Env vars whose presence implies a non-human consumer.
+pub const COMPACT_ENV_VARS: [&str; 5] = [
+    "CLAUDE_CODE",
+    "GEMINI_CLI",
+    "CODEX_CI",
+    "AGENT",
+    "GITHUB_ACTIONS",
+];
+
+/// Pure form: takes the presence flags rather than reading the environment.
+///
+/// #497: tests used to exercise this by mutating the process environment,
+/// which is `unsafe` in edition 2024 -- a concurrent `getenv` during `setenv`
+/// can fault because the environ block may be reallocated under the reader.
+/// The hazard does not depend on both threads touching the same variable, so
+/// a per-module lock did not make it sound.
+pub fn any_agent_env_set(present: &[bool; 5]) -> bool {
+    present.iter().any(|p| *p)
 }
 
 fn is_env_set(var: &str) -> bool {
@@ -469,10 +484,16 @@ pub enum OutputMode {
 }
 
 pub fn resolve_output_mode(json_flag: bool, compact_flag: bool, is_terminal: bool) -> OutputMode {
+    output_mode(json_flag, should_use_compact(compact_flag), is_terminal)
+}
+
+/// Pure form: takes the already-decided compact flag instead of consulting the
+/// environment, so the precedence rules are testable without mutating it
+/// (#497).
+pub fn output_mode(json_flag: bool, compact: bool, is_terminal: bool) -> OutputMode {
     if json_flag {
         return OutputMode::Json;
     }
-    let compact = should_use_compact(compact_flag);
     if compact {
         return OutputMode::Compact;
     }
@@ -498,35 +519,6 @@ mod tests {
     /// happened to run inside the window where a sibling test had temporarily
     /// removed that var. Adding unrelated tests changed thread scheduling and
     /// it started failing.
-    const COMPACT_ENV_VARS: [&str; 5] = [
-        "CLAUDE_CODE",
-        "GEMINI_CLI",
-        "CODEX_CI",
-        "AGENT",
-        "GITHUB_ACTIONS",
-    ];
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Run `f` with every compact-forcing env var cleared, restoring them after.
-    fn with_clean_compact_env<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let saved: Vec<(&str, Option<String>)> = COMPACT_ENV_VARS
-            .iter()
-            .map(|v| (*v, std::env::var(v).ok()))
-            .collect();
-        for (v, _) in &saved {
-            unsafe { std::env::remove_var(v) };
-        }
-        let out = f();
-        for (v, old) in saved {
-            if let Some(val) = old {
-                unsafe { std::env::set_var(v, val) };
-            }
-        }
-        out
-    }
-
     fn hint(linter: LinterKind, lang: &'static str, n: usize, inst: &'static str) -> LinterHint {
         LinterHint {
             linter,
@@ -979,18 +971,24 @@ mod tests {
 
     #[test]
     fn should_use_compact_github_actions() {
-        // This test previously set GITHUB_ACTIONS and then REMOVED it
-        // unconditionally, never restoring the original. Under CI -- where the
-        // var is legitimately set -- that destroyed it for every test that ran
-        // afterwards, making `terminal_without_flags_produces_human` pass or
-        // fail purely on thread scheduling. Take the lock and restore.
-        let result = with_clean_compact_env(|| {
-            unsafe { std::env::set_var("GITHUB_ACTIONS", "true") };
-            let r = should_use_compact(false);
-            unsafe { std::env::remove_var("GITHUB_ACTIONS") };
-            r
-        });
-        assert!(result);
+        // #497: this used to set GITHUB_ACTIONS and remove it without
+        // restoring, which under CI -- where the var is legitimately set --
+        // destroyed it for every later test, making
+        // `terminal_without_flags_produces_human` pass or fail on thread
+        // scheduling. A lock contained the damage; taking the env read out of
+        // the decision removes it. Each variable is now checked individually,
+        // which the env-mutating version never did.
+        for i in 0..super::COMPACT_ENV_VARS.len() {
+            let mut present = [false; 5];
+            present[i] = true;
+            assert!(
+                super::any_agent_env_set(&present),
+                "{} alone should force compact output",
+                super::COMPACT_ENV_VARS[i]
+            );
+        }
+        assert!(!super::any_agent_env_set(&[false; 5]));
+        assert!(should_use_compact(true), "explicit --compact wins");
     }
 
     #[test]
@@ -1237,14 +1235,12 @@ mod tests {
 
     #[test]
     fn pipe_without_flags_produces_json() {
-        let result = with_clean_compact_env(|| resolve_output_mode(false, false, false));
-        assert_eq!(result, OutputMode::Json);
+        assert_eq!(output_mode(false, false, false), OutputMode::Json);
     }
 
     #[test]
     fn terminal_without_flags_produces_human() {
-        let result = with_clean_compact_env(|| resolve_output_mode(false, false, true));
-        assert_eq!(result, OutputMode::Human);
+        assert_eq!(output_mode(false, false, true), OutputMode::Human);
     }
 
     #[test]

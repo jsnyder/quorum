@@ -77,64 +77,50 @@ fn run_context_cmd_init_is_idempotent_and_preserves_existing_config() {
 }
 
 #[test]
-fn prod_deps_from_env_rejects_empty_home() {
-    // An empty HOME would yield a relative ".quorum" path that resolves
-    // against the cwd. Treat empty as missing.
+fn quorum_root_rejects_empty_home() {
+    // An empty HOME would yield a relative ".quorum" path resolving against
+    // the cwd. Treat empty as missing.
     use super::cli::ProdDeps;
-    let prev_home = std::env::var_os("HOME");
-    let prev_up = std::env::var_os("USERPROFILE");
-    // SAFETY: test is single-threaded with respect to env mutation here;
-    // Rust 2024 marks set_var/remove_var unsafe because they can race with
-    // other threads reading env. We restore both values before returning.
-    unsafe {
-        std::env::set_var("HOME", "");
-        std::env::remove_var("USERPROFILE");
-    }
-    let r = ProdDeps::from_env();
-    unsafe {
-        match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match prev_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-    }
     assert!(
-        r.is_err(),
+        ProdDeps::quorum_root_from(Some(""), None).is_err(),
         "empty HOME with no USERPROFILE must error rather than accept relative '.quorum'"
     );
 }
 
 #[test]
-fn prod_deps_from_env_rejects_relative_home() {
-    // A non-empty but *relative* HOME (e.g. accidentally set to "foo" by a
-    // test harness or container init) would also yield a relative
-    // `.quorum` path. The doc comment on from_env promises an anchored
-    // state dir; reject relative values so the promise holds.
+fn quorum_root_rejects_relative_home() {
+    // A non-empty but relative HOME (a container init or test harness setting
+    // it to "foo") would also yield a relative `.quorum`. from_env promises an
+    // anchored state dir; reject relative values so the promise holds.
     use super::cli::ProdDeps;
-    let prev_home = std::env::var_os("HOME");
-    let prev_up = std::env::var_os("USERPROFILE");
-    unsafe {
-        std::env::set_var("HOME", "relative/path");
-        std::env::remove_var("USERPROFILE");
-    }
-    let r = ProdDeps::from_env();
-    unsafe {
-        match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match prev_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-    }
+    let err = ProdDeps::quorum_root_from(Some("relative/path"), None)
+        .expect_err("relative HOME must be rejected");
     assert!(
-        r.is_err(),
-        "relative HOME must error rather than silently anchor state to cwd"
+        err.to_string().contains("absolute"),
+        "error should name the requirement, got: {err}"
     );
+}
+
+#[test]
+fn quorum_root_accepts_an_absolute_home() {
+    // The positive case, which the env-mutating version never covered: a
+    // guard that rejected everything would have passed both tests above.
+    use super::cli::ProdDeps;
+    let root = ProdDeps::quorum_root_from(Some("/home/someone"), None)
+        .expect("absolute HOME must be accepted");
+    assert!(root.ends_with(".quorum"));
+    assert!(root.is_absolute());
+}
+
+#[test]
+fn quorum_root_falls_back_between_home_and_userprofile() {
+    // Whichever is canonical for the platform, an empty one must fall through
+    // to the other rather than being accepted as present-but-empty.
+    use super::cli::ProdDeps;
+    assert!(ProdDeps::quorum_root_from(Some(""), Some("/profile")).is_ok());
+    assert!(ProdDeps::quorum_root_from(Some("/home"), Some("")).is_ok());
+    assert!(ProdDeps::quorum_root_from(None, None).is_err());
+    assert!(ProdDeps::quorum_root_from(Some(""), Some("")).is_err());
 }
 
 #[test]
