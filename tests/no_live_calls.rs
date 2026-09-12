@@ -177,3 +177,32 @@ fn shared_fixture_still_exists() {
         "{FIXTURE} is referenced by review_log.rs and stats_dimensions.rs"
     );
 }
+
+/// #565: the embeddings model download is an outbound path gated on no
+/// credential, so `NETWORK_ENV_VARS` cannot reach it -- stripping cannot
+/// disable something that needs no key. `sanitize` sets the off switch
+/// instead, and this pins that it keeps doing so.
+///
+/// Without it, every `HOME`-isolated spawn hits a cold
+/// `$HOME/.quorum/models` and tries HuggingFace. A transient DNS stall once
+/// parked six of these for 90 minutes, because nothing in that stack has a
+/// timeout.
+#[test]
+fn every_spawn_disables_the_embedding_model_download() {
+    let home = tempfile::tempdir().unwrap();
+    let cmd = support::quorum(home.path());
+    let set: Vec<_> = cmd
+        .get_envs()
+        .filter(|(k, _)| *k == std::ffi::OsStr::new("QUORUM_DISABLE_EMBEDDINGS"))
+        .collect();
+    assert_eq!(
+        set.len(),
+        1,
+        "sanitize() must set QUORUM_DISABLE_EMBEDDINGS on every spawn"
+    );
+    assert_eq!(
+        set[0].1,
+        Some(std::ffi::OsStr::new("1")),
+        "the off switch must actually be on"
+    );
+}

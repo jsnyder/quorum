@@ -56,6 +56,15 @@ QUORUM_BYPASS_PROXY_CACHE=1                    # (or `--no-cache`) bypass the pr
                                                # (a 1.7s review is a cache hit, not a fast reviewer).
 GITHUB_TOKEN=ghp_...                           # GitHub API token for PR comments
 
+# Embedding model (#565)
+QUORUM_DISABLE_EMBEDDINGS=1    # skip the fastembed model entirely; FeedbackIndex falls back to
+                               # BM25+Jaccard. Set on every spawn by tests/support: the model
+                               # download is an outbound path gated on no credential, so stripping
+                               # env vars cannot reach it.
+QUORUM_MODEL_INIT_TIMEOUT=120  # seconds to wait for model init before degrading to BM25+Jaccard.
+                               # fastembed drives the download through ureq with no deadline of
+                               # its own, so a network stall would otherwise hang indefinitely.
+
 # HTTP timeouts (#117, v0.18.0+)
 QUORUM_HTTP_TIMEOUT=300        # total request timeout, seconds (default 300)
 QUORUM_HTTP_READ_TIMEOUT=120   # idle/read timeout, seconds (default 120)
