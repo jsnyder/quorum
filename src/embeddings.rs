@@ -64,6 +64,20 @@ fn init_timeout() -> std::time::Duration {
     init_timeout_from(std::env::var(INIT_TIMEOUT_ENV).ok().as_deref())
 }
 
+/// Latched when model init times out, so the cost is paid once per process.
+///
+/// Quorum's review of the first version pointed out that the abandoned thread
+/// is per call, and `LocalEmbedder::new` runs per index build -- so a stalled
+/// download on a ten-file review meant ten stuck threads and ten full 120s
+/// waits. After the first timeout every later call fails fast into the same
+/// BM25+Jaccard fallback.
+///
+/// Deliberately sticky: if the network recovers mid-run the process stays
+/// degraded rather than re-gambling 120s per file. A review is short-lived and
+/// degrading consistently beats degrading unpredictably.
+#[cfg(feature = "embeddings")]
+static INIT_TIMED_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(feature = "embeddings")]
 fn disabled_from(raw: Option<&str>) -> bool {
     raw.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -86,6 +100,9 @@ impl LocalEmbedder {
         if disabled {
             anyhow::bail!("embeddings disabled via {DISABLE_ENV}");
         }
+        if INIT_TIMED_OUT.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("embedding model init already timed out in this process");
+        }
 
         let mut options = InitOptions::default();
         options.model_name = EmbeddingModel::BGESmallENV15;
@@ -104,6 +121,7 @@ impl LocalEmbedder {
             Ok(Ok(model)) => Ok(Self { model }),
             Ok(Err(e)) => Err(e),
             Err(_) => {
+                INIT_TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
                     timeout_secs = deadline.as_secs(),
                     "embedding model init timed out (cold cache and a slow or \
