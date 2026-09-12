@@ -443,9 +443,7 @@ impl FeedbackStore {
     /// Sidecar lock path for this store (#494). Must match
     /// `main::feedback_lock_path`; a test pins the two together.
     pub fn lock_path(path: &std::path::Path) -> std::path::PathBuf {
-        let mut p = path.as_os_str().to_os_string();
-        p.push(".lock");
-        std::path::PathBuf::from(p)
+        crate::file_util::sidecar_lock_path(path)
     }
 
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
@@ -465,7 +463,7 @@ impl FeedbackStore {
         // the data file's inode does not protect the path across that swap --
         // a writer blocked here would wake holding a lock on an unlinked
         // inode, append successfully, and lose the verdict.
-        let lock_path = Self::lock_path(&self.path);
+        let lock_path = crate::file_util::sidecar_lock_path(&self.path);
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
@@ -545,6 +543,26 @@ impl FeedbackStore {
         use anyhow::Context;
         use fs2::FileExt;
         use std::io::Read;
+        // #549: the read lock goes on the sidecar too. Holding a shared lock
+        // on the data file does not survive a rewrite that renames over the
+        // path -- the reader keeps reading the orphaned inode and silently
+        // sees a stale corpus. Less costly than the write-side loss in #494
+        // (nothing is destroyed, the answer is just wrong), and the same
+        // mechanism, so it gets the same chokepoint.
+        let lock_path = crate::file_util::sidecar_lock_path(&self.path);
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open feedback lock: {}", lock_path.display()))?;
+        FileExt::lock_shared(&lock_file).with_context(|| {
+            format!(
+                "Failed to lock feedback file for read: {}",
+                lock_path.display()
+            )
+        })?;
         let mut file = match std::fs::OpenOptions::new().read(true).open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -556,15 +574,9 @@ impl FeedbackStore {
                 });
             }
         };
-        FileExt::lock_shared(&file).with_context(|| {
-            format!(
-                "Failed to lock feedback file for read: {}",
-                self.path.display()
-            )
-        })?;
         let mut content = String::new();
         let read_result = file.read_to_string(&mut content);
-        let unlock_result = FileExt::unlock(&file);
+        let unlock_result = FileExt::unlock(&lock_file);
         read_result
             .with_context(|| format!("Failed to read feedback file: {}", self.path.display()))?;
         unlock_result

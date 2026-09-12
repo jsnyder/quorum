@@ -40,22 +40,52 @@ fn write_calibrator_traces(
         // PIPE_BUF; trace records are well under that threshold in practice.)
         static TRACE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = TRACE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // #549: lock the sidecar, not the trace file. `calibrate
+        // --backfill-paths` replaces this path by rename; a lock held on the
+        // old inode does not protect the path across that swap, and an append
+        // that lands afterwards succeeds into an unlinked file.
+        let lock_path = crate::file_util::sidecar_lock_path(&trace_path);
+        let sidecar = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(
+                    path = %lock_path.display(),
+                    error = %e,
+                    "calibrator trace lock open failed, skipping write"
+                );
+                return;
+            }
+        };
+        // Lock BEFORE opening the trace file. Swapping which file is locked
+        // is not enough on its own: if the open happens first, a rewriter can
+        // rename between the open and the lock, and this handle is already on
+        // an orphaned inode by the time the lock is granted. Found by the
+        // quorum review of this branch -- the bug being fixed, surviving
+        // inside its own fix.
+        {
+            use fs2::FileExt;
+            if let Err(e) = sidecar.lock_exclusive() {
+                tracing::warn!(
+                    path = %lock_path.display(),
+                    error = %e,
+                    "calibrator trace file lock failed, skipping write"
+                );
+                return;
+            }
+        }
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&trace_path)
         {
             Ok(mut file) => {
-                use fs2::FileExt;
                 use std::io::Write;
-                if let Err(e) = file.lock_exclusive() {
-                    tracing::warn!(
-                        path = %trace_path.display(),
-                        error = %e,
-                        "calibrator trace file lock failed, skipping write"
-                    );
-                    return;
-                }
                 for trace in traces {
                     // #307: normalize file_path at write time
                     let mut trace = trace.clone();

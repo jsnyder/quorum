@@ -4378,6 +4378,114 @@ fn run_feedback(opts: cli::FeedbackOpts) -> i32 {
 
 /// Load a JSONL file line-by-line, skipping unparseable lines.
 /// Returns `Ok(vec![])` for missing files, propagates other I/O errors.
+/// Outcome of a `calibrator_traces.jsonl` rewrite (#549).
+#[derive(Debug, Default, Clone)]
+pub struct TraceRewriteReport {
+    pub rows_in: usize,
+    pub rows_out: usize,
+    /// Lines that did not parse. Preserved verbatim, never dropped.
+    pub unparseable: usize,
+    /// True when the sidecar lock was held by someone else and we declined.
+    pub declined: bool,
+}
+
+/// Rewrite `calibrator_traces.jsonl`, replacing the parsed rows in order while
+/// preserving every line that did not parse (#549).
+///
+/// Three properties, all learned from #480/#494/#526 on `feedback.jsonl`:
+///
+/// - **Sidecar lock.** The appender in `pipeline.rs` holds an `fs2` lock on
+///   the trace file. Renaming a replacement over it orphans the inode that
+///   appender is writing to, and the trace is lost with a successful write.
+///   The previous version of this code took no lock at all.
+/// - **Line preservation.** `load_jsonl` drops unparseable and blank lines, so
+///   rebuilding the file from parsed rows deleted them. Every line is carried
+///   through instead.
+/// - **Refuse to shrink.** `rows_in`/`rows_out` make "nothing was dropped" an
+///   assertion rather than an assumption.
+fn rewrite_traces_preserving_lines(
+    traces_path: &std::path::Path,
+    replacements: &[serde_json::Value],
+) -> Result<TraceRewriteReport, String> {
+    use fs2::FileExt;
+    let mut report = TraceRewriteReport::default();
+
+    let lock_path = quorum::file_util::sidecar_lock_path(traces_path);
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("failed to open trace lock {}: {e}", lock_path.display()))?;
+    if lock_file.try_lock_exclusive().is_err() {
+        report.declined = true;
+        return Ok(report);
+    }
+
+    let content = std::fs::read_to_string(traces_path)
+        .map_err(|e| format!("failed to read {}: {e}", traces_path.display()))?;
+
+    // Replacements are supplied in the order `load_jsonl` produced them, which
+    // is the order parsed lines appear in the file. Walk both together.
+    let mut next = replacements.iter();
+    let mut out = String::new();
+    for line in content.lines() {
+        report.rows_in += 1;
+        if line.trim().is_empty() {
+            out.push('\n');
+            continue;
+        }
+        if serde_json::from_str::<serde_json::Value>(line).is_ok() {
+            match next.next() {
+                Some(v) => {
+                    out.push_str(
+                        &serde_json::to_string(v)
+                            .map_err(|e| format!("failed to serialize trace: {e}"))?,
+                    );
+                    out.push('\n');
+                }
+                // More parsed lines than replacements: keep the original.
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        } else {
+            report.unparseable += 1;
+            out.push_str(line);
+            out.push('\n');
+        }
+        report.rows_out += 1;
+    }
+    // Blank lines are written but not counted above; recount from the buffer.
+    report.rows_out = out.lines().count();
+
+    if report.rows_out != report.rows_in {
+        let _ = lock_file.unlock();
+        return Err(format!(
+            "refusing to write {} row(s) when {} were read; no changes made to {}",
+            report.rows_out,
+            report.rows_in,
+            traces_path.display()
+        ));
+    }
+
+    let tmp_path = traces_path.with_file_name(format!(
+        "calibrator_traces.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    std::fs::write(&tmp_path, &out)
+        .map_err(|e| format!("failed to write {}: {e}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, traces_path).map_err(|e| format!("rename failed: {e}"))?;
+    let _ = lock_file.unlock();
+    Ok(report)
+}
+
 fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -4407,23 +4515,6 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
 
 // ── backfill-linkage ──────────────────────────────────────────────────
 
-/// Re-run `resolve_finding_id` on every unlinked feedback entry and
-/// atomically rewrite `feedback.jsonl`. Returns `(newly_linked, candidates)`
-/// where `candidates = total - already_linked`.
-/// Sidecar lock path for a feedback log (#494).
-///
-/// POSIX advisory locks attach to the **inode**, not the path, and
-/// `backfill_linkage` replaces the data file by `rename`. Locking the data
-/// file itself means a blocked `FeedbackStore::record()` wakes holding a lock
-/// on an inode that no longer has a directory entry: its `write_all` returns
-/// `Ok`, and the verdict is gone. A sidecar that is never renamed keeps lock
-/// identity stable across the swap while leaving the rewrite atomic.
-pub fn feedback_lock_path(feedback_path: &std::path::Path) -> std::path::PathBuf {
-    let mut p = feedback_path.as_os_str().to_os_string();
-    p.push(".lock");
-    std::path::PathBuf::from(p)
-}
-
 /// What a backfill did, or would do (#526).
 ///
 /// `rows_in` / `rows_out` exist so "nothing was dropped" is an assertion
@@ -4445,6 +4536,10 @@ pub struct BackfillReport {
     pub dry_run: bool,
 }
 
+/// Re-run `resolve_finding_id` on every unlinked feedback entry and
+/// atomically rewrite `feedback.jsonl`, preserving every input line.
+///
+/// See [`BackfillReport`] for what is counted and why.
 fn backfill_linkage_inner(quorum_home: &std::path::Path) -> BackfillReport {
     backfill_linkage_with_options(quorum_home, false)
 }
@@ -4470,7 +4565,7 @@ fn backfill_linkage_with_options(quorum_home: &std::path::Path, dry_run: bool) -
     // #494: lock the sidecar, never the data file. The rewrite renames a
     // replacement over `feedback_path`, and an advisory lock held on the old
     // inode does not protect the path afterwards.
-    let lock_path = feedback_lock_path(&feedback_path);
+    let lock_path = quorum::file_util::sidecar_lock_path(&feedback_path);
     let lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -4755,33 +4850,27 @@ fn run_calibrate(opts: cli::CalibrateOpts) -> i32 {
         }
         eprintln!("Backup: {}", bak_path.display());
 
-        let tmp_path = traces_path.with_file_name(format!(
-            "calibrator_traces.{}.{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        let mut out = match std::fs::File::create(&tmp_path) {
-            Ok(f) => std::io::BufWriter::new(f),
+        let report = match rewrite_traces_preserving_lines(&traces_path, &traces_mut) {
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("error: failed to create temp file: {e}");
+                eprintln!("error: {e}");
                 return 3;
             }
         };
-        use std::io::Write;
-        for t in &traces_mut {
-            if let Err(e) = writeln!(out, "{}", serde_json::to_string(t).unwrap()) {
-                eprintln!("error: write failed: {e}");
-                return 3;
-            }
+        if report.declined {
+            eprintln!(
+                "another process holds the trace lock; no changes made to {}",
+                traces_path.display()
+            );
+            return 0;
         }
-        drop(out);
-        if let Err(e) = std::fs::rename(&tmp_path, &traces_path) {
-            eprintln!("error: rename failed: {e}");
-            return 3;
+        if report.unparseable > 0 {
+            eprintln!(
+                "warning: {} unparseable line(s) preserved verbatim",
+                report.unparseable
+            );
         }
+        eprintln!("Rows: {} in, {} out", report.rows_in, report.rows_out);
         eprintln!("Wrote {}", traces_path.display());
         return 0;
     }
@@ -5830,6 +5919,110 @@ mod backfill_linkage_tests {
         (dir, qhome)
     }
 
+    // ── #549: calibrator_traces.jsonl, same three hazards ───────────────
+
+    fn trace_line(title: &str) -> String {
+        format!(
+            r#"{{"finding_title":"{title}","finding_category":"security","tp_weight":1.0,"fp_weight":0.0,"wontfix_weight":0.0,"full_suppress_weight":0.0,"soft_fp_weight":0.0,"matched_precedents":[],"action":null,"input_severity":"medium","output_severity":"medium"}}"#
+        )
+    }
+
+    /// #549 / #480 shape: `load_jsonl` drops unparseable lines, and rebuilding
+    /// the file from parsed rows deleted them permanently.
+    #[test]
+    fn trace_rewrite_preserves_unparseable_lines() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("calibrator_traces.jsonl");
+        let junk = r#"{"finding_title":"torn mid-writ"#;
+        std::fs::write(
+            &path,
+            format!("{}\n{junk}\n{}\n", trace_line("a"), trace_line("b")),
+        )
+        .unwrap();
+
+        let repl: Vec<serde_json::Value> = vec![
+            serde_json::from_str(&trace_line("a-new")).unwrap(),
+            serde_json::from_str(&trace_line("b-new")).unwrap(),
+        ];
+        let report = rewrite_traces_preserving_lines(&path, &repl).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains(junk),
+            "unparseable line must survive:\n{after}"
+        );
+        assert!(
+            after.contains("a-new") && after.contains("b-new"),
+            "parsed rows replaced"
+        );
+        assert_eq!(report.unparseable, 1);
+        assert_eq!(report.rows_in, report.rows_out);
+        assert_eq!(report.rows_in, 3);
+    }
+
+    /// Blank lines count too -- the defect the quorum review found in the
+    /// feedback fix was a skip that preceded the counter, so the guard could
+    /// not see what it dropped.
+    #[test]
+    fn trace_rewrite_preserves_blank_lines_and_counts_them() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("calibrator_traces.jsonl");
+        std::fs::write(
+            &path,
+            format!("{}\n\n{}\n", trace_line("a"), trace_line("b")),
+        )
+        .unwrap();
+
+        let repl: Vec<serde_json::Value> = vec![
+            serde_json::from_str(&trace_line("a-new")).unwrap(),
+            serde_json::from_str(&trace_line("b-new")).unwrap(),
+        ];
+        let report = rewrite_traces_preserving_lines(&path, &repl).unwrap();
+        assert_eq!(report.rows_in, 3, "the blank line must be counted");
+        assert_eq!(report.rows_out, 3);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after.lines().count(), 3, "structure preserved:\n{after}");
+    }
+
+    /// #549 proper: the rewrite must observe the sidecar lock. Asserted by
+    /// holding it and requiring the rewrite to decline -- not by checking the
+    /// sidecar's inode is unchanged, which is true whether or not the rewrite
+    /// ever opens it. That mistake is why the first #494 guard passed with the
+    /// bug reintroduced (#511).
+    #[test]
+    fn trace_rewrite_declines_when_the_sidecar_lock_is_held() {
+        use fs2::FileExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("calibrator_traces.jsonl");
+        std::fs::write(&path, format!("{}\n", trace_line("a"))).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let lock_path = quorum::file_util::sidecar_lock_path(&path);
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        held.lock_exclusive().unwrap();
+
+        let repl: Vec<serde_json::Value> =
+            vec![serde_json::from_str(&trace_line("a-new")).unwrap()];
+        let report = rewrite_traces_preserving_lines(&path, &repl).unwrap();
+        assert!(report.declined, "must yield to a held sidecar lock");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "and must not have written"
+        );
+
+        FileExt::unlock(&held).unwrap();
+        let report = rewrite_traces_preserving_lines(&path, &repl).unwrap();
+        assert!(!report.declined, "and proceeds once released");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("a-new"));
+    }
+
     // ── #480 / #526 / #494: feedback.jsonl is irreplaceable ─────────────
 
     /// #480: a line that fails to deserialize was dropped on the floor and the
@@ -5942,19 +6135,6 @@ mod backfill_linkage_tests {
         assert_eq!(report.by_provenance.get("human").copied().unwrap_or(0), 1);
     }
 
-    /// #494: the two lock-path helpers must agree. If `record()` locks one
-    /// path and the backfill locks another, both take a lock, neither
-    /// excludes the other, and the race is silently back with no test failing.
-    #[test]
-    fn writer_and_backfill_lock_the_same_sidecar() {
-        let p = std::path::Path::new("/tmp/q/feedback.jsonl");
-        assert_eq!(
-            feedback_lock_path(p),
-            feedback::FeedbackStore::lock_path(p),
-            "backfill and FeedbackStore::record must lock the same file"
-        );
-    }
-
     /// #494: POSIX advisory locks attach to the inode, not the path. Holding
     /// the lock on the data file and then renaming a replacement over it
     /// leaves a blocked writer appending to an unlinked inode -- its verdict
@@ -5970,7 +6150,7 @@ mod backfill_linkage_tests {
         use fs2::FileExt;
         let (_dir, qhome) = setup_backfill_env();
         let fb_path = qhome.join("feedback.jsonl");
-        let lock_path = feedback_lock_path(&fb_path);
+        let lock_path = quorum::file_util::sidecar_lock_path(&fb_path);
         assert_ne!(lock_path, fb_path, "the lock must not be the data file");
 
         let held = std::fs::OpenOptions::new()
