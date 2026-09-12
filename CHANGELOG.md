@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Untrusted model output could reach a log unredacted** (#574). Redaction is a chokepoint on the outbound path — `post_json` redacts every request body, so no LLM call can carry a secret out (#530). Logs are a different sink and nothing covered them: the judge logged a 200-char prefix of the raw response on two parse-failure paths, and #546 established that a model can be talked into echoing text straight out of the file it was shown. So a log line could carry a credential out of the source under review.
+
+  `redact::for_log` is now the one way to put that text in a log. It redacts **before** truncating — the other order can cut a secret in half and emit the surviving half, which is still a secret — and neutralises control characters so an attacker-shaped response cannot rewrite a terminal.
+
+  Three sites route through it: the judge's two response-parse warnings and the `raw_severity` field in `LlmFinding::into_finding`. A survey of all 37 `tracing` calls that interpolate a value found no others — notably `parse_llm_response`'s error does **not** embed the body, so the reviewer path was already clean. `tests/no_raw_model_output_in_logs.rs` scans `src/` and fails if a new site interpolates a raw response without the helper, and a behaviour test proves a secret in a malformed response never reaches the sink.
+
+
 ### Fixed
 
 - **A judge verdict could be applied to a finding it never named** (#566). Correlation fell back to "first unused finding with this `rule_id`" whenever the response item's index was missing or already consumed. Findings from one rule all share that id and a batch usually holds several, so the fallback was a guess — and the response is untrusted (it is a model's output, and #546 showed that model can be influenced by the code under review). With `judge: required` dropping a rejected finding, a wrong guess deleted a finding nothing had judged.
