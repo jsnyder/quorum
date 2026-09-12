@@ -138,3 +138,29 @@ fn review_multiple_files() {
         .code(predicate::gt(0))
         .stdout(predicate::str::contains("complexity"));
 }
+
+/// #517: the binary must be able to say what it was built from, so a stale
+/// install diagnoses itself instead of looking identical to a fresh one.
+///
+/// Either shape is acceptable -- a git build names its commit, a build from a
+/// release tarball says it cannot -- but a bare `quorum <version>` is not,
+/// because that is exactly the ambiguity the issue is about.
+#[test]
+fn version_reports_build_provenance() {
+    let (_home, mut cmd) = quorum();
+    let assert = cmd.arg("version").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let line = stdout.trim();
+
+    assert!(line.starts_with("quorum "), "unexpected shape: {line:?}");
+    assert!(line.contains("built "), "no build date: {line:?}");
+
+    let names_a_commit = line.split(['(', ',']).any(|field| {
+        let field = field.trim();
+        field.len() == 12 && field.chars().all(|c| c.is_ascii_hexdigit())
+    });
+    assert!(
+        names_a_commit || line.contains("commit unknown"),
+        "version line neither names a commit nor admits it cannot: {line:?}"
+    );
+}
