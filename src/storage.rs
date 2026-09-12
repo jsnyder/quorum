@@ -183,6 +183,11 @@ fn migrate_v0_to_v1(conn: &Connection) -> anyhow::Result<()> {
             context7_resolve_failed  INTEGER NOT NULL DEFAULT 0,
             context7_query_failed    INTEGER NOT NULL DEFAULT 0,
             context7_skipped_popular INTEGER NOT NULL DEFAULT 0,
+            -- Inert since #522: popularity-tier budgets were deleted and
+            -- nothing reads or writes this. Deliberately NOT dropped --
+            -- NOT NULL DEFAULT 0 means omitting it from INSERTs is safe,
+            -- whereas a DROP COLUMN migration that failed on a real
+            -- telemetry database would break startup. Leave it alone.
             context7_budget_reduced  INTEGER NOT NULL DEFAULT 0,
             fp_kind_utilization_rate REAL,
             judge_calls              INTEGER NOT NULL DEFAULT 0,
