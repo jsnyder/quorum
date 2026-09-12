@@ -440,6 +440,14 @@ impl FeedbackStore {
         &self.path
     }
 
+    /// Sidecar lock path for this store (#494). Must match
+    /// `main::feedback_lock_path`; a test pins the two together.
+    pub fn lock_path(path: &std::path::Path) -> std::path::PathBuf {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(".lock");
+        std::path::PathBuf::from(p)
+    }
+
     pub fn record(&self, entry: &FeedbackEntry) -> anyhow::Result<()> {
         use anyhow::Context;
         use fs2::FileExt;
@@ -452,6 +460,22 @@ impl FeedbackStore {
                 format!("Failed to create feedback parent dir: {}", parent.display())
             })?;
         }
+        // #494: take the advisory lock on a sidecar that is never renamed.
+        // `backfill_linkage` replaces this file by rename, and a lock held on
+        // the data file's inode does not protect the path across that swap --
+        // a writer blocked here would wake holding a lock on an unlinked
+        // inode, append successfully, and lose the verdict.
+        let lock_path = Self::lock_path(&self.path);
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open feedback lock: {}", lock_path.display()))?;
+        FileExt::lock_exclusive(&lock_file)
+            .with_context(|| format!("Failed to lock feedback file: {}", lock_path.display()))?;
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -465,8 +489,7 @@ impl FeedbackStore {
         // via fs2) and cheap. Released by closing the file when this function
         // returns; explicit unlock makes the intent obvious and gives us a
         // chance to surface unlock failures (rare but possible on NFS).
-        FileExt::lock_exclusive(&file)
-            .with_context(|| format!("Failed to lock feedback file: {}", self.path.display()))?;
+        // (The exclusive lock is held on the sidecar above, not on `file`.)
         // #307: normalize file_path at write time to prevent join mismatches.
         let normalized = if entry.file_path.contains("..") || entry.file_path.starts_with('/') {
             let mut clean = entry.clone();
@@ -1104,6 +1127,31 @@ mod tests {
             paths,
             vec![PathBuf::from("/tmp/z.jsonl"), PathBuf::from("/tmp/a.jsonl")],
         );
+    }
+
+    /// #494: `record()` must take its lock on the sidecar, not the data file.
+    ///
+    /// Asserted by observing that the sidecar gets created, which is only true
+    /// if `record` actually opens it. Comparing the two `lock_path` helpers to
+    /// each other does not test this -- both can agree while `record` locks
+    /// something else entirely, which is how the first version of this guard
+    /// passed with the bug reintroduced. Found by mutation testing.
+    #[test]
+    fn record_takes_its_lock_on_the_sidecar() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("feedback.jsonl");
+        let store = FeedbackStore::new(path.clone());
+        let lock_path = FeedbackStore::lock_path(&path);
+        assert!(!lock_path.exists(), "sidecar must not exist yet");
+
+        store.record(&sample_entry(Verdict::Tp)).unwrap();
+
+        assert!(
+            lock_path.exists(),
+            "record() must have opened the sidecar lock at {}",
+            lock_path.display()
+        );
+        assert!(path.exists(), "and still written the entry");
     }
 
     fn sample_entry(verdict: Verdict) -> FeedbackEntry {

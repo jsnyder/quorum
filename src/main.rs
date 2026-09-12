@@ -130,7 +130,8 @@ fn backfill_linkage_opportunistic() {
     let Some(home) = quorum_dir() else {
         return;
     };
-    let (linked, _) = backfill_linkage_inner(&home);
+    let report = backfill_linkage_inner(&home);
+    let linked = report.newly_linked;
     if linked > 0 {
         tracing::info!(linked, "auto-backfilled feedback finding_id linkage");
     }
@@ -4397,94 +4398,211 @@ fn load_jsonl(path: &std::path::Path) -> Result<Vec<serde_json::Value>, String> 
 /// Re-run `resolve_finding_id` on every unlinked feedback entry and
 /// atomically rewrite `feedback.jsonl`. Returns `(newly_linked, candidates)`
 /// where `candidates = total - already_linked`.
-fn backfill_linkage_inner(quorum_home: &std::path::Path) -> (usize, usize) {
+/// Sidecar lock path for a feedback log (#494).
+///
+/// POSIX advisory locks attach to the **inode**, not the path, and
+/// `backfill_linkage` replaces the data file by `rename`. Locking the data
+/// file itself means a blocked `FeedbackStore::record()` wakes holding a lock
+/// on an inode that no longer has a directory entry: its `write_all` returns
+/// `Ok`, and the verdict is gone. A sidecar that is never renamed keeps lock
+/// identity stable across the swap while leaving the rewrite atomic.
+pub fn feedback_lock_path(feedback_path: &std::path::Path) -> std::path::PathBuf {
+    let mut p = feedback_path.as_os_str().to_os_string();
+    p.push(".lock");
+    std::path::PathBuf::from(p)
+}
+
+/// What a backfill did, or would do (#526).
+///
+/// `rows_in` / `rows_out` exist so "nothing was dropped" is an assertion
+/// rather than an assumption. A migration that silently drops rows and one
+/// that drops none are indistinguishable without counting, which is how 15
+/// irreplaceable human/post_fix verdicts went missing for four months.
+#[derive(Debug, Default, Clone)]
+pub struct BackfillReport {
+    pub newly_linked: usize,
+    pub candidates: usize,
+    /// Lines read from the file, including ones that did not parse.
+    pub rows_in: usize,
+    /// Lines written back. Must equal `rows_in`.
+    pub rows_out: usize,
+    /// Lines that failed to deserialize. Preserved verbatim, never dropped.
+    pub unparseable: usize,
+    /// Row counts by provenance tier, so a preview shows what is at stake.
+    pub by_provenance: std::collections::BTreeMap<String, usize>,
+    pub dry_run: bool,
+}
+
+fn backfill_linkage_inner(quorum_home: &std::path::Path) -> BackfillReport {
+    backfill_linkage_with_options(quorum_home, false)
+}
+
+fn backfill_linkage_with_options(quorum_home: &std::path::Path, dry_run: bool) -> BackfillReport {
     use fs2::FileExt;
 
     let feedback_path = quorum_home.join("feedback.jsonl");
+    let mut report = BackfillReport {
+        dry_run,
+        ..Default::default()
+    };
 
     let conn = match quorum::storage::initialize(quorum_home) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("error: cannot open review storage: {e}");
-            return (0, 0);
+            return report;
         }
     };
     let log = review_log::ReviewLog::with_storage(conn);
 
-    // Hold an exclusive lock for the entire read-resolve-write cycle so
-    // concurrent `FeedbackStore::record()` appends cannot be lost (#452).
-    // Use try_lock to keep this opportunistic — skip if another process holds it.
-    let mut lock_file = match std::fs::OpenOptions::new()
+    // #494: lock the sidecar, never the data file. The rewrite renames a
+    // replacement over `feedback_path`, and an advisory lock held on the old
+    // inode does not protect the path afterwards.
+    let lock_path = feedback_lock_path(&feedback_path);
+    let lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&feedback_path)
+        .open(&lock_path)
     {
         Ok(f) => f,
-        Err(_) => return (0, 0),
+        Err(_) => return report,
     };
     if lock_file.try_lock_exclusive().is_err() {
-        return (0, 0);
+        return report;
     }
 
-    // Read directly under our lock — FeedbackStore::load_all() would try to
-    // acquire its own shared lock on the same file, deadlocking on macOS (#452).
-    let mut content = String::new();
-    if std::io::Read::read_to_string(&mut lock_file, &mut content).is_err() {
-        let _ = lock_file.unlock();
-        return (0, 0);
+    let content = match std::fs::read_to_string(&feedback_path) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = lock_file.unlock();
+            return report;
+        }
+    };
+
+    // #480: keep every line. Parsed rows can be updated; unparseable ones are
+    // carried through verbatim. Nothing is reconstructed from a filtered set,
+    // so nothing can be silently dropped -- these are human judgements that
+    // cannot be regenerated.
+    enum Row {
+        Parsed(Box<feedback::FeedbackEntry>),
+        Raw(String),
     }
-    let mut entries: Vec<feedback::FeedbackEntry> = content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    let mut rows: Vec<Row> = Vec::new();
+    for line in content.lines() {
+        // Every line counts, blank ones included. Skipping before the
+        // increment is what let blank lines vanish while `rows_in ==
+        // rows_out` still passed -- the guard cannot see what it never
+        // counted. A whitespace-only line is also evidence of a torn write,
+        // which is exactly the thing worth not destroying.
+        report.rows_in += 1;
+        if line.trim().is_empty() {
+            rows.push(Row::Raw(line.to_string()));
+            continue;
+        }
+        match serde_json::from_str::<feedback::FeedbackEntry>(line) {
+            Ok(e) => {
+                *report
+                    .by_provenance
+                    .entry(format!("{:?}", e.provenance).to_lowercase())
+                    .or_default() += 1;
+                rows.push(Row::Parsed(Box::new(e)));
+            }
+            Err(_) => {
+                report.unparseable += 1;
+                rows.push(Row::Raw(line.to_string()));
+            }
+        }
+    }
 
-    let already_linked = entries.iter().filter(|e| e.finding_id.is_some()).count();
-    let candidates = entries.len() - already_linked;
-    let mut newly_linked = 0usize;
+    let already_linked = rows
+        .iter()
+        .filter(|r| matches!(r, Row::Parsed(e) if e.finding_id.is_some()))
+        .count();
+    let parsed_total = rows.iter().filter(|r| matches!(r, Row::Parsed(_))).count();
+    report.candidates = parsed_total - already_linked;
 
-    for entry in &mut entries {
+    for row in &mut rows {
+        let Row::Parsed(entry) = row else { continue };
         if entry.finding_id.is_some() {
             continue;
         }
         if let Some(fid) = log.resolve_finding_id(&entry.file_path, &entry.finding_title) {
             entry.finding_id = Some(fid);
-            newly_linked += 1;
+            report.newly_linked += 1;
         }
+    }
+    let newly_linked = report.newly_linked;
+    let candidates = report.candidates;
+
+    if dry_run {
+        report.rows_out = report.rows_in;
+        let _ = lock_file.unlock();
+        return report;
     }
 
     if newly_linked > 0 {
         let tmp_path = feedback_path.with_extension("jsonl.tmp");
         let mut buf = String::new();
-        for entry in &entries {
-            match serde_json::to_string(entry) {
-                Ok(line) => {
-                    buf.push_str(&line);
-                    buf.push('\n');
-                }
-                Err(e) => {
-                    eprintln!("error: failed to serialize feedback entry: {e}");
-                    let _ = lock_file.unlock();
-                    return (0, candidates);
-                }
-            }
+        let mut written = 0usize;
+        for row in &rows {
+            let line = match row {
+                Row::Parsed(e) => match serde_json::to_string(e) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("error: failed to serialize feedback entry: {e}");
+                        let _ = lock_file.unlock();
+                        report.newly_linked = 0;
+                        return report;
+                    }
+                },
+                // #480: verbatim. A line we could not parse is still someone's
+                // verdict, and re-emitting it unchanged is the only safe move.
+                Row::Raw(raw) => raw.clone(),
+            };
+            buf.push_str(&line);
+            buf.push('\n');
+            written += 1;
         }
+
+        // #526: refuse to shrink the corpus. This cannot currently fail --
+        // the loop is one line out per line in -- which is exactly why it is
+        // an assertion: a future refactor that filters here would otherwise
+        // drop rows as silently as the one this replaces.
+        if written != report.rows_in {
+            eprintln!(
+                "error: refusing to write {} row(s) when {} were read; \
+                 no changes made to {}",
+                written,
+                report.rows_in,
+                feedback_path.display()
+            );
+            let _ = lock_file.unlock();
+            report.newly_linked = 0;
+            return report;
+        }
+
         if let Err(e) = std::fs::write(&tmp_path, &buf) {
             eprintln!("error: failed to write {}: {e}", tmp_path.display());
             let _ = lock_file.unlock();
-            return (0, candidates);
+            report.newly_linked = 0;
+            return report;
         }
         if let Err(e) = std::fs::rename(&tmp_path, &feedback_path) {
             eprintln!("error: failed to rename tmp to feedback.jsonl: {e}");
             let _ = lock_file.unlock();
-            return (0, candidates);
+            report.newly_linked = 0;
+            return report;
         }
+        report.rows_out = written;
+    } else {
+        report.rows_out = report.rows_in;
     }
 
     let _ = lock_file.unlock();
-    (newly_linked, candidates)
+    let _ = candidates;
+    report
 }
 
 /// CLI entry point for `quorum backfill-linkage`.
@@ -4508,7 +4626,14 @@ fn run_backfill_linkage(opts: cli::BackfillLinkageOpts) -> i32 {
         .count();
     drop(all_entries);
 
-    let (newly_linked, candidates) = backfill_linkage_inner(&quorum_home);
+    let report = backfill_linkage_with_options(&quorum_home, opts.dry_run);
+    let (newly_linked, candidates) = (report.newly_linked, report.candidates);
+    if report.unparseable > 0 {
+        eprintln!(
+            "warning: {} unparseable line(s) preserved verbatim (#480)",
+            report.unparseable
+        );
+    }
 
     let is_pipe = !std::io::IsTerminal::is_terminal(&std::io::stdout());
     let use_compact = output::should_use_compact(false);
@@ -5693,11 +5818,180 @@ mod backfill_linkage_tests {
         (dir, qhome)
     }
 
+    // ── #480 / #526 / #494: feedback.jsonl is irreplaceable ─────────────
+
+    /// #480: a line that fails to deserialize was dropped on the floor and the
+    /// file rewritten without it. `feedback.jsonl` holds human judgements that
+    /// cannot be regenerated, and a partial write, a downgrade, or disk
+    /// corruption is enough to make a line unparseable.
+    #[test]
+    fn backfill_preserves_unparseable_lines_verbatim() {
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+
+        let good = std::fs::read_to_string(&fb_path).unwrap();
+        let junk = r#"{"file_path":"src/x.rs","finding_title":"truncated mid-writ"#;
+        std::fs::write(
+            &fb_path,
+            format!(
+                "{junk}
+{good}"
+            ),
+        )
+        .unwrap();
+
+        let report = backfill_linkage_inner(&qhome);
+        assert_eq!(report.newly_linked, 1, "the good row must still link");
+
+        let after = std::fs::read_to_string(&fb_path).unwrap();
+        assert!(
+            after.contains(junk),
+            "unparseable line must survive the rewrite verbatim; got:\n{after}"
+        );
+        assert_eq!(report.unparseable, 1, "and be reported, not silently kept");
+    }
+
+    /// Found by the quorum review of this very branch: the blank-line skip
+    /// sat *before* `rows_in` was incremented, so blank lines were dropped on
+    /// rewrite and the `rows_in == rows_out` guard still passed -- it could
+    /// not see what it never counted. A refuse-to-shrink check blind to a
+    /// class of row is the same defect this branch exists to fix.
+    #[test]
+    fn backfill_preserves_blank_lines_and_counts_them() {
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+        let good = std::fs::read_to_string(&fb_path).unwrap();
+        // A blank line between two records, as a torn write can leave.
+        std::fs::write(&fb_path, format!("{good}\n{good}")).unwrap();
+
+        let before = std::fs::read_to_string(&fb_path).unwrap();
+        let before_lines: Vec<&str> = before.split('\n').collect();
+
+        let report = backfill_linkage_inner(&qhome);
+        assert_eq!(report.newly_linked, 2, "both records still link");
+        assert_eq!(
+            report.rows_in, 3,
+            "the blank line must be counted, not skipped before counting"
+        );
+        assert_eq!(report.rows_out, report.rows_in);
+        assert_eq!(
+            report.unparseable, 0,
+            "a blank line is not an unparseable verdict"
+        );
+
+        let after = std::fs::read_to_string(&fb_path).unwrap();
+        assert_eq!(
+            after.split('\n').count(),
+            before_lines.len(),
+            "line structure must survive the rewrite; got:\n{after}"
+        );
+    }
+
+    /// #526: the rewrite must never reduce the row count. A migration that
+    /// drops rows and reports nothing is indistinguishable from one that drops
+    /// none -- which is how 15 irreplaceable human/post_fix verdicts went
+    /// missing for four and a half months.
+    #[test]
+    fn backfill_never_reduces_the_row_count() {
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+        let good = std::fs::read_to_string(&fb_path).unwrap();
+        std::fs::write(&fb_path, format!("{good}not json at all\n{good}")).unwrap();
+
+        let before = std::fs::read_to_string(&fb_path).unwrap().lines().count();
+        let report = backfill_linkage_inner(&qhome);
+        let after = std::fs::read_to_string(&fb_path).unwrap().lines().count();
+        assert_eq!(before, after, "row count must be preserved exactly");
+        assert_eq!(report.rows_in, report.rows_out, "and reported as preserved");
+    }
+
+    /// #526: `backfill-linkage` rewrites ground truth and had no preview,
+    /// while `calibrate` -- which writes regenerable model files -- has
+    /// `--dry-run`. The tool that touches irreplaceable data needs it more.
+    #[test]
+    fn backfill_dry_run_reports_without_writing() {
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+        let before = std::fs::read_to_string(&fb_path).unwrap();
+
+        let report = backfill_linkage_with_options(&qhome, true);
+        assert_eq!(
+            report.newly_linked, 1,
+            "dry run still reports what it would do"
+        );
+        assert!(report.dry_run);
+        assert_eq!(
+            std::fs::read_to_string(&fb_path).unwrap(),
+            before,
+            "dry run must not modify the file"
+        );
+
+        // And the provenance breakdown is what makes the preview useful.
+        assert_eq!(report.by_provenance.get("human").copied().unwrap_or(0), 1);
+    }
+
+    /// #494: the two lock-path helpers must agree. If `record()` locks one
+    /// path and the backfill locks another, both take a lock, neither
+    /// excludes the other, and the race is silently back with no test failing.
+    #[test]
+    fn writer_and_backfill_lock_the_same_sidecar() {
+        let p = std::path::Path::new("/tmp/q/feedback.jsonl");
+        assert_eq!(
+            feedback_lock_path(p),
+            feedback::FeedbackStore::lock_path(p),
+            "backfill and FeedbackStore::record must lock the same file"
+        );
+    }
+
+    /// #494: POSIX advisory locks attach to the inode, not the path. Holding
+    /// the lock on the data file and then renaming a replacement over it
+    /// leaves a blocked writer appending to an unlinked inode -- its verdict
+    /// is written successfully and lost. The lock must live on a sidecar.
+    ///
+    /// This asserts the backfill *observes* the sidecar, by holding that lock
+    /// and requiring the backfill to decline. An earlier version of this test
+    /// only checked the sidecar's inode was unchanged after a rewrite, which
+    /// is true whether or not the backfill ever opens it -- it passed with the
+    /// bug reintroduced. Found by mutation-testing rather than by review.
+    #[test]
+    fn backfill_declines_when_the_sidecar_lock_is_held() {
+        use fs2::FileExt;
+        let (_dir, qhome) = setup_backfill_env();
+        let fb_path = qhome.join("feedback.jsonl");
+        let lock_path = feedback_lock_path(&fb_path);
+        assert_ne!(lock_path, fb_path, "the lock must not be the data file");
+
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        held.lock_exclusive().unwrap();
+
+        let report = backfill_linkage_inner(&qhome);
+        assert_eq!(
+            report.newly_linked, 0,
+            "backfill must yield to a held sidecar lock; if it linked anyway \
+             it is locking some other file and the #494 race is open"
+        );
+        assert_eq!(report.rows_in, 0, "it should not even have read");
+
+        FileExt::unlock(&held).unwrap();
+
+        // And with the lock released it proceeds, so the assertion above is
+        // about the lock rather than about the backfill being broken.
+        let report = backfill_linkage_inner(&qhome);
+        assert_eq!(report.newly_linked, 1);
+    }
+
     #[test]
     fn backfill_linkage_links_matching_entries() {
         let (_dir, qhome) = setup_backfill_env();
 
-        let (newly_linked, candidates) = backfill_linkage_inner(&qhome);
+        let r = backfill_linkage_inner(&qhome);
+        let (newly_linked, candidates) = (r.newly_linked, r.candidates);
         assert_eq!(candidates, 1, "one unlinked entry");
         assert_eq!(newly_linked, 1, "should link the matching entry");
 
@@ -5717,12 +6011,14 @@ mod backfill_linkage_tests {
         let (_dir, qhome) = setup_backfill_env();
 
         // First run: links the entry.
-        let (linked1, cand1) = backfill_linkage_inner(&qhome);
+        let r1 = backfill_linkage_inner(&qhome);
+        let (linked1, cand1) = (r1.newly_linked, r1.candidates);
         assert_eq!(linked1, 1);
         assert_eq!(cand1, 1);
 
         // Second run: entry already linked, 0 newly linked.
-        let (linked2, cand2) = backfill_linkage_inner(&qhome);
+        let r2 = backfill_linkage_inner(&qhome);
+        let (linked2, cand2) = (r2.newly_linked, r2.candidates);
         assert_eq!(linked2, 0, "second run must link 0 — already done");
         assert_eq!(cand2, 0, "no unlinked candidates remain");
     }
