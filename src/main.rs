@@ -992,10 +992,19 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
 ///
 /// All three shapes are accepted now. The `_meta` entry is skipped rather than
 /// rejected: it carries linter coverage, not findings.
-fn parse_findings_payload(json_str: &str) -> Result<Vec<finding::Finding>, String> {
-    // Shape 1: a bare array of findings.
+fn parse_findings_payload(json_str: &str) -> Result<Vec<github_report::ReviewFinding>, String> {
+    // Shape 1: a bare array of findings. This shape carries no path at all --
+    // it is a list of findings with nothing saying which file they came from --
+    // so those findings can only be posted to the summary body. #592: the old
+    // code invented a path from `evidence[0]` and so never admitted that.
     if let Ok(f) = serde_json::from_str::<Vec<finding::Finding>>(json_str) {
-        return Ok(f);
+        return Ok(f
+            .into_iter()
+            .map(|finding| github_report::ReviewFinding {
+                file_path: String::new(),
+                finding,
+            })
+            .collect());
     }
 
     let value: serde_json::Value = serde_json::from_str(json_str)
@@ -1016,17 +1025,57 @@ fn parse_findings_payload(json_str: &str) -> Result<Vec<finding::Finding>, Strin
 
 /// Flatten `{"file": ..., "findings": [...]}` entries, ignoring any without a
 /// `findings` key (the `_meta` header is one such).
-fn collect_grouped(entries: &[serde_json::Value]) -> Result<Vec<finding::Finding>, String> {
+///
+/// #592: the group's `file` travels with each finding instead of being dropped
+/// here. It is the only place the path exists -- `Finding` has no such field --
+/// so losing it at this step is what made inline comments impossible.
+fn collect_grouped(
+    entries: &[serde_json::Value],
+) -> Result<Vec<github_report::ReviewFinding>, String> {
     let mut merged = Vec::new();
     for entry in entries {
         let Some(findings_val) = entry.get("findings") else {
             continue;
         };
-        let mut ff: Vec<finding::Finding> = serde_json::from_value(findings_val.clone())
+        let file_path = entry
+            .get("file")
+            .and_then(|f| f.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let ff: Vec<finding::Finding> = serde_json::from_value(findings_val.clone())
             .map_err(|e| format!("invalid grouped findings payload: {e}"))?;
-        merged.append(&mut ff);
+        merged.extend(ff.into_iter().map(|finding| github_report::ReviewFinding {
+            file_path: file_path.clone(),
+            finding,
+        }));
     }
     Ok(merged)
+}
+
+/// Record a file's findings, keeping the flat list and the path-carrying list
+/// in step.
+///
+/// #592: posting needs the file path and `Finding` does not carry one, so a
+/// second list has to exist. A second list that some call site forgets to
+/// update is precisely how the path went missing in the first place, so there
+/// is exactly one writer and `tests/inline_comment_paths.rs` fails if a new
+/// site appends to `all_findings` directly.
+fn record_findings(
+    all: &mut Vec<finding::Finding>,
+    with_paths: &mut Vec<github_report::ReviewFinding>,
+    file_path: &str,
+    findings: Vec<finding::Finding>,
+) {
+    with_paths.extend(
+        findings
+            .iter()
+            .cloned()
+            .map(|finding| github_report::ReviewFinding {
+                file_path: file_path.to_string(),
+                finding,
+            }),
+    );
+    all.extend(findings);
 }
 
 async fn run_report(opts: cli::ReportOpts) -> i32 {
@@ -1048,7 +1097,7 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         }
     };
 
-    let findings: Vec<finding::Finding> = match parse_findings_payload(&json_str) {
+    let findings: Vec<github_report::ReviewFinding> = match parse_findings_payload(&json_str) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -2522,6 +2571,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let use_json = mode == output::OutputMode::Json;
     let use_compact = mode == output::OutputMode::Compact;
     let mut all_findings = Vec::new();
+    // #592: the same findings, each carrying the file it came from, for the
+    // GitHub posting path. `Finding` has no path field.
+    let mut all_review_findings: Vec<github_report::ReviewFinding> = Vec::new();
     let mut file_results: Vec<pipeline::FileReviewResult> = Vec::new();
     let mut had_errors = false;
     // Shared across the sequential and parallel review paths; folded into the
@@ -2670,7 +2722,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 output::format_review(&file_display, &findings, &style)
                             );
                         }
-                        all_findings.extend(findings);
+                        record_findings(
+                            &mut all_findings,
+                            &mut all_review_findings,
+                            &file_display,
+                            findings,
+                        );
                         deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
@@ -2845,7 +2902,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             output::format_review(&result.file_path, &result.findings, &style)
                         );
                     }
-                    all_findings.extend(result.findings.clone());
+                    record_findings(
+                        &mut all_findings,
+                        &mut all_review_findings,
+                        &result.file_path,
+                        result.findings.clone(),
+                    );
                     file_results.push(result);
                 }
                 Err(e) => {
@@ -3146,7 +3208,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     output::format_review(&result.file_path, &result.findings, &style)
                 );
             }
-            all_findings.extend(result.findings.clone());
+            record_findings(
+                &mut all_findings,
+                &mut all_review_findings,
+                &result.file_path,
+                result.findings.clone(),
+            );
             file_results.push(result);
         }
 
@@ -3571,7 +3638,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             repo: ctx.repo,
             pr_number,
             token: ctx.token,
-            findings: all_findings.clone(),
+            findings: all_review_findings.clone(),
             diff_text,
             version,
             run_id,
@@ -6137,6 +6204,31 @@ mod report_payload_tests {
     /// shape, and a wrong belief about the shape is the bug (#496).
     const REVIEW_JSON: &str = include_str!("../tests/fixtures/report/review_json_output.json");
 
+    /// #592: the group's `file` is the only place the path exists, and
+    /// dropping it here is what made inline comments impossible. `report` must
+    /// carry it onto every finding in that group.
+    #[test]
+    fn each_finding_keeps_the_file_its_group_named() {
+        let findings = parse_findings_payload(REVIEW_JSON)
+            .expect("review --json output must be consumable by report");
+        assert!(!findings.is_empty(), "fixture produced no findings");
+        for f in &findings {
+            assert!(
+                !f.file_path.is_empty(),
+                "finding {:?} lost the file its group named",
+                f.finding.title
+            );
+        }
+        // And it must be the path the fixture actually names, not any
+        // non-empty string -- `evidence[0]` was also non-empty.
+        let files: std::collections::BTreeSet<_> =
+            findings.iter().map(|f| f.file_path.as_str()).collect();
+        assert!(
+            files.iter().all(|p| p.ends_with(".rs")),
+            "grouped file paths look wrong: {files:?}"
+        );
+    }
+
     #[test]
     fn report_parses_what_review_actually_writes() {
         let findings = parse_findings_payload(REVIEW_JSON)
@@ -6147,7 +6239,7 @@ mod report_payload_tests {
             "both findings should survive the flatten"
         );
         assert!(
-            findings.iter().all(|f| !f.title.is_empty()),
+            findings.iter().all(|f| !f.finding.title.is_empty()),
             "findings came through empty, so the shape matched but the contents did not"
         );
     }
