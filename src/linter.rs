@@ -394,16 +394,6 @@ mod tests {
         assert!(linters.contains(&LinterKind::Clippy));
     }
 
-    // -- Ruff output normalization --
-
-    // -- Clippy output normalization --
-
-    // -- ESLint output normalization --
-
-    // -- CommandRunner integration --
-
-    // -- Linter source tags --
-
     // -- Yamllint detection --
 
     #[test]
@@ -421,8 +411,6 @@ mod tests {
         let linters = detect_linters(dir.path());
         assert!(linters.contains(&LinterKind::Yamllint));
     }
-
-    // -- Yamllint output normalization --
 
     // -- Shellcheck detection --
 
@@ -452,10 +440,6 @@ mod tests {
         assert!(linters.contains(&LinterKind::Hadolint));
     }
 
-    // -- Shellcheck output normalization --
-
-    // -- Hadolint output normalization --
-
     // -- Tflint detection --
 
     #[test]
@@ -481,8 +465,6 @@ mod tests {
         let linters = detect_linters(dir.path());
         assert!(linters.contains(&LinterKind::Tflint));
     }
-
-    // -- Tflint output normalization --
 
     // -- golangci-lint --
 
