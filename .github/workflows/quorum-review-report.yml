@@ -33,8 +33,19 @@ jobs:
           fi
       - name: Post review
         run: |
-          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
-          PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" --jq '.[0].number')
+          # #496: the PR number comes from the analyze job, which ran on
+          # `pull_request` and knew it. Deriving it here from the head SHA
+          # returns nothing for fork PRs, and the previous version passed the
+          # resulting empty string straight to `--pr`.
+          if [ ! -s pr-number.txt ]; then
+            echo "::error::pr-number.txt missing or empty; refusing to post without a PR number"
+            exit 1
+          fi
+          PR_NUMBER=$(tr -d '[:space:]' < pr-number.txt)
+          if ! echo "$PR_NUMBER" | grep -qE '^[1-9][0-9]*$'; then
+            echo "::error::Invalid PR number: '$PR_NUMBER'"
+            exit 1
+          fi
           quorum report findings.json --pr "$PR_NUMBER"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

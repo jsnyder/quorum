@@ -1,0 +1,78 @@
+[
+ {
+  "_meta": {
+   "linters": {
+    "available_unconfigured": [],
+    "configured": [
+     "clippy"
+    ]
+   }
+  }
+ },
+ {
+  "file": "src/github_report.rs",
+  "findings": [
+   {
+    "calibrator_action": "confirmed",
+    "category": "performance",
+    "confidence": 1.0,
+    "description": "Cyclomatic complexity of 10 exceeds threshold of 10. Consider refactoring.",
+    "evidence": [
+     "cyclomatic_complexity=10"
+    ],
+    "id": "01M2A0PJPW2C94Q9S436H5B2GR",
+    "line_end": 232,
+    "line_start": 190,
+    "rule_id": "local-ast:complexity",
+    "severity": "low",
+    "similar_precedent": [
+     "Wontfix: Function format_summary_counts has cyclomatic complexity 10 (Straightforward severity counting) [sim=1.00]",
+     "Partial: Function `deduplicateFindings` has cyclomatic complexity 10 (While the function does have high cyclomatic complexity that could benefit from refactoring, the finding states complexity \"exceeds threshold of 10\" when it equals 10, making it a borderline case that's somewhat overstated.) [sim=0.99]",
+     "Wontfix: Function format_summary_counts has cyclomatic complexity 10 (Natural complexity for counting severities across multiple categories) [sim=0.91]",
+     "Wontfix: Function format_context_dimension_table has cyclomatic complexity 10 (Threshold-only, pre-existing.) [sim=0.88]",
+     "Wontfix: Function `score` has cyclomatic complexity 10 (Exactly at the threshold, in a reporting function that is a sequence of prints. Splitting it would make it harder to read, not easier.) [sim=0.76]"
+    ],
+    "source": "local-ast",
+    "title": "Function `format_summary_counts` has cyclomatic complexity 10"
+   },
+   {
+    "calibrator_action": "disputed",
+    "category": "maintainability",
+    "confidence": 0.5400000214576721,
+    "description": "Byte-index slicing on a `&str` panics if the index falls on a multi-byte UTF-8 character boundary. Consider `.chars().take(n)` or `.get(..n)`.",
+    "evidence": [
+     "t[5..]"
+    ],
+    "id": "01M2A0PKE8FM8SM9YSHME5WVA0",
+    "line_end": 424,
+    "line_start": 424,
+    "precision_tier": "high",
+    "rule_id": "ast-grep:rust/string-byte-slice",
+    "severity": "info",
+    "similar_precedent": [
+     "FP: string-byte-slice: Byte-index slicing on a `&str` panics if the index falls on a multi-byte UTF-8 character boundary. Consider `.chars().take(n)` or `.get(..n)`. (after[9..] slices past the literal \"tracing::\", which is ASCII, so the boundary is always valid.) [sim=1.00]",
+     "FP: string-byte-slice: Byte-index slicing on a `&str` panics if the index falls on a multi-byte UTF-8 character boundary. Consider `.chars().take(n)` or `.get(..n)`. (The narrow string-byte-slice rule firing on a test helper's bounded slice of an ASCII literal. Pattern matched; context makes it safe.) [sim=0.98]",
+     "TP: string-byte-slice: Byte-index slicing on a &str panics if the index falls on a multi-byte UTF-8 character boundary (Real defensive correctness bug at parse_unified_diff:522 (line[6..]), NEW filing as #197. Pre-existing, low-impact (malformed/adversarial diff only). Out of scope for this batch.) [sim=0.96]",
+     "TP: string-byte-slice: Byte-index slicing on a `&str` panics if the index falls on a non-char boundary (Same short_sha panic; fixed by switching to char_indices. AST pattern correctly flagged the unsafe slice.) [sim=0.96]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.90]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.88]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.88]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.88]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.87]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.87]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Technically the flagged syntax, but &source[name_node.byte_range()] cannot panic. The index comes from a tree-sitter node span, which is always char-aligned in a parsed tree.) [sim=0.86]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.86]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.85]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.85]",
+     "FP: string-byte-slice-broad: String byte slicing (&s[..n]) can panic on non-ASCII boundaries. Consider using s.get(..n) or char_indices. (Not string slicing. The matched expressions are Vec/slice indexing (&output.findings[0], &buf[..end] on a byte buffer, &records[start..end] on a slice); none can split a UTF-8 boundary. Rule defect filed as #510.) [sim=0.84]",
+     "FP: string-byte-slice: Byte-index slicing on a `&str` panics if the index falls on a non-char boundary (All three slices are safe: `&after_prefix[..3]` guarded by starts_with(\"\\\"\\\"\\\"\") (3 ASCII bytes), `&after_prefix[..1]` guarded by starts_with('\"') (1 ASCII byte), and `line[indent..]` uses indent=count of ASCII whitespace chars where byte count == char count. AST pattern can't see the guards.) [sim=0.78]",
+     "TP: string-byte-slice (Tracked in #175. Bundled ast-pattern rule fired correctly: byte-index slicing on &str panics at multi-byte UTF-8 boundary on real source containing non-ASCII.) [sim=0.73]"
+    ],
+    "source": {
+     "linter": "ast-grep"
+    },
+    "title": "string-byte-slice: Byte-index slicing on a `&str` panics if the index falls on a multi-byte UTF-8 character boundary. Consider `.chars().take(n)` or `.get(..n)`."
+   }
+  ]
+ }
+]
