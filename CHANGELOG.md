@@ -9,6 +9,11 @@
   `redact::for_log` is now the one way to put that text in a log. It redacts **before** truncating — the other order can cut a secret in half and emit the surviving half, which is still a secret — and neutralises control characters so an attacker-shaped response cannot rewrite a terminal.
 
   Three sites route through it: the judge's two response-parse warnings and the `raw_severity` field in `LlmFinding::into_finding`. A survey of all 37 `tracing` calls that interpolate a value found no others — notably `parse_llm_response`'s error does **not** embed the body, so the reviewer path was already clean. `tests/no_raw_model_output_in_logs.rs` scans `src/` and fails if a new site interpolates a raw response without the helper, and a behaviour test proves a secret in a malformed response never reaches the sink.
+- **Two credential shapes passed the redactor unredacted** (#578). `github_pat_...` — the fine-grained format GitHub now steers users toward; only the legacy `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` family was covered — and unquoted assignments like `PASSWORD=hunter2`, which the generic patterns missed because they required quotes. Unquoted is what `.env` files, `docker run -e`, CI variable blocks and shell exports all look like. Both reach the LLM through `post_json`, so this was live egress.
+
+  The unquoted pattern is deliberately narrow and every restriction was measured over 685 files of real Rust, Python, TypeScript, YAML and shell, because this file carries a scar from widening a pattern on intuition (`sk-` once turned `flask-debug-true` into `fla[REDACTED]`). Reusing the quoted forms' case-insensitive keyword anchor matched **508** sites — `token: String,`, `api_key: Option<String>,` — and would have corrupted source far worse. Restricting to SCREAMING_CASE keys with `=`, a six-character floor, no `.` in the value, and a whole-token match took that to **5 matches with no false positives**.
+
+  Two gaps are deliberate and tested as such: YAML's `password: hunter2` is out of scope (`:` is what `token: String,` uses), and a dotted value such as a JWT is excluded to spare `os.getenv` — the quoted patterns still cover its quoted form.
 
 
 ### Fixed
