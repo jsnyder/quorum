@@ -98,6 +98,28 @@ established (`judge: required` means required) and is a product decision rather
 than a bug fix, so it is not taken here. It is the right answer if this class
 recurs.
 
-Currently unexercised either way: no bundled rule declares `judge: required`
-after #520 part 2, and `--judge` is opt-in. This is a fix ahead of the next
-speculative rule, not a live incident.
+## What is actually exposed today
+
+An earlier draft of this document said the primitive was "currently
+unexercised". That was too comfortable, and the correction is worth keeping
+rather than quietly editing out.
+
+No **bundled** rule declares `judge: required` after #520 part 2 -- the only
+remaining match in `rules/` is the entry in `README-removed-rules.md` describing
+the six that were deleted. But `judge: required` is rule metadata, and
+`load_rules` reads `~/.quorum/rules/<lang>/` alongside the bundled set, so any
+user rule can declare it and get the drop behaviour.
+
+So the exposure is:
+
+- **Live** for a custom rule declaring `judge: required`, whenever `--judge` is
+  passed.
+- **Live** for any finding the judge rejects on the `judge: optional` path,
+  where the effect is a confidence clamp to 0.05 rather than a drop -- quieter,
+  but still attacker-influenced.
+- **Not** reachable from a default `quorum review` with the shipped rules,
+  because `--judge` is opt-in and nothing bundled requires it.
+
+"A fix ahead of the next speculative rule" understates it. It is a fix ahead of
+the next *user* rule, and users do not review quorum's threat model before
+writing one.
