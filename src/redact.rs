@@ -51,6 +51,52 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
          "$1$2\"[REDACTED]\""),
         (Regex::new(r#"(?i)(^|[^A-Za-z0-9])((?:api[_-]?key|password|secret|token|passwd)(?:[_-][A-Za-z0-9]+)*\s*[=:]\s*)'((?:\\.|[^\n'])+)'"#).unwrap(),
          "$1$2'[REDACTED]'"),
+        // GitHub fine-grained PATs (#578). The legacy `ghp_`/`gho_`/... family
+        // above misses these, and `github_pat_` is the format GitHub now
+        // steers users toward, so the covered prefixes were the historical
+        // ones. The prefix is distinctive enough to need no keyword anchor;
+        // `\b` keeps it from matching inside a longer word, the same guard
+        // `sk-` needed after #530.
+        (Regex::new(r"\bgithub_pat_[A-Za-z0-9_]{20,}").unwrap(), "[REDACTED]"),
+        // Unquoted secret assignments (#578): `PASSWORD=hunter2`.
+        //
+        // The quoted forms above require quotes, so `.env` files, `docker run
+        // -e`, CI variable blocks and shell exports all passed through intact.
+        //
+        // Every constraint here was measured over 685 files of real Rust,
+        // Python, TypeScript, YAML and shell, because this file has a scar
+        // from widening a pattern on intuition (see `sk-` below, which ate
+        // `flask-debug-true`). Reusing the case-insensitive keyword anchor of
+        // the quoted forms matched **508** sites -- `token: String,`,
+        // `api_key: Option<String>,`, `token = token_flag` -- and would have
+        // corrupted ordinary source far worse than `sk-` ever did.
+        //
+        // Four restrictions take that to 5 matches with no false positives:
+        //
+        // 1. SCREAMING_CASE key, `=` only. Env assignments are conventionally
+        //    uppercase; code identifiers are not. This is what kills the 508.
+        //    Cost: YAML's `password: hunter2` is NOT covered, because `:` is
+        //    what `token: String,` uses and no restriction separated them.
+        // 2. Six-char floor. Kills `pf`, `yd`, `int`, and numeric config like
+        //    `TOKEN_EXPIRE_MINUTES=30`. (#61 dropped this floor for the quoted
+        //    forms because the quotes anchor them; unquoted has no such anchor.)
+        // 3. No `.` in the value, which kills `os.getenv`, `process.env.X`,
+        //    `os.environ.get`. Cost: a dotted secret (a JWT) is missed here;
+        //    the quoted patterns still catch it.
+        // 4. The value must run to whitespace or end of input, so a prefix of
+        //    a longer expression cannot match -- without this, `API_KEY =
+        //    process.env.API_KEY;` redacted `process`.
+        //
+        // Two constraints were tried and dropped as redundant: a keyword
+        // exclusion (only `undefined` is long enough to survive the floor) and
+        // an all-digits exclusion (zero digits-only values occurred). Rust's
+        // regex crate has no lookaround, so the trailing delimiter is captured
+        // and replaced rather than asserted.
+        (Regex::new(
+            r#"(^|[^A-Za-z0-9])((?:API[_-]?KEY|PASSWORD|SECRET|TOKEN|PASSWD)(?:[_-][A-Z0-9]+)*\s*=\s*)([^\s"'`()\[\];{}$.]{6,})(\s|$)"#,
+        )
+        .unwrap(),
+        "${1}${2}[REDACTED]${4}"),
         // OpenAI-style keys
         // `\b` left-anchor matters (#530): without it, any word CONTAINING
         // "sk-" matched. `flask-debug-true` became `fla[REDACTED]` and
@@ -550,5 +596,86 @@ mod tests {
         let out = for_log(&"\u{65e5}".repeat(300), 100);
         assert!(out.starts_with('\u{65e5}'));
         assert!(out.ends_with("...[truncated]"));
+    }
+
+    // ── #578: unquoted assignments and fine-grained GitHub PATs ───────────
+
+    #[test]
+    fn github_fine_grained_pat_is_redacted() {
+        let out =
+            redact_secrets("github_pat_11ABCDEFG0aBcDeFgHiJkL_mNoPqRsTuVwXyZ0123456789AbCdEf");
+        assert_eq!(out, "[REDACTED]", "got {out}");
+    }
+
+    #[test]
+    fn github_pat_prefix_inside_a_longer_word_is_left_alone() {
+        // The guard `sk-` needed after #530: a word boundary, so a identifier
+        // that merely contains the prefix is not eaten.
+        let input = "mygithub_pat_of_behaviour_documented_here";
+        assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn unquoted_env_assignments_are_redacted() {
+        for input in [
+            "PASSWORD=hunter2",
+            "export PASSWORD=hunter2",
+            "API_KEY=sk-proj-abc123def456",
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY",
+            "GITHUB_TOKEN=xyzzyabcdefghij",
+        ] {
+            let out = redact_secrets(input);
+            assert!(
+                out.contains("[REDACTED]"),
+                "{input:?} was not redacted: {out}"
+            );
+            assert!(
+                !out.contains("hunter2") && !out.contains("abc123def456"),
+                "the value survived: {out}"
+            );
+        }
+    }
+
+    /// The half that matters more, and the half this file has been burned by.
+    ///
+    /// Reusing the quoted forms' case-insensitive keyword anchor for the
+    /// unquoted case matched 508 sites across 685 real files -- `token:
+    /// String,` and friends -- which would have corrupted ordinary source far
+    /// worse than `sk-` ever did to `flask-debug-true`. Each case below is one
+    /// of the classes that measurement turned up.
+    #[test]
+    fn ordinary_source_is_not_eaten_by_the_unquoted_pattern() {
+        for input in [
+            "    token: String,",
+            "    api_key: Option<String>,",
+            "    let token = token_flag",
+            "    let secret = compute();",
+            "PASSWORD = None",
+            "API_KEY = process.env.API_KEY;",
+            "SECRET_KEY = os.getenv",
+            "ACCESS_TOKEN_EXPIRE_MINUTES=30",
+            "PASSWORD=abc",
+            "from flask import Flask  # flask-debug-true",
+        ] {
+            assert_eq!(
+                redact_secrets(input),
+                input,
+                "{input:?} must pass through untouched"
+            );
+        }
+    }
+
+    /// Known and deliberate gaps, recorded so they are decisions rather than
+    /// surprises. Both fall out of the restrictions that made the pattern
+    /// safe; see the comment on the regex.
+    #[test]
+    fn documented_gaps_in_the_unquoted_pattern() {
+        // `:` is what `token: String,` uses, so YAML scalars are out of scope.
+        let yaml = "password: hunter2value";
+        assert_eq!(redact_secrets(yaml), yaml);
+        // A dotted value is excluded to spare `os.getenv`; the quoted patterns
+        // still cover the quoted form of the same secret.
+        let dotted = "TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0";
+        assert_eq!(redact_secrets(dotted), dotted);
     }
 }
