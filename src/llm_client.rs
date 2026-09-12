@@ -789,6 +789,20 @@ impl OpenAiClient {
         validate_base_url(base_url, policy)?;
         let timeouts = HttpTimeouts::from_env();
         let http = reqwest::Client::builder()
+            // #570: refuse redirects outright. `validate_base_url` above
+            // checks the CONFIGURED url once; reqwest's default
+            // `Policy::limited(10)` would then follow a 302 to a destination
+            // that was never validated -- a private address, say -- carrying
+            // `Authorization: Bearer <api_key>`. That defeats the #119/#167
+            // guard entirely.
+            //
+            // `none()` rather than a re-validating custom policy: an
+            // OpenAI-compatible chat-completions endpoint has no legitimate
+            // reason to redirect, refusing needs no per-hop plumbing, and it
+            // fails loudly with the offending URL rather than following
+            // silently. An operator whose gateway redirects configures the
+            // final URL instead.
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .read_timeout(timeouts.per_read)
             .timeout(timeouts.total)
@@ -2641,6 +2655,81 @@ mod tests {
             "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         }))
+    }
+
+    /// #570: a 302 from the configured endpoint must be an error, not a hop.
+    ///
+    /// `validate_base_url` runs once, on the configured URL. Under reqwest's
+    /// default `Policy::limited(10)` the client would then follow a redirect
+    /// to an address that was never validated -- carrying the bearer token --
+    /// which is precisely what the #119/#167 guard exists to prevent.
+    #[tokio::test]
+    async fn redirect_is_an_error_not_a_follow() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let attacker = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&attacker)
+            .await;
+
+        let configured = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "Location",
+                format!("{}/chat/completions", attacker.uri()).as_str(),
+            ))
+            .mount(&configured)
+            .await;
+
+        let client = build_test_client(&configured.uri());
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
+
+        assert!(
+            res.is_err(),
+            "a 302 must surface as an error rather than being followed"
+        );
+
+        // And the redirect target must never have been contacted. Asserting
+        // only on the error would pass even if the request went out and the
+        // failure came from somewhere else.
+        let hits = attacker
+            .received_requests()
+            .await
+            .expect("wiremock records requests");
+        assert!(
+            hits.is_empty(),
+            "the redirect target received {} request(s); the token was sent to \
+             an unvalidated host",
+            hits.len()
+        );
+    }
+
+    /// The other half: a normal 200 still works, so the policy has not simply
+    /// broken the client. A test that only asserted the failure above would
+    /// pass if `chat_completion` were broken outright.
+    #[tokio::test]
+    async fn non_redirect_responses_still_succeed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let res = client
+            .chat_completion("gpt-5.4", "test prompt", "system")
+            .await;
+        assert!(res.is_ok(), "a plain 200 must still succeed: {res:?}");
     }
 
     #[tokio::test]
