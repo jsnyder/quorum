@@ -68,6 +68,46 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     ]
 });
 
+/// The one way to put untrusted model output or reviewed source into a log.
+///
+/// #574. Redaction is a chokepoint on the *outbound* path -- `post_json`
+/// redacts every request body so no LLM call can leak a secret (#530). Logs are
+/// a different sink and nothing covered them. The judge logged a 200-char
+/// prefix of the raw response on two parse-failure paths, and #546 established
+/// that a model can be talked into echoing text straight out of the file it was
+/// shown, so "the response" and "the reviewed source" are not separable
+/// categories.
+///
+/// Order matters and is the reason this is a function rather than a convention.
+/// Redaction runs **before** truncation: truncating first can cut a secret in
+/// half so the pattern no longer matches, and the surviving half is still a
+/// secret. Cutting a `[REDACTED]` marker in half, by contrast, costs nothing.
+///
+/// Control characters go too. A log line is usually read in a terminal, and
+/// ANSI escapes from an attacker-influenced response can rewrite what the
+/// reader sees -- the same argument `output::strip_control_chars` makes for
+/// findings rendered to a TTY.
+pub fn for_log(text: &str, max_chars: usize) -> String {
+    let redacted = redact_secrets(text);
+    let cleaned: String = redacted
+        .chars()
+        .map(|c| {
+            if c == '\n' || c == '\t' {
+                ' '
+            } else if c.is_control() {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if cleaned.chars().count() <= max_chars {
+        return cleaned;
+    }
+    let kept: String = cleaned.chars().take(max_chars).collect();
+    format!("{kept}...[truncated]")
+}
+
 pub fn redact_secrets(text: &str) -> String {
     let mut result = text.to_string();
     for (pattern, replacement) in PATTERNS.iter() {
@@ -457,5 +497,58 @@ mod tests {
                 "{kw} keyword regressed: input={input:?}, got={output}"
             );
         }
+    }
+
+    // ── #574: for_log ──────────────────────────────────────────────────────
+
+    #[test]
+    fn for_log_redacts_before_it_truncates() {
+        // The secret sits past the cut. Truncating first would drop it, which
+        // looks safe -- but then a shorter secret straddling the boundary
+        // would survive as a half. Redaction has to run on the whole string.
+        let key = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let text = format!("{}{key}", "x".repeat(400));
+        let out = for_log(&text, 200);
+        assert!(!out.contains(key), "secret survived: {out}");
+    }
+
+    #[test]
+    fn for_log_redacts_a_secret_that_straddles_the_cut() {
+        // The case truncate-then-redact gets wrong: half the token is inside
+        // the window, so a naive implementation emits a real prefix of a real
+        // credential.
+        let key = "ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let text = format!("{}{key} trailing", "y".repeat(180));
+        let out = for_log(&text, 200);
+        assert!(!out.contains("ghp_bbbb"), "secret prefix survived: {out}");
+    }
+
+    #[test]
+    fn for_log_truncates_and_says_so() {
+        let out = for_log(&"z".repeat(500), 100);
+        assert!(out.ends_with("...[truncated]"), "{out}");
+        assert!(out.chars().count() < 150);
+        // Short input passes through untouched, so the marker means something.
+        assert_eq!(for_log("short", 100), "short");
+    }
+
+    #[test]
+    fn for_log_neutralises_control_characters() {
+        let out = for_log("before\u{1b}[2J\u{7}after\nnext", 200);
+        assert!(!out.contains('\u{1b}'), "ANSI escape survived: {out:?}");
+        assert!(!out.contains('\u{7}'), "BEL survived: {out:?}");
+        assert!(
+            !out.contains('\n'),
+            "newline can forge a second log line: {out:?}"
+        );
+        assert!(out.contains("before") && out.contains("after"));
+    }
+
+    #[test]
+    fn for_log_counts_chars_not_bytes() {
+        // A byte-based cut would panic or split a code point here.
+        let out = for_log(&"\u{65e5}".repeat(300), 100);
+        assert!(out.starts_with('\u{65e5}'));
+        assert!(out.ends_with("...[truncated]"));
     }
 }

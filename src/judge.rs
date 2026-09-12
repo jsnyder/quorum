@@ -163,10 +163,6 @@ pub struct JudgeResponseItem {
     pub reason: String,
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
 fn extract_json_array(response: &str) -> Option<&str> {
     let trimmed = response.trim();
     let end = trimmed.rfind(']')?;
@@ -522,7 +518,8 @@ async fn judge_one_batch<J: JudgeLlm>(
     let Some(json_str) = extract_json_array(&response) else {
         tracing::warn!(
             response_len = response.len(),
-            response_prefix = %truncate_chars(&response, 200),
+            // #574: the response is untrusted and may echo the reviewed file.
+            response_prefix = %crate::redact::for_log(&response, 200),
             "judge: no JSON array found in LLM response"
         );
         return;
@@ -533,7 +530,8 @@ async fn judge_one_batch<J: JudgeLlm>(
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                json_prefix = %truncate_chars(json_str, 200),
+                // #574: same sink, same untrusted text.
+            json_prefix = %crate::redact::for_log(json_str, 200),
                 "judge: failed to parse JSON response"
             );
             return;
@@ -1666,6 +1664,79 @@ mod tests {
 
     /// The second half of the enforcement, found by quorum reviewing the first
     /// half. When a judge IS configured but its call fails or omits an item,
+    /// #574: a secret in a malformed response must not reach the log sink.
+    ///
+    /// The judge logs a prefix of the raw response when it will not parse.
+    /// That response is untrusted, and #546 established a model can be talked
+    /// into echoing text straight out of the file it was shown -- so the
+    /// prefix can carry a credential out of the reviewed source. Redaction was
+    /// a chokepoint on the outbound path only (#530); logs are a different
+    /// sink and had nothing.
+    ///
+    /// The second assertion is the one that keeps this honest. Without it the
+    /// test passes when nothing is logged at all, which is exactly how a
+    /// "secret never appears" check quietly stops checking.
+    #[tokio::test]
+    async fn a_secret_in_a_malformed_response_never_reaches_the_log() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        const SECRET: &str = "ghp_cccccccccccccccccccccccccccccccccccc";
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Capture(buf.clone());
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_ansi(false)
+                .with_writer(move || sink.clone())
+                .finish(),
+        );
+
+        let rule = "ast-grep:python/some-speculative";
+        let mut findings = vec![speculative_finding(rule)];
+        // Not a JSON array, so the "no JSON array found" path logs the prefix.
+        let judge = MockJudge {
+            response: Some(format!(
+                "I could not comply. Here is the config: token={SECRET}"
+            )),
+        };
+        let dir = tempfile::tempdir().unwrap();
+
+        let _ = judge_findings(
+            &mut findings,
+            "src",
+            "a.rs",
+            &required_meta(rule),
+            &HashMap::new(),
+            &dir.path().join("cache.jsonl"),
+            Some(&judge),
+        )
+        .await;
+
+        let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logged.contains(SECRET),
+            "the secret reached the log sink:\n{logged}"
+        );
+        assert!(
+            logged.contains("REDACTED"),
+            "nothing was redacted, so nothing was logged and this test proved \
+             nothing:\n{logged}"
+        );
+    }
+
     /// #566: a verdict may only reach the finding its index names.
     ///
     /// Correlation used to fall back to "first unused finding with this

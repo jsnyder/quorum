@@ -119,6 +119,15 @@ Test fixtures in `rules/<language>/tests/`. Gap analysis in `docs/feedback-patte
   fixed the case where this claim was false: redaction used to live in two
   unrelated places and the skills/axes path went through neither.
   `tests/no_secret_egress.rs` enforces it at the wire across every path.
+- **Logs are a second sink with its own chokepoint** (#574). `post_json` covers
+  what leaves the process over the network; it does not cover what gets
+  written to a log. Untrusted model output reaches a log only through
+  `redact::for_log`, which redacts *before* truncating (the other order can cut
+  a secret in half and emit the surviving half) and neutralises control
+  characters. `tests/no_raw_model_output_in_logs.rs` fails if a new site
+  interpolates a raw response. This matters because #546 showed a model can be
+  talked into echoing text straight out of the file it was shown, so "the
+  response" and "the reviewed source" are not separable categories.
 - Provider-agnostic: single OpenAI-compatible client, no provider-specific code paths
 - JSON output grouped by file when piped, human output when TTY
 - Exit codes: 0 = clean, 1 = warnings, 2 = critical, 3 = tool error

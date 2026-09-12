@@ -1596,7 +1596,9 @@ impl LlmFinding {
                 tracing::warn!(
                     target: "review.severity_drift",
                     model = %model_name,
-                    raw_severity = %other,
+                    // #574: a model-supplied field value, so it goes through
+                    // the same helper as any other untrusted text in a log.
+                    raw_severity = %crate::redact::for_log(other, 64),
                     "unknown severity in LLM response; defaulting to Medium"
                 );
                 Severity::Medium
