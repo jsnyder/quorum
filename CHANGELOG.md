@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A judge verdict could be applied to a finding it never named** (#566). Correlation fell back to "first unused finding with this `rule_id`" whenever the response item's index was missing or already consumed. Findings from one rule all share that id and a batch usually holds several, so the fallback was a guess — and the response is untrusted (it is a model's output, and #546 showed that model can be influenced by the code under review). With `judge: required` dropping a rejected finding, a wrong guess deleted a finding nothing had judged.
+
+  A verdict now reaches only the finding its index names. The prompt already requires the index, so an item without a usable one is malformed; it routes through the same path as every other way a judgment fails to arrive (#533) — verdict stays unset, the finding is withheld, and it is counted as `withheld_judge_failed` so the summary line says the judge ran and returned nothing for it. A `tracing::warn` names the offending item.
+
+  Verified against a real judge before removing the fallback: 30 findings across three batches, all 30 correlated by index, none withheld.
+
+
 ### Security
 
 - **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
