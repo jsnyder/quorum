@@ -622,7 +622,10 @@ fn query_feedback_precedents(
         .filter(|s| s.entry.verdict == Verdict::Fp)
         .count();
     tracing::info!(
-        query_prefix = &query[..query.len().min(100)],
+        // #539: char-bounded, like the two chars().take() sites above and
+        // below. A byte slice panicked when byte 100 fell inside a
+        // multi-byte char, taking the whole review down to emit a log line.
+        query_prefix = %query.chars().take(100).collect::<String>(),
         candidates_found = candidates.len(),
         selected_count = selected.len(),
         selected_tps = tp_count,
@@ -3604,5 +3607,29 @@ mod tests {
         // Without LLM reviewer, LLM-only path produces empty findings
         assert!(result.findings.is_empty());
         assert_eq!(result.judge_metrics, JudgeMetrics::default());
+    }
+
+    /// #539: the precedent-selection log line byte-sliced `query` at 100,
+    /// which panics when byte 100 falls inside a multi-byte char. Three
+    /// path lengths shift the alignment so at least one lands mid-char.
+    #[test]
+    fn query_feedback_precedents_survives_non_ascii_code() {
+        // The field expression on a tracing event is only evaluated when a
+        // subscriber is enabled at that level. Without this guard the slice
+        // never runs and the test passes with the bug present.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_test_writer()
+                .finish(),
+        );
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::feedback::FeedbackStore::new(tmp.path().join("feedback.jsonl"));
+        let mut idx = crate::feedback_index::FeedbackIndex::build_bm25(&store).unwrap();
+        let code = "日".repeat(300);
+        for pad in 0..3 {
+            let path = format!("src/{}.rs", "a".repeat(pad));
+            let _ = query_feedback_precedents(&mut idx, &path, "rust", &code);
+        }
     }
 }

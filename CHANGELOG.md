@@ -5,6 +5,7 @@
 ### Fixed
 
 - `quorum feedback` spent 4-6s of CPU per verdict resolving the finding id: `review_finding_ids` had no index on `file_path`, so the resolver ran a full scan, and the inner path resolved the same title three times. Schema v5 adds the index and the verdict path resolves once (`#553`). Measured 4.7s -> 0.5s on the production corpus.
+- The precedent-selection log line byte-sliced the query at 100 and panicked when that fell inside a multi-byte character, taking the review down to emit a log line. Now char-bounded like its neighbours (`#539`). The regression test installs a tracing subscriber, because a tracing field expression is not evaluated without one and the first version of the test passed with the bug present.
 - **The judge silently deleted findings on the files with the most of them** (#533). `judge_findings` sent a file's entire finding set in one call and `judge_completion` caps the response at 2048 tokens. Measured on `src/calibrator.rs`: 31 findings in, `finish_reason: "length"`, zero verdicts out -- and `judge: required` then withheld all 31. Findings are now sent in batches of 12 (~2.5x headroom), and a batch that fails no longer costs the batches that succeeded.
 
   Verified on the wire: 30 findings, cache writes clustering at exactly 12 / 24 / 30, all 30 judged. Before this, that run produced no verdicts at all.
