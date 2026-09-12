@@ -88,6 +88,34 @@ fn tracing_calls(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Blank out every `for_log( ... )` span so what remains is the text that
+/// reaches the log record unwrapped. Balanced-paren scan; an unbalanced one
+/// just blanks to the end, which errs toward silence rather than noise -- and
+/// an unbalanced paren would not compile anyway.
+fn strip_for_log_spans(body: &str) -> String {
+    let mut out = body.to_string();
+    while let Some(at) = out.find("for_log(") {
+        let open = at + "for_log(".len() - 1;
+        let mut depth = 0usize;
+        let mut end = out.len();
+        for (i, c) in out[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.replace_range(at..end.min(out.len()), " ");
+    }
+    out
+}
+
 #[test]
 fn untrusted_model_output_reaches_logs_only_through_for_log() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -98,26 +126,53 @@ fn untrusted_model_output_reaches_logs_only_through_for_log() {
     let mut offenders = Vec::new();
     for (text, path) in &files {
         for (line, body) in tracing_calls(text) {
-            // Only interpolating forms carry a value into the record, and the
-            // name has to end there: `completion_tokens = completion_tok` is a
-            // count, not model output, and matching it would make the guard
-            // noisy enough to get switched off.
+            // Everything a `for_log(...)` call encloses is already handled,
+            // so remove those spans and look at what is left. Quorum's review
+            // of the first version caught two holes this closes at once:
+            // checking `body.contains("for_log")` let one wrapped field exempt
+            // an unwrapped one in the same call, and matching only `%name` /
+            // `?name` / `= name` missed `warn!("raw: {}", response)` and
+            // `warn!("raw: {response}")`, which carry the value just as well.
+            let outside = strip_for_log_spans(&body);
+
+            // The name has to be used as a value, not merely mentioned: the
+            // message string "no JSON array found in LLM response" contains
+            // `response` and is not a leak.
             let interpolates = |name: &str| {
-                for pat in [format!("%{name}"), format!("?{name}"), format!("= {name}")] {
+                [
+                    format!("%{name}"),
+                    format!("?{name}"),
+                    format!("= {name}"),
+                    format!("{{{name}}}"),
+                    format!(", {name}"),
+                ]
+                .iter()
+                .any(|pat| {
                     let mut from = 0usize;
-                    while let Some(at) = body[from..].find(pat.as_str()) {
+                    while let Some(at) = outside[from..].find(pat.as_str()) {
                         let end = from + at + pat.len();
-                        let next = body[end..].chars().next();
-                        if !next.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        let rest = &outside[end..];
+                        let next = rest.chars().next();
+                        // `response_len` is a different identifier, not a hit.
+                        let is_longer_name = next.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        // `response.len()` is a length, not the content. It is
+                        // the only projection allowed through: anything else
+                        // that reaches into the response is reaching for its
+                        // text, and text goes through `for_log`.
+                        let is_length = rest.starts_with(".len()");
+                        if !is_longer_name && !is_length {
                             return true;
                         }
                         from = end;
                     }
-                }
-                false
+                    false
+                })
             };
             for name in UNTRUSTED {
-                if interpolates(name) && !body.contains("for_log") {
+                // No `body.contains("for_log")` clause: `interpolates` already
+                // works on the text OUTSIDE those spans, and the old clause let
+                // a single wrapped field exempt every unwrapped one beside it.
+                if interpolates(name) {
                     let rel = path.strip_prefix(&src).unwrap_or(path);
                     offenders.push(format!("  {}:{line} interpolates `{name}`", rel.display()));
                 }
