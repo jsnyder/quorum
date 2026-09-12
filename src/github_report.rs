@@ -593,9 +593,19 @@ fn github_client_headers(token: &str) -> Result<reqwest::header::HeaderMap, GitH
     Ok(headers)
 }
 
+/// Dismiss our own superseded reviews.
+///
+/// `keep` is the review just created. #572 moved this call after creation so a
+/// failed POST cannot leave the PR with no review -- but the list GitHub
+/// returns then includes the new review, which is ours and carries our marker,
+/// so it matched every dismissal criterion and was dismissed immediately.
+/// Excluding it by id is the fix; quorum's review of the branch caught it, and
+/// the end-to-end test that should have caught it could not, because its mock
+/// returned a static list that omitted the new review.
 async fn dismiss_previous_reviews(
     client: &reqwest::Client,
     req: &PostReviewRequest,
+    keep: u64,
 ) -> Option<u64> {
     let base = api_base(req);
     let url = format!(
@@ -637,7 +647,8 @@ async fn dismiss_previous_reviews(
     let mut dismissed_id = None;
     for review in &reviews {
         let authored_by_us = review.user.as_ref().is_some_and(|u| u.login == me);
-        if let Some(body) = &review.body
+        if review.id != keep
+            && let Some(body) = &review.body
             && authored_by_us
             && body_contains_quorum_marker(body)
         {
@@ -818,7 +829,7 @@ pub async fn post_review(
     // The replacement is live, so the old one can go. Best-effort by design:
     // a failure here leaves two reviews visible, which is strictly better than
     // the previous ordering's failure mode of leaving none.
-    let dismissed_previous = dismiss_previous_reviews(client, req).await;
+    let dismissed_previous = dismiss_previous_reviews(client, req, review.id).await;
 
     Ok(PostReviewResult {
         review_id: review.id,
@@ -1597,6 +1608,79 @@ mod integration_tests {
         server
     }
 
+    /// GitHub's review list AFTER a create includes the review just created.
+    /// The first version of these mocks returned a static list that omitted
+    /// it, which hid a self-dismissal bug introduced by moving dismissal after
+    /// creation (#572). A fixture that cannot contain the bug is a fixture
+    /// that cannot find it.
+    async fn mock_github_listing_new_review(
+        me: &str,
+        existing: serde_json::Value,
+    ) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        let mut after = existing.as_array().cloned().unwrap_or_default();
+        after.push(serde_json::json!({
+            "id": 999,
+            "body": format!("{}\n\n## Quorum Review\n",
+                build_review_marker("01RUN", "deadbeef", "0.31.0")),
+            "user": {"login": me},
+        }));
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"login": me})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::Value::Array(after)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/widget/pulls/7/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 999})))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path_regex(r".*/dismissals$"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// #572: moving dismissal after creation put the new review into the list
+    /// being dismissed -- it is ours and it carries our marker, so it matched
+    /// every criterion. Quorum's review of this branch caught it; my own
+    /// end-to-end test could not, because its mock listed only the old review.
+    #[tokio::test]
+    async fn the_review_we_just_created_is_not_dismissed() {
+        let server = mock_github_listing_new_review(
+            "quorum-bot",
+            serde_json::json!([{ "id": 11, "body": marked_body(), "user": {"login": "quorum-bot"} }]),
+        )
+        .await;
+
+        let result = post_review(&reqwest::Client::new(), &review_req(&server.uri(), vec![]))
+            .await
+            .expect("create succeeds");
+        assert_eq!(result.review_id, 999);
+
+        let dismissed = dismissals(&server).await;
+        assert!(
+            !dismissed.iter().any(|p| p.contains("/reviews/999/")),
+            "dismissed the review it had just created: {dismissed:?}"
+        );
+        assert_eq!(
+            dismissed.len(),
+            1,
+            "only the previous review should go: {dismissed:?}"
+        );
+    }
+
     async fn dismissals(server: &wiremock::MockServer) -> Vec<String> {
         server
             .received_requests()
@@ -1639,8 +1723,9 @@ mod integration_tests {
     /// suppress their change request.
     #[tokio::test]
     async fn only_our_own_marked_review_is_dismissed() {
-        let server = mock_github(
-            200,
+        // Realistic mock: the list GitHub returns after the create includes
+        // the new review, so this also holds the self-dismissal line.
+        let server = mock_github_listing_new_review(
             "quorum-bot",
             serde_json::json!([
                 { "id": 11, "body": marked_body(), "user": {"login": "quorum-bot"} },
