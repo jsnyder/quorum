@@ -473,12 +473,31 @@ impl From<reqwest::Error> for GitHubReportError {
     }
 }
 
+/// A finding paired with the file it was found in.
+///
+/// `Finding` has no path of its own: in `review --json` the path lives on the
+/// enclosing group (`{"file": ..., "findings": [...]}`), and posting is the
+/// only place that needs it back. #592: `post_review` used to recover it with
+/// `finding.evidence.first()`, which holds matched *source text*, not a path --
+/// so every inline comment was classified against a file like
+/// `cyclomatic_complexity=21`, matched no diff range, and fell through to the
+/// summary body. Inline comments had never worked.
+///
+/// Keeping the path here rather than on `Finding` confines it to the one
+/// consumer that needs it, instead of touching every producer and the
+/// serialized form.
+#[derive(Debug, Clone)]
+pub struct ReviewFinding {
+    pub file_path: String,
+    pub finding: Finding,
+}
+
 pub struct PostReviewRequest {
     pub owner: String,
     pub repo: String,
     pub pr_number: u64,
     pub token: String,
-    pub findings: Vec<Finding>,
+    pub findings: Vec<ReviewFinding>,
     pub diff_text: String,
     pub version: String,
     pub run_id: String,
@@ -766,9 +785,9 @@ pub async fn post_review(
     let mut inline_findings = Vec::new();
     let mut body_findings = Vec::new();
 
-    for finding in &req.findings {
-        // Use first evidence entry as file path (populated by the review pipeline)
-        let file_path = finding.evidence.first().map(|s| s.as_str()).unwrap_or("");
+    for review_finding in &req.findings {
+        let file_path = review_finding.file_path.as_str();
+        let finding = &review_finding.finding;
         let target = classify_posting_target(finding, file_path, &diff_ranges);
         match target {
             PostingTarget::Inline => {
@@ -1395,7 +1414,10 @@ mod integration_tests {
             repo: "repo".into(),
             pr_number: 1,
             token: "fake-token".into(),
-            findings: vec![f],
+            findings: vec![ReviewFinding {
+                file_path: "src/auth.rs".into(),
+                finding: f,
+            }],
             diff_text: diff.into(),
             version: "0.27.0".into(),
             run_id: "01TEST".into(),
@@ -1423,16 +1445,106 @@ mod integration_tests {
     /// separate bug: `start_line` was emitted whenever `line_start !=
     /// line_end`, so that finding posted `start_line == line`, which GitHub
     /// rejects outright.
-    fn finding_spanning(start: u32, end: u32, path: &str) -> Finding {
+    fn finding_spanning(start: u32, end: u32) -> Finding {
         let mut f = FindingBuilder::new()
             .title("spans a gap")
             .severity(Severity::Critical)
-            .evidence(path)
+            .evidence("fn spans() {")
             .lines(start, end)
             .build();
         f.in_diff = Some(true);
         f.cited_lines = Some((end, end));
         f
+    }
+
+    /// A diff that changes lines 1..12 of `a.rs`, so a finding anywhere in
+    /// that span is anchorable.
+    fn diff_touching_a_rs() -> String {
+        "--- a/a.rs\n+++ b/a.rs\n@@ -1,12 +1,12 @@\n".to_string()
+            + &(1..=12).map(|_| "+x\n").collect::<String>()
+    }
+
+    /// #592, the regression test. A finding on a changed line must post as an
+    /// inline comment **on the file it was found in**.
+    ///
+    /// `post_review` used to recover the path from `finding.evidence[0]`, which
+    /// holds matched source text -- a comment in the code even said so.
+    /// `classify_posting_target` then looked up diff ranges for a "file" named
+    /// after a snippet of code, found none, and sent the finding to the summary
+    /// body. Every finding, every time: inline comments had never been produced
+    /// in any released version.
+    ///
+    /// The evidence on this fixture is deliberately a line of code rather than
+    /// a path, because that is what evidence actually contains. The old tests
+    /// passed a path there, which is why none of them could see this.
+    #[tokio::test]
+    async fn a_finding_on_a_changed_line_posts_inline_on_its_own_file() {
+        let f = finding_spanning(7, 7);
+        assert!(
+            !f.evidence[0].contains(".rs"),
+            "fixture must not smuggle a path through evidence, or it cannot detect #592"
+        );
+
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+
+        assert_eq!(
+            (result.inline_count, result.body_count),
+            (1, 0),
+            "a finding on a changed line was not posted inline"
+        );
+
+        let posted = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.method == wiremock::http::Method::POST)
+            .expect("a create-review POST was sent");
+        let body: serde_json::Value = serde_json::from_slice(&posted.body).unwrap();
+        assert_eq!(
+            body["comments"][0]["path"], "a.rs",
+            "inline comment carries the wrong file: {}",
+            body["comments"][0]
+        );
+        assert_eq!(body["comments"][0]["line"], 7);
+    }
+
+    /// The bare-array payload shape carries no path at all, so those findings
+    /// can only go to the body. What they must never do is post a comment
+    /// against an empty path, which GitHub rejects and which would fail the
+    /// whole review, since comments travel inside the create POST (#572).
+    #[tokio::test]
+    async fn a_finding_with_no_known_file_goes_to_the_body_not_an_empty_path() {
+        let f = finding_spanning(7, 7);
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        let mut req = review_req(&server.uri(), vec![at("", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!(
+            (result.inline_count, result.body_count),
+            (0, 1),
+            "a finding with no file must not be anchored anywhere"
+        );
+
+        let posted = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.method == wiremock::http::Method::POST)
+            .expect("a create-review POST was sent");
+        let body: serde_json::Value = serde_json::from_slice(&posted.body).unwrap();
+        let comments = body["comments"].as_array().cloned().unwrap_or_default();
+        assert!(comments.is_empty(), "posted a comment with no path: {body}");
     }
 
     /// #572: a comment whose start is not strictly above its end is invalid to
@@ -1450,7 +1562,7 @@ mod integration_tests {
         let mut f = FindingBuilder::new()
             .title("no cited lines")
             .severity(Severity::Medium)
-            .evidence("a.rs")
+            .evidence("let x = compute();")
             .lines(7, 9)
             .build();
         f.in_diff = Some(true);
@@ -1459,7 +1571,7 @@ mod integration_tests {
         assert_eq!(f.anchor_line(), 7);
 
         let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
-        let mut req = review_req(&server.uri(), vec![f]);
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
         req.diff_text = "--- a/a.rs\n+++ b/a.rs\n@@ -1,12 +1,12 @@\n".to_string()
             + &(1..=12).map(|_| "+x\n").collect::<String>();
 
@@ -1576,7 +1688,17 @@ mod integration_tests {
     // because the bugs were in the ORDER and the SELECTION, not in either
     // request on its own.
 
-    fn review_req(base: &str, findings: Vec<Finding>) -> PostReviewRequest {
+    /// Pair a finding with the file it was found in. #592: the path is no
+    /// longer smuggled through `evidence[0]`, so tests state it explicitly --
+    /// which is also what makes the inline path testable at all.
+    fn at(path: &str, finding: Finding) -> ReviewFinding {
+        ReviewFinding {
+            file_path: path.to_string(),
+            finding,
+        }
+    }
+
+    fn review_req(base: &str, findings: Vec<ReviewFinding>) -> PostReviewRequest {
         PostReviewRequest {
             owner: "acme".into(),
             repo: "widget".into(),

@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- **Inline PR comments have never worked** (#592). `post_review` recovered each finding's file path with `finding.evidence.first()`, behind a comment stating the review pipeline populated it. It does not: `evidence[0]` is the matched *source text*. `classify_posting_target` was therefore looking up diff ranges for "files" named things like `cyclomatic_complexity=21`, matching none, and routing every finding to the summary body. Both posting paths were affected, so the five correctness gaps #572 fixed in the inline path could never have fired in production.
+
+  `Finding` has no file field at all -- in `review --json` the path lives on the enclosing group -- so the path now travels with the finding as `ReviewFinding { file_path, finding }`, which keeps it a property of *posting* rather than widening `Finding` and every producer of one.
+
+  Found during #496's live acceptance, which is the only thing that could have found it: a mock server answers the same way whether the path is real or a fragment of code.
+
+
+### Fixed
+
 - **The PR posting path could not run end to end** (#496). Three bugs, each sufficient on its own. `quorum report` could not parse `quorum review --json`: it accepted a bare finding array or an object with a `files` key, and `review` emits a top-level array whose first element is `{"_meta": ...}`. The report workflow derived the PR number from the head SHA, which returns nothing for fork PRs, and passed the resulting empty string to `--pr`; the analyze job now records the number it already knows and the report job refuses to post without a valid one. And **every GitHub request was missing a `User-Agent`**, which GitHub rejects with 403 — so the path could never have worked against the real API regardless of the other two.
 
   The User-Agent bug is the reason #496 asked for a real posted review as its acceptance rather than a test: no unit test and no mock server could see it, because mock servers do not enforce the header. It took posting to an actual PR.
