@@ -28,7 +28,7 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 
 # HTTP + serialization
-reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "stream", "blocking", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -82,9 +82,9 @@ tree-sitter-cpp = "0.23"
 tree-sitter-language = "0.1"
 
 # ast-grep (compiled-in rule engine)
-ast-grep-core = "=0.42.2"
-ast-grep-config = "=0.42.2"
-ast-grep-language = { version = "=0.42.2", default-features = false, features = [
+ast-grep-core = "=0.45.2"
+ast-grep-config = "=0.45.2"
+ast-grep-language = { version = "=0.45.2", default-features = false, features = [
     "tree-sitter-bash",
     "tree-sitter-go",
     "tree-sitter-hcl",
@@ -115,7 +115,7 @@ pulldown-cmark = "0.13"
 walkdir = "2"
 
 # SQLite + vector search (context feature: chunk index with FTS5 and vec0)
-rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions"] }
 sqlite-vec = "0.1"
 libc = "0.2.186"
 # tree-sitter-dockerfile grammar is vendored in grammars/ and compiled via build.rs
