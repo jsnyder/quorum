@@ -640,6 +640,11 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub show_suppressed: bool,
 
+    /// With --diff-file, also show findings outside the changed lines
+    /// (hidden by default: corpus precision on them is 7% vs 88% inside)
+    #[arg(long)]
+    pub show_out_of_diff: bool,
+
     /// Override framework detection (e.g., --framework home-assistant)
     #[arg(long)]
     pub framework: Vec<String>,
