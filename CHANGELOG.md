@@ -32,6 +32,10 @@
 
 ### Fixed
 
+- **The calibrator trace writer released the wrong handle** (#549 follow-up). `write_calibrator_traces` moved its lock to the sidecar in #589 but left `file.unlock()` on the trace file, which was never locked. The sidecar lock was released only when the handle dropped, and an unlock failure could never surface. The unlock now targets the sidecar. `tests/no_lock_on_renamed_file.rs` gains a rule that every `unlock(` line must name the sidecar handle, so the lock side and the unlock side cannot drift apart again; the two test helpers that held the sidecar under the name `held` are renamed to satisfy it. Found by running Claude Code's built-in review on the original #589 diff during a review-tool comparison; neither CodeRabbit nor quorum reported it.
+
+### Fixed
+
 - **Inline PR comments have never worked** (#592). `post_review` recovered each finding's file path with `finding.evidence.first()`, behind a comment stating the review pipeline populated it. It does not: `evidence[0]` is the matched *source text*. `classify_posting_target` was therefore looking up diff ranges for "files" named things like `cyclomatic_complexity=21`, matching none, and routing every finding to the summary body. Both posting paths were affected, so the five correctness gaps #572 fixed in the inline path could never have fired in production.
 
   `Finding` has no file field at all -- in `review --json` the path lives on the enclosing group -- so the path now travels with the finding as `ReviewFinding { file_path, finding }`, which keeps it a property of *posting* rather than widening `Finding` and every producer of one.

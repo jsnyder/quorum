@@ -111,7 +111,9 @@ fn write_calibrator_traces(
                         ),
                     }
                 }
-                let _ = file.unlock();
+                // The lock is on the sidecar, not on `file` (#549). Release the
+                // handle that holds it; unlocking `file` released nothing.
+                let _ = fs2::FileExt::unlock(&sidecar);
             }
             Err(e) => tracing::warn!(
                 path = %trace_path.display(),
