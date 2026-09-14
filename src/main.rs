@@ -4418,9 +4418,15 @@ fn rewrite_traces_preserving_lines(
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("failed to open trace lock {}: {e}", lock_path.display()))?;
-    if lock_file.try_lock_exclusive().is_err() {
-        report.declined = true;
-        return Ok(report);
+    if let Err(e) = lock_file.try_lock_exclusive() {
+        // Only a held lock is a reason to yield. Any other failure (EBADF,
+        // ENOLCK, an NFS mount without locking) must surface, or a broken
+        // lock looks like a clean no-op and `calibrate` exits 0.
+        if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+            report.declined = true;
+            return Ok(report);
+        }
+        return Err(format!("failed to lock {}: {e}", lock_path.display()));
     }
 
     let content = std::fs::read_to_string(traces_path)
@@ -4433,6 +4439,9 @@ fn rewrite_traces_preserving_lines(
     for line in content.lines() {
         report.rows_in += 1;
         if line.trim().is_empty() {
+            // Verbatim: a whitespace-only line keeps its bytes, not just its
+            // slot. The row count cannot see the difference.
+            out.push_str(line);
             out.push('\n');
             continue;
         }
@@ -5969,7 +5978,7 @@ mod backfill_linkage_tests {
         let path = dir.path().join("calibrator_traces.jsonl");
         std::fs::write(
             &path,
-            format!("{}\n\n{}\n", trace_line("a"), trace_line("b")),
+            format!("{}\n  \t \n{}\n", trace_line("a"), trace_line("b")),
         )
         .unwrap();
 
@@ -5982,6 +5991,11 @@ mod backfill_linkage_tests {
         assert_eq!(report.rows_out, 3);
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(after.lines().count(), 3, "structure preserved:\n{after}");
+        assert_eq!(
+            after.lines().nth(1),
+            Some("  \t "),
+            "a whitespace-only line keeps its bytes, not just its slot"
+        );
     }
 
     /// #549 proper: the rewrite must observe the sidecar lock. Asserted by

@@ -502,10 +502,10 @@ impl FeedbackStore {
         // Always attempt unlock, even if the write failed. Ignore unlock
         // errors when the write itself errored — the original error is more
         // informative.
-        let unlock_result = FileExt::unlock(&file);
+        let unlock_result = FileExt::unlock(&lock_file);
         write_result?;
         unlock_result
-            .with_context(|| format!("Failed to unlock feedback file: {}", self.path.display()))?;
+            .with_context(|| format!("Failed to unlock feedback lock: {}", lock_path.display()))?;
         Ok(())
     }
 
