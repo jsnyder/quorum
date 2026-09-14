@@ -1268,14 +1268,12 @@ struct ResolvedAxes {
 
 /// The default code-mode macro axes, applied when no `--axes` flag is given
 /// and the mode is `Code` with no legacy flags active.
-const CODE_MODE_MACRO_AXES: &[&str] = &[
-    "correctness",
-    "security",
-    "testing-antipatterns",
-    "simplicity",
-    "performance",
-    "architecture",
-];
+///
+/// Two axes, not six. On 2026-09-14 a six-axis review of a five-file diff
+/// cost 712k tokens and produced 66 findings; the four axes dropped here
+/// (architecture, simplicity, performance, testing-antipatterns) produced 40
+/// of them and none of the bugs. They remain available through `--axes`.
+const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security"];
 
 /// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
 /// to the lib-side `skill_executor::LlmReviewer` trait.
@@ -1574,7 +1572,7 @@ mod axes_tests {
             &skills,
         );
         let resolved = result.unwrap().unwrap();
-        assert_eq!(resolved.skills.len(), 6);
+        assert_eq!(resolved.skills.len(), 2);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -1584,17 +1582,7 @@ mod axes_tests {
             .iter()
             .map(|s| s.manifest.name.as_str())
             .collect();
-        assert_eq!(
-            names,
-            &[
-                "correctness",
-                "security",
-                "testing-antipatterns",
-                "simplicity",
-                "performance",
-                "architecture",
-            ]
-        );
+        assert_eq!(names, &["correctness", "security"]);
     }
 
     // A4: deep_suppresses_default_axes
@@ -1852,7 +1840,7 @@ mod axes_tests {
         );
         let resolved = result.unwrap().unwrap();
         // Falls through to code-mode macro since no explicit axes remain
-        assert_eq!(resolved.skills.len(), 6);
+        assert_eq!(resolved.skills.len(), CODE_MODE_MACRO_AXES.len());
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -2617,6 +2605,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     );
     let use_json = mode == output::OutputMode::Json;
     let use_compact = mode == output::OutputMode::Compact;
+    // With a diff, findings outside it are hidden unless asked for. Computed
+    // once so the sequential and parallel branches cannot disagree.
+    let hide_out_of_diff = opts.diff_file.is_some() && !opts.show_out_of_diff;
     let mut all_findings = Vec::new();
     // #592: the same findings, each carrying the file it came from, for the
     // GitHub posting path. `Finding` has no path field.
@@ -2923,6 +2914,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
                     // Apply project-level suppressions
                     let file_display = result.file_path.clone();
+                    // Every path that classified findings for this file has run;
+                    // hide the ones stamped outside the diff before suppression.
+                    if hide_out_of_diff {
+                        result.hidden_out_of_diff +=
+                            pipeline::hide_out_of_diff(&mut result.findings);
+                    }
                     let sup_result = suppress::apply_suppressions(
                         result.findings,
                         &suppress_rules,
@@ -3043,6 +3040,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 // return any. See `deep_llm_ran` below.
                                 usage: Default::default(),
                                 suppressed: sup_result.suppressed.len(),
+                                hidden_out_of_diff: 0,
                                 context_telemetry: None,
                                 enrichment_metrics: Default::default(),
                                 judge_metrics: Default::default(),
@@ -3189,6 +3187,18 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 result.suppressed += int_output.suppressed.len();
                         }
 
+                        // Every path that classified findings for this file has run;
+
+                        // hide the ones stamped outside the diff before suppression.
+
+                        if hide_out_of_diff {
+
+                            result.hidden_out_of_diff +=
+
+                                pipeline::hide_out_of_diff(&mut result.findings);
+
+                        }
+
                         let sup_result = suppress::apply_suppressions(
                             result.findings,
                             &suppress_rules,
@@ -3317,8 +3327,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .iter()
             .map(|r| r.judge_metrics.withheld_judge_failed)
             .sum();
+        let hidden_out_of_diff: usize = file_results.iter().map(|r| r.hidden_out_of_diff).sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
             engine_label,
@@ -3343,6 +3354,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             if withheld_judge_failed > 0 {
                 format!(
                     ", {withheld_judge_failed} speculative withheld (the judge ran but returned no verdict for them)"
+                )
+            } else {
+                String::new()
+            },
+            if hidden_out_of_diff > 0 {
+                format!(
+                    ", {hidden_out_of_diff} outside the diff hidden (run with --show-out-of-diff to see them)"
                 )
             } else {
                 String::new()

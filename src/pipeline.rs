@@ -164,6 +164,10 @@ pub struct FileReviewResult {
     pub findings: Vec<Finding>,
     pub usage: crate::llm_client::TokenUsage,
     pub suppressed: usize,
+    /// Findings dropped because `in_diff == Some(false)` and the caller did
+    /// not ask for them. Reported in the summary line so the user knows the
+    /// count is smaller than what the reviewers produced.
+    pub hidden_out_of_diff: usize,
     /// Context-injection telemetry for this file, if an injector was
     /// wired. `None` when the pipeline ran without `context_injector`
     /// (reviewers that don't support context, or the LLM-only paths).
@@ -1083,6 +1087,7 @@ pub async fn review_file(
         findings: final_findings,
         usage: total_usage,
         suppressed: suppressed_count,
+        hidden_out_of_diff: 0,
         context_telemetry,
         enrichment_metrics,
         judge_metrics,
@@ -1510,6 +1515,20 @@ fn lang_name_from_path(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_lowercase()
+}
+
+/// Drop findings stamped `in_diff == Some(false)`, returning how many went.
+///
+/// One rule, applied after every finding for a file has been stamped: the
+/// corpus puts LLM findings inside the diff at 88% precision and outside it
+/// at 7%, so with `--diff-file` the outside ones are noise by default.
+/// `None` (no diff, or a deletion-only hunk, #562) is kept: unknown is not
+/// outside. Callers add the count to the summary line; a review that hides
+/// findings must say so.
+pub fn hide_out_of_diff(findings: &mut Vec<Finding>) -> usize {
+    let before = findings.len();
+    findings.retain(|f| f.in_diff != Some(false));
+    before - findings.len()
 }
 
 /// Resolve `diff_ranges` against one reviewed file and stamp its findings.
@@ -3200,6 +3219,28 @@ mod tests {
         classify_findings_for_file(&mut findings, Path::new(&abs), &diff_ranges);
         drop(tmp);
         assert_eq!(findings[0].in_diff, Some(false));
+    }
+
+    // -- hide_out_of_diff --
+
+    /// Only `Some(false)` goes. `None` is unknown (no diff, or a deletion-only
+    /// hunk per #562) and must survive, or the default would silently drop
+    /// every finding on a file whose hunks were all deletions.
+    #[test]
+    fn hide_out_of_diff_drops_only_known_outside() {
+        use crate::finding::FindingBuilder;
+        let mut findings = vec![
+            FindingBuilder::new().title("in").build(),
+            FindingBuilder::new().title("out").build(),
+            FindingBuilder::new().title("unknown").build(),
+        ];
+        findings[0].in_diff = Some(true);
+        findings[1].in_diff = Some(false);
+        findings[2].in_diff = None;
+        let hidden = hide_out_of_diff(&mut findings);
+        assert_eq!(hidden, 1);
+        let titles: Vec<&str> = findings.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(titles, ["in", "unknown"]);
     }
 
     // -- classify_in_diff --

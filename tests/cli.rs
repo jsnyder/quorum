@@ -164,3 +164,93 @@ fn version_reports_build_provenance() {
         "version line neither names a commit nor admits it cannot: {line:?}"
     );
 }
+
+/// With `--diff-file`, findings outside the changed lines are hidden by
+/// default and the summary line says how many; `--show-out-of-diff` restores
+/// them. Corpus precision on out-of-diff findings is 7% against 88% inside,
+/// and CI has no feedback corpus to suppress them with.
+#[test]
+fn diff_file_hides_out_of_diff_findings_unless_asked() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    // Line 2 (`unwrap`) is added by the diff; `untouched` is not in the diff
+    // and trips the complexity threshold.
+    let mut source = String::from("pub fn changed(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n\n");
+    source.push_str("pub fn untouched(n: u32) -> u32 {\n");
+    for i in 0..12 {
+        source.push_str(&format!(
+            "    if n == {i} {{\n        return {i};\n    }}\n"
+        ));
+    }
+    source.push_str("    0\n}\n");
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(&lib, source).unwrap();
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n pub fn changed(x: Option<u32>) -> u32 {\n+    x.unwrap()\n }\n",
+    )
+    .unwrap();
+
+    let titles = |stdout: &str| -> Vec<String> {
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(stdout).unwrap();
+        parsed
+            .iter()
+            .filter_map(|el| el.get("findings").and_then(|f| f.as_array()))
+            .flatten()
+            .map(|f| f["title"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+
+    let (_home, mut cmd) = quorum();
+    let output = cmd
+        .arg("review")
+        .arg("--json")
+        .arg("--diff-file")
+        .arg(&diff)
+        .arg(&lib)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let shown = titles(&stdout);
+    assert!(
+        shown.iter().any(|t| t.contains("unwrap")),
+        "the in-diff unwrap finding must survive: {shown:?}\n{stderr}"
+    );
+    assert!(
+        !shown.iter().any(|t| t.contains("cyclomatic")),
+        "the out-of-diff complexity finding must be hidden: {shown:?}"
+    );
+    assert!(
+        stderr.contains("outside the diff hidden (run with --show-out-of-diff"),
+        "the summary must say findings were hidden:\n{stderr}"
+    );
+
+    let (_home, mut cmd) = quorum();
+    let output = cmd
+        .arg("review")
+        .arg("--json")
+        .arg("--diff-file")
+        .arg(&diff)
+        .arg("--show-out-of-diff")
+        .arg(&lib)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let shown = titles(&stdout);
+    assert!(
+        shown.iter().any(|t| t.contains("cyclomatic")),
+        "--show-out-of-diff must restore the complexity finding: {shown:?}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("outside the diff hidden"),
+        "nothing hidden, nothing to announce:\n{stderr}"
+    );
+}

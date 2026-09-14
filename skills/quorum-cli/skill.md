@@ -317,6 +317,7 @@ Hydration context scoped to changed lines only. Same finding quality, smaller pr
 | --trace | Enable structured tracing to ~/.quorum/trace.jsonl | --trace |
 | --mode M | Review mode: code (default), plan, docs | --mode plan |
 | --show-suppressed | Show findings suppressed by project rules | --show-suppressed |
+| --show-out-of-diff | With --diff-file, also show findings outside the changed lines (hidden by default) | --show-out-of-diff |
 | --skip-context7 | Skip Context7 framework doc enrichment | --skip-context7 |
 | --live-registry | Enable download-count popularity lookups | --live-registry |
 

@@ -20,7 +20,7 @@ cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review src/*.rs --ensemble      # cross-model ensemble review
 cargo run -- review src/*.rs --model gpt-5.6 # override reviewer model (else QUORUM_MODEL)
 cargo run -- review src/*.rs --ensemble --model gpt-5.6,claude-opus-5  # override ensemble pool
-cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review
+cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review (this pair is the default; add architecture, simplicity, performance, testing-antipatterns for an audit)
 cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
 cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
 cargo run -- review file.rs --framework home-assistant  # override framework detection
@@ -33,6 +33,7 @@ cargo run -- stats --skills                  # per-axis skill audit rollup (zero
 cargo run -- stats --integrator              # integrator decisions + severity clamp transitions
 cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review
+cargo run -- review file.rs --diff-file d.patch --show-out-of-diff  # also show findings outside the diff (hidden by default)
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
 cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"
 cargo run -- report findings.json --pr 42     # post findings to GitHub PR
