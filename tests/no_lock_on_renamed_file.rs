@@ -50,6 +50,9 @@ const LOCKS: &[&str] = &[
     "try_lock_shared",
 ];
 
+/// Identifiers an `unlock(` line must mention: the sidecar handle names.
+const UNLOCK_TARGETS: &[&str] = &["lock_file", "sidecar"];
+
 /// The chokepoint. A file that both locks and renames must route its lock
 /// through this helper, which appends `.lock` to the data path.
 const SIDECAR_HELPER: &str = "sidecar_lock_path";
@@ -121,6 +124,24 @@ fn no_source_file_locks_and_renames_without_a_sidecar() {
         const WINDOW: usize = 45;
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
+            // Unlock must target the handle that holds the lock. The lock is
+            // taken on the sidecar (`lock_file` / `sidecar`), so an unlock on
+            // any other handle releases nothing and hides unlock failures.
+            // Found by the review-tool comparison on #589's diff: the trace
+            // writer moved its lock to the sidecar and left the unlock on
+            // the data file.
+            if line.contains("unlock(")
+                && !line.trim_start().starts_with("//")
+                && !UNLOCK_TARGETS.iter().any(|t| line.contains(t))
+            {
+                offenders.push(format!(
+                    "{}:{}  {}  (unlock does not target the sidecar handle)",
+                    path.strip_prefix(&src).unwrap_or(path).display(),
+                    i + 1,
+                    line.trim()
+                ));
+                continue;
+            }
             if !LOCKS.iter().any(|m| line.contains(m)) {
                 continue;
             }

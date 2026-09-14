@@ -6143,14 +6143,14 @@ mod backfill_linkage_tests {
         let before = std::fs::read_to_string(&path).unwrap();
 
         let lock_path = quorum::file_util::sidecar_lock_path(&path);
-        let held = std::fs::OpenOptions::new()
+        let sidecar = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        held.lock_exclusive().unwrap();
+        sidecar.lock_exclusive().unwrap();
 
         let repl: Vec<serde_json::Value> =
             vec![serde_json::from_str(&trace_line("a-new")).unwrap()];
@@ -6162,7 +6162,7 @@ mod backfill_linkage_tests {
             "and must not have written"
         );
 
-        FileExt::unlock(&held).unwrap();
+        FileExt::unlock(&sidecar).unwrap();
         let report = rewrite_traces_preserving_lines(&path, &repl).unwrap();
         assert!(!report.declined, "and proceeds once released");
         assert!(std::fs::read_to_string(&path).unwrap().contains("a-new"));
@@ -6298,14 +6298,14 @@ mod backfill_linkage_tests {
         let lock_path = quorum::file_util::sidecar_lock_path(&fb_path);
         assert_ne!(lock_path, fb_path, "the lock must not be the data file");
 
-        let held = std::fs::OpenOptions::new()
+        let sidecar = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        held.lock_exclusive().unwrap();
+        sidecar.lock_exclusive().unwrap();
 
         let report = backfill_linkage_inner(&qhome);
         assert_eq!(
@@ -6315,7 +6315,7 @@ mod backfill_linkage_tests {
         );
         assert_eq!(report.rows_in, 0, "it should not even have read");
 
-        FileExt::unlock(&held).unwrap();
+        FileExt::unlock(&sidecar).unwrap();
 
         // And with the lock released it proceeds, so the assertion above is
         // about the lock rather than about the backfill being broken.
