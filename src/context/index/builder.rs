@@ -609,9 +609,9 @@ mod tests {
         conn.query_row(
             "SELECT COUNT(*) FROM chunks WHERE source = ?1 AND source_path = ?2",
             params![source, source_path],
-            |r| r.get::<_, usize>(0),
+            |r| r.get::<_, i64>(0),
         )
-        .unwrap()
+        .unwrap() as usize
     }
 
     /// Helper: count all chunks in the `chunks` table for a given source.
@@ -619,9 +619,9 @@ mod tests {
         conn.query_row(
             "SELECT COUNT(*) FROM chunks WHERE source = ?1",
             params![source],
-            |r| r.get::<_, usize>(0),
+            |r| r.get::<_, i64>(0),
         )
-        .unwrap()
+        .unwrap() as usize
     }
 
     /// Helper: get a specific chunk's content by id.
@@ -640,7 +640,7 @@ mod tests {
         conn.query_row(
             "SELECT COUNT(*) FROM chunks_fts WHERE id = ?1",
             params![id],
-            |r| r.get::<_, usize>(0),
+            |r| r.get::<_, i64>(0),
         )
         .unwrap()
             > 0
@@ -651,7 +651,7 @@ mod tests {
         conn.query_row(
             "SELECT COUNT(*) FROM chunks_vec WHERE id = ?1",
             params![id],
-            |r| r.get::<_, usize>(0),
+            |r| r.get::<_, i64>(0),
         )
         .unwrap()
             > 0
@@ -762,7 +762,7 @@ mod tests {
             .unwrap();
 
         // Verify structural fingerprint was inserted
-        let fp_count: usize = builder
+        let fp_count: i64 = builder
             .conn()
             .query_row(
                 "SELECT COUNT(*) FROM chunks_struct_vec WHERE chunk_id = ?1",
