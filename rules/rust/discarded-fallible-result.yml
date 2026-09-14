@@ -2,9 +2,10 @@ id: discarded-fallible-result
 language: Rust
 severity: warning
 message: "Fallible result discarded with `let _ = ...`. If this operation fails (lock poisoned, channel closed, I/O error) the error is silently lost. Handle with `?`, `.expect(\"…\")`, or log the error."
-note: "Broadens ignored-io-result to cover lock/send/flush/close/connect/bind patterns. Issue #380."
+note: "Broadens ignored-io-result to cover lock/send/flush/close/connect/bind patterns. Issue #380. Corpus 2026-09-14: 0 tp in 7 verdicts; the earlier precision: high claim did not survive contact. Withheld unless --judge confirms it in context."
 metadata:
-  precision: high
+  precision: speculative
+  judge: required
 rule:
   kind: let_declaration
   all:

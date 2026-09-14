@@ -1864,4 +1864,36 @@ metadata:
             );
         }
     }
+
+    /// The three Rust rules with single-digit corpus precision (2026-09-14:
+    /// 1/49, 2/44, 0/7) are withheld unless a judge confirms them. CI runs
+    /// without a feedback corpus, so the calibrator cannot suppress them
+    /// there; the rule tag is the only lever that works everywhere. Pinned
+    /// so a YAML edit cannot quietly put them back on every PR.
+    #[test]
+    fn low_precision_rust_rules_require_a_judge() {
+        let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fake_home = tempfile::tempdir().unwrap();
+        let (_rules, metadata) = load_rules(&project_dir, fake_home.path());
+        for id in [
+            "silent-error-conversion",
+            "expect-empty-message",
+            "discarded-fallible-result",
+        ] {
+            let key = format!("ast-grep:rust/{id}");
+            let meta = metadata
+                .get(&key)
+                .unwrap_or_else(|| panic!("bundled rule {key} not loaded"));
+            assert_eq!(
+                meta.precision,
+                PrecisionTier::Speculative,
+                "{key} must be tagged precision: speculative"
+            );
+            assert_eq!(
+                meta.judge,
+                JudgeRequirement::Required,
+                "{key} must be tagged judge: required"
+            );
+        }
+    }
 }

@@ -2,7 +2,10 @@ id: silent-error-conversion
 language: Rust
 severity: hint
 message: "`.ok()` / `.unwrap_or_default()` on a fallible I/O or parse result silently converts errors to `None` / `Default::default()`. If the error matters (disk, network, malformed input), log it or propagate with `?`."
-note: "Mining: 4 confirmed true positives. Matches `.ok()`/`.unwrap_or_default()` directly chained to a fallible call. Covers method-style (`x.parse()`) and path-style (`fs::read_to_string`, `serde_json::from_str`, `std::env::var`, `Type::from_str`) receivers."
+note: "Mining: 4 confirmed true positives. Matches `.ok()`/`.unwrap_or_default()` directly chained to a fallible call. Covers method-style (`x.parse()`) and path-style (`fs::read_to_string`, `serde_json::from_str`, `std::env::var`, `Type::from_str`) receivers. Corpus 2026-09-14: 1 tp in 49 verdicts. The match is real but almost never matters; withheld unless --judge confirms it in context."
+metadata:
+  precision: speculative
+  judge: required
 rule:
   kind: call_expression
   has:

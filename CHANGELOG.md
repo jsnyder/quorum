@@ -24,6 +24,12 @@
 
   The dirty flag needed `rerun-if-changed` on `src` and the manifests, not just on `HEAD`: printing any `rerun-if-changed` opts the script into a narrow rerun set, so without them a tree edited after the last build-script run still reported itself clean. That was measured rather than assumed -- the first version had the bug. A change confined to `tests/` or `docs/` still reports clean, which is the known ceiling.
 
+### Changed
+
+- **Three Rust rules now require a judge.** `silent-error-conversion`, `expect-empty-message` and `discarded-fallible-result` are tagged `precision: speculative, judge: required`, so they are withheld unless a review runs with `--judge`. The feedback corpus on 2026-09-14 had them at 1/49, 2/44 and 0/7 true positives; the match is real but almost never matters. Locally the calibrator was already suppressing most of them from precedent, but CI has no feedback corpus, so every one of them posted on every PR (17 to 26 findings per review, all outside the changed lines). The rule tag is the only lever that works in both places. `discarded-fallible-result` loses its `precision: high` claim, which did not survive contact with the corpus. A test pins the tags so a YAML edit cannot quietly put them back.
+
+  The complexity finding was measured for the same treatment and left alone: precision is flat across every complexity bucket (27% to 47%) and the 10-14 range holds the most true positives, so raising the threshold would drop good findings without improving the ratio. Its noise is wontfix-shaped, not false-positive-shaped.
+
 ### Fixed
 
 - **Inline PR comments have never worked** (#592). `post_review` recovered each finding's file path with `finding.evidence.first()`, behind a comment stating the review pipeline populated it. It does not: `evidence[0]` is the matched *source text*. `classify_posting_target` was therefore looking up diff ranges for "files" named things like `cyclomatic_complexity=21`, matching none, and routing every finding to the summary body. Both posting paths were affected, so the five correctness gaps #572 fixed in the inline path could never have fired in production.

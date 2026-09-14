@@ -2,7 +2,10 @@ id: expect-empty-message
 language: Rust
 severity: hint
 message: "Empty `.expect()` message makes debugging hard. Provide context about what failed."
-note: "Feedback: 3 confirmed true positives"
+note: "Feedback: 3 confirmed true positives Corpus 2026-09-14: 2 tp in 44 verdicts. Withheld unless --judge confirms it in context."
+metadata:
+  precision: speculative
+  judge: required
 rule:
   kind: call_expression
   regex: '\.\s*expect\s*\(\s*"[^"]{0,8}"\s*\)'
