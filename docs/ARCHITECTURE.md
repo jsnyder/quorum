@@ -392,3 +392,8 @@ This enables:
 **Don't port if**: the goal is just "same features, different language." But that's no longer what this is -- the reimagined architecture couldn't reasonably be built in TypeScript (native tree-sitter, linked ruff, daemon-cached embeddings, <30MB idle footprint).
 
 **Hybrid approach**: Phase 0 first. Build the Rust analysis core (AST hydration + local reviewer + linter orchestration), call it from TS via subprocess. Test whether hydrated context improves LLM review quality before committing to the full rewrite. This is both the lowest-risk path and a meaningful quality experiment.
+
+## Axes prompt layout
+
+Each skill axis (correctness, security, or any `--axes` selection) is one LLM call per file. The user message is `<skill_instructions>` (the axis manifest), then `<review_context>` (framework docs, hydration scoped to the changed lines, injected project context, historical verdicts, rendered by `review::render_context_sections`, the same renderer the legacy single-prompt path uses), then `<code_to_review>` (the whole file, or with `--diff-file` a focused view: enclosing functions of the changed ranges with absolute line numbers plus the file's hunks; see `src/focus.rs`), then the output schema. The base system prompt (`src/skill_base_system_prompt.txt`) explains the focused-view metadata and the status of `<review_context>` as reference data.
+

@@ -1286,7 +1286,7 @@ async fn axes_context_for_file(
     lang: Option<parser::Language>,
     parse_cache: &cache::ParseCache,
     pipeline_cfg: &PipelineConfig,
-) -> Option<String> {
+) -> Option<pipeline::FileContext> {
     let tree = lang.and_then(|l| parse_cache.get_or_parse(source, l).ok());
     let ast = match (&tree, lang) {
         (Some(t), Some(l)) => Some(pipeline::AstContext {
@@ -1296,12 +1296,16 @@ async fn axes_context_for_file(
         _ => None,
     };
     match pipeline::build_file_context(file_path, source, ast.as_ref(), pipeline_cfg).await {
-        Ok(fc) => pipeline::render_context_for_axes(&fc),
+        Ok(fc) => Some(fc),
         Err(e) => {
-            tracing::warn!(
-                file = %file_path.display(),
-                error = %e,
-                "context for the axes unavailable; reviewing without it"
+            // The legacy path fails the review here (Context7 unreachable
+            // with frameworks detected, feedback index I/O). The axes review
+            // the bare file instead, and say so where the user can see it:
+            // a silent fallback would make "the axes see the file context"
+            // a claim nothing checks.
+            eprintln!(
+                "Note: context for the axes unavailable for {}: {e}. Reviewing without it.",
+                file_path.display()
             );
             None
         }
@@ -2952,7 +2956,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             max_calls_per_review: 50,
                             audit_writer: skill_audit_writer.clone(),
                         };
-                        let axes_context = axes_context_for_file(
+                        let axes_fc = axes_context_for_file(
                             file_path,
                             &source,
                             lang,
@@ -2960,6 +2964,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             &pipeline_cfg,
                         )
                         .await;
+                        let axes_context =
+                            axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                        if let Some(fc) = axes_fc {
+                            // The axes path runs review_file AST-only, so these
+                            // counters would otherwise read zero for every
+                            // default review (#491).
+                            result.enrichment_metrics = fc.enrichment_metrics;
+                            result.context_telemetry = fc.context_telemetry;
+                        }
                         let files_input = vec![build_review_file(
                             std::path::Path::new(&file_str),
                             &file_str,
@@ -3259,13 +3272,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     max_calls_per_review: 50,
                                     audit_writer: skill_audit_writer.clone(),
                                 };
-                                let axes_context = handle.block_on(axes_context_for_file(
+                                let axes_fc = handle.block_on(axes_context_for_file(
                                     &file_path,
                                     &source,
                                     lang,
                                     &parse_cache,
                                     &pipeline_cfg,
                                 ));
+                                let axes_context =
+                                    axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                                if let Some(fc) = axes_fc {
+                                    result.enrichment_metrics = fc.enrichment_metrics;
+                                    result.context_telemetry = fc.context_telemetry;
+                                }
                                 let files_input = vec![build_review_file(
     std::path::Path::new(&file_str),
     &file_str,

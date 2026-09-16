@@ -40,12 +40,15 @@ pub fn wrap_skill_instructions(skill_prompt: &str) -> String {
 }
 
 /// Wrap derived facts about the file (signatures, types, callers, docs,
-/// prior verdicts) in `<review_context>...</review_context>`. The sections
-/// inside are already sandbox-tagged by `review::render_context_sections`;
-/// the outer tag is defanged again so nothing inside can close it early.
+/// prior verdicts) in `<review_context>...</review_context>`.
+///
+/// No defang pass here: `review::render_context_sections` already defangs
+/// every untrusted string it interpolates, and `review_context` is in
+/// `SANDBOX_TAGS`, so a forged `</review_context>` inside a signature is
+/// neutralised at the source. A second pass over the rendered block would
+/// mangle the legitimate `</hydration_context>` and friends it contains.
 pub fn wrap_review_context(context: &str) -> String {
-    let safe = defang_sandbox_tags(context);
-    format!("<review_context>\n{safe}\n</review_context>")
+    format!("<review_context>\n{context}\n</review_context>")
 }
 
 /// How a focused (diff-first) view is laid out, stated in the metadata line

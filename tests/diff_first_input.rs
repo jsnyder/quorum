@@ -310,5 +310,9 @@ fn axes_receive_the_file_context_before_the_code() {
             !body[ctx..code].contains("s.parse().ok()"),
             "the context carries signatures, not the helper's body:\n{body}"
         );
+        assert!(
+            body[ctx..code].contains("</hydration_context>"),
+            "the inner sandbox closers must survive intact:\n{body}"
+        );
     }
 }

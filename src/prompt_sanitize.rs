@@ -26,6 +26,10 @@ pub const SANDBOX_TAGS: &[&str] = &[
     // the prompt -- measured to flip 4 of 4 verdicts on gpt-4.1-mini with no
     // comment block anywhere else in the file.
     "findings_to_judge",
+    // The axes' context block. Its contents are hydration strings, docs and
+    // precedents, all derived from the reviewed file or from indexed
+    // sources, so a forged closer must be neutralised at the source.
+    "review_context",
 ];
 
 /// Replace each closing tag for a known sandbox tag with a defanged form

@@ -33,14 +33,6 @@ pub struct ReviewRequest {
 
 pub use crate::finding::LlmFinding;
 
-/// Build the user-message portion of the review prompt.
-///
-/// Static instructions (review goals, severity rubric, response format,
-/// untrusted-data warning, suggested_fix policy) live in the system message
-/// (`OpenAiClient::system_prompt`). This function emits ONLY per-request
-/// content. Sections are ordered to extend the OpenAI prompt-cache prefix:
-/// stable-per-language content (framework docs) first, then file-specific
-/// context, then file metadata, then the code payload itself.
 use crate::prompt_sanitize::{defang_sandbox_tags, pick_fence_for, sanitize_fence_lang};
 
 /// The context sections of a review prompt: framework docs, hydration
@@ -126,6 +118,14 @@ pub fn render_context_sections(req: &ReviewRequest) -> String {
     prompt
 }
 
+/// Build the user-message portion of the review prompt.
+///
+/// Static instructions (review goals, severity rubric, response format,
+/// untrusted-data warning, suggested_fix policy) live in the system message
+/// (`OpenAiClient::system_prompt`). This function emits ONLY per-request
+/// content. Sections are ordered to extend the OpenAI prompt-cache prefix:
+/// stable-per-language content (framework docs) first, then file-specific
+/// context, then file metadata, then the code payload itself.
 pub fn build_review_prompt(req: &ReviewRequest) -> String {
     let mut prompt = render_context_sections(req);
     if let Some(ref notice) = req.truncation_notice {
