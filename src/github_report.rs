@@ -252,14 +252,24 @@ pub fn render_review_body(
             i.axes_failed, i.axes_total
         )
         .unwrap();
-        // A PR touching hundreds of files can fail hundreds of cells; the
-        // body has a size limit, so list the first few and count the rest.
+        // A PR touching hundreds of files can fail hundreds of cells, and a
+        // label carries an unbounded path; the body has a size limit, so
+        // list cells while they fit a fixed byte budget and count the rest.
         const MAX_CELLS_LISTED: usize = 20;
-        for cell in i.cells.iter().take(MAX_CELLS_LISTED) {
+        const CELL_LIST_BYTES: usize = 4096;
+        let mut listed = 0usize;
+        let mut used = 0usize;
+        for cell in &i.cells {
+            let line_len = cell.len() + 3;
+            if listed >= MAX_CELLS_LISTED || used + line_len > CELL_LIST_BYTES {
+                break;
+            }
             writeln!(out, "- {cell}").unwrap();
+            listed += 1;
+            used += line_len;
         }
-        if i.cells.len() > MAX_CELLS_LISTED {
-            writeln!(out, "- and {} more", i.cells.len() - MAX_CELLS_LISTED).unwrap();
+        if i.cells.len() > listed {
+            writeln!(out, "- and {} more", i.cells.len() - listed).unwrap();
         }
         writeln!(out).unwrap();
     }
@@ -1042,6 +1052,40 @@ mod tests {
             "body must stay far under GitHub's limit: {}",
             body.len()
         );
+    }
+
+    /// Long labels (deep paths, long model names) are bounded by bytes, not
+    /// only by count, so twenty of them cannot exceed the body limit.
+    #[test]
+    fn render_review_body_bounds_the_cell_list_by_bytes() {
+        let long = format!(
+            "{}/x.rs: security/gpt-5.6 (network_error)",
+            "a".repeat(2000)
+        );
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 20,
+            axes_total: 20,
+            cells: vec![long; 20],
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        let listed = body.matches("(network_error)").count();
+        assert!(
+            (1..20).contains(&listed),
+            "listed {listed}:\n{}",
+            &body[..200]
+        );
+        assert!(
+            body.contains(&format!("- and {} more", 20 - listed)),
+            "{}",
+            &body[body.len() - 200..]
+        );
+        assert!(body.len() < 8192, "body must stay small: {}", body.len());
     }
 
     #[test]
