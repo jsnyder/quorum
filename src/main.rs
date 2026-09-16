@@ -1330,6 +1330,38 @@ async fn axes_context_for_file(
 /// absolute line numbers, then this file's hunks) instead of the whole
 /// file. Without a diff, or when the view would keep most of the file, or
 /// when the diff never mentions this file, the whole file goes as before.
+/// The enclosing functions of the changed lines (no context padding): the
+/// ranges inside which an outside-hunk finding is still about the change.
+/// Same inputs as `build_review_file`, so the parse is a cache lookup.
+fn changed_function_ranges(
+    file_path: &std::path::Path,
+    source: &str,
+    lang: Option<parser::Language>,
+    parse_cache: &cache::ParseCache,
+    diff_ranges: Option<&hydration::DiffRanges>,
+) -> Vec<(u32, u32)> {
+    let Some(diff_ranges) = diff_ranges else {
+        return Vec::new();
+    };
+    let Some(changed) = pipeline::diff_lines_for_file(file_path, diff_ranges) else {
+        return Vec::new();
+    };
+    if changed.is_empty() {
+        return Vec::new();
+    }
+    let spans = lang
+        .and_then(|l| {
+            parse_cache
+                .get_or_parse(source, l)
+                .ok()
+                .map(|t| hydration::function_spans(&t, l))
+        })
+        .unwrap_or_default();
+    // Context 0, unlike the focused view's DEFAULT_CONTEXT_LINES: a finding in
+    // the padding the model was shown is still outside the changed function.
+    quorum::focus::kept_ranges(&changed, &spans, 0, source.lines().count() as u32)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_review_file(
     file_path: &std::path::Path,
@@ -3098,8 +3130,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     // Every path that classified findings for this file has run;
                     // hide the ones stamped outside the diff before suppression.
                     if hide_out_of_diff {
-                        result.hidden_out_of_diff +=
-                            pipeline::hide_out_of_diff(&mut result.findings);
+                        let rescue = changed_function_ranges(
+                            std::path::Path::new(&result.file_path),
+                            &source,
+                            lang,
+                            &parse_cache,
+                            pipeline_cfg.diff_ranges.as_ref(),
+                        );
+                        // Hidden findings are recorded, so a project's suppression rules
+                        // apply to them exactly as to the shown ones; otherwise a rule
+                        // the project never wants to see would be written to the
+                        // review record and become linkable.
+                        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+                        let hidden_sup =
+                            suppress::apply_suppressions(hidden, &suppress_rules, &file_display);
+                        // A suppressed hidden finding still counts as suppressed in the summary.
+                        result.suppressed += hidden_sup.suppressed.len();
+                        result.hidden_out_of_diff.extend(hidden_sup.kept);
                     }
                     let sup_result = suppress::apply_suppressions(
                         result.findings,
@@ -3224,7 +3271,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 // return any. See `deep_llm_ran` below.
                                 usage: Default::default(),
                                 suppressed: sup_result.suppressed.len(),
-                                hidden_out_of_diff: 0,
+                                hidden_out_of_diff: Vec::new(),
                                 context_telemetry: None,
                                 enrichment_metrics: Default::default(),
                                 judge_metrics: Default::default(),
@@ -3406,13 +3453,24 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
                         // hide the ones stamped outside the diff before suppression.
 
-                        if hide_out_of_diff {
-
-                            result.hidden_out_of_diff +=
-
-                                pipeline::hide_out_of_diff(&mut result.findings);
-
-                        }
+                            if hide_out_of_diff {
+                                let rescue = changed_function_ranges(
+                                    std::path::Path::new(&result.file_path),
+                                    &source,
+                                    lang,
+                                    &parse_cache,
+                                    pipeline_cfg.diff_ranges.as_ref(),
+                                );
+                                // Hidden findings are recorded, so a project's suppression rules
+                                // apply to them exactly as to the shown ones; otherwise a rule
+                                // the project never wants to see would be written to the
+                                // review record and become linkable.
+                                let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+                                let hidden_sup = suppress::apply_suppressions(hidden, &suppress_rules, &file_display);
+                                // A suppressed hidden finding still counts as suppressed in the summary.
+                                result.suppressed += hidden_sup.suppressed.len();
+                                result.hidden_out_of_diff.extend(hidden_sup.kept);
+                            }
 
                         let sup_result = suppress::apply_suppressions(
                             result.findings,
@@ -3552,7 +3610,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .iter()
             .map(|r| r.judge_metrics.withheld_judge_failed)
             .sum();
-        let hidden_out_of_diff: usize = file_results.iter().map(|r| r.hidden_out_of_diff).sum();
+        let hidden_out_of_diff: usize = file_results
+            .iter()
+            .map(|r| r.hidden_out_of_diff.len())
+            .sum();
         eprintln!(
             "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}{}",
             file_results.len(),
@@ -3771,13 +3832,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         let finding_meta: Vec<review_log::FindingMeta> = file_results
             .iter()
             .flat_map(|fr| {
-                fr.findings.iter().map(|f| review_log::FindingMeta {
-                    id: f.id.clone(),
-                    title: f.title.clone(),
-                    file_path: fr.file_path.clone(),
-                    // #523: carried so `quorum feedback` can resolve it later.
-                    rule_id: f.rule_id.clone(),
-                })
+                // Hidden findings are recorded too: a verdict on one must
+                // still resolve to its id, or the hidden set can never be
+                // labelled and its precision never measured.
+                fr.findings
+                    .iter()
+                    .chain(fr.hidden_out_of_diff.iter())
+                    .map(|f| review_log::FindingMeta {
+                        id: f.id.clone(),
+                        title: f.title.clone(),
+                        file_path: fr.file_path.clone(),
+                        // #523: carried so `quorum feedback` can resolve it later.
+                        rule_id: f.rule_id.clone(),
+                    })
             })
             .collect();
 

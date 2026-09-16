@@ -275,3 +275,207 @@ fn diff_file_hides_out_of_diff_findings_unless_asked() {
         "nothing hidden, nothing to announce:\n{stderr}"
     );
 }
+
+/// An outside-hunk model finding inside the changed function is shown by
+/// default; rule findings outside the hunk stay hidden, in the changed
+/// function or not. The `unwrap()` on line 2 is far enough from the hunk to
+/// be outside the diff ranges.
+#[test]
+fn diff_file_rescues_model_findings_inside_the_changed_function() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let mut source = String::from(
+        "pub fn changed(x: Option<u32>, y: Option<u32>) -> u32 {\n    let a = x.unwrap();\n",
+    );
+    for i in 0..12 {
+        source.push_str(&format!("    let _pad{i} = {i};\n"));
+    }
+    source.push_str("    let b = y.map(|v| v + 1).unwrap_or(0);\n    a + b\n}\n\n");
+    source.push_str("pub fn untouched(p: *const u32) -> u32 {\n    unsafe { *p }\n}\n");
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(&lib, source).unwrap();
+    // The diff touches only the `let b` line, deep in `changed`.
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -15,1 +15,1 @@\n-    let b = y.map(|v| v + 1).unwrap_or(1);\n+    let b = y.map(|v| v + 1).unwrap_or(0);\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    // The cassette's model finding is on line 2: inside `changed`, outside the hunk.
+    let (out, _sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--diff-file")
+            .arg(&diff)
+            .arg(&lib)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let files: serde_json::Value = serde_json::from_str(&stdout).expect("json output");
+    let shown: Vec<(u64, String)> = files
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|f| f["findings"].as_array().into_iter().flatten())
+        .map(|f| {
+            (
+                f["line_start"].as_u64().unwrap(),
+                f["source"].as_str().unwrap_or("llm").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [(2, "llm".to_owned())],
+        "only the model finding in the changed function is shown:\n{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("2 outside the diff hidden"),
+        "the rule findings (unwrap in `changed`, unsafe in `untouched`) are hidden:\n{stderr}"
+    );
+}
+
+/// A hidden finding is recorded with the review, so a verdict recorded
+/// against it later resolves to its finding id instead of dangling.
+#[test]
+fn hidden_finding_can_still_receive_a_linked_verdict() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let mut source = String::from("pub fn changed(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n\n");
+    source.push_str("pub fn untouched(p: *const u32) -> u32 {\n    unsafe { *p }\n}\n");
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(&lib, source).unwrap();
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n pub fn changed(x: Option<u32>) -> u32 {\n+    x.unwrap()\n }\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = support::quorum(home.path())
+        .arg("review")
+        .arg("--json")
+        .arg("--diff-file")
+        .arg(&diff)
+        .arg(&lib)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 outside the diff hidden"),
+        "precondition: the `untouched` unwrap is hidden:\n{stderr}"
+    );
+    // Record a verdict on the hidden finding by title; it must link.
+    let fb = support::quorum(home.path())
+        .arg("feedback")
+        .arg("--file")
+        .arg(&lib)
+        .arg("--finding")
+        .arg("Use of `unsafe` block")
+        .arg("--verdict")
+        .arg("tp")
+        .arg("--in-diff")
+        .arg("false")
+        .arg("--reason")
+        .arg("hidden but real")
+        .output()
+        .unwrap();
+    let fb_out = String::from_utf8_lossy(&fb.stdout);
+    let linked: serde_json::Value = serde_json::from_str(fb_out.trim()).expect("feedback json");
+    let linked_id = linked["linked"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the verdict must resolve to a recorded finding id:\n{fb_out}"));
+    // And to the hidden one, not to the visible unwrap finding by fuzzy title.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let files: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let visible_ids: Vec<&str> = files
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|f| f["findings"].as_array().into_iter().flatten())
+        .filter_map(|f| f["id"].as_str())
+        .collect();
+    assert!(!visible_ids.is_empty(), "{stdout}");
+    assert!(
+        !visible_ids.contains(&linked_id),
+        "linked to a visible finding {linked_id}, not the hidden one"
+    );
+}
+
+/// A project suppression rule applies to hidden findings too: a suppressed
+/// hidden finding is not recorded, so it cannot be linked or fed to the
+/// calibrator for a rule the project never wants to see.
+#[test]
+fn suppressed_hidden_finding_is_not_recorded() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join(".quorum")).unwrap();
+    std::fs::write(
+        proj.path().join(".quorum").join("suppress.toml"),
+        "[[suppress]]\npattern = \"unsafe\"\nreason = \"raw pointer access is reviewed by hand\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let mut source = String::from("pub fn changed(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n\n");
+    source.push_str("pub fn untouched(p: *const u32) -> u32 {\n    unsafe { *p }\n}\n");
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(&lib, source).unwrap();
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n pub fn changed(x: Option<u32>) -> u32 {\n+    x.unwrap()\n }\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = support::quorum(home.path())
+        .arg("review")
+        .arg("--json")
+        .arg("--diff-file")
+        .arg(&diff)
+        .arg(&lib)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success() || out.status.code() == Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let fb = support::quorum(home.path())
+        .arg("feedback")
+        .arg("--file")
+        .arg(&lib)
+        .arg("--finding")
+        .arg("Use of `unsafe` block")
+        .arg("--verdict")
+        .arg("tp")
+        .arg("--in-diff")
+        .arg("false")
+        .arg("--reason")
+        .arg("hidden and suppressed")
+        .output()
+        .unwrap();
+    let fb_out = String::from_utf8_lossy(&fb.stdout);
+    let v: serde_json::Value = serde_json::from_str(fb_out.trim()).expect("feedback json");
+    assert!(
+        v.get("linked").is_none_or(|l| l.is_null()),
+        "a suppressed hidden finding must not be recorded, yet the verdict linked:\n{fb_out}"
+    );
+}
