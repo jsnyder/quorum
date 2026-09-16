@@ -41,6 +41,8 @@ fn write_fixture(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 /// The user message of each request the binary sent, one string per request.
+/// The whole prompt per request, system then user: the file-stable part
+/// (context, code) is the system message and the axis is the user message.
 fn user_message_per_request(sent: &[serde_json::Value]) -> Vec<String> {
     sent.iter()
         .map(|req| {
@@ -48,7 +50,7 @@ fn user_message_per_request(sent: &[serde_json::Value]) -> Vec<String> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|m| m["role"] == "user")
+                .filter(|m| m["role"] == "system" || m["role"] == "user")
                 .map(|m| m["content"].as_str().unwrap_or("").to_string())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -56,7 +58,7 @@ fn user_message_per_request(sent: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-/// Every user message the binary sent, concatenated.
+/// Every prompt the binary sent, concatenated.
 fn user_messages(sent: &[serde_json::Value]) -> String {
     user_message_per_request(sent).join("\n")
 }
@@ -298,9 +300,9 @@ fn axes_receive_the_file_context_before_the_code() {
     );
     for body in bodies {
         let ctx = body
-            .find("<review_context>")
+            .rfind("<review_context>\n")
             .unwrap_or_else(|| panic!("no review_context:\n{body}"));
-        let code = body.find("<code_to_review>").expect("no code block");
+        let code = body.rfind("<code_to_review>\n").expect("no code block");
         assert!(ctx < code, "context must precede the code:\n{body}");
         assert!(
             body.contains("fn helper_target(s: &str) -> Option<i32>"),

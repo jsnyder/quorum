@@ -3599,11 +3599,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 String::new()
             },
             {
-                // Provider prompt-cache hits, so a reorder that is meant to
-                // make them happen can be seen to.
+                // Provider prompt-cache hits, so a layout that is meant to
+                // produce them can be seen to. A proxy response-cache replay
+                // echoes the original usage, so measure with --no-cache.
                 let cached: u64 = file_results.iter().map(|r| r.usage.cached_tokens).sum();
                 if cached > 0 {
-                    format!(", {cached} prompt tokens served from cache")
+                    format!(", {cached} prompt tokens reported cached by the provider")
                 } else {
                     String::new()
                 }

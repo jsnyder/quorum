@@ -16,6 +16,9 @@
   "usage": {
     "prompt_tokens": 412,
     "completion_tokens": 87,
-    "total_tokens": 499
+    "total_tokens": 499,
+    "prompt_tokens_details": {
+      "cached_tokens": 300
+    }
   }
 }

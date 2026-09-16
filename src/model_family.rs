@@ -160,13 +160,17 @@ pub struct AssembledPrompt {
 /// Assemble the final prompt from its constituent parts.
 ///
 /// The assembly order is identical across families today (system =
-/// `base_system`, user = code + skill + schema). The file-stable part
-/// (`<review_context>` and `<code_to_review>`) leads the user message and the
-/// axis-specific `<skill_instructions>` follow it, so every axis reviewing the
-/// same file sends an identical prefix and provider prompt caching can serve
-/// it; per file, the axes run sequentially, so the second call finds the
-/// prefix cached. The base system prompt primes the read with what every
-/// axis looks for, so the code is not read cold. The key differentiator is
+/// `base_system` + code, user = skill + schema). The file-stable part
+/// (`<review_context>` and `<code_to_review>`) goes into the system message
+/// and only the axis-specific `<skill_instructions>` and schema vary in the
+/// user message. Measured through the LiteLLM proxy against gpt-5.6, the
+/// provider serves a cache hit only when the *system message* repeats: an
+/// identical prefix inside the user message, or an identical earlier user
+/// message, got 0 cached tokens, while the same content as the system
+/// message got 3760 of 4247. Per file the axes run sequentially
+/// (`expand_matrix` is files-outer), so the second call finds the system
+/// message the first one wrote. The base system prompt primes the read with
+/// what every axis looks for, so the code is not read cold. The key differentiator is
 /// prompt *content* selection via [`select_prompt`], which picks per-family
 /// overrides. Structure divergence (e.g., OpenAI terminal-position system
 /// messages) is deferred to the transport layer.
@@ -178,12 +182,12 @@ pub fn assemble_prompt(
     output_schema: &str,
     _family: ModelFamily,
 ) -> AssembledPrompt {
-    let system_message = base_system.to_owned();
+    let mut system_message = String::with_capacity(base_system.len() + code_to_review.len() + 2);
+    system_message.push_str(base_system);
+    system_message.push_str("\n\n");
+    system_message.push_str(code_to_review);
 
-    let mut user_message =
-        String::with_capacity(skill_prompt.len() + code_to_review.len() + output_schema.len() + 4);
-    user_message.push_str(code_to_review);
-    user_message.push('\n');
+    let mut user_message = String::with_capacity(skill_prompt.len() + output_schema.len() + 1);
     user_message.push_str(skill_prompt);
     user_message.push('\n');
     user_message.push_str(output_schema);
@@ -403,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_system_message_is_base_system() {
+    fn assemble_system_message_is_base_system_then_code() {
         let p = assemble_prompt(
             "base-system",
             "skill",
@@ -411,15 +415,18 @@ mod tests {
             "schema",
             ModelFamily::Anthropic,
         );
-        assert_eq!(p.system_message, "base-system");
+        assert_eq!(p.system_message, "base-system\n\ncode");
     }
 
     #[test]
     fn assemble_user_message_contains_all_parts() {
         let p = assemble_prompt("sys", "SKILL", "CODE", "SCHEMA", ModelFamily::Anthropic);
         assert!(p.user_message.contains("SKILL"));
-        assert!(p.user_message.contains("CODE"));
         assert!(p.user_message.contains("SCHEMA"));
+        // The code is file-stable, so it belongs to the cached system message,
+        // not the per-axis user message.
+        assert!(!p.user_message.contains("CODE"));
+        assert!(p.system_message.contains("CODE"));
     }
 
     #[test]
