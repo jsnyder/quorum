@@ -228,28 +228,49 @@ impl QuorumHandler {
             return Ok(CallToolResult::text_content(vec![msg.into()]));
         }
 
+        // Same resolution as the CLI: the review log next to the feedback
+        // store knows the finding's id and what produced it. A caller-supplied
+        // value still wins. Before, this path never resolved and wrote every
+        // attribution field as None.
+        let (finding_id, attribution) = {
+            let resolved = (|| {
+                let home = self.feedback_store.path().parent()?.to_path_buf();
+                let handle = crate::storage::initialize(&home).ok()?;
+                let log = crate::review_log::ReviewLog::with_storage(handle);
+                let fid = params
+                    .finding_id
+                    .clone()
+                    .or_else(|| log.resolve_finding_id(&params.file_path, &params.finding));
+                let attr = fid.as_deref().and_then(|f| log.attribution_for(f));
+                Some((fid, attr))
+            })();
+            resolved.unwrap_or((params.finding_id.clone(), None))
+        };
+        let attribution = attribution.unwrap_or_default();
         let entry = FeedbackEntry {
             file_path: params.file_path,
             finding_title: params.finding,
             // Honor caller-supplied category on the Human path too — keeps
             // analytics aligned across the three ingestion surfaces. Falls
-            // back to blank, matching the CLI Human default (#499).
-            finding_category: params
-                .category
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_default(),
+            // back to what the review recorded, then blank (#499).
+            // A given category wins even when blank (#499); only an absent
+            // one inherits what the model stated.
+            finding_category: match params.category {
+                Some(c) => c.trim().to_string(),
+                None => attribution.category.clone().unwrap_or_default(),
+            },
             verdict: verdict.clone(),
             reason: params.reason,
-            model: params.model,
+            model: params.model.or_else(|| attribution.model.clone()),
             timestamp: chrono::Utc::now(),
             provenance: crate::feedback::Provenance::Human,
             fp_kind,
-            finding_id: params.finding_id.clone(),
-            rule_id: None,
-            in_diff: params.in_diff,
-            skill_name: None,
-            skill_version: None,
-            manifest_sha256: None,
+            finding_id,
+            rule_id: attribution.rule_id.clone(),
+            in_diff: params.in_diff.or(attribution.in_diff),
+            skill_name: attribution.skill_name.clone(),
+            skill_version: attribution.skill_version.clone(),
+            manifest_sha256: attribution.manifest_sha256.clone(),
         };
 
         self.feedback_store
@@ -1452,6 +1473,70 @@ mod tests {
     // helper now copies it through; the prompt-side rendering is covered
     // separately in `src/review.rs`. This test kills the "forgot to thread"
     // mutation that any review.rs-only test would miss.
+
+    /// The MCP path resolves the finding by file and title and attributes
+    /// the verdict to what the review recorded, like the CLI. Before, it
+    /// never resolved and wrote every attribution field as None.
+    #[test]
+    fn feedback_tool_attributes_the_verdict_from_the_review_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = crate::storage::initialize(dir.path()).unwrap();
+        let log = crate::review_log::ReviewLog::with_storage(handle);
+        let mut record: crate::review_log::ReviewRecord =
+            serde_json::from_value(serde_json::json!({
+                "run_id": "run-mcp", "timestamp": "2026-09-16T00:00:00Z",
+                "quorum_version": "0.31.0", "repo": "x", "invoked_from": "mcp",
+                "model": "gpt-5.6", "files_reviewed": 1, "lines_added": null, "lines_removed": null,
+                "findings_by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                "tokens_in": 0, "tokens_out": 0, "tokens_cache_read": 0, "duration_ms": 0,
+                "flags": {}
+            }))
+            .unwrap();
+        record.model = "gpt-5.6".to_owned();
+        log.record_with_meta(
+            &record,
+            &[crate::review_log::FindingMeta {
+                id: "F-mcp".to_owned(),
+                title: "Unchecked unwrap on parse result".to_owned(),
+                file_path: "src/a.rs".to_owned(),
+                rule_id: None,
+                in_diff: Some(false),
+                skill_name: Some("security".to_owned()),
+                skill_version: Some("1.0.0".to_owned()),
+                manifest_sha256: Some("abc".to_owned()),
+                category: Some("security".to_owned()),
+                model: Some("gpt-5.6".to_owned()),
+            }],
+        )
+        .unwrap();
+
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(dir.path().join("feedback.jsonl")),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let params: FeedbackTool = serde_json::from_value(serde_json::json!({
+            "filePath": "src/a.rs",
+            "finding": "Unchecked unwrap on parse result",
+            "verdict": "tp",
+            "reason": "real"
+        }))
+        .unwrap();
+        handler.handle_feedback(params).expect("recorded");
+
+        let rows = handler.feedback_store.load_all().unwrap();
+        let row = rows.last().expect("one row");
+        assert_eq!(row.finding_id.as_deref(), Some("F-mcp"));
+        assert_eq!(row.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(row.skill_name.as_deref(), Some("security"));
+        assert_eq!(row.in_diff, Some(false));
+        assert_eq!(row.finding_category, "security");
+    }
 
     #[test]
     fn build_pipeline_config_threads_focus_from_review_tool() {

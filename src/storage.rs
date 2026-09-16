@@ -51,7 +51,7 @@ impl std::error::Error for FutureSchemaVersion {}
 /// nothing could compare an on-disk version against "what this build knows".
 /// `run_migrations` needs exactly that comparison to reject a database written
 /// by a newer binary, so the constant is now real.
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// Open (or create) the quorum SQLite database and run any pending
 /// migrations. Returns a shared connection handle ready for use.
@@ -252,6 +252,9 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     if version < 5 {
         migrate_v4_to_v5(conn).context("schema migration v4 -> v5 failed")?;
     }
+    if version < 6 {
+        migrate_v5_to_v6(conn).context("schema migration v5 -> v6 failed")?;
+    }
 
     Ok(())
 }
@@ -385,7 +388,31 @@ fn migrate_v4_to_v5(conn: &Connection) -> anyhow::Result<()> {
     tx.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_rfi_file_path ON review_finding_ids(file_path);",
     )?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.pragma_update(None, "user_version", 5)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v6: attribution columns on `review_finding_ids`.
+///
+/// `quorum feedback` resolved a finding's id and rule but wrote `model`,
+/// `in_diff`, `skill_name`, `skill_version` and `manifest_sha256` from flags
+/// nobody passed (86% of the corpus has no model; no row has a skill). The
+/// review knew all of them, so they are recorded per finding. `model` is the
+/// finding's own producer (`Source::Llm`), not the review's configured
+/// model: a rule finding has no model, and under `--ensemble` the review row
+/// names only the first. Legacy rows keep empty defaults (`in_diff` NULL).
+fn migrate_v5_to_v6(conn: &Connection) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "ALTER TABLE review_finding_ids ADD COLUMN in_diff INTEGER;
+         ALTER TABLE review_finding_ids ADD COLUMN skill_name TEXT NOT NULL DEFAULT '';
+         ALTER TABLE review_finding_ids ADD COLUMN skill_version TEXT NOT NULL DEFAULT '';
+         ALTER TABLE review_finding_ids ADD COLUMN manifest_sha256 TEXT NOT NULL DEFAULT '';
+         ALTER TABLE review_finding_ids ADD COLUMN category TEXT NOT NULL DEFAULT '';
+         ALTER TABLE review_finding_ids ADD COLUMN model TEXT NOT NULL DEFAULT '';",
+    )?;
+    tx.pragma_update(None, "user_version", 6)?;
     tx.commit()?;
     Ok(())
 }
@@ -1312,7 +1339,7 @@ mod tests {
     fn migrate_v4_to_v5_creates_file_path_index() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        assert_eq!(current_version(&conn).unwrap(), 5);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
 
         let idx_exists: bool = conn
             .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_rfi_file_path'")
@@ -1322,6 +1349,49 @@ mod tests {
         assert!(
             idx_exists,
             "idx_rfi_file_path must exist after v5 migration (#553)"
+        );
+    }
+
+    #[test]
+    fn migrate_v5_to_v6_adds_attribution_columns_with_legacy_defaults() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate_v0_to_v1(&conn).unwrap();
+        migrate_v1_to_v2(&conn).unwrap();
+        migrate_v2_to_v3(&conn).unwrap();
+        migrate_v3_to_v4(&conn).unwrap();
+        migrate_v4_to_v5(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO reviews (
+                run_id, timestamp, quorum_version, invoked_from, model,
+                files_reviewed, tokens_in, tokens_out, duration_ms
+            ) VALUES ('r1', '2026-09-16T00:00:00Z', '0.31.0', 'tty', 'gpt-5.6', 1, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path, rule_id) VALUES ('r1', 'f1', 't', 'a.rs', '')",
+            [],
+        )
+        .unwrap();
+        migrate_v5_to_v6(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 6);
+        let row: (Option<i64>, String, String, String, String, String) = conn
+            .query_row(
+                "SELECT in_diff, skill_name, skill_version, manifest_sha256, category, model FROM review_finding_ids WHERE finding_id = 'f1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                None,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new()
+            )
         );
     }
 

@@ -479,3 +479,163 @@ fn suppressed_hidden_finding_is_not_recorded() {
         "a suppressed hidden finding must not be recorded, yet the verdict linked:\n{fb_out}"
     );
 }
+
+/// A verdict recorded with only `--file`, `--finding`, `--verdict` and
+/// `--reason` is attributed to what produced the finding: the review's model,
+/// the axis, its version and manifest, `in_diff`, and the category. Before,
+/// 86% of the corpus had no model and no row had a skill.
+#[test]
+fn feedback_is_attributed_from_the_recorded_review() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
+    )
+    .unwrap();
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n pub fn changed(text: &str) -> i32 {\n-    text.parse::<i32>().unwrap_or(0)\n+    text.parse::<i32>().unwrap()\n }\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness")
+            .arg("--diff-file")
+            .arg(&diff)
+            .arg(&lib)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("unwrap() on a fallible parse can panic"),
+        "{stdout}"
+    );
+
+    let fb = support::quorum(home.path())
+        .arg("feedback")
+        .arg("--file")
+        .arg(&lib)
+        .arg("--finding")
+        .arg("unwrap() on a fallible parse can panic")
+        .arg("--verdict")
+        .arg("tp")
+        .arg("--reason")
+        .arg("real")
+        .output()
+        .unwrap();
+    assert!(
+        fb.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fb.stderr)
+    );
+    let store =
+        std::fs::read_to_string(home.path().join(".quorum").join("feedback.jsonl")).unwrap();
+    let row: serde_json::Value = serde_json::from_str(store.lines().last().unwrap()).unwrap();
+    assert_eq!(row["model"], "gpt-5.6", "{row}");
+    assert_eq!(row["skill_name"], "correctness", "{row}");
+    assert!(
+        row["skill_version"].is_string() && row["manifest_sha256"].is_string(),
+        "{row}"
+    );
+    assert_eq!(row["in_diff"], true, "{row}");
+    assert_eq!(row["finding_category"], "correctness", "{row}");
+    assert!(row["finding_id"].is_string(), "{row}");
+
+    // An explicit blank category stays blank (#499): the flag's presence
+    // decides, not its content, so a placeholder is never laundered in.
+    let fb = support::quorum(home.path())
+        .arg("feedback")
+        .arg("--file")
+        .arg(&lib)
+        .arg("--finding")
+        .arg("unwrap() on a fallible parse can panic")
+        .arg("--verdict")
+        .arg("tp")
+        .arg("--category")
+        .arg("   ")
+        .arg("--reason")
+        .arg("real, category deliberately blank")
+        .output()
+        .unwrap();
+    assert!(fb.status.success());
+    let store =
+        std::fs::read_to_string(home.path().join(".quorum").join("feedback.jsonl")).unwrap();
+    let row: serde_json::Value = serde_json::from_str(store.lines().last().unwrap()).unwrap();
+    assert_eq!(row["finding_category"], "", "blank must stay blank: {row}");
+}
+
+/// A verdict on a rule finding inherits no model and no category: the
+/// review's configured model never saw it, and its category is a folded
+/// placeholder, not a stated one (#499).
+#[test]
+fn feedback_on_a_rule_finding_inherits_no_model_or_category() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn changed(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = support::quorum(home.path())
+        .arg("review")
+        .arg("--json")
+        .arg(&lib)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("unwrap()"));
+    let fb = support::quorum(home.path())
+        .arg("feedback")
+        .arg("--file")
+        .arg(&lib)
+        .arg("--finding")
+        .arg("Use of `.unwrap()` may panic at runtime")
+        .arg("--verdict")
+        .arg("fp")
+        .arg("--fp-kind")
+        .arg("pattern-overgeneralization")
+        .arg("--reason")
+        .arg("guarded")
+        .output()
+        .unwrap();
+    assert!(
+        fb.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fb.stderr)
+    );
+    let store =
+        std::fs::read_to_string(home.path().join(".quorum").join("feedback.jsonl")).unwrap();
+    let row: serde_json::Value = serde_json::from_str(store.lines().last().unwrap()).unwrap();
+    assert!(row["finding_id"].is_string(), "linked: {row}");
+    assert!(
+        row["rule_id"].as_str().unwrap_or("").contains("unwrap"),
+        "{row}"
+    );
+    assert!(
+        row["model"].is_null(),
+        "no model produced a rule finding: {row}"
+    );
+    assert_eq!(
+        row["finding_category"], "",
+        "a folded category is not a stated one: {row}"
+    );
+}
