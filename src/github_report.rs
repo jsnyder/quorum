@@ -236,6 +236,7 @@ pub fn render_review_body(
     inline_findings: &[Finding],
     body_findings: &[Finding],
     version: &str,
+    incomplete: Option<&crate::finding::ReviewIncomplete>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(4096);
@@ -244,8 +245,25 @@ pub fn render_review_body(
     let total = inline_findings.len() + body_findings.len();
     writeln!(out, "## Quorum Review\n").unwrap();
 
+    if let Some(i) = incomplete.filter(|i| i.axes_failed > 0) {
+        writeln!(
+            out,
+            "**Review incomplete:** {} of {} skill axes failed, so this is not a full review.\n",
+            i.axes_failed, i.axes_total
+        )
+        .unwrap();
+        for cell in &i.cells {
+            writeln!(out, "- {cell}").unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
     if total == 0 {
-        writeln!(out, "No findings.").unwrap();
+        if incomplete.is_some_and(|i| i.axes_failed > 0) {
+            writeln!(out, "No findings from the axes that completed.").unwrap();
+        } else {
+            writeln!(out, "No findings.").unwrap();
+        }
         return out;
     }
 
@@ -500,6 +518,9 @@ pub struct PostReviewRequest {
     pub findings: Vec<ReviewFinding>,
     pub diff_text: String,
     pub version: String,
+    /// What the review could not do; rendered ahead of the findings so a
+    /// failed analysis does not post as "No findings.".
+    pub incomplete: Option<crate::finding::ReviewIncomplete>,
     pub run_id: String,
     pub commit_sha: String,
     /// Override API base URL (for testing). Default: https://api.github.com
@@ -824,7 +845,13 @@ pub async fn post_review(
         }
     }
 
-    let review_body = render_review_body(&marker, &inline_findings, &body_findings, &req.version);
+    let review_body = render_review_body(
+        &marker,
+        &inline_findings,
+        &body_findings,
+        &req.version,
+        req.incomplete.as_ref(),
+    );
 
     let create_req = CreateReviewRequest {
         commit_id: req.commit_sha.clone(),
@@ -958,9 +985,37 @@ mod tests {
         assert!(result.contains("L89"));
     }
 
+    /// A review whose axes failed must not post as a clean "No findings.".
+    #[test]
+    fn render_review_body_says_incomplete_before_anything_else() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 1,
+            axes_total: 2,
+            cells: vec!["src/a.rs: security/gpt-5.6 (not_json)".to_owned()],
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        assert!(body.contains("Review incomplete:"), "{body}");
+        assert!(body.contains("1 of 2 skill axes failed"), "{body}");
+        assert!(
+            body.contains("src/a.rs: security/gpt-5.6 (not_json)"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("No findings.\n"),
+            "must not read as clean:\n{body}"
+        );
+        assert!(body.contains("No findings from the axes that completed."));
+    }
+
     #[test]
     fn render_review_body_clean() {
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &[], "0.27.0");
+        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &[], "0.27.0", None);
         assert!(body.contains("quorum-review-marker"));
         assert!(body.contains("No findings."));
     }
@@ -1011,7 +1066,13 @@ mod tests {
                     .build()
             })
             .collect();
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &inline, &[f], "0.27.0");
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &inline,
+            &[f],
+            "0.27.0",
+            None,
+        );
         assert!(body.contains("## Quorum Review"));
         assert!(body.contains("3 findings"));
         assert!(body.contains("2 inline, 1 in summary"));
@@ -1056,7 +1117,13 @@ mod tests {
                 clamped_from_severity: None,
             })
             .collect();
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &findings, "0.27.0");
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &findings,
+            "0.27.0",
+            None,
+        );
         assert!(body.len() <= 60_000);
         assert!(body.contains("additional findings omitted"));
     }
@@ -1420,6 +1487,7 @@ mod integration_tests {
             }],
             diff_text: diff.into(),
             version: "0.27.0".into(),
+            incomplete: None,
             run_id: "01TEST".into(),
             commit_sha: "abc123".into(),
             api_base_url: Some(base_url),
@@ -1707,6 +1775,7 @@ mod integration_tests {
             findings,
             diff_text: String::new(),
             version: "0.31.0".into(),
+            incomplete: None,
             run_id: "01RUN".into(),
             commit_sha: "deadbeef".into(),
             api_base_url: Some(base.to_string()),

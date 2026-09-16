@@ -1104,10 +1104,11 @@ impl OpenAiClient {
             .as_str()
             .unwrap_or("unknown");
         if finish_reason == "length" {
-            anyhow::bail!(
-                "Response truncated (finish_reason=length). Model {} hit its output token limit.",
-                model
-            );
+            return Err(quorum::skill_output::TruncatedResponse {
+                model: model.to_owned(),
+                detail: "finish_reason=length: the model hit its output token limit".to_owned(),
+            }
+            .into());
         }
 
         let content = json["choices"][0]["message"]["content"]
@@ -1159,8 +1160,11 @@ impl OpenAiClient {
         let usage = parse_usage(&json);
 
         if json["status"].as_str() == Some("incomplete") {
-            let reason = json["incomplete_details"].to_string();
-            anyhow::bail!("Response incomplete: {}", reason);
+            return Err(quorum::skill_output::TruncatedResponse {
+                model: model.to_owned(),
+                detail: format!("incomplete: {}", json["incomplete_details"]),
+            }
+            .into());
         }
 
         // Extract and concatenate all text from output[].content[].text

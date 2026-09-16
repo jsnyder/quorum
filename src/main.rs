@@ -1039,6 +1039,17 @@ fn deep_tool_root(file_path: &std::path::Path) -> std::path::PathBuf {
 ///
 /// All three shapes are accepted now. The `_meta` entry is skipped rather than
 /// rejected: it carries linter coverage, not findings.
+/// The `_meta.incomplete` entry `quorum review --json` writes when a skill
+/// axis failed. Absent (or unreadable) means "nothing claimed", not "complete".
+fn parse_incomplete_meta(json_str: &str) -> Option<quorum::finding::ReviewIncomplete> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let entries = value.as_array()?;
+    entries
+        .iter()
+        .find_map(|e| e.get("_meta").and_then(|m| m.get("incomplete")))
+        .and_then(|i| serde_json::from_value(i.clone()).ok())
+}
+
 fn parse_findings_payload(json_str: &str) -> Result<Vec<github_report::ReviewFinding>, String> {
     // Shape 1: a bare array of findings. This shape carries no path at all --
     // it is a list of findings with nothing saying which file they came from --
@@ -1144,6 +1155,7 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         }
     };
 
+    let incomplete = parse_incomplete_meta(&json_str);
     let findings: Vec<github_report::ReviewFinding> = match parse_findings_payload(&json_str) {
         Ok(f) => f,
         Err(e) => {
@@ -1225,6 +1237,7 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         findings,
         diff_text,
         version,
+        incomplete,
         run_id,
         commit_sha,
         api_base_url: None,
@@ -1417,7 +1430,7 @@ impl quorum::skill_executor::LlmReviewer for SkillLlmAdapter {
 fn report_failed_skill_cells(
     cell_results: &[quorum::skill_executor::CellResult],
     file: &str,
-) -> usize {
+) -> Vec<String> {
     let failed: Vec<String> = cell_results
         .iter()
         .filter(|c| c.parse_error_class.is_some() || c.failure_reason.is_some())
@@ -1435,7 +1448,7 @@ fn report_failed_skill_cells(
             failed.join(", "),
         );
     }
-    failed.len()
+    failed.into_iter().map(|c| format!("{file}: {c}")).collect()
 }
 
 /// Resolve the review axis set from CLI flags and available skills.
@@ -2736,6 +2749,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // Shared across the sequential and parallel review paths; folded into the
     // exit status so a review whose skill axes all failed cannot exit 0.
     let skill_cells_failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skill_cells_total = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // One label per failed cell, so the JSON `_meta` and the PR report can
+    // say which axis failed on which file, not only how many.
+    let failed_cells: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     // #531 follow-up (CodeRabbit on #547): `llm_ran` is derived from
     // `FileReviewResult.usage`, and neither `--deep` path records any. The
     // sequential path never pushes a result at all (#481); the parallel path
@@ -2999,10 +3017,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         // axis reviewer silently emitted zero findings for two
                         // months; nothing ever read it back. A parse failure
                         // must not look like a clean file.
-                        skill_cells_failed.fetch_add(
-                            report_failed_skill_cells(&cell_results, &file_str),
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
+                        {
+                            let failed = report_failed_skill_cells(&cell_results, &file_str);
+                            skill_cells_failed
+                                .fetch_add(failed.len(), std::sync::atomic::Ordering::Relaxed);
+                            skill_cells_total.fetch_add(
+                                cell_results.len(),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            failed_cells.lock().unwrap().extend(failed);
+                        }
 
                         let _int_span = tracing::info_span!(
                                 "phase.integrator",
@@ -3131,6 +3155,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let integrator_audit_writer = integrator_audit_writer_arc.clone();
             let run_id = run_id.clone();
             let skill_cells_failed = skill_cells_failed.clone();
+            let skill_cells_total = skill_cells_total.clone();
+            let failed_cells = failed_cells.clone();
             let deep_llm_ran = deep_llm_ran.clone();
 
             let handle = rt.spawn_blocking(move || {
@@ -3305,10 +3331,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
                                 drop(_exec_span);
 
-                                skill_cells_failed.fetch_add(
-                                    report_failed_skill_cells(&cell_results, &file_str),
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
+                                {
+                            let failed = report_failed_skill_cells(&cell_results, &file_str);
+                            skill_cells_failed
+                                .fetch_add(failed.len(), std::sync::atomic::Ordering::Relaxed);
+                            skill_cells_total.fetch_add(
+                                cell_results.len(),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            failed_cells.lock().unwrap().extend(failed);
+                        }
 
                                 let _int_span = tracing::info_span!(
                                     "phase.integrator",
@@ -3456,6 +3488,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     let review_duration = review_start.elapsed();
+    let review_incomplete = quorum::finding::ReviewIncomplete {
+        axes_failed: skill_cells_failed.load(std::sync::atomic::Ordering::Relaxed),
+        axes_total: skill_cells_total.load(std::sync::atomic::Ordering::Relaxed),
+        cells: failed_cells.lock().unwrap().clone(),
+    };
 
     // Aggregated end-of-run summary (one line, always printed to stderr).
     {
@@ -3501,7 +3538,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .sum();
         let hidden_out_of_diff: usize = file_results.iter().map(|r| r.hidden_out_of_diff).sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
             engine_label,
@@ -3533,6 +3570,14 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             if hidden_out_of_diff > 0 {
                 format!(
                     ", {hidden_out_of_diff} outside the diff hidden (run with --show-out-of-diff to see them)"
+                )
+            } else {
+                String::new()
+            },
+            if review_incomplete.axes_failed > 0 {
+                format!(
+                    ", {} of {} skill axes failed (review incomplete)",
+                    review_incomplete.axes_failed, review_incomplete.axes_total
                 )
             } else {
                 String::new()
@@ -3775,8 +3820,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     if use_json {
-        match output::format_json_grouped_with_meta(&file_results, &enabled_linters, &linter_hints)
-        {
+        match output::format_json_grouped_with_meta(
+            &file_results,
+            &enabled_linters,
+            &linter_hints,
+            Some(&review_incomplete),
+        ) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Error: JSON serialization failed: {}", e);
@@ -3790,8 +3839,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     }
 
+    // A review whose skill axes failed is not clean, even with no findings:
+    // that combination is exactly what hid the parser regression for two
+    // months. Floor the status at 1 (warnings) without escalating transient
+    // LLM failures to a tool error. Applied before the GitHub branch too,
+    // which used to return the unfloored code.
+    let floor_incomplete = |code: i32| {
+        if review_incomplete.axes_failed > 0 {
+            code.max(1)
+        } else {
+            code
+        }
+    };
+
     if let Some(pr_number) = opts.github_pr {
-        let review_exit = output::compute_exit_code(&all_findings);
+        let review_exit = floor_incomplete(output::compute_exit_code(&all_findings));
         let ctx = match github_report::resolve_github_context(
             opts.github_token.as_deref(),
             opts.github_repo.as_deref(),
@@ -3880,6 +3942,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             version,
             run_id,
             commit_sha,
+            incomplete: Some(review_incomplete.clone()).filter(|i| i.axes_failed > 0),
             api_base_url: None,
         };
 
@@ -3909,16 +3972,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         return review_exit;
     }
 
-    // A review whose skill axes failed is not clean, even with no findings:
-    // that combination is exactly what hid the parser regression for two
-    // months. Floor the status at 1 (warnings) without escalating transient
-    // LLM failures to a tool error.
-    let code = output::compute_exit_code(&all_findings);
-    if skill_cells_failed.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-        code.max(1)
-    } else {
-        code
-    }
+    floor_incomplete(output::compute_exit_code(&all_findings))
 }
 
 /// Relevance gate: a detected linter is only worth surfacing in this review's
@@ -6695,6 +6749,16 @@ mod report_payload_tests {
     /// description has since been reworded); only the shape is the claim. A hand-written fixture would have encoded my belief about the
     /// shape, and a wrong belief about the shape is the bug (#496).
     const REVIEW_JSON: &str = include_str!("../tests/fixtures/report/review_json_output.json");
+
+    #[test]
+    fn incomplete_meta_is_read_from_review_json_and_absent_otherwise() {
+        let with = r#"[{"_meta":{"linters":{"configured":[],"available_unconfigured":[]},"incomplete":{"axes_failed":1,"axes_total":2,"cells":["a.rs: security/m (not_json)"]}}}]"#;
+        let got = parse_incomplete_meta(with).expect("present");
+        assert_eq!((got.axes_failed, got.axes_total), (1, 2));
+        assert_eq!(got.cells, vec!["a.rs: security/m (not_json)".to_owned()]);
+        assert!(parse_incomplete_meta(REVIEW_JSON).is_none());
+        assert!(parse_incomplete_meta("not json").is_none());
+    }
 
     /// #592: the group's `file` is the only place the path exists, and
     /// dropping it here is what made inline comments impossible. `report` must

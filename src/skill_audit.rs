@@ -390,10 +390,12 @@ pub struct SkillInvocationRecord {
     pub findings_clamped: u32,
     #[serde(default)]
     pub findings_dropped_invalid_json: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Written as `null` when absent (not skipped), so a reader can tell
+    /// "no parse error" from "field never written by this binary".
+    #[serde(default)]
     pub parse_error_class: Option<ParseErrorClass>,
     pub exit_status: ExitStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub failure_reason: Option<FailureReason>,
     #[serde(default)]
     pub calibrator_suppressions: u32,
