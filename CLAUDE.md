@@ -32,7 +32,7 @@ cargo run -- stats --rolling 50              # rolling 50-review windows
 cargo run -- stats --skills                  # per-axis skill audit rollup (zero-finding streaks)
 cargo run -- stats --integrator              # integrator decisions + severity clamp transitions
 cargo run -- review file.yaml --deep         # multi-turn agent loop
-cargo run -- review file.rs --diff-file d.patch  # change-scoped review
+cargo run -- review file.rs --diff-file d.patch  # change-scoped review: axes get a focused view (enclosing functions + hunks) unless a whole-file fallback applies (>60% kept, deletion-only, or file not in the diff); out-of-diff findings hidden
 cargo run -- review file.rs --diff-file d.patch --show-out-of-diff  # also show findings outside the diff (hidden by default)
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
 cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"

@@ -1550,6 +1550,28 @@ pub fn classify_findings_for_file(
     file_path: &Path,
     diff_ranges: &hydration::DiffRanges,
 ) {
+    let (diff_lines, deletion_only) = match diff_lines_for_file(file_path, diff_ranges) {
+        // #562: the file appeared in the diff but contributed no post-image
+        // lines -- every hunk touching it was a pure deletion. Nothing can be
+        // attributed to a range that does not exist, so the honest answer is
+        // "unknown", not "outside the diff".
+        Some(lines) => {
+            let deletion_only = lines.is_empty();
+            (lines, deletion_only)
+        }
+        None => (Vec::new(), false),
+    };
+
+    classify_in_diff(findings, &diff_lines, deletion_only);
+}
+
+/// The new-side changed ranges of `diff_ranges` that belong to `file_path`,
+/// resolved the same way for every caller. `None` when the diff never
+/// mentions the file; `Some(empty)` when it does but only with deletions.
+pub fn diff_lines_for_file(
+    file_path: &Path,
+    diff_ranges: &hydration::DiffRanges,
+) -> Option<Vec<(u32, u32)>> {
     let file_str = file_path.to_string_lossy().to_string();
     let repo_root = find_project_root(file_path);
     let resolver = ReviewPathResolver::new(&file_str, &repo_root);
@@ -1557,18 +1579,15 @@ pub fn classify_findings_for_file(
         .iter()
         .filter(|(path, _)| resolver.matches(path))
         .collect();
-    let diff_lines: Vec<(u32, u32)> = matching
-        .iter()
-        .flat_map(|(_, ranges)| ranges.clone())
-        .collect();
-
-    // #562: the file appeared in the diff but contributed no post-image lines
-    // -- every hunk touching it was a pure deletion. Nothing can be attributed
-    // to a range that does not exist, so the honest answer is "unknown", not
-    // "outside the diff".
-    let deletion_only = !matching.is_empty() && diff_lines.is_empty();
-
-    classify_in_diff(findings, &diff_lines, deletion_only);
+    if matching.is_empty() {
+        return None;
+    }
+    Some(
+        matching
+            .iter()
+            .flat_map(|(_, ranges)| ranges.clone())
+            .collect(),
+    )
 }
 
 /// Stamp each finding with `in_diff` based on whether the finding's anchor

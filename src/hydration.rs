@@ -137,7 +137,7 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["function_definition"],
         Language::TypeScript | Language::Tsx => vec!["function_declaration", "method_definition"],
         Language::Yaml => vec![],
-        Language::Bash => vec![],
+        Language::Bash => vec!["function_definition"],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["function_declaration", "method_declaration"],
@@ -644,6 +644,28 @@ fn collect_import_refs_in_range(
     }
 }
 
+/// 1-based inclusive line spans of every function definition in the tree,
+/// in source order. Used by the diff-first focus view to expand a changed
+/// range to the function that contains it.
+pub fn function_spans(tree: &tree_sitter::Tree, lang: Language) -> Vec<(u32, u32)> {
+    fn walk(node: tree_sitter::Node, kinds: &[&str], out: &mut Vec<(u32, u32)>) {
+        if kinds.contains(&node.kind()) {
+            out.push((
+                node.start_position().row as u32 + 1,
+                node.end_position().row as u32 + 1,
+            ));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, kinds, out);
+        }
+    }
+    let kinds = function_def_kinds(lang);
+    let mut out = Vec::new();
+    walk(tree.root_node(), &kinds, &mut out);
+    out
+}
+
 /// Parse a unified diff to extract changed line ranges per file.
 /// Returns Vec<(file_path, Vec<(start_line, end_line)>)>
 pub fn parse_unified_diff(diff: &str) -> DiffRanges {
@@ -842,6 +864,26 @@ fn handle(req: Request) {
             "Should find type definition for Request. Got: {:?}",
             ctx.type_definitions
         );
+    }
+
+    /// Spans are 1-based inclusive and cover nested functions too, which is
+    /// what lets a change inside a closure-heavy body expand to its parent.
+    /// Bash had no function kind, so a change inside a long shell function
+    /// got 20 lines of context instead of the function. Found by CodeRabbit
+    /// on #610.
+    #[test]
+    fn function_spans_cover_bash_functions() {
+        let src = "#!/bin/bash\nset -e\n\ndeploy() {\n    echo one\n    echo two\n}\n\nfunction cleanup {\n    rm -f x\n}\n";
+        let tree = crate::parser::parse(src, Language::Bash).unwrap();
+        assert_eq!(function_spans(&tree, Language::Bash), vec![(4, 7), (9, 11)]);
+    }
+
+    #[test]
+    fn function_spans_are_one_based_inclusive_in_source_order() {
+        let src = "fn a() {\n    1\n}\n\nfn b() {\n    fn inner() {}\n    2\n}\n";
+        let tree = crate::parser::parse(src, Language::Rust).unwrap();
+        let spans = function_spans(&tree, Language::Rust);
+        assert_eq!(spans, vec![(1, 3), (5, 8), (6, 6)]);
     }
 
     /// `collect_definitions` read the `name` field directly, which C++
