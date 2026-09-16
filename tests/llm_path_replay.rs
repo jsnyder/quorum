@@ -140,12 +140,19 @@ fn request_carries_the_reviewed_source_and_model() {
         .iter()
         .find(|m| m["role"] == "user")
         .unwrap_or_else(|| panic!("no user message in {body}"));
-    let user_text = user["content"].as_str().unwrap_or_default();
+    // The axes path carries the file-stable code in the system message (the
+    // part the provider caches) and the axis in the user message; the legacy
+    // path carries the code in the user message. Either way it must be there.
+    let prompt_text = format!(
+        "{}\n{}",
+        system["content"].as_str().unwrap_or_default(),
+        user["content"].as_str().unwrap_or_default()
+    );
     assert!(
-        user_text.contains("text.parse::<i32>().unwrap()"),
+        prompt_text.contains("text.parse::<i32>().unwrap()"),
         "the reviewed source must reach the prompt. If this fails, the \
          reviewer is being asked to review code it was never shown.\n\
-         user message was:\n{user_text}"
+         prompt was:\n{prompt_text}"
     );
 }
 

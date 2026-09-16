@@ -230,17 +230,20 @@ pub fn expand_matrix(
 ) -> Vec<CellSpec> {
     let mut cells = Vec::new();
 
-    for skill in skills {
-        let models: Vec<String> = if let Some(ref preferred) = skill.manifest.preferred_model {
-            vec![preferred.clone()]
-        } else if config.ensemble && !config.ensemble_pool.is_empty() {
-            config.ensemble_pool.clone()
-        } else {
-            config.global_models.clone()
-        };
+    // Files outer: every axis (and model) for one file is adjacent, so the
+    // file-stable system message the first call wrote is still the
+    // provider's newest cache entry when the next one arrives.
+    for f in files {
+        for skill in skills {
+            let models: Vec<String> = if let Some(ref preferred) = skill.manifest.preferred_model {
+                vec![preferred.clone()]
+            } else if config.ensemble && !config.ensemble_pool.is_empty() {
+                config.ensemble_pool.clone()
+            } else {
+                config.global_models.clone()
+            };
 
-        for model in &models {
-            for f in files {
+            for model in &models {
                 cells.push(CellSpec {
                     skill: skill.clone(),
                     model: model.clone(),
@@ -750,6 +753,42 @@ mod tests {
         );
     }
 
+    /// The provider caches the file-stable system message, so every axis
+    /// for one file must be adjacent: files outer, skills inner.
+    #[test]
+    fn expand_matrix_keeps_every_axis_of_one_file_adjacent() {
+        let skills = vec![
+            sample_skill("correctness", None, Severity::Critical),
+            sample_skill("security", None, Severity::Critical),
+        ];
+        let files = vec![
+            ReviewFile::whole(
+                "a.rs".to_owned(),
+                "sha-a".to_owned(),
+                "fn a() {}".to_owned(),
+            ),
+            ReviewFile::whole(
+                "b.rs".to_owned(),
+                "sha-b".to_owned(),
+                "fn b() {}".to_owned(),
+            ),
+        ];
+        let cells = expand_matrix(&skills, &files, &default_config());
+        let order: Vec<(&str, &str)> = cells
+            .iter()
+            .map(|c| (c.file_path.as_str(), c.skill.manifest.name.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("a.rs", "correctness"),
+                ("a.rs", "security"),
+                ("b.rs", "correctness"),
+                ("b.rs", "security"),
+            ]
+        );
+    }
+
     #[test]
     fn expand_matrix_is_skills_times_models_not_one_to_one() {
         let skills = vec![
@@ -1004,7 +1043,11 @@ mod tests {
             _model: &str,
             _system_prompt: &str,
         ) -> anyhow::Result<LlmResponse> {
-            self.prompts.lock().unwrap().push(prompt.to_owned());
+            // System first, then user: the order test reads positions across both.
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(format!("{_system_prompt}\n{prompt}"));
             Ok(LlmResponse {
                 content: "[]".to_owned(),
                 usage: Some(TokenUsage::default()),
@@ -1013,7 +1056,8 @@ mod tests {
     }
 
     /// With no context the prompt carries no `<review_context>` at all; with
-    /// one, the block sits between the skill instructions and the code.
+    /// one, the block precedes the code, and both precede the axis's
+    /// `<skill_instructions>`.
     #[test]
     fn execute_cell_places_context_before_code_or_omits_it() {
         let skill = sample_skill("correctness", None, Severity::High);
@@ -1036,8 +1080,13 @@ mod tests {
                 .to_owned(),
         );
         execute_cell(&cell, &reviewer, &budget);
-        let prompts = reviewer.prompts.lock().unwrap();
-        assert_eq!(prompts.len(), 2);
+        let captured = reviewer.prompts.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        // The base prompt's prose names the tags; look only past it.
+        let prompts: Vec<&str> = captured
+            .iter()
+            .map(|p| &p[BASE_SYSTEM_PROMPT.len()..])
+            .collect();
         assert!(
             !prompts[0].contains("<review_context>"),
             "no context, no block:\n{}",
@@ -1049,12 +1098,12 @@ mod tests {
         let code = prompts[1]
             .find("<code_to_review>")
             .expect("code block present");
-        let skill_end = prompts[1]
-            .find("</skill_instructions>")
+        let skill_start = prompts[1]
+            .find("<skill_instructions>")
             .expect("skill block present");
         assert!(
-            skill_end < ctx && ctx < code,
-            "order must be skill, context, code:\n{}",
+            ctx < code && code < skill_start,
+            "order must be context, code, skill (file-stable prefix first):\n{}",
             prompts[1]
         );
         assert!(prompts[1].contains("- fn b()"));

@@ -33,9 +33,12 @@ pub const SANDBOX_TAGS: &[&str] = &[
 ];
 
 /// Replace each closing tag for a known sandbox tag with a defanged form
-/// that inserts a zero-width space immediately after `</`. Visually
-/// identical for humans but no longer matches the literal closing-tag
-/// string the prompt builder uses as a sandbox boundary.
+/// that inserts a zero-width space immediately after `</`, and each opening
+/// tag with one that inserts it after `<`. Visually identical for humans but
+/// no longer matches the literal tag string the prompt builder uses as a
+/// sandbox boundary. Openers matter since the axes' `<skill_instructions>`
+/// follow the code: a forged opener inside the code would otherwise pair
+/// with the one real closer and swallow the real instructions.
 ///
 /// Matching is permissive on inputs the LLM treats as equivalent to a
 /// canonical closing tag, even though strict XML parsers wouldn't:
@@ -61,10 +64,11 @@ fn defang_closing_tags(s: &str, tags: &[&str]) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
     while i < bytes.len() {
-        // Look for `</`.
-        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // Skip optional whitespace after `</`.
-            let mut j = i + 2;
+        // Look for `<` or `</`.
+        if bytes[i] == b'<' {
+            let closing = i + 1 < bytes.len() && bytes[i + 1] == b'/';
+            // Skip optional whitespace after `<` or `</`.
+            let mut j = if closing { i + 2 } else { i + 1 };
             while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
                 j += 1;
             }
@@ -85,7 +89,7 @@ fn defang_closing_tags(s: &str, tags: &[&str]) -> String {
                 if k < bytes.len() && bytes[k] == b'>' {
                     let lower_name = name.to_ascii_lowercase();
                     if tags.contains(&lower_name.as_str()) {
-                        out.push_str("</\u{200B}");
+                        out.push_str(if closing { "</\u{200B}" } else { "<\u{200B}" });
                         out.push_str(name);
                         out.push('>');
                         i = k + 1;
@@ -190,6 +194,19 @@ mod tests {
                 "tag {tag} not defanged in {out}"
             );
         }
+    }
+
+    #[test]
+    fn defangs_each_sandbox_opener() {
+        for tag in SANDBOX_TAGS {
+            let input = format!("hello <{tag}> world");
+            let out = defang_sandbox_tags(&input);
+            assert!(
+                !out.contains(&format!("<{tag}>")),
+                "opener {tag} not defanged in {out}"
+            );
+        }
+        assert_eq!(defang_sandbox_tags("<div> <span>"), "<div> <span>");
     }
 
     #[test]
