@@ -357,9 +357,9 @@ fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> 
 /// reported (the axes ask for it in their output schema), else nothing.
 /// Nothing stays nothing; the integrator does not invent a number.
 fn confidence_of(f: &Finding) -> Option<f64> {
-    f.confidence
-        .or(f.llm_confidence)
-        .filter(|c| c.is_finite())
+    let finite = |c: Option<f32>| c.filter(|c| c.is_finite());
+    finite(f.confidence)
+        .or_else(|| finite(f.llm_confidence))
         .map(|c| f64::from(c.clamp(0.0, 1.0)))
 }
 
@@ -2068,6 +2068,21 @@ mod tests {
         assert_eq!(output.findings.len(), 1);
         let conf = confidence_of(&output.findings[0]).unwrap();
         assert!((conf - 0.6).abs() < 1e-6, "got {conf}");
+    }
+
+    /// A computed NaN must not shadow a usable model-reported value.
+    #[test]
+    fn non_finite_computed_confidence_falls_back_to_the_model_value() {
+        let mut f = FindingBuilder::new()
+            .id("F001")
+            .title("NaN computed")
+            .severity(Severity::Medium)
+            .lines(1, 1)
+            .confidence(f32::NAN)
+            .build();
+        f.llm_confidence = Some(0.7);
+        let got = confidence_of(&f).expect("model value must be used");
+        assert!((got - 0.7).abs() < 1e-6, "got {got}");
     }
 
     /// The axes ask the model for a confidence; it lands in

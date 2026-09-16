@@ -1344,11 +1344,13 @@ pub fn format_integrator_table(
     ));
     for r in rows {
         out.push_str(&format!(
-            "  {:<14}  {:>6}  {:>5}%  {:>10.2}  {:>12}{}\n",
+            "  {:<14}  {:>6}  {:>5}%  {:>10}  {:>12}{}\n",
             r.decision,
             r.count,
             (r.share * 100.0).round() as u32,
-            r.avg_output_confidence,
+            r.avg_output_confidence
+                .map(|c| format!("{c:.2}"))
+                .unwrap_or_else(|| "-".to_owned()),
             r.severity_changed,
             if r.low_sample { " *" } else { "" },
         ));
@@ -1874,7 +1876,7 @@ mod tests {
             decision: decision.into(),
             count,
             share,
-            avg_output_confidence: 0.7,
+            avg_output_confidence: Some(0.7),
             severity_changed,
             reasons: Default::default(),
             low_sample: count < dimensions::MIN_SAMPLE,
