@@ -38,6 +38,17 @@ fn axes_reviewing_one_file_share_the_prefix_through_the_code() {
             .unwrap()
     });
     assert_eq!(sent.len(), 2, "one call per axis; got {}", sent.len());
+    // The cache key is the message list itself, so pin its shape before
+    // comparing contents: exactly one system message then one user message.
+    for req in &sent {
+        let roles: Vec<&str> = req["messages"]
+            .as_array()
+            .expect("messages array")
+            .iter()
+            .map(|m| m["role"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(roles, ["system", "user"], "message list shape");
+    }
 
     assert_eq!(
         messages(&sent[0], "system"),
