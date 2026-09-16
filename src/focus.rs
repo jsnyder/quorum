@@ -15,8 +15,10 @@ pub const DEFAULT_CONTEXT_LINES: u32 = 20;
 /// Above this fraction of the file kept, a focused view is not worth the
 /// elision markers; send the whole file.
 pub const MAX_KEPT_FRACTION: f64 = 0.6;
-/// Hunk text is bounded so a mass rename cannot blow the prompt up.
+/// Hunk text is bounded so a mass rename cannot blow the prompt up: by
+/// line count and, because one line can be a megabyte, by bytes.
 pub const MAX_HUNK_LINES: usize = 400;
+pub const MAX_HUNK_BYTES: usize = 64 * 1024;
 
 /// A rendered focused view of one file.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +61,7 @@ pub fn kept_ranges(
         }
         if !covered {
             lo = s.saturating_sub(context).max(1);
-            hi = (e + context).min(total_lines);
+            hi = e.saturating_add(context).min(total_lines);
         }
         out.push((lo, hi));
     }
@@ -140,50 +142,75 @@ pub fn focus_source(
 
 /// The hunk lines (`@@` headers and `-`/`+`/` ` body lines) of every file in
 /// `diff` whose `+++ b/` path satisfies `matches`, bounded by
-/// [`MAX_HUNK_LINES`]. `None` when no file matches.
+/// [`MAX_HUNK_LINES`] and [`MAX_HUNK_BYTES`]. `None` when no matching file
+/// contributed hunk text (a file absent from the diff, or present with a
+/// binary or empty section).
+///
+/// Inside a hunk every body line starts with ` `, `+`, `-` or `\`, so a
+/// body line whose content happens to start with `-- ` or `++ ` renders as
+/// `--- ` / `+++ ` and must not be mistaken for a file header. A header is
+/// only recognised where a hunk cannot continue: at a `diff --git` line, or
+/// at a `--- ` line that is immediately followed by `+++ ` while no hunk is
+/// open.
 pub fn hunks_for_file(diff: &str, matches: &dyn Fn(&str) -> bool) -> Option<String> {
+    let lines: Vec<&str> = diff.lines().collect();
     let mut out = String::new();
     let mut in_file = false;
     let mut in_hunk = false;
     let mut emitted = 0usize;
     let mut truncated = false;
-    for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ b/") {
-            in_file = matches(path);
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("diff --git ") {
             in_hunk = false;
+            i += 1;
             continue;
-        }
-        if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("index ")
-        {
-            in_hunk = false;
-            continue;
-        }
-        if !in_file {
-            continue;
-        }
-        if line.starts_with("@@ ") {
-            in_hunk = true;
         }
         if !in_hunk {
-            continue;
+            if let Some(path) = line.strip_prefix("+++ b/") {
+                in_file = matches(path);
+            }
+            if line.starts_with("@@ ") {
+                in_hunk = true;
+            } else {
+                i += 1;
+                continue;
+            }
+        } else if !is_body(line) {
+            // Anything that is not a body line ends the hunk (a new `@@`
+            // starts the next one on the same pass).
+            in_hunk = line.starts_with("@@ ");
+            if !in_hunk {
+                continue;
+            }
         }
-        if emitted >= MAX_HUNK_LINES {
-            truncated = true;
-            break;
+        if in_file {
+            if emitted >= MAX_HUNK_LINES || out.len() + line.len() + 1 > MAX_HUNK_BYTES {
+                truncated = true;
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+            emitted += 1;
         }
-        out.push_str(line);
-        out.push('\n');
-        emitted += 1;
+        i += 1;
     }
     if out.is_empty() {
         return None;
     }
     if truncated {
         out.push_str(&format!(
-            "... diff truncated after {MAX_HUNK_LINES} lines ...\n"
+            "... diff truncated after {emitted} lines ({MAX_HUNK_LINES} lines / {MAX_HUNK_BYTES} bytes cap) ...\n"
         ));
     }
     Some(out)
+}
+
+/// A unified-diff hunk body line: context, addition, deletion, or the
+/// "no newline at end of file" marker.
+fn is_body(line: &str) -> bool {
+    line.is_empty() || matches!(line.as_bytes()[0], b' ' | b'+' | b'-' | b'\\')
 }
 
 #[cfg(test)]
@@ -271,8 +298,49 @@ mod tests {
         }
         let h = hunks_for_file(&big, &|_| true).unwrap();
         assert_eq!(h.lines().count(), MAX_HUNK_LINES + 1);
-        assert!(h.ends_with(&format!(
-            "... diff truncated after {MAX_HUNK_LINES} lines ...\n"
-        )));
+        assert!(h.contains(&format!("... diff truncated after {MAX_HUNK_LINES} lines")));
+    }
+
+    #[test]
+    fn hunks_for_file_is_bounded_by_bytes_too() {
+        let big_line = "+".to_string() + &"x".repeat(MAX_HUNK_BYTES);
+        let diff = format!("--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,2 @@\n+first\n{big_line}\n");
+        let h = hunks_for_file(&diff, &|_| true).unwrap();
+        assert!(
+            h.len() < MAX_HUNK_BYTES + 200,
+            "one oversized line must not blow the cap"
+        );
+        assert!(h.contains("... diff truncated after 2 lines"), "{h}");
+    }
+
+    /// A removed SQL comment `-- x` renders as `--- x`; an added `++ b/y`
+    /// renders as `+++ b/y`. Neither is a header, and dropping the rest of
+    /// the hunk on them lost the edit the model was meant to see.
+    #[test]
+    fn hunks_for_file_keeps_body_lines_that_look_like_headers() {
+        let diff = "--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n-- select\n--- old comment\n+++ b/not a header\n index_line_kept\n+select 1;\n";
+        let h = hunks_for_file(diff, &|p| p == "q.sql").unwrap();
+        assert!(h.contains("--- old comment"), "removed line kept: {h}");
+        assert!(h.contains("+++ b/not a header"), "added line kept: {h}");
+        assert!(h.contains("+select 1;"), "hunk continues to its end: {h}");
+        // And a second file after a real header is still separated.
+        let two = format!(
+            "{diff}diff --git a/z.rs b/z.rs\n--- a/z.rs\n+++ b/z.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+        );
+        assert!(
+            !hunks_for_file(&two, &|p| p == "q.sql")
+                .unwrap()
+                .contains("+b")
+        );
+        assert_eq!(
+            hunks_for_file(&two, &|p| p == "z.rs").unwrap(),
+            "@@ -1,1 +1,1 @@\n-a\n+b\n"
+        );
+    }
+
+    #[test]
+    fn kept_ranges_does_not_overflow_near_u32_max() {
+        let r = kept_ranges(&[(u32::MAX - 1, u32::MAX)], &[], 20, u32::MAX);
+        assert_eq!(r, vec![(u32::MAX - 21, u32::MAX)]);
     }
 }

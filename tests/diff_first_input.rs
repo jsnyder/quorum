@@ -40,6 +40,22 @@ fn write_fixture(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     (subject_path, diff_path)
 }
 
+/// The user message of each request the binary sent, one string per request.
+fn user_message_per_request(sent: &[serde_json::Value]) -> Vec<String> {
+    sent.iter()
+        .map(|req| {
+            req["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["role"] == "user")
+                .map(|m| m["content"].as_str().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect()
+}
+
 /// Every user message the binary sent, concatenated.
 fn user_messages(sent: &[serde_json::Value]) -> String {
     sent.iter()
@@ -73,32 +89,27 @@ fn diff_file_sends_the_focused_view_not_the_whole_file() {
             .unwrap()
     });
     assert!(!sent.is_empty(), "the binary must have called the LLM");
-    eprintln!(
-        "DEBUG_REQ {}",
-        serde_json::to_string(&sent[0])
-            .unwrap()
-            .chars()
-            .take(3000)
-            .collect::<String>()
-    );
-    let body = user_messages(&sent);
-    assert!(
-        body.contains("[focused view:"),
-        "the axes must receive the focused view:\n{body}"
-    );
-    assert!(
-        body.contains("2|     text.parse::<i32>().unwrap()"),
-        "the changed function must be present with its absolute line number:\n{body}"
-    );
-    assert!(
-        body.contains("===== unified diff for this file")
-            && body.contains("-    text.parse::<i32>().unwrap_or(0)"),
-        "the hunks, deleted line included, must follow the code:\n{body}"
-    );
-    assert!(
-        !body.contains("SENTINEL_FAR_AWAY_BODY"),
-        "an untouched function far from the change must be omitted:\n{body}"
-    );
+    // Every axis is a separate request; each one must carry the complete
+    // focused payload, not just the union of them.
+    for body in user_message_per_request(&sent) {
+        assert!(
+            body.contains("[focused view:"),
+            "the axes must receive the focused view:\n{body}"
+        );
+        assert!(
+            body.contains("2|     text.parse::<i32>().unwrap()"),
+            "the changed function must be present with its absolute line number:\n{body}"
+        );
+        assert!(
+            body.contains("===== unified diff for this file")
+                && body.contains("-    text.parse::<i32>().unwrap_or(0)"),
+            "the hunks, deleted line included, must follow the code:\n{body}"
+        );
+        assert!(
+            !body.contains("SENTINEL_FAR_AWAY_BODY"),
+            "an untouched function far from the change must be omitted:\n{body}"
+        );
+    }
 }
 
 #[test]
