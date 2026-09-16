@@ -26,6 +26,10 @@ pub const SANDBOX_TAGS: &[&str] = &[
     // the prompt -- measured to flip 4 of 4 verdicts on gpt-4.1-mini with no
     // comment block anywhere else in the file.
     "findings_to_judge",
+    // The axes' context block. Its contents are hydration strings, docs and
+    // precedents, all derived from the reviewed file or from indexed
+    // sources, so a forged closer must be neutralised at the source.
+    "review_context",
 ];
 
 /// Replace each closing tag for a known sandbox tag with a defanged form
@@ -41,6 +45,18 @@ pub const SANDBOX_TAGS: &[&str] = &[
 ///
 /// Non-sandbox tags (e.g. `</div>`) pass through unchanged.
 pub fn defang_sandbox_tags(s: &str) -> String {
+    defang_closing_tags(s, SANDBOX_TAGS)
+}
+
+/// [`defang_sandbox_tags`] for one tag: the wrapper that owns a sandbox tag
+/// calls this on whatever it is about to enclose, so the boundary holds
+/// even for a caller that skipped the per-string pass, while the closers
+/// of the sections inside are left intact.
+pub fn defang_closing_tag(s: &str, tag: &str) -> String {
+    defang_closing_tags(s, &[tag])
+}
+
+fn defang_closing_tags(s: &str, tags: &[&str]) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
@@ -68,7 +84,7 @@ pub fn defang_sandbox_tags(s: &str) -> String {
                 }
                 if k < bytes.len() && bytes[k] == b'>' {
                     let lower_name = name.to_ascii_lowercase();
-                    if SANDBOX_TAGS.contains(&lower_name.as_str()) {
+                    if tags.contains(&lower_name.as_str()) {
                         out.push_str("</\u{200B}");
                         out.push_str(name);
                         out.push('>');

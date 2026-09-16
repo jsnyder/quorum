@@ -1293,7 +1293,7 @@ impl OpenAiClient {
             "<historical_findings_policy>\n",
             "If the user message includes a <historical_findings> block, those are human-verified precedents from past reviews of similar code.\n",
             "- TRUE POSITIVE precedents indicate real defect patterns. Look for similar code in the current file and flag it when present.\n",
-            "- FALSE POSITIVE precedents indicate patterns that were flagged incorrectly in the past. Do NOT re-flag code that matches a false-positive precedent.\n",
+            "- FALSE POSITIVE precedents indicate patterns that were flagged incorrectly in the past. Do NOT re-flag code that matches a false-positive precedent, unless the precedent carries a \"When the pattern IS a real bug\" note and that condition holds in the code you see.\n",
             "The precedents are hints about what reviewers previously cared about; they are not the full scope of your review. Continue to look for other defects.\n",
             "</historical_findings_policy>\n",
             "\n",

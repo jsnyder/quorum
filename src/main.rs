@@ -1275,6 +1275,43 @@ struct ResolvedAxes {
 /// of them and none of the bugs. They remain available through `--axes`.
 const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security"];
 
+/// Everything the pipeline knows about a file, rendered for the skill axes:
+/// hydration (called signatures, types, callers scoped to the changed
+/// lines when a diff is given), framework docs, injected context and
+/// historical verdicts. Before this the axes saw none of it; the machinery
+/// was wired only into the single-prompt path they replace.
+async fn axes_context_for_file(
+    file_path: &std::path::Path,
+    source: &str,
+    lang: Option<parser::Language>,
+    parse_cache: &cache::ParseCache,
+    pipeline_cfg: &PipelineConfig,
+) -> Option<pipeline::FileContext> {
+    let tree = lang.and_then(|l| parse_cache.get_or_parse(source, l).ok());
+    let ast = match (&tree, lang) {
+        (Some(t), Some(l)) => Some(pipeline::AstContext {
+            tree: t,
+            language: l,
+        }),
+        _ => None,
+    };
+    match pipeline::build_file_context(file_path, source, ast.as_ref(), pipeline_cfg).await {
+        Ok(fc) => Some(fc),
+        Err(e) => {
+            // The legacy path fails the review here (Context7 unreachable
+            // with frameworks detected, feedback index I/O). The axes review
+            // the bare file instead, and say so where the user can see it:
+            // a silent fallback would make "the axes see the file context"
+            // a claim nothing checks.
+            eprintln!(
+                "Note: context for the axes unavailable for {}: {e}. Reviewing without it.",
+                file_path.display()
+            );
+            None
+        }
+    }
+}
+
 /// Diff-first input for the skill matrix. With a diff, the axes receive the
 /// focused view (the enclosing functions of every changed range, with
 /// absolute line numbers, then this file's hunks) instead of the whole
@@ -1290,9 +1327,14 @@ fn build_review_file(
     parse_cache: &cache::ParseCache,
     diff_text: Option<&str>,
     diff_ranges: Option<&hydration::DiffRanges>,
+    context: Option<String>,
 ) -> quorum::skill_executor::ReviewFile {
     use quorum::skill_executor::{FocusMeta, ReviewFile};
-    let whole = |sha: String| ReviewFile::whole(file_str.to_owned(), sha, source.to_owned());
+    let whole = |sha: String| {
+        let mut f = ReviewFile::whole(file_str.to_owned(), sha, source.to_owned());
+        f.context = context.clone();
+        f
+    };
     let Some(diff_ranges) = diff_ranges else {
         return whole(file_sha);
     };
@@ -1334,6 +1376,7 @@ fn build_review_file(
                     regions: view.regions,
                     diff_follows: view.diff_follows,
                 }),
+                context,
             }
         }
         None => whole(file_sha),
@@ -2913,6 +2956,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             max_calls_per_review: 50,
                             audit_writer: skill_audit_writer.clone(),
                         };
+                        let axes_fc = axes_context_for_file(
+                            file_path,
+                            &source,
+                            lang,
+                            &parse_cache,
+                            &pipeline_cfg,
+                        )
+                        .await;
+                        let axes_context =
+                            axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                        if let Some(fc) = axes_fc {
+                            // The axes path runs review_file AST-only, so these
+                            // counters would otherwise read zero for every
+                            // default review (#491).
+                            result.enrichment_metrics = fc.enrichment_metrics;
+                            result.context_telemetry = fc.context_telemetry;
+                        }
                         let files_input = vec![build_review_file(
                             std::path::Path::new(&file_str),
                             &file_str,
@@ -2922,6 +2982,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             &parse_cache,
                             diff_text.as_deref(),
                             pipeline_cfg.diff_ranges.as_ref(),
+                            axes_context,
                         )];
                         let cell_results = quorum::skill_executor::execute_matrix(
                             &ra.skills,
@@ -3211,6 +3272,19 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     max_calls_per_review: 50,
                                     audit_writer: skill_audit_writer.clone(),
                                 };
+                                let axes_fc = handle.block_on(axes_context_for_file(
+                                    &file_path,
+                                    &source,
+                                    lang,
+                                    &parse_cache,
+                                    &pipeline_cfg,
+                                ));
+                                let axes_context =
+                                    axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                                if let Some(fc) = axes_fc {
+                                    result.enrichment_metrics = fc.enrichment_metrics;
+                                    result.context_telemetry = fc.context_telemetry;
+                                }
                                 let files_input = vec![build_review_file(
     std::path::Path::new(&file_str),
     &file_str,
@@ -3221,8 +3295,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     &parse_cache,
 
     diff_text.as_deref(),
-    pipeline_cfg.diff_ranges.as_ref(),
-)];
+                                    pipeline_cfg.diff_ranges.as_ref(),
+                                    axes_context,
+                                )];
                                 let cell_results = quorum::skill_executor::execute_matrix(
                                     &ra.skills, &files_input, &adapter, &exec_cfg,
                                 );

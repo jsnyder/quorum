@@ -153,6 +153,10 @@ pub struct ReviewFile {
     pub code: String,
     /// Present when `code` is a focused view rather than the whole file.
     pub focus: Option<FocusMeta>,
+    /// Rendered context sections for the file (see
+    /// `pipeline::render_context_for_axes`), shown to every axis before the
+    /// code. `None` when there is nothing to say.
+    pub context: Option<String>,
 }
 
 /// What the scaffold needs to say about a focused view.
@@ -171,6 +175,7 @@ impl ReviewFile {
             sha256,
             code,
             focus: None,
+            context: None,
         }
     }
 }
@@ -184,6 +189,8 @@ pub struct CellSpec {
     pub code: String,
     /// Present when `code` is a focused view rather than the whole file.
     pub focus: Option<FocusMeta>,
+    /// Rendered context sections shared by every axis for this file.
+    pub context: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +248,7 @@ pub fn expand_matrix(
                     file_sha256: f.sha256.clone(),
                     code: f.code.clone(),
                     focus: f.focus,
+                    context: f.context.clone(),
                 });
             }
         }
@@ -302,10 +310,20 @@ pub(crate) fn execute_cell(
         line_end,
         view.as_ref(),
     );
+    // Context precedes the code: the model reads what is known about the
+    // file before the excerpt it is asked to judge.
+    let code_section = match cell.context.as_deref() {
+        Some(ctx) => format!(
+            "{}\n{}",
+            crate::skill_prompt_defense::wrap_review_context(ctx),
+            wrapped_code
+        ),
+        None => wrapped_code,
+    };
     let assembled = model_family::assemble_prompt(
         BASE_SYSTEM_PROMPT,
         &wrapped_skill,
-        &wrapped_code,
+        &code_section,
         OUTPUT_SCHEMA,
         family,
     );
@@ -927,6 +945,74 @@ mod tests {
         }
     }
 
+    /// Records every prompt it is given and answers with no findings.
+    struct CapturingReviewer {
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl LlmReviewer for CapturingReviewer {
+        fn review(
+            &self,
+            prompt: &str,
+            _model: &str,
+            _system_prompt: &str,
+        ) -> anyhow::Result<LlmResponse> {
+            self.prompts.lock().unwrap().push(prompt.to_owned());
+            Ok(LlmResponse {
+                content: "[]".to_owned(),
+                usage: Some(TokenUsage::default()),
+            })
+        }
+    }
+
+    /// With no context the prompt carries no `<review_context>` at all; with
+    /// one, the block sits between the skill instructions and the code.
+    #[test]
+    fn execute_cell_places_context_before_code_or_omits_it() {
+        let skill = sample_skill("correctness", None, Severity::High);
+        let mut cell = CellSpec {
+            skill,
+            model: "test-model".to_owned(),
+            file_path: "a.rs".to_owned(),
+            file_sha256: "sha".to_owned(),
+            code: "fn a() {}".to_owned(),
+            focus: None,
+            context: None,
+        };
+        let reviewer = CapturingReviewer {
+            prompts: Mutex::new(Vec::new()),
+        };
+        let budget = BudgetTracker::new(10, 1_000_000);
+        execute_cell(&cell, &reviewer, &budget);
+        cell.context = Some(
+            "<hydration_context>\nCalled function signatures:\n- fn b()\n</hydration_context>\n"
+                .to_owned(),
+        );
+        execute_cell(&cell, &reviewer, &budget);
+        let prompts = reviewer.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            !prompts[0].contains("<review_context>"),
+            "no context, no block:\n{}",
+            prompts[0]
+        );
+        let ctx = prompts[1]
+            .find("<review_context>")
+            .expect("context block present");
+        let code = prompts[1]
+            .find("<code_to_review>")
+            .expect("code block present");
+        let skill_end = prompts[1]
+            .find("</skill_instructions>")
+            .expect("skill block present");
+        assert!(
+            skill_end < ctx && ctx < code,
+            "order must be skill, context, code:\n{}",
+            prompts[1]
+        );
+        assert!(prompts[1].contains("- fn b()"));
+    }
+
     fn sample_files() -> Vec<ReviewFile> {
         vec![ReviewFile::whole(
             "src/main.rs".to_owned(),
@@ -1040,6 +1126,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1059,6 +1146,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1077,6 +1165,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1096,6 +1185,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1121,6 +1211,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1161,6 +1252,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1198,6 +1290,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(1, 0);
         // Use the one allowed call
@@ -1230,6 +1323,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1257,6 +1351,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1284,6 +1379,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1301,6 +1397,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1352,6 +1449,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let budget = BudgetTracker::new(1, 0);
         let _ = execute_cell(&cell, &reviewer, &budget);
@@ -1374,6 +1472,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let result = CellResult {
             skill_name: "security".to_owned(),
@@ -1421,6 +1520,7 @@ mod tests {
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
             focus: None,
+            context: None,
         };
         let result = CellResult {
             skill_name: "security".to_owned(),

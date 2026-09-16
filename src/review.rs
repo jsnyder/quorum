@@ -33,17 +33,14 @@ pub struct ReviewRequest {
 
 pub use crate::finding::LlmFinding;
 
-/// Build the user-message portion of the review prompt.
-///
-/// Static instructions (review goals, severity rubric, response format,
-/// untrusted-data warning, suggested_fix policy) live in the system message
-/// (`OpenAiClient::system_prompt`). This function emits ONLY per-request
-/// content. Sections are ordered to extend the OpenAI prompt-cache prefix:
-/// stable-per-language content (framework docs) first, then file-specific
-/// context, then file metadata, then the code payload itself.
 use crate::prompt_sanitize::{defang_sandbox_tags, pick_fence_for, sanitize_fence_lang};
 
-pub fn build_review_prompt(req: &ReviewRequest) -> String {
+/// The context sections of a review prompt: framework docs, hydration
+/// (called signatures, types, callers), injected context and historical
+/// verdicts, each in its own sandbox tag. Shared by the legacy single-prompt
+/// review and the skill axes, so both see the same facts about the file.
+/// Empty when the request carries none of them.
+pub fn render_context_sections(req: &ReviewRequest) -> String {
     let mut prompt = String::new();
 
     if let Some(docs) = &req.framework_docs
@@ -118,6 +115,19 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
         prompt.push_str("</historical_findings>\n\n");
     }
 
+    prompt
+}
+
+/// Build the user-message portion of the review prompt.
+///
+/// Static instructions (review goals, severity rubric, response format,
+/// untrusted-data warning, suggested_fix policy) live in the system message
+/// (`OpenAiClient::system_prompt`). This function emits ONLY per-request
+/// content. Sections are ordered to extend the OpenAI prompt-cache prefix:
+/// stable-per-language content (framework docs) first, then file-specific
+/// context, then file metadata, then the code payload itself.
+pub fn build_review_prompt(req: &ReviewRequest) -> String {
+    let mut prompt = render_context_sections(req);
     if let Some(ref notice) = req.truncation_notice {
         prompt.push_str(&format!(
             "<truncation_notice>\nThis is a partial view of the file ({}). \
@@ -1688,6 +1698,18 @@ mod tests {
                     || sys.contains("Do NOT")),
             "system prompt must instruct the model not to re-flag FP precedents"
         );
+        // A PatternOvergeneralization precedent can carry a discriminator
+        // (`render_precedent_for_few_shot` emits it under this marker); the
+        // suppression must yield to it in both the legacy and the axes prompt.
+        for (name, text) in [
+            ("legacy", sys),
+            ("axes", crate::skill_prompt_defense::BASE_SYSTEM_PROMPT),
+        ] {
+            assert!(
+                text.contains("When the pattern IS a real bug"),
+                "{name} system prompt must qualify FP suppression by the discriminator"
+            );
+        }
     }
 
     // -- reasoning & confidence wiring --
