@@ -220,6 +220,9 @@ pub struct FileContext {
 }
 
 pub struct PipelineConfig {
+    /// Cyclomatic complexity at or above which a function is reported. 0
+    /// (the default) turns complexity findings off; `--complexity-threshold N`
+    /// turns them on.
     pub complexity_threshold: u32,
     pub similarity_threshold: f64,
     pub models: Vec<String>,
@@ -285,7 +288,7 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            complexity_threshold: 10,
+            complexity_threshold: 0,
             similarity_threshold: 0.8,
             models: vec![],
             feedback: vec![],
@@ -2498,9 +2501,25 @@ mod tests {
 
     // -- Complexity threshold default --
 
+    /// Complexity is off unless asked for: its corpus precision is flat and
+    /// low in every band and it was most of the in-diff noise on every PR.
     #[test]
-    fn default_complexity_threshold_is_ten() {
-        assert_eq!(PipelineConfig::default().complexity_threshold, 10);
+    fn default_complexity_is_off() {
+        assert_eq!(PipelineConfig::default().complexity_threshold, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn complexity_off_by_default_even_for_a_cc_eleven_function() {
+        let source = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
+        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id.as_deref() == Some("local-ast:complexity")),
+            "no complexity finding without a threshold: {:?}",
+            result.findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -2508,8 +2527,11 @@ mod tests {
         let source = "fn moderate(a: bool, b: bool, c: bool) {\n    if a {\n        if b {\n            if c {\n                for i in 0..10 {\n                    if i > 5 { break; }\n                }\n            }\n        }\n    }\n}\n";
         let result = parse_and_review(source, Language::Rust, None, vec![]).await;
         assert!(
-            !result.findings.iter().any(|f| f.category == "complexity"),
-            "CC=6 should not flag at default threshold=10"
+            !result
+                .findings
+                .iter()
+                .any(|f| f.rule_id.as_deref() == Some("local-ast:complexity")),
+            "CC=6 must not be reported: complexity is off by default"
         );
     }
 
@@ -2525,9 +2547,23 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn pipeline_local_finds_complexity() {
-        // CC=11: 10 decision points + 1 baseline. Must exceed default threshold (10).
+        // CC=11: 10 decision points + 1 baseline. Reaches the explicit threshold
+        // of 10 below; the default (0) would report nothing.
         let source = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
-        let result = parse_and_review(source, Language::Rust, None, vec![]).await;
+        let result = {
+            let tree = parser::parse(source, Language::Rust).unwrap();
+            let config = PipelineConfig {
+                complexity_threshold: 10,
+                ..Default::default()
+            };
+            let ast_ctx = AstContext {
+                tree: &tree,
+                language: Language::Rust,
+            };
+            review_file(Path::new("test.rs"), source, Some(ast_ctx), None, &config)
+                .await
+                .unwrap()
+        };
         assert!(!result.findings.is_empty());
         assert!(result.findings.iter().any(|f| f.category == "performance"));
     }

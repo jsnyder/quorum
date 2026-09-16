@@ -65,7 +65,7 @@ quorum review --daemon src/lib.rs  # cache hit, instant parse
 ## What Local Analysis Finds (no LLM needed)
 
 ### Rust
-- Cyclomatic complexity > threshold
+- Cyclomatic complexity >= N, only with `--complexity-threshold N` (off by default)
 - `.unwrap()` in non-test code
 - `unsafe` blocks
 
@@ -318,6 +318,7 @@ Hydration context scoped to changed lines only. Same finding quality, smaller pr
 | --mode M | Review mode: code (default), plan, docs | --mode plan |
 | --show-suppressed | Show findings suppressed by project rules | --show-suppressed |
 | --show-out-of-diff | With --diff-file, also show findings outside the changed lines (hidden by default) | --show-out-of-diff |
+| --complexity-threshold N | Report functions with cyclomatic complexity >= N (default 0: off) | --complexity-threshold 10 |
 | --skip-context7 | Skip Context7 framework doc enrichment | --skip-context7 |
 | --live-registry | Enable download-count popularity lookups | --live-registry |
 

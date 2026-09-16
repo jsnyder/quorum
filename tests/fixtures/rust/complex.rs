@@ -1,5 +1,6 @@
-// Expected: complexity finding for process(). Cyclomatic complexity must
-// stay >= 2 * threshold (default threshold = 10) so the analyzer emits a
+// Expected: complexity finding for process() when reviewed with
+// --complexity-threshold 10 (complexity is off by default). Cyclomatic
+// complexity must stay >= 2 * that threshold so the analyzer emits a
 // Medium-severity finding under the post-PR-50 cap, which keeps the
 // `review_complex_file_exits_nonzero` integration test meaningful.
 fn process(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool) {

@@ -37,7 +37,7 @@ In daemon mode, parsed trees are cached in a 256-entry LRU keyed by content hash
 
 Two passes run over the syntax tree:
 
-**Complexity analysis** walks every function node, counts decision points (if, match, for, while, &&, ||), and flags functions that exceed a threshold.
+**Complexity analysis** walks every function node, counts decision points (if, match, for, while, &&, ||), and flags functions at or above `--complexity-threshold N`. The default is 0, which reports none.
 
 **Insecure pattern detection** walks every node looking for language-specific anti-patterns. Each language has its own scanner:
 

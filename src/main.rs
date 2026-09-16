@@ -2663,6 +2663,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     let pipeline_cfg = PipelineConfig {
         models,
+        complexity_threshold: opts.complexity_threshold,
         feedback: feedback_entries,
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
@@ -4071,6 +4072,7 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
             "file_path": file_path.to_string_lossy(),
             "code": source,
             "models": daemon_models,
+            "complexity_threshold": opts.complexity_threshold,
         });
 
         match client.post(format!("{}/review", base)).json(&body).send() {

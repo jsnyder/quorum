@@ -135,7 +135,7 @@ quorum review src/*.py --json | jq '[.[].findings[] | select(.severity == "criti
 
 | Language | Extensions | Local Patterns | External Linter |
 |----------|-----------|---------------|-----------------|
-| Rust | .rs | complexity, unsafe, unwrap | clippy |
+| Rust | .rs | unsafe, unwrap, complexity (with `--complexity-threshold N`) | clippy |
 | Python | .py | eval, secrets, SQL injection, mutable defaults, open() encoding, bare except | ruff |
 | TypeScript | .ts .js .mjs .cjs | eval, innerHTML, secrets, any type, empty catch, sync-in-async | eslint |
 | TSX/JSX | .tsx .jsx | same as TypeScript | eslint |
@@ -344,4 +344,4 @@ fi
 
 **Feedback not affecting results**: Run with stderr visible (`quorum review file.py 2>&1`) and look for "Loaded N feedback entries". If N is 0, check that `~/.quorum/feedback.jsonl` exists and is valid JSON-per-line.
 
-**Too many complexity findings**: Complexity threshold defaults to 5. Functions with many branches will flag. These are informational — focus on security and correctness findings first.
+**Complexity findings**: off by default. `--complexity-threshold N` reports functions at or above cyclomatic complexity N. They are informational — security and correctness findings come first.

@@ -69,7 +69,7 @@ quorum review src/auth.py --diff-file changes.patch
 
 | Language | Extensions | AST Patterns | Advises |
 |----------|-----------|-------------|--------|
-| Rust | .rs | complexity, unsafe, unwrap | clippy |
+| Rust | .rs | unsafe, unwrap; complexity with `--complexity-threshold N` | clippy |
 | Python | .py | secrets, eval, SQL injection, mutable defaults, open() encoding, bare except:pass, blocking .result() in async | ruff |
 | TypeScript | .ts, .js, .mjs, .cjs | eval, innerHTML, secrets, any type, empty catch, sync-in-async, .length>=0 | eslint |
 | TSX/JSX | .tsx, .jsx | same as TypeScript | eslint |

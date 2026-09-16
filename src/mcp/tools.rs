@@ -17,6 +17,10 @@ pub struct ReviewTool {
     /// Focus areas: security, performance, style, best-practices (comma-separated)
     #[serde(default)]
     pub focus: Option<String>,
+    /// Report functions at or above this cyclomatic complexity. Omit (0) to
+    /// leave complexity findings off, the same default as the CLI.
+    #[serde(rename = "complexityThreshold", default)]
+    pub complexity_threshold: u32,
 }
 
 /// Strict wire contract for `FeedbackTool.verdict` (issue #94).

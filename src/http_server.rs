@@ -36,6 +36,10 @@ pub struct ReviewRequest {
     /// silently ignored the caller's model selection.
     #[serde(default)]
     pub models: Vec<String>,
+    /// `--complexity-threshold`. 0 (absent) means complexity findings are
+    /// off, the same default as the local path.
+    #[serde(default)]
+    pub complexity_threshold: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -158,6 +162,7 @@ async fn review(
     let pipeline_cfg = PipelineConfig {
         models,
         feedback,
+        complexity_threshold: req.complexity_threshold,
         ..Default::default()
     };
 
@@ -292,6 +297,50 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    async fn review_findings(state: &Arc<DaemonState>, body: serde_json::Value) -> Vec<Finding> {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/review")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = build_router(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice::<ReviewResponse>(&body)
+            .unwrap()
+            .findings
+    }
+
+    /// The daemon path builds its own PipelineConfig, so the flag has to be
+    /// carried in the request or `--daemon --complexity-threshold N` is a
+    /// silent no-op.
+    #[tokio::test]
+    async fn review_endpoint_honours_complexity_threshold() {
+        let state = test_state();
+        let code = "fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) {\n    if a { return; }\n    if b { return; }\n    if c { return; }\n    if d { return; }\n    if e { return; }\n    for i in 0..10 {\n        if i > 5 { break; }\n        while i < 3 { break; }\n        match i { 0 => {}, 1 => {}, _ => {} }\n    }\n}\n";
+        let is_cc = |f: &Finding| f.rule_id.as_deref() == Some("local-ast:complexity");
+
+        let off = review_findings(
+            &state,
+            serde_json::json!({ "file_path": "cc_off.rs", "code": code }),
+        )
+        .await;
+        assert!(!off.iter().any(is_cc), "off by default: {off:?}");
+
+        let on = review_findings(
+            &state,
+            serde_json::json!({ "file_path": "cc_on.rs", "code": code, "complexity_threshold": 10 }),
+        )
+        .await;
+        assert!(
+            on.iter().any(is_cc),
+            "threshold 10 must report CC=11: {on:?}"
+        );
     }
 
     #[tokio::test]
