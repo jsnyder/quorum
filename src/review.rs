@@ -1698,6 +1698,18 @@ mod tests {
                     || sys.contains("Do NOT")),
             "system prompt must instruct the model not to re-flag FP precedents"
         );
+        // A PatternOvergeneralization precedent can carry a discriminator
+        // (`render_precedent_for_few_shot` emits it under this marker); the
+        // suppression must yield to it in both the legacy and the axes prompt.
+        for (name, text) in [
+            ("legacy", sys),
+            ("axes", crate::skill_prompt_defense::BASE_SYSTEM_PROMPT),
+        ] {
+            assert!(
+                text.contains("When the pattern IS a real bug"),
+                "{name} system prompt must qualify FP suppression by the discriminator"
+            );
+        }
     }
 
     // -- reasoning & confidence wiring --
