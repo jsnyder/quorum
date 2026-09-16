@@ -647,7 +647,8 @@ pub struct ReviewOpts {
 
     /// Report functions whose cyclomatic complexity is at or above N
     /// (0, the default, reports none: complexity is a number, not a defect,
-    /// and its corpus precision is flat and low)
+    /// and its corpus precision is flat and low; values below 3 flag nearly
+    /// every function)
     #[arg(long, default_value_t = 0)]
     pub complexity_threshold: u32,
 

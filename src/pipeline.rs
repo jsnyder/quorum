@@ -2564,8 +2564,14 @@ mod tests {
                 .await
                 .unwrap()
         };
-        assert!(!result.findings.is_empty());
-        assert!(result.findings.iter().any(|f| f.category == "performance"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.rule_id.as_deref() == Some("local-ast:complexity")),
+            "CC=11 at threshold 10 must be reported: {:?}",
+            result.findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

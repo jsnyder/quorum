@@ -263,8 +263,8 @@ file = "src/url_resolver.py"
 reason = "Intentional -- self-signed cert on local network"
 
 [[suppress]]
-pattern = "cyclomatic complexity"
-reason = "Accepted for config loading patterns"
+pattern = "unwrap()"
+reason = "Accepted in the CLI entry point; a panic there is the intended exit"
 ```
 
 ```bash
