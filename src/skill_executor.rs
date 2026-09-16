@@ -64,7 +64,8 @@ pub trait LlmReviewer: Send + Sync {
 const OUTPUT_SCHEMA: &str = "Respond with a JSON array of findings. Each finding \
     must have: title (string), description (string), severity \
     (critical/high/medium/low/info), category (string), line_start (u32), \
-    line_end (u32), evidence (string[]).";
+    line_end (u32), evidence (string[]), confidence (number 0.0-1.0: how \
+    sure you are that the defect is real and reachable; omit if unsure).";
 
 // ---------------------------------------------------------------------------
 // BudgetExhausted
@@ -786,6 +787,16 @@ mod tests {
                 ("b.rs", "correctness"),
                 ("b.rs", "security"),
             ]
+        );
+    }
+
+    /// The integrator reads `llm_confidence`, which only exists if the
+    /// axes ask for it; without this the integrator has nothing but None.
+    #[test]
+    fn output_schema_asks_for_confidence() {
+        assert!(
+            OUTPUT_SCHEMA.contains("confidence (number 0.0-1.0"),
+            "schema must ask the model for a confidence: {OUTPUT_SCHEMA}"
         );
     }
 

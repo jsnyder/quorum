@@ -23,9 +23,6 @@ use crate::skill_prompt_defense::sanitize_output;
 /// Default confidence floor: findings below this are suppressed.
 const DEFAULT_CONFIDENCE_FLOOR: f64 = 0.30;
 
-/// Default confidence assigned when `Finding.confidence` is `None`.
-const DEFAULT_CONFIDENCE: f64 = 0.5;
-
 // ---------------------------------------------------------------------------
 // TaggedFinding
 // ---------------------------------------------------------------------------
@@ -323,8 +320,28 @@ fn noisy_or(pairs: &[(f64, f64)]) -> f64 {
 /// duplicates (same skill, different models) are collapsed by taking the max
 /// confidence among them.
 fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> {
+    collapse_with(findings, confidence_of)
+}
+
+/// The same collapse over computed confidences only, for the suppression
+/// floor: a model-reported 0.9 must not lift a computed 0.2 over the floor
+/// (noisy-or would make the pair 0.92).
+fn collapse_computed_only(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> {
+    collapse_with(findings, |f| {
+        f.confidence
+            .filter(|c| c.is_finite())
+            .map(|c| f64::from(c.clamp(0.0, 1.0)))
+    })
+}
+
+fn collapse_with(
+    findings: &[&TaggedFinding],
+    pick: impl Fn(&Finding) -> Option<f64>,
+) -> Vec<(f64, f64)> {
     // Group by originating_skill. Findings without originating_skill each
-    // get their own unique key.
+    // get their own unique key. A finding with no confidence contributes
+    // nothing: a noisy-or over fabricated 0.5s reported agreement between
+    // two axes as 0.75 confidence when neither had said anything.
     let mut skill_groups: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut anonymous_idx: u64 = 0;
 
@@ -336,14 +353,17 @@ fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> 
                 format!("__anonymous_{anonymous_idx}")
             }
         };
-        let conf = confidence_of(&tf.finding);
-        skill_groups.entry(key).or_default().push(conf);
+        let group = skill_groups.entry(key).or_default();
+        if let Some(conf) = pick(&tf.finding) {
+            group.push(conf);
+        }
     }
 
-    // For each skill group, take the max confidence. Weight is 1.0 for all
-    // cross-skill contributions.
+    // For each skill group with a known confidence, take the max. Weight is
+    // 1.0 for all cross-skill contributions.
     skill_groups
         .values()
+        .filter(|confs| !confs.is_empty())
         .map(|confs| {
             let max_conf = confs.iter().copied().fold(0.0_f64, f64::max);
             (max_conf, 1.0)
@@ -351,12 +371,14 @@ fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> 
         .collect()
 }
 
-/// Extract confidence from a Finding as f64, defaulting to 0.5 if None.
-fn confidence_of(f: &Finding) -> f64 {
-    f.confidence
-        .filter(|c| c.is_finite())
+/// The confidence a finding carries: the computed one, else what the model
+/// reported (the axes ask for it in their output schema), else nothing.
+/// Nothing stays nothing; the integrator does not invent a number.
+fn confidence_of(f: &Finding) -> Option<f64> {
+    let finite = |c: Option<f32>| c.filter(|c| c.is_finite());
+    finite(f.confidence)
+        .or_else(|| finite(f.llm_confidence))
         .map(|c| f64::from(c.clamp(0.0, 1.0)))
-        .unwrap_or(DEFAULT_CONFIDENCE)
 }
 
 /// Extract severity label as a String.
@@ -451,7 +473,7 @@ pub fn integrate(
         b.severity
             .cmp(&a.severity)
             .then_with(|| {
-                // Confidence desc.
+                // Confidence desc; unknown sorts after any known value.
                 let ca = confidence_of(a);
                 let cb = confidence_of(b);
                 cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
@@ -592,11 +614,14 @@ fn process_cluster(
 
     // Collapse ensemble duplicates before noisy-or.
     let noisy_or_pairs = collapse_ensemble_duplicates(cluster);
-    let merged_confidence = noisy_or(&noisy_or_pairs);
+    // No known input, no output number: the log records null, not 0.5.
+    let merged_confidence = (!noisy_or_pairs.is_empty()).then(|| noisy_or(&noisy_or_pairs));
 
-    // Pick the highest-confidence finding for the body (description).
+    // Pick the highest-confidence finding for the body (description); an
+    // unknown confidence sorts below any known one, ties keep the first.
     let best = cluster
         .iter()
+        .rev()
         .max_by(|a, b| {
             let ca = confidence_of(&a.finding);
             let cb = confidence_of(&b.finding);
@@ -605,19 +630,21 @@ fn process_cluster(
         .unwrap(); // cluster is non-empty
 
     // Compute originating_skills union, ordered by max confidence desc.
-    let mut skill_max: BTreeMap<String, f64> = BTreeMap::new();
+    // Unknown stays `None`, which sorts below a known 0.0, so a skill that
+    // said nothing never outranks one that said "zero".
+    let mut skill_max: BTreeMap<String, Option<f64>> = BTreeMap::new();
     for tf in cluster {
         if let Some(ref skill) = tf.finding.originating_skill
             && !skill.is_empty()
         {
             let conf = confidence_of(&tf.finding);
-            let entry = skill_max.entry(skill.clone()).or_insert(0.0);
+            let entry = skill_max.entry(skill.clone()).or_insert(None);
             if conf > *entry {
                 *entry = conf;
             }
         }
     }
-    let mut skill_confs: Vec<(String, f64)> = skill_max.into_iter().collect();
+    let mut skill_confs: Vec<(String, Option<f64>)> = skill_max.into_iter().collect();
     skill_confs.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -653,7 +680,7 @@ fn process_cluster(
     let mut output = best.finding.clone();
     output.id = output_id.clone();
     output.severity = max_severity.clone();
-    output.confidence = Some(merged_confidence as f32);
+    output.confidence = merged_confidence.map(|c| c as f32);
     output.description = description;
     output.line_start = line_start;
     output.line_end = line_end;
@@ -674,8 +701,15 @@ fn process_cluster(
     }
     output.evidence = all_evidence;
 
-    // Check suppression.
-    let suppressed = merged_confidence < config.confidence_floor;
+    // Check suppression. Only a computed confidence can put a cluster
+    // below the floor: a model-reported value ranks and is logged, but the
+    // model's own hedge must not delete its finding, since nothing on the
+    // CLI shows an integrator-suppressed finding and no verdict could ever
+    // be recorded against it.
+    let computed_pairs = collapse_computed_only(cluster);
+    let computed_confidence = (!computed_pairs.is_empty()).then(|| noisy_or(&computed_pairs));
+    let below_floor = computed_confidence.filter(|c| *c < config.confidence_floor);
+    let suppressed = below_floor.is_some();
 
     // Determine decision type.
     let decision_type = if suppressed {
@@ -704,8 +738,9 @@ fn process_cluster(
             )
         }
         IntegratorDecision::Suppressed => {
+            let c = below_floor.expect("suppressed only when a value is below the floor");
             format!(
-                "confidence {merged_confidence:.3} below floor {:.3}",
+                "confidence {c:.3} below floor {:.3}",
                 config.confidence_floor
             )
         }
@@ -1064,7 +1099,7 @@ mod tests {
         let merged = &output.findings[0];
         assert_eq!(merged.severity, Severity::High, "severity = max");
         // Noisy-or of 0.8 and 0.6: 1 - (1-0.8)*(1-0.6) = 0.92
-        let conf = confidence_of(merged);
+        let conf = confidence_of(merged).unwrap();
         assert!(
             (conf - 0.92).abs() < 0.01,
             "confidence should be noisy-or; got {conf}"
@@ -1124,7 +1159,7 @@ mod tests {
         // The merge must actually do the merging, not just collapse a row.
         let merged = &output.findings[0];
         assert_eq!(merged.severity, Severity::High, "severity = max");
-        let conf = confidence_of(merged);
+        let conf = confidence_of(merged).unwrap();
         assert!(
             (conf - 0.88).abs() < 0.01,
             "noisy-or of 0.7 and 0.6 should be 0.88; got {conf}"
@@ -1787,7 +1822,7 @@ mod tests {
         let merged = &output.findings[0];
         // All 3 are from "security" skill: collapsed to 1 source with
         // max confidence 0.8. Noisy-or of single (0.8, 1.0) = 0.8.
-        let conf = confidence_of(merged);
+        let conf = confidence_of(merged).unwrap();
         assert!(
             (conf - 0.8).abs() < 0.01,
             "ensemble from same skill should collapse to max; got {conf}"
@@ -1979,7 +2014,7 @@ mod tests {
     }
 
     #[test]
-    fn default_confidence_used_when_none() {
+    fn no_confidence_stays_unknown() {
         let f = FindingBuilder::new()
             .id("F001")
             .title("No confidence")
@@ -1992,12 +2027,244 @@ mod tests {
         let output = integrate(vec![tagged("src/main.rs", f)], &config);
 
         assert_eq!(output.findings.len(), 1);
-        let conf = confidence_of(&output.findings[0]);
-        // The merged output should use the noisy-or of 0.5 (default) = 0.5.
-        assert!(
-            (conf - 0.5).abs() < 0.01,
-            "None confidence should default to 0.5; got {conf}"
+        assert_eq!(
+            confidence_of(&output.findings[0]),
+            None,
+            "the integrator must not invent a confidence for a finding that carried none"
         );
+        assert_eq!(output.decisions[0].input_confidences, vec![None]);
+        assert_eq!(output.decisions[0].output_confidence, None);
+    }
+
+    /// Two axes agreeing on a defect, neither with a confidence, used to
+    /// come out at 0.75 (noisy-or of two fabricated 0.5s). Agreement is
+    /// still a merge; it is not a number.
+    #[test]
+    fn merging_unknown_confidences_stays_unknown_and_is_not_suppressed() {
+        let a = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .build();
+        let b = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        let output = integrate(
+            vec![tagged("src/main.rs", a), tagged("src/main.rs", b)],
+            &default_config(),
+        );
+        assert_eq!(output.findings.len(), 1, "same defect from two axes merges");
+        assert!(
+            output.suppressed.is_empty(),
+            "nothing known, nothing below the floor"
+        );
+        assert_eq!(confidence_of(&output.findings[0]), None);
+        assert_eq!(output.decisions[0].input_confidences, vec![None, None]);
+    }
+
+    /// One axis reports a confidence and the other does not: the known
+    /// value is the merged value, undiluted by a placeholder.
+    #[test]
+    fn known_confidence_is_not_diluted_by_an_unknown_one() {
+        let a = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .confidence(0.6)
+            .build();
+        let b = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        let output = integrate(
+            vec![tagged("src/main.rs", a), tagged("src/main.rs", b)],
+            &default_config(),
+        );
+        assert_eq!(output.findings.len(), 1);
+        let conf = confidence_of(&output.findings[0]).unwrap();
+        assert!((conf - 0.6).abs() < 1e-6, "got {conf}");
+    }
+
+    /// A computed NaN must not shadow a usable model-reported value.
+    #[test]
+    fn non_finite_computed_confidence_falls_back_to_the_model_value() {
+        let mut f = FindingBuilder::new()
+            .id("F001")
+            .title("NaN computed")
+            .severity(Severity::Medium)
+            .lines(1, 1)
+            .confidence(f32::NAN)
+            .build();
+        f.llm_confidence = Some(0.7);
+        let got = confidence_of(&f).expect("model value must be used");
+        assert!((got - 0.7).abs() < 1e-6, "got {got}");
+    }
+
+    /// The axes ask the model for a confidence; it lands in
+    /// `llm_confidence`, and the integrator reads it when nothing computed
+    /// one.
+    #[test]
+    fn model_reported_confidence_reaches_the_integrator() {
+        let mut f = FindingBuilder::new()
+            .id("F001")
+            .title("Reported")
+            .severity(Severity::Medium)
+            .lines(1, 1)
+            .build();
+        f.llm_confidence = Some(0.2);
+        let output = integrate(vec![tagged("src/main.rs", f)], &default_config());
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "a model-reported 0.2 ranks and is logged; it must not suppress"
+        );
+        assert!(output.suppressed.is_empty());
+        let got = confidence_of(&output.findings[0]).expect("reported value carried");
+        assert!((got - 0.2).abs() < 1e-6, "got {got}");
+        let logged = output.decisions[0].input_confidences[0].expect("logged as known");
+        assert!((logged - 0.2).abs() < 1e-6, "got {logged}");
+    }
+
+    /// A model-reported 0.9 beside a computed 0.2 must not lift the pair
+    /// over the floor: the floor is judged on computed values alone, while
+    /// the merged (ranking, audit) value still blends both.
+    #[test]
+    fn reported_confidence_cannot_lift_a_computed_one_over_the_floor() {
+        let low = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .confidence(0.2)
+            .build();
+        let mut hedged = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        hedged.llm_confidence = Some(0.9);
+        let output = integrate(
+            vec![tagged("src/main.rs", low), tagged("src/main.rs", hedged)],
+            &default_config(),
+        );
+        assert!(
+            output.findings.is_empty() && output.suppressed.len() == 1,
+            "suppressed on 0.2"
+        );
+        let merged = output.decisions[0].output_confidence.unwrap();
+        assert!(
+            (merged - 0.92).abs() < 1e-6,
+            "audit still records the blend: {merged}"
+        );
+    }
+
+    /// A skill that said nothing must not outrank one that said zero.
+    #[test]
+    fn unknown_confidence_ranks_below_known_zero_in_originating_skills() {
+        let zero = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .confidence(0.0)
+            .build();
+        let unknown = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .build();
+        let output = integrate(
+            vec![tagged("src/main.rs", zero), tagged("src/main.rs", unknown)],
+            &IntegratorConfig {
+                confidence_floor: 0.0,
+                ..default_config()
+            },
+        );
+        assert_eq!(output.findings.len(), 1);
+        assert_eq!(
+            output.findings[0].originating_skill.as_deref(),
+            Some("security"),
+            "the known zero leads; alphabetical order would have said correctness"
+        );
+    }
+
+    /// A computed confidence below the floor still suppresses: the floor is
+    /// for what the pipeline established, not for what the model hedged.
+    #[test]
+    fn computed_confidence_below_floor_suppresses() {
+        let f = FindingBuilder::new()
+            .id("F001")
+            .title("Computed low")
+            .severity(Severity::Medium)
+            .lines(1, 1)
+            .confidence(0.2)
+            .build();
+        let output = integrate(vec![tagged("src/main.rs", f)], &default_config());
+        assert!(output.findings.is_empty() && output.suppressed.len() == 1);
+        assert!(
+            output.decisions[0]
+                .reason
+                .contains("confidence 0.200 below floor"),
+            "reason: {}",
+            output.decisions[0].reason
+        );
+    }
+
+    /// Equal confidences: the merged body comes from the sort-first member
+    /// (lowest line, then title, then id), whatever order the axes emitted.
+    #[test]
+    fn equal_confidence_tie_keeps_the_sort_first_member_body() {
+        let first = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .description("FIRST body")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .build();
+        let second = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .description("SECOND body")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        for order in [
+            vec![first.clone(), second.clone()],
+            vec![second.clone(), first.clone()],
+        ] {
+            let output = integrate(
+                order
+                    .into_iter()
+                    .map(|f| tagged("src/main.rs", f))
+                    .collect(),
+                &default_config(),
+            );
+            assert_eq!(output.findings.len(), 1);
+            assert!(
+                output.findings[0].description.starts_with("FIRST body"),
+                "got: {}",
+                output.findings[0].description
+            );
+        }
     }
 
     #[test]

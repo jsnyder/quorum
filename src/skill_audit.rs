@@ -435,13 +435,16 @@ pub struct IntegratorDecisionRecord {
     /// reading the log -- which is how #498 stayed invisible.
     #[serde(default)]
     pub input_titles: Vec<String>,
-    pub input_confidences: Vec<f64>,
+    /// `None` where the input carried no confidence. Before #615 the
+    /// integrator wrote a fabricated 0.5 here, so the log could not tell
+    /// "the model said 0.5" from "nobody said anything".
+    pub input_confidences: Vec<Option<f64>>,
     pub input_severities: Vec<String>,
     pub calibrator_weights: HashMap<String, f64>,
     pub confidence_floor: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_finding_id: Option<String>,
-    pub output_confidence: f64,
+    pub output_confidence: Option<f64>,
     pub severity_pre_clamp: String,
     pub severity_post_clamp: String,
     pub reason: String,
@@ -663,7 +666,7 @@ mod tests {
                 "SQL injection in query builder".into(),
                 "Unsanitized input reaches SQL query".into(),
             ],
-            input_confidences: vec![0.85, 0.72],
+            input_confidences: vec![Some(0.85), Some(0.72)],
             input_severities: vec!["high".into(), "medium".into()],
             calibrator_weights: HashMap::from([
                 ("security".into(), 1.2),
@@ -671,7 +674,7 @@ mod tests {
             ]),
             confidence_floor: 0.5,
             output_finding_id: Some("merged-f1".into()),
-            output_confidence: 0.9,
+            output_confidence: Some(0.9),
             severity_pre_clamp: "high".into(),
             severity_post_clamp: "high".into(),
             reason: "Two skills agree on SQL injection at same location".into(),
@@ -902,7 +905,7 @@ mod tests {
         let mut record = sample_integrator_record();
         record.decision = IntegratorDecision::Suppressed;
         record.output_finding_id = None;
-        record.output_confidence = 0.0;
+        record.output_confidence = Some(0.0);
         record.reason = "Below confidence floor".into();
 
         let json = serde_json::to_string(&record).unwrap();
@@ -916,7 +919,7 @@ mod tests {
         let mut record = sample_integrator_record();
         record.decision = IntegratorDecision::PassThrough;
         record.input_finding_ids = vec!["solo-f1".into()];
-        record.input_confidences = vec![0.95];
+        record.input_confidences = vec![Some(0.95)];
         record.input_severities = vec!["critical".into()];
         record.originating_skills = vec!["security".into()];
         record.reason = "Single skill, no merge needed".into();

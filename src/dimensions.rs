@@ -923,7 +923,9 @@ pub struct IntegratorAuditRow {
     pub decision: String,
     pub count: u32,
     pub share: f64,
-    pub avg_output_confidence: f64,
+    /// Mean over the rows that carry an output confidence; `None` when
+    /// no row in the group does, rather than a 0.0 that reads as a value.
+    pub avg_output_confidence: Option<f64>,
     /// Decisions where the integrator changed a finding's severity. The
     /// v0.28.0 severity collapse lived here for two months (#491).
     pub severity_changed: u32,
@@ -963,11 +965,15 @@ pub fn group_by_integrator_decision(
             let count = group.len() as u32;
             let mut reasons: BTreeMap<String, u32> = BTreeMap::new();
             let mut confidence_total = 0.0;
+            let mut confidence_known = 0u32;
             let mut severity_changed = 0;
             for r in &group {
                 *reasons.entry(r.reason.clone()).or_insert(0) += 1;
-                if r.output_confidence.is_finite() {
-                    confidence_total += r.output_confidence;
+                if let Some(c) = r.output_confidence
+                    && c.is_finite()
+                {
+                    confidence_total += c;
+                    confidence_known += 1;
                 }
                 if r.severity_pre_clamp != r.severity_post_clamp {
                     severity_changed += 1;
@@ -977,7 +983,8 @@ pub fn group_by_integrator_decision(
                 decision,
                 count,
                 share: f64::from(count) / total,
-                avg_output_confidence: confidence_total / f64::from(count),
+                avg_output_confidence: (confidence_known > 0)
+                    .then(|| confidence_total / f64::from(confidence_known)),
                 severity_changed,
                 reasons,
                 low_sample: count < MIN_SAMPLE,
@@ -2224,12 +2231,12 @@ mod tests {
             },
             input_finding_ids: vec!["f1".into()],
             input_titles: vec!["Test finding".into()],
-            input_confidences: vec![0.8],
+            input_confidences: vec![Some(0.8)],
             input_severities: vec![pre.into()],
             calibrator_weights: Default::default(),
             confidence_floor: 0.3,
             output_finding_id: Some("f1".into()),
-            output_confidence: 0.7,
+            output_confidence: Some(0.7),
             severity_pre_clamp: pre.into(),
             severity_post_clamp: post.into(),
             reason: reason.into(),
@@ -2259,7 +2266,24 @@ mod tests {
         assert_eq!(rows[0].count, 2);
         assert!((rows[0].share - 2.0 / 3.0).abs() < 1e-9);
         assert_eq!(rows[0].reasons.get("below floor"), Some(&2));
-        assert!((rows[0].avg_output_confidence - 0.7).abs() < 1e-9);
+        assert!((rows[0].avg_output_confidence.unwrap() - 0.7).abs() < 1e-9);
+    }
+
+    /// Rows without an output confidence must not drag the mean toward
+    /// zero, and a group with none reports no mean at all.
+    #[test]
+    fn integrator_average_ignores_unknown_confidences() {
+        let mut known = dec(IntegratorDecision::Merged, "high", "high", "merged");
+        known.output_confidence = Some(0.8);
+        let mut unknown = dec(IntegratorDecision::Merged, "high", "high", "merged");
+        unknown.output_confidence = None;
+        let mut also_unknown = dec(IntegratorDecision::PassThrough, "low", "low", "single");
+        also_unknown.output_confidence = None;
+        let (rows, _) = group_by_integrator_decision(&[known, unknown, also_unknown]);
+        let merged = rows.iter().find(|r| r.decision == "merged").unwrap();
+        assert!((merged.avg_output_confidence.unwrap() - 0.8).abs() < 1e-9);
+        let single = rows.iter().find(|r| r.decision == "pass_through").unwrap();
+        assert_eq!(single.avg_output_confidence, None);
     }
 
     #[test]
