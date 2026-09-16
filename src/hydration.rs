@@ -137,7 +137,7 @@ fn function_def_kinds(lang: Language) -> Vec<&'static str> {
         Language::Python => vec!["function_definition"],
         Language::TypeScript | Language::Tsx => vec!["function_declaration", "method_definition"],
         Language::Yaml => vec![],
-        Language::Bash => vec![],
+        Language::Bash => vec!["function_definition"],
         Language::Dockerfile => vec![],
         Language::Terraform => vec![],
         Language::Go => vec!["function_declaration", "method_declaration"],
@@ -868,6 +868,16 @@ fn handle(req: Request) {
 
     /// Spans are 1-based inclusive and cover nested functions too, which is
     /// what lets a change inside a closure-heavy body expand to its parent.
+    /// Bash had no function kind, so a change inside a long shell function
+    /// got 20 lines of context instead of the function. Found by CodeRabbit
+    /// on #610.
+    #[test]
+    fn function_spans_cover_bash_functions() {
+        let src = "#!/bin/bash\nset -e\n\ndeploy() {\n    echo one\n    echo two\n}\n\nfunction cleanup {\n    rm -f x\n}\n";
+        let tree = crate::parser::parse(src, Language::Bash).unwrap();
+        assert_eq!(function_spans(&tree, Language::Bash), vec![(4, 7), (9, 11)]);
+    }
+
     #[test]
     fn function_spans_are_one_based_inclusive_in_source_order() {
         let src = "fn a() {\n    1\n}\n\nfn b() {\n    fn inner() {}\n    2\n}\n";
