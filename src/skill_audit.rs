@@ -435,7 +435,7 @@ pub struct IntegratorDecisionRecord {
     /// reading the log -- which is how #498 stayed invisible.
     #[serde(default)]
     pub input_titles: Vec<String>,
-    /// `None` where the input carried no confidence. Before #614 the
+    /// `None` where the input carried no confidence. Before #615 the
     /// integrator wrote a fabricated 0.5 here, so the log could not tell
     /// "the model said 0.5" from "nobody said anything".
     pub input_confidences: Vec<Option<f64>>,

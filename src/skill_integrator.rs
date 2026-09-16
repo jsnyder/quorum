@@ -681,9 +681,16 @@ fn process_cluster(
     }
     output.evidence = all_evidence;
 
-    // Check suppression.
-    // Only a known confidence can fall below the floor.
-    let suppressed = matches!(merged_confidence, Some(c) if c < config.confidence_floor);
+    // Check suppression. Only a computed confidence can put a cluster
+    // below the floor: a model-reported value ranks and is logged, but the
+    // model's own hedge must not delete its finding, since nothing on the
+    // CLI shows an integrator-suppressed finding and no verdict could ever
+    // be recorded against it.
+    let has_computed = cluster
+        .iter()
+        .any(|tf| tf.finding.confidence.is_some_and(|c| c.is_finite()));
+    let below_floor = merged_confidence.filter(|c| has_computed && *c < config.confidence_floor);
+    let suppressed = below_floor.is_some();
 
     // Determine decision type.
     let decision_type = if suppressed {
@@ -712,9 +719,9 @@ fn process_cluster(
             )
         }
         IntegratorDecision::Suppressed => {
+            let c = below_floor.expect("suppressed only when a value is below the floor");
             format!(
-                "confidence {:.3} below floor {:.3}",
-                merged_confidence.unwrap_or(f64::NAN),
+                "confidence {c:.3} below floor {:.3}",
                 config.confidence_floor
             )
         }
@@ -1988,7 +1995,7 @@ mod tests {
     }
 
     #[test]
-    fn default_confidence_used_when_none() {
+    fn no_confidence_stays_unknown() {
         let f = FindingBuilder::new()
             .id("F001")
             .title("No confidence")
@@ -2098,12 +2105,78 @@ mod tests {
             .build();
         f.llm_confidence = Some(0.2);
         let output = integrate(vec![tagged("src/main.rs", f)], &default_config());
-        assert!(
-            output.findings.is_empty() && output.suppressed.len() == 1,
-            "0.2 is below the 0.30 floor; the model's own confidence must count"
+        assert_eq!(
+            output.findings.len(),
+            1,
+            "a model-reported 0.2 ranks and is logged; it must not suppress"
         );
+        assert!(output.suppressed.is_empty());
+        let got = confidence_of(&output.findings[0]).expect("reported value carried");
+        assert!((got - 0.2).abs() < 1e-6, "got {got}");
         let logged = output.decisions[0].input_confidences[0].expect("logged as known");
         assert!((logged - 0.2).abs() < 1e-6, "got {logged}");
+    }
+
+    /// A computed confidence below the floor still suppresses: the floor is
+    /// for what the pipeline established, not for what the model hedged.
+    #[test]
+    fn computed_confidence_below_floor_suppresses() {
+        let f = FindingBuilder::new()
+            .id("F001")
+            .title("Computed low")
+            .severity(Severity::Medium)
+            .lines(1, 1)
+            .confidence(0.2)
+            .build();
+        let output = integrate(vec![tagged("src/main.rs", f)], &default_config());
+        assert!(output.findings.is_empty() && output.suppressed.len() == 1);
+        assert!(
+            output.decisions[0]
+                .reason
+                .contains("confidence 0.200 below floor"),
+            "reason: {}",
+            output.decisions[0].reason
+        );
+    }
+
+    /// Equal confidences: the merged body comes from the sort-first member
+    /// (lowest line, then title, then id), whatever order the axes emitted.
+    #[test]
+    fn equal_confidence_tie_keeps_the_sort_first_member_body() {
+        let first = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .description("FIRST body")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .build();
+        let second = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .description("SECOND body")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        for order in [
+            vec![first.clone(), second.clone()],
+            vec![second.clone(), first.clone()],
+        ] {
+            let output = integrate(
+                order
+                    .into_iter()
+                    .map(|f| tagged("src/main.rs", f))
+                    .collect(),
+                &default_config(),
+            );
+            assert_eq!(output.findings.len(), 1);
+            assert!(
+                output.findings[0].description.starts_with("FIRST body"),
+                "got: {}",
+                output.findings[0].description
+            );
+        }
     }
 
     #[test]
