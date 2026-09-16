@@ -671,7 +671,7 @@ impl ReviewLog {
                  JOIN reviews r ON r.run_id = rfi.run_id
                  WHERE (rfi.file_path = ?1 OR rfi.file_path = ?2)
                    AND rfi.title <> ''
-                 ORDER BY r.timestamp DESC
+                 ORDER BY r.timestamp DESC, rfi.rowid ASC
                  LIMIT 200",
             )
             .ok()?;

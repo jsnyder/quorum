@@ -640,9 +640,10 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub show_suppressed: bool,
 
-    /// With --diff-file, also show findings outside the changed lines and
-    /// outside the functions they sit in (hidden by default: corpus
-    /// precision on them is 7% vs 88% inside; hidden ones are still
+    /// With --diff-file, also show findings outside the changed lines
+    /// (hidden by default: corpus precision on them is 7% vs 88% inside;
+    /// a model finding inside a changed function is shown anyway, where
+    /// quorum knows the language's function nodes; hidden ones are still
     /// recorded, so `quorum feedback` can reach them)
     #[arg(long)]
     pub show_out_of_diff: bool,

@@ -1357,6 +1357,8 @@ fn changed_function_ranges(
                 .map(|t| hydration::function_spans(&t, l))
         })
         .unwrap_or_default();
+    // Context 0, unlike the focused view's DEFAULT_CONTEXT_LINES: a finding in
+    // the padding the model was shown is still outside the changed function.
     quorum::focus::kept_ranges(&changed, &spans, 0, source.lines().count() as u32)
 }
 
@@ -3135,9 +3137,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             &parse_cache,
                             pipeline_cfg.diff_ranges.as_ref(),
                         );
-                        result
-                            .hidden_out_of_diff
-                            .extend(pipeline::hide_out_of_diff(&mut result.findings, &rescue));
+                        // Hidden findings are recorded, so a project's suppression rules
+                        // apply to them exactly as to the shown ones; otherwise a rule
+                        // the project never wants to see would be written to the
+                        // review record and become linkable.
+                        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+                        result.hidden_out_of_diff.extend(
+                            suppress::apply_suppressions(hidden, &suppress_rules, &file_display)
+                                .kept,
+                        );
                     }
                     let sup_result = suppress::apply_suppressions(
                         result.findings,
@@ -3453,9 +3461,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             &parse_cache,
                             pipeline_cfg.diff_ranges.as_ref(),
                         );
-                        result
-                            .hidden_out_of_diff
-                            .extend(pipeline::hide_out_of_diff(&mut result.findings, &rescue));
+                        // Hidden findings are recorded, so a project's suppression rules
+                        // apply to them exactly as to the shown ones; otherwise a rule
+                        // the project never wants to see would be written to the
+                        // review record and become linkable.
+                        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+                        result.hidden_out_of_diff.extend(
+                            suppress::apply_suppressions(hidden, &suppress_rules, &file_display)
+                                .kept,
+                        );
 
                         }
 

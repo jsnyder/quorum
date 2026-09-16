@@ -32,7 +32,7 @@ cargo run -- stats --rolling 50              # rolling 50-review windows
 cargo run -- stats --skills                  # per-axis skill audit rollup (zero-finding streaks)
 cargo run -- stats --integrator              # integrator decisions + severity clamp transitions
 cargo run -- review file.yaml --deep         # multi-turn agent loop
-cargo run -- review file.rs --diff-file d.patch  # change-scoped review: axes get a focused view (enclosing functions + hunks) unless a whole-file fallback applies (>60% kept, deletion-only, or file not in the diff); findings outside the changed lines and their enclosing functions hidden but recorded
+cargo run -- review file.rs --diff-file d.patch  # change-scoped review: axes get a focused view (enclosing functions + hunks) unless a whole-file fallback applies (>60% kept, deletion-only, or file not in the diff); findings outside the changed lines hidden but recorded (a model finding inside a changed function is shown)
 cargo run -- review file.rs --diff-file d.patch --show-out-of-diff  # also show findings outside the diff (hidden by default)
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
 cargo run -- review src/*.rs --complexity-threshold 10  # also report cyclomatic complexity >= 10 (off by default)

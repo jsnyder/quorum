@@ -1552,19 +1552,25 @@ pub fn render_context_for_axes(file_ctx: &FileContext) -> Option<String> {
 /// corpus puts LLM findings inside the diff at 88% precision and outside it
 /// at 7%, so with `--diff-file` the outside ones are noise by default.
 /// `None` (no diff, or a deletion-only hunk, #562) is kept: unknown is not
-/// outside. A finding anchored inside a `rescue` range (the enclosing
-/// functions of the changed lines) is kept too: on the #589 benchmark the
-/// two outside-hunk findings that were real bugs sat 23 and 36 lines from a
-/// hunk inside the changed function, and the noise sat 1,477 lines away in
-/// another. The hidden findings are returned, not destroyed, so the caller
+/// outside. A model finding anchored inside a `rescue` range (the enclosing
+/// functions of the changed lines) is kept too: the model was shown that
+/// function because of the change, so what it says about it is about the
+/// change. Measured once locally on the #589 benchmark diff, the two
+/// outside-hunk findings that were real bugs sat 23 and 36 lines from a
+/// hunk inside the changed function. Rule findings (local AST, ast-grep,
+/// linters) are never rescued: a mechanical `unwrap` or `block_on` match
+/// 1,700 lines from the hunk in a 1,800-line function says nothing about
+/// the change, and that is what an unbounded rescue surfaced on its own
+/// review. The hidden findings are returned, not destroyed, so the caller
 /// can record them and a verdict can still reach them. Callers add the
 /// count to the summary line; a review that hides findings must say so.
 pub fn hide_out_of_diff(findings: &mut Vec<Finding>, rescue: &[(u32, u32)]) -> Vec<Finding> {
     let (kept, hidden): (Vec<Finding>, Vec<Finding>) = findings.drain(..).partition(|f| {
-        f.in_diff != Some(false) || {
-            let anchor = f.anchor_line();
-            rescue.iter().any(|&(s, e)| s <= anchor && anchor <= e)
-        }
+        f.in_diff != Some(false)
+            || (matches!(f.source, crate::finding::Source::Llm(_)) && {
+                let anchor = f.anchor_line();
+                rescue.iter().any(|&(s, e)| s <= anchor && anchor <= e)
+            })
     });
     *findings = kept;
     hidden
@@ -3395,19 +3401,27 @@ mod tests {
         assert_eq!(titles, ["in", "unknown"]);
     }
 
-    /// An outside-hunk finding inside a changed function is rescued; one in
-    /// an untouched function is not.
+    /// An outside-hunk model finding inside a changed function is rescued;
+    /// one in an untouched function is not, and a rule finding is not even
+    /// inside the changed function.
     #[test]
-    fn hide_out_of_diff_rescues_findings_in_changed_functions() {
-        use crate::finding::FindingBuilder;
+    fn hide_out_of_diff_rescues_model_findings_in_changed_functions() {
+        use crate::finding::{FindingBuilder, Source};
         let mut findings = vec![
             FindingBuilder::new()
-                .title("in changed fn")
+                .title("model, in changed fn")
                 .lines(30, 31)
+                .source(Source::Llm("m".into()))
                 .build(),
             FindingBuilder::new()
-                .title("far away")
+                .title("model, far away")
                 .lines(900, 901)
+                .source(Source::Llm("m".into()))
+                .build(),
+            FindingBuilder::new()
+                .title("rule, in changed fn")
+                .lines(32, 32)
+                .source(Source::LocalAst)
                 .build(),
         ];
         for f in &mut findings {
@@ -3419,9 +3433,12 @@ mod tests {
                 .iter()
                 .map(|f| f.title.as_str())
                 .collect::<Vec<_>>(),
-            ["in changed fn"]
+            ["model, in changed fn"]
         );
-        assert_eq!(hidden[0].title, "far away");
+        assert_eq!(
+            hidden.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(),
+            ["model, far away", "rule, in changed fn"]
+        );
     }
 
     // -- classify_in_diff --
