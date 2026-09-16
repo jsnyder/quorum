@@ -3452,26 +3452,23 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
                         // hide the ones stamped outside the diff before suppression.
 
-                        if hide_out_of_diff {
-
-                            let rescue = changed_function_ranges(
-                            std::path::Path::new(&result.file_path),
-                            &source,
-                            lang,
-                            &parse_cache,
-                            pipeline_cfg.diff_ranges.as_ref(),
-                        );
-                        // Hidden findings are recorded, so a project's suppression rules
-                        // apply to them exactly as to the shown ones; otherwise a rule
-                        // the project never wants to see would be written to the
-                        // review record and become linkable.
-                        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
-                        result.hidden_out_of_diff.extend(
-                            suppress::apply_suppressions(hidden, &suppress_rules, &file_display)
-                                .kept,
-                        );
-
-                        }
+                            if hide_out_of_diff {
+                                let rescue = changed_function_ranges(
+                                    std::path::Path::new(&result.file_path),
+                                    &source,
+                                    lang,
+                                    &parse_cache,
+                                    pipeline_cfg.diff_ranges.as_ref(),
+                                );
+                                // Hidden findings are recorded, so a project's suppression rules
+                                // apply to them exactly as to the shown ones; otherwise a rule
+                                // the project never wants to see would be written to the
+                                // review record and become linkable.
+                                let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+                                result.hidden_out_of_diff.extend(
+                                    suppress::apply_suppressions(hidden, &suppress_rules, &file_display).kept,
+                                );
+                            }
 
                         let sup_result = suppress::apply_suppressions(
                             result.findings,
