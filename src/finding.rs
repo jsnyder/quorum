@@ -110,9 +110,9 @@ pub enum GroundingStatus {
 pub struct ReviewIncomplete {
     /// Skill cells (axis x model x file) that produced no usable answer.
     pub axes_failed: usize,
-    /// Skill cells that ran.
+    /// Skill cells attempted (a budget-capped cell counts: it was owed).
     pub axes_total: usize,
-    /// One label per failed cell: `file: axis/model (class)`.
+    /// One label per failed cell: `file: axis/model (class or reason)`.
     #[serde(default)]
     pub cells: Vec<String>,
 }

@@ -85,3 +85,84 @@ fn complete_review_carries_no_incomplete_entry() {
     assert!(!stdout.contains("\"incomplete\""), "{stdout}");
     assert!(!String::from_utf8_lossy(&out.stderr).contains("review incomplete"));
 }
+
+/// A response cut off by the output-token limit is logged and labelled as
+/// `truncated`, not as a network error, through the real client.
+#[test]
+fn truncated_axes_are_labelled_truncated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let subject = tmp.path().join("subject.rs");
+    std::fs::write(
+        &subject,
+        "fn changed(text: &str) -> i32 {\n    text.len() as i32\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "truncated_response", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness,security")
+            .arg(&subject)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let entries: serde_json::Value = serde_json::from_str(&stdout).expect("json output");
+    let cells = entries
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|e| {
+            e.get("_meta")
+                .and_then(|m| m.get("incomplete"))
+                .and_then(|i| i.get("cells"))
+                .cloned()
+        })
+        .expect("_meta.incomplete.cells present");
+    assert!(
+        cells
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.as_str().unwrap().contains("(truncated)")),
+        "every cell must be labelled truncated: {cells}"
+    );
+}
+
+/// A hard error (an unreadable input) beside failed axes must not collapse
+/// the JSON to a bare `[]`: `quorum report` would post it as clean.
+#[test]
+fn hard_error_run_still_reports_incomplete() {
+    let tmp = tempfile::tempdir().unwrap();
+    let subject = tmp.path().join("subject.rs");
+    std::fs::write(
+        &subject,
+        "fn changed(text: &str) -> i32 {\n    text.len() as i32\n}\n",
+    )
+    .unwrap();
+    let missing = tmp.path().join("does-not-exist.rs");
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "malformed_response", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness,security")
+            .arg(&subject)
+            .arg(&missing)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "unreadable input is a tool error"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"incomplete\""),
+        "the payload must still carry _meta.incomplete:\n{stdout}"
+    );
+}

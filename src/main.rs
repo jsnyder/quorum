@@ -1434,9 +1434,20 @@ fn report_failed_skill_cells(
     let failed: Vec<String> = cell_results
         .iter()
         .filter(|c| c.parse_error_class.is_some() || c.failure_reason.is_some())
-        .map(|c| match &c.parse_error_class {
-            Some(class) => format!("{}/{} ({class})", c.skill_name, c.actual_model),
-            None => format!("{}/{}", c.skill_name, c.actual_model),
+        .map(|c| match (&c.parse_error_class, &c.failure_reason) {
+            (Some(class), _) => format!("{}/{} ({class})", c.skill_name, c.actual_model),
+            // A budget cap and a transport failure call for opposite actions
+            // (raise the cap vs. re-run), so the reason is part of the label.
+            (None, Some(reason)) => format!(
+                "{}/{} ({})",
+                c.skill_name,
+                c.actual_model,
+                serde_json::to_value(reason)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("{reason:?}"))
+            ),
+            (None, None) => format!("{}/{}", c.skill_name, c.actual_model),
         })
         .collect();
     if !failed.is_empty() {
@@ -3491,7 +3502,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let review_incomplete = quorum::finding::ReviewIncomplete {
         axes_failed: skill_cells_failed.load(std::sync::atomic::Ordering::Relaxed),
         axes_total: skill_cells_total.load(std::sync::atomic::Ordering::Relaxed),
-        cells: failed_cells.lock().unwrap().clone(),
+        cells: {
+            // Workers push in completion order; sort so re-runs are diffable.
+            let mut cells = failed_cells.lock().unwrap().clone();
+            cells.sort();
+            cells
+        },
     };
 
     // Aggregated end-of-run summary (one line, always printed to stderr).
@@ -3814,7 +3830,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     // If all files had errors and no findings, exit with tool error
     if had_errors && all_findings.is_empty() {
         if use_json {
-            println!("[]");
+            // Still the meta-bearing payload: a hard error plus failed axes
+            // must not hand `quorum report` a bare `[]` that posts as clean.
+            match output::format_json_grouped_with_meta(
+                &file_results,
+                &enabled_linters,
+                &linter_hints,
+                Some(&review_incomplete),
+            ) {
+                Ok(json) => println!("{json}"),
+                Err(_) => println!("[]"),
+            }
         }
         return 3;
     }

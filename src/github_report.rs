@@ -252,8 +252,14 @@ pub fn render_review_body(
             i.axes_failed, i.axes_total
         )
         .unwrap();
-        for cell in &i.cells {
+        // A PR touching hundreds of files can fail hundreds of cells; the
+        // body has a size limit, so list the first few and count the rest.
+        const MAX_CELLS_LISTED: usize = 20;
+        for cell in i.cells.iter().take(MAX_CELLS_LISTED) {
             writeln!(out, "- {cell}").unwrap();
+        }
+        if i.cells.len() > MAX_CELLS_LISTED {
+            writeln!(out, "- and {} more", i.cells.len() - MAX_CELLS_LISTED).unwrap();
         }
         writeln!(out).unwrap();
     }
@@ -1011,6 +1017,31 @@ mod tests {
             "must not read as clean:\n{body}"
         );
         assert!(body.contains("No findings from the axes that completed."));
+    }
+
+    #[test]
+    fn render_review_body_caps_the_incomplete_cell_list() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 500,
+            axes_total: 500,
+            cells: (0..500)
+                .map(|i| format!("src/f{i}.rs: security/m (not_json)"))
+                .collect(),
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        assert_eq!(body.matches("(not_json)").count(), 20, "{body}");
+        assert!(body.contains("- and 480 more"), "{body}");
+        assert!(
+            body.len() < 4000,
+            "body must stay far under GitHub's limit: {}",
+            body.len()
+        );
     }
 
     #[test]

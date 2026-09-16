@@ -357,6 +357,7 @@ pub(crate) fn execute_cell(
     let (raw_content, mut usage) = match review_result {
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
         Err(e) => {
+            let classified = classify_reviewer_error(&e);
             return CellResult {
                 skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
@@ -366,8 +367,8 @@ pub(crate) fn execute_cell(
                 model_was_fallback: false,
                 actual_model: cell.model.clone(),
                 exit_status: ExitStatus::Error,
-                failure_reason: classify_reviewer_error(&e).0,
-                parse_error_class: classify_reviewer_error(&e).1,
+                failure_reason: classified.0,
+                parse_error_class: classified.1,
                 findings_clamped: 0,
                 findings_dropped_invalid_json: 0,
                 prompt_sha256,

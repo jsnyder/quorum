@@ -328,26 +328,6 @@ pub fn format_json_grouped_with_meta(
     Ok(serde_json::to_string_pretty(&out)?)
 }
 
-/// JSON output grouped by file -- includes file_path so findings can be traced back.
-pub fn format_json_grouped(
-    results: &[crate::pipeline::FileReviewResult],
-) -> anyhow::Result<String> {
-    #[derive(serde::Serialize)]
-    struct FileFindings<'a> {
-        file: &'a str,
-        findings: &'a [Finding],
-    }
-    let grouped: Vec<FileFindings> = results
-        .iter()
-        .filter(|r| !r.findings.is_empty())
-        .map(|r| FileFindings {
-            file: &r.file_path,
-            findings: &r.findings,
-        })
-        .collect();
-    Ok(serde_json::to_string_pretty(&grouped)?)
-}
-
 pub fn format_compact_finding(f: &Finding) -> String {
     let icon = severity_icon(&f.severity);
     let line_label = if f.line_start == f.line_end {
