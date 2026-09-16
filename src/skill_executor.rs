@@ -151,7 +151,17 @@ pub struct ReviewFile {
     pub path: String,
     pub sha256: String,
     pub code: String,
-    pub line_range: Option<(u32, u32)>,
+    /// Present when `code` is a focused view rather than the whole file.
+    pub focus: Option<FocusMeta>,
+}
+
+/// What the scaffold needs to say about a focused view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusMeta {
+    /// First and last absolute line present in the view.
+    pub line_range: (u32, u32),
+    pub regions: usize,
+    pub diff_follows: bool,
 }
 
 impl ReviewFile {
@@ -160,7 +170,7 @@ impl ReviewFile {
             path,
             sha256,
             code,
-            line_range: None,
+            focus: None,
         }
     }
 }
@@ -172,8 +182,8 @@ pub struct CellSpec {
     pub file_path: String,
     pub file_sha256: String,
     pub code: String,
-    /// Absolute line range the code covers when it is a focused view.
-    pub line_range: Option<(u32, u32)>,
+    /// Present when `code` is a focused view rather than the whole file.
+    pub focus: Option<FocusMeta>,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +240,7 @@ pub fn expand_matrix(
                     file_path: f.path.clone(),
                     file_sha256: f.sha256.clone(),
                     code: f.code.clone(),
-                    line_range: f.line_range,
+                    focus: f.focus,
                 });
             }
         }
@@ -277,14 +287,20 @@ pub(crate) fn execute_cell(
     let selected = select_prompt(&skill_prompts, family);
     let wrapped_skill = wrap_skill_instructions(selected);
     let (line_start, line_end) = cell
-        .line_range
+        .focus
+        .map(|f| f.line_range)
         .unwrap_or((1, cell.code.lines().count().max(1) as u32));
+    let view = cell.focus.map(|f| crate::skill_prompt_defense::ViewMeta {
+        regions: f.regions,
+        diff_follows: f.diff_follows,
+    });
     let wrapped_code = wrap_code_to_review(
         &cell.code,
         &cell.file_path,
         &cell.file_sha256,
         line_start,
         line_end,
+        view.as_ref(),
     );
     let assembled = model_family::assemble_prompt(
         BASE_SYSTEM_PROMPT,
@@ -1023,7 +1039,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1042,7 +1058,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1060,7 +1076,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1079,7 +1095,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1104,7 +1120,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1144,7 +1160,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell(&cell, &reviewer, &budget);
@@ -1181,7 +1197,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(1, 0);
         // Use the one allowed call
@@ -1213,7 +1229,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1240,7 +1256,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1267,7 +1283,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1284,7 +1300,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(0, 0);
         let result = execute_cell_with_fallback(&cell, &reviewer, &budget);
@@ -1335,7 +1351,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let budget = BudgetTracker::new(1, 0);
         let _ = execute_cell(&cell, &reviewer, &budget);
@@ -1357,7 +1373,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let result = CellResult {
             skill_name: "security".to_owned(),
@@ -1404,7 +1420,7 @@ mod tests {
             file_path: "src/main.rs".to_owned(),
             file_sha256: "abc123".to_owned(),
             code: "fn main() {}".to_owned(),
-            line_range: None,
+            focus: None,
         };
         let result = CellResult {
             skill_name: "security".to_owned(),

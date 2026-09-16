@@ -1280,16 +1280,18 @@ const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security"];
 /// absolute line numbers, then this file's hunks) instead of the whole
 /// file. Without a diff, or when the view would keep most of the file, or
 /// when the diff never mentions this file, the whole file goes as before.
+#[allow(clippy::too_many_arguments)]
 fn build_review_file(
     file_path: &std::path::Path,
     file_str: &str,
     file_sha: String,
     source: &str,
     lang: Option<parser::Language>,
+    parse_cache: &cache::ParseCache,
     diff_text: Option<&str>,
     diff_ranges: Option<&hydration::DiffRanges>,
 ) -> quorum::skill_executor::ReviewFile {
-    use quorum::skill_executor::ReviewFile;
+    use quorum::skill_executor::{FocusMeta, ReviewFile};
     let whole = |sha: String| ReviewFile::whole(file_str.to_owned(), sha, source.to_owned());
     let Some(diff_ranges) = diff_ranges else {
         return whole(file_sha);
@@ -1300,16 +1302,21 @@ fn build_review_file(
     if changed.is_empty() {
         return whole(file_sha);
     }
+    // The pipeline parsed this file moments ago; the cache makes this a
+    // lookup rather than a second parse.
     let spans = lang
         .and_then(|l| {
-            parser::parse(source, l)
+            parse_cache
+                .get_or_parse(source, l)
                 .ok()
                 .map(|t| hydration::function_spans(&t, l))
         })
         .unwrap_or_default();
-    let hunks = diff_text.and_then(|d| {
-        quorum::focus::hunks_for_file(d, &|p| pipeline::diff_names_file(file_path, p))
-    });
+    // One resolver for every `+++ b/` line of the diff, not one project-root
+    // walk per line.
+    let repo_root = pipeline::find_project_root(file_path);
+    let resolver = pipeline::ReviewPathResolver::new(file_str, &repo_root);
+    let hunks = diff_text.and_then(|d| quorum::focus::hunks_for_file(d, &|p| resolver.matches(p)));
     match quorum::focus::focus_source(source, &changed, &spans, hunks.as_deref()) {
         Some(view) => {
             tracing::info!(
@@ -1322,7 +1329,11 @@ fn build_review_file(
                 path: file_str.to_owned(),
                 sha256: file_sha,
                 code: view.text,
-                line_range: Some((view.first_line, view.last_line)),
+                focus: Some(FocusMeta {
+                    line_range: (view.first_line, view.last_line),
+                    regions: view.regions,
+                    diff_follows: view.diff_follows,
+                }),
             }
         }
         None => whole(file_sha),
@@ -2368,8 +2379,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     let diff_ranges = if let Some(ref diff_path) = opts.diff_file {
         match std::fs::read_to_string(diff_path) {
             Ok(diff_content) => {
-                diff_text = Some(diff_content.clone());
                 let ranges = hydration::parse_unified_diff(&diff_content);
+                diff_text = Some(diff_content);
                 if !ranges.is_empty() {
                     eprintln!(
                         "Diff-aware: scoping hydration to {} changed file(s)",
@@ -2908,6 +2919,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             file_sha,
                             &source,
                             lang,
+                            &parse_cache,
                             diff_text.as_deref(),
                             pipeline_cfg.diff_ranges.as_ref(),
                         )];
@@ -3205,6 +3217,9 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     file_sha,
     &source,
     lang,
+
+    &parse_cache,
+
     diff_text.as_deref(),
     pipeline_cfg.diff_ranges.as_ref(),
 )];

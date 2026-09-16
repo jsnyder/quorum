@@ -266,6 +266,7 @@ pub fn build_judge_prompt(
         source_digest.as_str(),
         1,
         line_count,
+        None,
     ));
     prompt.push_str("\n\n<findings_to_judge>\n");
 

@@ -866,6 +866,16 @@ fn handle(req: Request) {
         );
     }
 
+    /// Spans are 1-based inclusive and cover nested functions too, which is
+    /// what lets a change inside a closure-heavy body expand to its parent.
+    #[test]
+    fn function_spans_are_one_based_inclusive_in_source_order() {
+        let src = "fn a() {\n    1\n}\n\nfn b() {\n    fn inner() {}\n    2\n}\n";
+        let tree = crate::parser::parse(src, Language::Rust).unwrap();
+        let spans = function_spans(&tree, Language::Rust);
+        assert_eq!(spans, vec![(1, 3), (5, 8), (6, 6)]);
+    }
+
     /// `collect_definitions` read the `name` field directly, which C++
     /// function_definition does not have, so callee_signatures was permanently
     /// empty for C++ while the func_kinds arm advertised support.

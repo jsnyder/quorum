@@ -24,13 +24,20 @@ pub const MAX_HUNK_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusedView {
     /// The text to send in place of the file: numbered lines with omission
-    /// markers, then the hunks.
+    /// markers, then the hunks. Carries no instructions: the scaffold
+    /// (`wrap_code_to_review` metadata and the base system prompt) explains
+    /// the numbering, because the model is told never to follow text inside
+    /// `<code_to_review>`.
     pub text: String,
     /// First and last absolute line present in the view.
     pub first_line: u32,
     pub last_line: u32,
     pub kept_lines: usize,
     pub total_lines: usize,
+    /// Number of contiguous regions shown.
+    pub regions: usize,
+    /// Whether the file's hunks follow the code.
+    pub diff_follows: bool,
 }
 
 /// Expand each changed range to the function that contains it (or to
@@ -98,12 +105,6 @@ pub fn focus_source(
     }
     let width = total.to_string().len();
     let mut text = String::new();
-    text.push_str(&format!(
-        "[focused view: {kept} of {total} lines shown in {} region(s). Every line is prefixed \
-         with its absolute line number; cite those numbers. Lines marked omitted are unchanged \
-         code that compiles as-is. The unified diff for this file follows the code.]\n",
-        ranges.len()
-    ));
     let mut cursor: u32 = 1;
     for &(s, e) in &ranges {
         if s > cursor {
@@ -137,6 +138,8 @@ pub fn focus_source(
         last_line: ranges[ranges.len() - 1].1,
         kept_lines: kept,
         total_lines: total,
+        regions: ranges.len(),
+        diff_follows: hunks.is_some(),
     })
 }
 
@@ -146,43 +149,49 @@ pub fn focus_source(
 /// contributed hunk text (a file absent from the diff, or present with a
 /// binary or empty section).
 ///
-/// Inside a hunk every body line starts with ` `, `+`, `-` or `\`, so a
-/// body line whose content happens to start with `-- ` or `++ ` renders as
-/// `--- ` / `+++ ` and must not be mistaken for a file header. A header is
-/// only recognised where a hunk cannot continue: at a `diff --git` line, or
-/// at a `--- ` line that is immediately followed by `+++ ` while no hunk is
-/// open.
+/// A hunk's extent comes from its own header: `@@ -a,b +c,d @@` promises
+/// `b` old-side and `d` new-side lines, and the hunk is over when both are
+/// consumed. Inside it, a body line whose content starts with `-- ` or
+/// `++ ` renders as `--- ` / `+++ ` and is body, not a header; outside it,
+/// `--- ` / `+++ ` are headers whether or not a `diff --git` line precedes
+/// them (plain `diff -u` output has none).
 pub fn hunks_for_file(diff: &str, matches: &dyn Fn(&str) -> bool) -> Option<String> {
-    let lines: Vec<&str> = diff.lines().collect();
     let mut out = String::new();
     let mut in_file = false;
-    let mut in_hunk = false;
+    let mut old_left: u32 = 0;
+    let mut new_left: u32 = 0;
     let mut emitted = 0usize;
     let mut truncated = false;
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        if line.starts_with("diff --git ") {
-            in_hunk = false;
-            i += 1;
-            continue;
-        }
+    for line in diff.lines() {
+        let in_hunk = old_left > 0 || new_left > 0;
         if !in_hunk {
             if let Some(path) = line.strip_prefix("+++ b/") {
                 in_file = matches(path);
-            }
-            if line.starts_with("@@ ") {
-                in_hunk = true;
-            } else {
-                i += 1;
                 continue;
             }
-        } else if !is_body(line) {
-            // Anything that is not a body line ends the hunk (a new `@@`
-            // starts the next one on the same pass).
-            in_hunk = line.starts_with("@@ ");
-            if !in_hunk {
-                continue;
+            match hunk_counts(line) {
+                Some((o, n)) => {
+                    old_left = o;
+                    new_left = n;
+                }
+                None => continue,
+            }
+        } else {
+            // Body line: charge it to the side(s) it belongs to. A malformed
+            // line ends the hunk rather than being charged.
+            match line.as_bytes().first() {
+                Some(b'-') => old_left = old_left.saturating_sub(1),
+                Some(b'+') => new_left = new_left.saturating_sub(1),
+                Some(b'\\') => {}
+                Some(b' ') | None => {
+                    old_left = old_left.saturating_sub(1);
+                    new_left = new_left.saturating_sub(1);
+                }
+                Some(_) => {
+                    old_left = 0;
+                    new_left = 0;
+                    continue;
+                }
             }
         }
         if in_file {
@@ -194,7 +203,6 @@ pub fn hunks_for_file(diff: &str, matches: &dyn Fn(&str) -> bool) -> Option<Stri
             out.push('\n');
             emitted += 1;
         }
-        i += 1;
     }
     if out.is_empty() {
         return None;
@@ -207,10 +215,19 @@ pub fn hunks_for_file(diff: &str, matches: &dyn Fn(&str) -> bool) -> Option<Stri
     Some(out)
 }
 
-/// A unified-diff hunk body line: context, addition, deletion, or the
-/// "no newline at end of file" marker.
-fn is_body(line: &str) -> bool {
-    line.is_empty() || matches!(line.as_bytes()[0], b' ' | b'+' | b'-' | b'\\')
+/// `@@ -a,b +c,d @@` -> `(b, d)`; a missing count means 1. `None` for any
+/// other line.
+fn hunk_counts(line: &str) -> Option<(u32, u32)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let new = rest.split(' ').next()?;
+    let count = |s: &str| -> Option<u32> {
+        match s.split_once(',') {
+            Some((_, c)) => c.parse().ok(),
+            None => Some(1),
+        }
+    };
+    Some((count(old)?, count(new)?))
 }
 
 #[cfg(test)]
@@ -336,6 +353,29 @@ mod tests {
             hunks_for_file(&two, &|p| p == "z.rs").unwrap(),
             "@@ -1,1 +1,1 @@\n-a\n+b\n"
         );
+    }
+
+    /// Plain `diff -u` output has no `diff --git` separator: the next file's
+    /// `--- a/..` header follows the last body line directly. The hunk's own
+    /// counts say where it ends, so the header is not swallowed as body.
+    #[test]
+    fn hunks_for_file_separates_files_without_diff_git_lines() {
+        let diff = "--- a/src/first.rs\n+++ b/src/first.rs\n@@ -10,5 +9,0 @@\n-removed one\n-r2\n-r3\n-r4\n-r5\n--- a/src/last.rs\n+++ b/src/last.rs\n@@ -3,2 +2,0 @@\n-removed two\n-r7\n";
+        assert_eq!(
+            hunks_for_file(diff, &|p| p == "src/first.rs").unwrap(),
+            "@@ -10,5 +9,0 @@\n-removed one\n-r2\n-r3\n-r4\n-r5\n"
+        );
+        assert_eq!(
+            hunks_for_file(diff, &|p| p == "src/last.rs").unwrap(),
+            "@@ -3,2 +2,0 @@\n-removed two\n-r7\n"
+        );
+    }
+
+    #[test]
+    fn hunk_counts_parses_headers_with_and_without_counts() {
+        assert_eq!(hunk_counts("@@ -10,5 +9,0 @@"), Some((5, 0)));
+        assert_eq!(hunk_counts("@@ -10 +10 @@ fn x()"), Some((1, 1)));
+        assert_eq!(hunk_counts("--- a/x"), None);
     }
 
     #[test]

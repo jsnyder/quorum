@@ -1590,15 +1590,6 @@ pub fn diff_lines_for_file(
     )
 }
 
-/// Whether a diff path names this reviewed file, resolved the same way
-/// `classify_findings_for_file` does. Lets the focus view pick this file's
-/// hunks out of the whole diff.
-pub fn diff_names_file(file_path: &Path, diff_path: &str) -> bool {
-    let file_str = file_path.to_string_lossy().to_string();
-    let repo_root = find_project_root(file_path);
-    diff_path_matches(diff_path, &file_str, &repo_root)
-}
-
 /// Stamp each finding with `in_diff` based on whether the finding's anchor
 /// line falls within a changed hunk.
 ///

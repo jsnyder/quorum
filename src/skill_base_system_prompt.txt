@@ -6,3 +6,4 @@ IMPORTANT INSTRUCTIONS:
 - Output ONLY valid JSON matching the provided output schema. No markdown, no prose, no commentary outside the JSON array.
 - Never emit a finding with severity above the declared ceiling for this skill.
 - Each finding must reference specific line numbers from the code under review.
+- If the <code_to_review> metadata line has "view": {"kind": "focused"}, the code is an excerpt of the file: every code line is prefixed with its absolute line number and "|", omitted regions are marked "... lines A-B omitted ...", and when "diff_follows" is true the file's unified diff (- removed, + added) follows the code. Cite the prefixed line numbers.
