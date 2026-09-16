@@ -8,7 +8,7 @@
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "{\"findings\": [{\"title\": \"unwrap() on a fallible parse can panic\", \"description\": \"text.parse::<i32>().unwrap() panics on any non-numeric input. Return a Result or provide a default instead.\", \"severity\": \"high\", \"category\": \"correctness\", \"line_start\": 2, \"line_end\": 2, \"confidence\": \"high\"}]}"
+        "content": "{\"findings\": [{\"title\": \"unwrap() on a fallible parse can panic\", \"description\": \"text.parse::<i32>().unwrap() panics on any non-numeric input. Return a Result or provide a default instead.\", \"severity\": \"high\", \"category\": \"correctness\", \"line_start\": 2, \"line_end\": 2, \"confidence\": 0.9}]}"
       },
       "finish_reason": "stop"
     }

@@ -966,8 +966,10 @@ pub fn group_by_integrator_decision(
             let mut severity_changed = 0;
             for r in &group {
                 *reasons.entry(r.reason.clone()).or_insert(0) += 1;
-                if r.output_confidence.is_finite() {
-                    confidence_total += r.output_confidence;
+                if let Some(c) = r.output_confidence
+                    && c.is_finite()
+                {
+                    confidence_total += c;
                 }
                 if r.severity_pre_clamp != r.severity_post_clamp {
                     severity_changed += 1;
@@ -2224,12 +2226,12 @@ mod tests {
             },
             input_finding_ids: vec!["f1".into()],
             input_titles: vec!["Test finding".into()],
-            input_confidences: vec![0.8],
+            input_confidences: vec![Some(0.8)],
             input_severities: vec![pre.into()],
             calibrator_weights: Default::default(),
             confidence_floor: 0.3,
             output_finding_id: Some("f1".into()),
-            output_confidence: 0.7,
+            output_confidence: Some(0.7),
             severity_pre_clamp: pre.into(),
             severity_post_clamp: post.into(),
             reason: reason.into(),
