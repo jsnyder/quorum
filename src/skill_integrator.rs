@@ -320,6 +320,24 @@ fn noisy_or(pairs: &[(f64, f64)]) -> f64 {
 /// duplicates (same skill, different models) are collapsed by taking the max
 /// confidence among them.
 fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> {
+    collapse_with(findings, confidence_of)
+}
+
+/// The same collapse over computed confidences only, for the suppression
+/// floor: a model-reported 0.9 must not lift a computed 0.2 over the floor
+/// (noisy-or would make the pair 0.92).
+fn collapse_computed_only(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> {
+    collapse_with(findings, |f| {
+        f.confidence
+            .filter(|c| c.is_finite())
+            .map(|c| f64::from(c.clamp(0.0, 1.0)))
+    })
+}
+
+fn collapse_with(
+    findings: &[&TaggedFinding],
+    pick: impl Fn(&Finding) -> Option<f64>,
+) -> Vec<(f64, f64)> {
     // Group by originating_skill. Findings without originating_skill each
     // get their own unique key. A finding with no confidence contributes
     // nothing: a noisy-or over fabricated 0.5s reported agreement between
@@ -336,7 +354,7 @@ fn collapse_ensemble_duplicates(findings: &[&TaggedFinding]) -> Vec<(f64, f64)> 
             }
         };
         let group = skill_groups.entry(key).or_default();
-        if let Some(conf) = confidence_of(&tf.finding) {
+        if let Some(conf) = pick(&tf.finding) {
             group.push(conf);
         }
     }
@@ -612,19 +630,21 @@ fn process_cluster(
         .unwrap(); // cluster is non-empty
 
     // Compute originating_skills union, ordered by max confidence desc.
-    let mut skill_max: BTreeMap<String, f64> = BTreeMap::new();
+    // Unknown stays `None`, which sorts below a known 0.0, so a skill that
+    // said nothing never outranks one that said "zero".
+    let mut skill_max: BTreeMap<String, Option<f64>> = BTreeMap::new();
     for tf in cluster {
         if let Some(ref skill) = tf.finding.originating_skill
             && !skill.is_empty()
         {
-            let conf = confidence_of(&tf.finding).unwrap_or(0.0);
-            let entry = skill_max.entry(skill.clone()).or_insert(0.0);
+            let conf = confidence_of(&tf.finding);
+            let entry = skill_max.entry(skill.clone()).or_insert(None);
             if conf > *entry {
                 *entry = conf;
             }
         }
     }
-    let mut skill_confs: Vec<(String, f64)> = skill_max.into_iter().collect();
+    let mut skill_confs: Vec<(String, Option<f64>)> = skill_max.into_iter().collect();
     skill_confs.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -686,10 +706,9 @@ fn process_cluster(
     // model's own hedge must not delete its finding, since nothing on the
     // CLI shows an integrator-suppressed finding and no verdict could ever
     // be recorded against it.
-    let has_computed = cluster
-        .iter()
-        .any(|tf| tf.finding.confidence.is_some_and(|c| c.is_finite()));
-    let below_floor = merged_confidence.filter(|c| has_computed && *c < config.confidence_floor);
+    let computed_pairs = collapse_computed_only(cluster);
+    let computed_confidence = (!computed_pairs.is_empty()).then(|| noisy_or(&computed_pairs));
+    let below_floor = computed_confidence.filter(|c| *c < config.confidence_floor);
     let suppressed = below_floor.is_some();
 
     // Determine decision type.
@@ -2115,6 +2134,75 @@ mod tests {
         assert!((got - 0.2).abs() < 1e-6, "got {got}");
         let logged = output.decisions[0].input_confidences[0].expect("logged as known");
         assert!((logged - 0.2).abs() < 1e-6, "got {logged}");
+    }
+
+    /// A model-reported 0.9 beside a computed 0.2 must not lift the pair
+    /// over the floor: the floor is judged on computed values alone, while
+    /// the merged (ranking, audit) value still blends both.
+    #[test]
+    fn reported_confidence_cannot_lift_a_computed_one_over_the_floor() {
+        let low = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .confidence(0.2)
+            .build();
+        let mut hedged = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .build();
+        hedged.llm_confidence = Some(0.9);
+        let output = integrate(
+            vec![tagged("src/main.rs", low), tagged("src/main.rs", hedged)],
+            &default_config(),
+        );
+        assert!(
+            output.findings.is_empty() && output.suppressed.len() == 1,
+            "suppressed on 0.2"
+        );
+        let merged = output.decisions[0].output_confidence.unwrap();
+        assert!(
+            (merged - 0.92).abs() < 1e-6,
+            "audit still records the blend: {merged}"
+        );
+    }
+
+    /// A skill that said nothing must not outrank one that said zero.
+    #[test]
+    fn unknown_confidence_ranks_below_known_zero_in_originating_skills() {
+        let zero = FindingBuilder::new()
+            .id("F001")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("security")
+            .confidence(0.0)
+            .build();
+        let unknown = FindingBuilder::new()
+            .id("F002")
+            .title("Unchecked unwrap on parse result")
+            .severity(Severity::Medium)
+            .lines(10, 12)
+            .originating_skill("correctness")
+            .build();
+        let output = integrate(
+            vec![tagged("src/main.rs", zero), tagged("src/main.rs", unknown)],
+            &IntegratorConfig {
+                confidence_floor: 0.0,
+                ..default_config()
+            },
+        );
+        assert_eq!(output.findings.len(), 1);
+        assert_eq!(
+            output.findings[0].originating_skill.as_deref(),
+            Some("security"),
+            "the known zero leads; alphabetical order would have said correctness"
+        );
     }
 
     /// A computed confidence below the floor still suppresses: the floor is
