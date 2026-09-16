@@ -19,6 +19,28 @@ use std::fmt;
 // ParseErrorClass
 // ---------------------------------------------------------------------------
 
+/// The model stopped before finishing its answer. A typed error so the
+/// skill executor can log it as a truncated parse rather than a network
+/// failure: before, every truncation was recorded as `network_error` and the
+/// `truncated` class never appeared in the audit log.
+#[derive(Debug, Clone)]
+pub struct TruncatedResponse {
+    pub model: String,
+    pub detail: String,
+}
+
+impl std::fmt::Display for TruncatedResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Response truncated by model {} ({})",
+            self.model, self.detail
+        )
+    }
+}
+
+impl std::error::Error for TruncatedResponse {}
+
 /// Classification of why a skill response could not be parsed into findings.
 ///
 /// Used for telemetry bucketing and retry decisions. Each variant maps to a

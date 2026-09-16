@@ -83,6 +83,9 @@ pub fn parse_chat_response(json: &serde_json::Value) -> anyhow::Result<LlmTurnRe
     }
 
     if finish_reason == "length" {
+        // The agent (tool-calling) path does not feed skill cells, so its
+        // truncation stays a plain error; the review paths raise the typed
+        // `skill_output::TruncatedResponse` below.
         anyhow::bail!("Response truncated (finish_reason=length)");
     }
     let content = message
@@ -1104,10 +1107,11 @@ impl OpenAiClient {
             .as_str()
             .unwrap_or("unknown");
         if finish_reason == "length" {
-            anyhow::bail!(
-                "Response truncated (finish_reason=length). Model {} hit its output token limit.",
-                model
-            );
+            return Err(quorum::skill_output::TruncatedResponse {
+                model: model.to_owned(),
+                detail: "finish_reason=length: the model hit its output token limit".to_owned(),
+            }
+            .into());
         }
 
         let content = json["choices"][0]["message"]["content"]
@@ -1159,8 +1163,18 @@ impl OpenAiClient {
         let usage = parse_usage(&json);
 
         if json["status"].as_str() == Some("incomplete") {
-            let reason = json["incomplete_details"].to_string();
-            anyhow::bail!("Response incomplete: {}", reason);
+            let reason = json["incomplete_details"]["reason"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_owned();
+            if incomplete_reason_is_truncation(&reason) {
+                return Err(quorum::skill_output::TruncatedResponse {
+                    model: model.to_owned(),
+                    detail: format!("incomplete: {reason}"),
+                }
+                .into());
+            }
+            anyhow::bail!("Response incomplete ({reason}); model {model}");
         }
 
         // Extract and concatenate all text from output[].content[].text
@@ -1411,6 +1425,13 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+/// Only an output-token cutoff is a truncation. The Responses API also
+/// reports `incomplete` for a content filter, which is not the model running
+/// out of room and must not be logged (or retried) as if it were.
+fn incomplete_reason_is_truncation(reason: &str) -> bool {
+    reason == "max_output_tokens"
 }
 
 #[cfg(test)]
@@ -3263,5 +3284,17 @@ mod tests {
         assert!(super::supports_temperature("ollama-llama3"));
         assert!(super::supports_temperature("openai/gpt-4"));
         assert!(super::supports_temperature("openrouter/auto"));
+    }
+}
+
+#[cfg(test)]
+mod incomplete_reason_tests {
+    use super::incomplete_reason_is_truncation;
+
+    #[test]
+    fn only_the_token_cutoff_counts_as_truncation() {
+        assert!(incomplete_reason_is_truncation("max_output_tokens"));
+        assert!(!incomplete_reason_is_truncation("content_filter"));
+        assert!(!incomplete_reason_is_truncation("unknown"));
     }
 }

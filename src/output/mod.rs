@@ -272,16 +272,19 @@ pub fn format_compact_linter_header(
 }
 
 /// JSON output grouped by file, optionally prefixed with a `_meta` entry
-/// describing linter coverage. The `_meta` entry is omitted when both
-/// `enabled` and `hints` are empty, preserving the legacy list shape.
+/// describing linter coverage and, when any skill axis failed, what the
+/// review could not do (`incomplete`). The `_meta` entry is omitted when
+/// there is nothing to say, preserving the legacy list shape.
 pub fn format_json_grouped_with_meta(
     results: &[crate::pipeline::FileReviewResult],
     enabled: &[crate::linter::LinterKind],
     hints: &[crate::linter::LinterHint],
+    incomplete: Option<&quorum::finding::ReviewIncomplete>,
 ) -> anyhow::Result<String> {
     use serde_json::{Value, json};
     let mut out: Vec<Value> = Vec::new();
-    if !enabled.is_empty() || !hints.is_empty() {
+    let incomplete = incomplete.filter(|i| i.axes_failed > 0);
+    if !enabled.is_empty() || !hints.is_empty() || incomplete.is_some() {
         let enabled_names: Vec<&str> = enabled.iter().map(|k| k.name()).collect();
         let unconfigured: Vec<Value> = hints
             .iter()
@@ -294,9 +297,8 @@ pub fn format_json_grouped_with_meta(
                 })
             })
             .collect();
-        out.push(json!({
-            "_meta": {
-                "linters": {
+        let mut meta = json!({
+            "linters": {
                     // #531: named `enabled` until it was pointed out that
                     // `enabled` reads as `ran`. Nothing invokes these linters
                     // -- `run_linter` has no production caller and never has.
@@ -310,9 +312,12 @@ pub fn format_json_grouped_with_meta(
                     // was actually determined.
                     "configured": enabled_names,
                     "available_unconfigured": unconfigured,
-                }
             }
-        }));
+        });
+        if let Some(i) = incomplete {
+            meta["incomplete"] = json!(i);
+        }
+        out.push(json!({ "_meta": meta }));
     }
     for r in results.iter().filter(|r| !r.findings.is_empty()) {
         out.push(json!({
@@ -321,26 +326,6 @@ pub fn format_json_grouped_with_meta(
         }));
     }
     Ok(serde_json::to_string_pretty(&out)?)
-}
-
-/// JSON output grouped by file -- includes file_path so findings can be traced back.
-pub fn format_json_grouped(
-    results: &[crate::pipeline::FileReviewResult],
-) -> anyhow::Result<String> {
-    #[derive(serde::Serialize)]
-    struct FileFindings<'a> {
-        file: &'a str,
-        findings: &'a [Finding],
-    }
-    let grouped: Vec<FileFindings> = results
-        .iter()
-        .filter(|r| !r.findings.is_empty())
-        .map(|r| FileFindings {
-            file: &r.file_path,
-            findings: &r.findings,
-        })
-        .collect();
-    Ok(serde_json::to_string_pretty(&grouped)?)
 }
 
 pub fn format_compact_finding(f: &Finding) -> String {
@@ -627,7 +612,7 @@ mod tests {
             1,
             "add [tool.ruff] to pyproject.toml",
         )];
-        let out = format_json_grouped_with_meta(&results, &enabled, &hints).unwrap();
+        let out = format_json_grouped_with_meta(&results, &enabled, &hints, None).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let arr = parsed.as_array().expect("top-level array");
         assert!(!arr.is_empty());
@@ -647,10 +632,31 @@ mod tests {
     }
 
     #[test]
+    fn json_meta_carries_incomplete_when_an_axis_failed() {
+        let results: Vec<crate::pipeline::FileReviewResult> = vec![];
+        let incomplete = quorum::finding::ReviewIncomplete {
+            axes_failed: 1,
+            axes_total: 2,
+            cells: vec!["a.rs: correctness/m (truncated)".to_owned()],
+        };
+        let out = format_json_grouped_with_meta(&results, &[], &[], Some(&incomplete)).unwrap();
+        let arr: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(arr[0]["_meta"]["incomplete"]["axes_failed"], 1, "{out}");
+        assert_eq!(
+            arr[0]["_meta"]["incomplete"]["cells"][0],
+            "a.rs: correctness/m (truncated)"
+        );
+        // Nothing failed: no entry at all, so the legacy shape is kept.
+        let none = quorum::finding::ReviewIncomplete::default();
+        let out = format_json_grouped_with_meta(&results, &[], &[], Some(&none)).unwrap();
+        assert_eq!(out.trim(), "[]", "{out}");
+    }
+
+    #[test]
     fn json_meta_omits_entry_when_nothing_to_report() {
         use crate::pipeline::FileReviewResult;
         let results: Vec<FileReviewResult> = vec![];
-        let out = format_json_grouped_with_meta(&results, &[], &[]).unwrap();
+        let out = format_json_grouped_with_meta(&results, &[], &[], None).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(
             parsed

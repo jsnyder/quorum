@@ -236,6 +236,7 @@ pub fn render_review_body(
     inline_findings: &[Finding],
     body_findings: &[Finding],
     version: &str,
+    incomplete: Option<&crate::finding::ReviewIncomplete>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(4096);
@@ -244,8 +245,41 @@ pub fn render_review_body(
     let total = inline_findings.len() + body_findings.len();
     writeln!(out, "## Quorum Review\n").unwrap();
 
+    if let Some(i) = incomplete.filter(|i| i.axes_failed > 0) {
+        writeln!(
+            out,
+            "**Review incomplete:** {} of {} skill axes failed, so this is not a full review.\n",
+            i.axes_failed, i.axes_total
+        )
+        .unwrap();
+        // A PR touching hundreds of files can fail hundreds of cells, and a
+        // label carries an unbounded path; the body has a size limit, so
+        // list cells while they fit a fixed byte budget and count the rest.
+        const MAX_CELLS_LISTED: usize = 20;
+        const CELL_LIST_BYTES: usize = 4096;
+        let mut listed = 0usize;
+        let mut used = 0usize;
+        for cell in &i.cells {
+            let line_len = cell.len() + 3;
+            if listed >= MAX_CELLS_LISTED || used + line_len > CELL_LIST_BYTES {
+                break;
+            }
+            writeln!(out, "- {cell}").unwrap();
+            listed += 1;
+            used += line_len;
+        }
+        if i.cells.len() > listed {
+            writeln!(out, "- and {} more", i.cells.len() - listed).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
     if total == 0 {
-        writeln!(out, "No findings.").unwrap();
+        if incomplete.is_some_and(|i| i.axes_failed > 0) {
+            writeln!(out, "No findings from the axes that completed.").unwrap();
+        } else {
+            writeln!(out, "No findings.").unwrap();
+        }
         return out;
     }
 
@@ -500,6 +534,9 @@ pub struct PostReviewRequest {
     pub findings: Vec<ReviewFinding>,
     pub diff_text: String,
     pub version: String,
+    /// What the review could not do; rendered ahead of the findings so a
+    /// failed analysis does not post as "No findings.".
+    pub incomplete: Option<crate::finding::ReviewIncomplete>,
     pub run_id: String,
     pub commit_sha: String,
     /// Override API base URL (for testing). Default: https://api.github.com
@@ -824,7 +861,13 @@ pub async fn post_review(
         }
     }
 
-    let review_body = render_review_body(&marker, &inline_findings, &body_findings, &req.version);
+    let review_body = render_review_body(
+        &marker,
+        &inline_findings,
+        &body_findings,
+        &req.version,
+        req.incomplete.as_ref(),
+    );
 
     let create_req = CreateReviewRequest {
         commit_id: req.commit_sha.clone(),
@@ -958,9 +1001,96 @@ mod tests {
         assert!(result.contains("L89"));
     }
 
+    /// A review whose axes failed must not post as a clean "No findings.".
+    #[test]
+    fn render_review_body_says_incomplete_before_anything_else() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 1,
+            axes_total: 2,
+            cells: vec!["src/a.rs: security/gpt-5.6 (not_json)".to_owned()],
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        assert!(body.contains("Review incomplete:"), "{body}");
+        assert!(body.contains("1 of 2 skill axes failed"), "{body}");
+        assert!(
+            body.contains("src/a.rs: security/gpt-5.6 (not_json)"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("No findings.\n"),
+            "must not read as clean:\n{body}"
+        );
+        assert!(body.contains("No findings from the axes that completed."));
+    }
+
+    #[test]
+    fn render_review_body_caps_the_incomplete_cell_list() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 500,
+            axes_total: 500,
+            cells: (0..500)
+                .map(|i| format!("src/f{i}.rs: security/m (not_json)"))
+                .collect(),
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        assert_eq!(body.matches("(not_json)").count(), 20, "{body}");
+        assert!(body.contains("- and 480 more"), "{body}");
+        assert!(
+            body.len() < 4000,
+            "body must stay far under GitHub's limit: {}",
+            body.len()
+        );
+    }
+
+    /// Long labels (deep paths, long model names) are bounded by bytes, not
+    /// only by count, so twenty of them cannot exceed the body limit.
+    #[test]
+    fn render_review_body_bounds_the_cell_list_by_bytes() {
+        let long = format!(
+            "{}/x.rs: security/gpt-5.6 (network_error)",
+            "a".repeat(2000)
+        );
+        let incomplete = crate::finding::ReviewIncomplete {
+            axes_failed: 20,
+            axes_total: 20,
+            cells: vec![long; 20],
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            Some(&incomplete),
+        );
+        let listed = body.matches("(network_error)").count();
+        assert!(
+            (1..20).contains(&listed),
+            "listed {listed}:\n{}",
+            &body[..200]
+        );
+        assert!(
+            body.contains(&format!("- and {} more", 20 - listed)),
+            "{}",
+            &body[body.len() - 200..]
+        );
+        assert!(body.len() < 8192, "body must stay small: {}", body.len());
+    }
+
     #[test]
     fn render_review_body_clean() {
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &[], "0.27.0");
+        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &[], "0.27.0", None);
         assert!(body.contains("quorum-review-marker"));
         assert!(body.contains("No findings."));
     }
@@ -1011,7 +1141,13 @@ mod tests {
                     .build()
             })
             .collect();
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &inline, &[f], "0.27.0");
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &inline,
+            &[f],
+            "0.27.0",
+            None,
+        );
         assert!(body.contains("## Quorum Review"));
         assert!(body.contains("3 findings"));
         assert!(body.contains("2 inline, 1 in summary"));
@@ -1056,7 +1192,13 @@ mod tests {
                 clamped_from_severity: None,
             })
             .collect();
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &findings, "0.27.0");
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &findings,
+            "0.27.0",
+            None,
+        );
         assert!(body.len() <= 60_000);
         assert!(body.contains("additional findings omitted"));
     }
@@ -1420,6 +1562,7 @@ mod integration_tests {
             }],
             diff_text: diff.into(),
             version: "0.27.0".into(),
+            incomplete: None,
             run_id: "01TEST".into(),
             commit_sha: "abc123".into(),
             api_base_url: Some(base_url),
@@ -1707,6 +1850,7 @@ mod integration_tests {
             findings,
             diff_text: String::new(),
             version: "0.31.0".into(),
+            incomplete: None,
             run_id: "01RUN".into(),
             commit_sha: "deadbeef".into(),
             api_base_url: Some(base.to_string()),

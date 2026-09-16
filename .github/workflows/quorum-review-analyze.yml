@@ -38,6 +38,9 @@ jobs:
             echo '[]' > findings.json
             exit 0
           fi
+          # The `|| true` masks the exit code (1 = warnings or an incomplete review,
+          # 3 = tool error). The signal survives in findings.json: `_meta.incomplete`
+          # names every failed axis and `quorum report` posts it ahead of the findings.
           quorum review --json --diff-file pr.diff $files > findings.json || true
         env:
           QUORUM_BASE_URL: ${{ secrets.QUORUM_BASE_URL }}

@@ -102,6 +102,21 @@ pub enum GroundingStatus {
     NotChecked,
 }
 
+/// What a review could not do. Carried in the `_meta` entry of `--json`
+/// output and into the PR report so that a review whose skill axes failed
+/// cannot masquerade as a clean one: a bare `[]` and a "No findings." are
+/// what hid the parser regression for two months.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewIncomplete {
+    /// Skill cells (axis x model x file) that produced no usable answer.
+    pub axes_failed: usize,
+    /// Skill cells attempted (a budget-capped cell counts: it was owed).
+    pub axes_total: usize,
+    /// One label per failed cell: `file: axis/model (class or reason)`.
+    #[serde(default)]
+    pub cells: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     /// Stable per-finding identifier (ULID, 26 chars). Generated at build

@@ -261,6 +261,20 @@ pub fn expand_matrix(
 // execute_cell (pub(crate), sync)
 // ---------------------------------------------------------------------------
 
+/// One place that decides what a failed reviewer call was. A truncated
+/// answer is a parse-class failure (the model ran out of room), not a
+/// network error; everything else the client could not turn into a
+/// response is.
+fn classify_reviewer_error(e: &anyhow::Error) -> (Option<FailureReason>, Option<ParseErrorClass>) {
+    if e.downcast_ref::<crate::skill_output::TruncatedResponse>()
+        .is_some()
+    {
+        (None, Some(ParseErrorClass::Truncated))
+    } else {
+        (Some(FailureReason::NetworkError), None)
+    }
+}
+
 pub(crate) fn execute_cell(
     cell: &CellSpec,
     reviewer: &dyn LlmReviewer,
@@ -342,7 +356,8 @@ pub(crate) fn execute_cell(
 
     let (raw_content, mut usage) = match review_result {
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
-        Err(_) => {
+        Err(e) => {
+            let classified = classify_reviewer_error(&e);
             return CellResult {
                 skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
@@ -352,8 +367,8 @@ pub(crate) fn execute_cell(
                 model_was_fallback: false,
                 actual_model: cell.model.clone(),
                 exit_status: ExitStatus::Error,
-                failure_reason: Some(FailureReason::NetworkError),
-                parse_error_class: None,
+                failure_reason: classified.0,
+                parse_error_class: classified.1,
                 findings_clamped: 0,
                 findings_dropped_invalid_json: 0,
                 prompt_sha256,
@@ -414,13 +429,10 @@ pub(crate) fn execute_cell(
                         }
                     }
                 }
-                Err(_) => (
-                    vec![],
-                    None,
-                    0,
-                    ExitStatus::Error,
-                    Some(FailureReason::NetworkError),
-                ),
+                Err(e) => {
+                    let (reason, class) = classify_reviewer_error(&e);
+                    (vec![], class, 0, ExitStatus::Error, reason)
+                }
             }
         }
     };
@@ -703,6 +715,41 @@ mod tests {
     /// line up 1:1 with the skills list. Reporting code that zipped cell
     /// results against `skills` truncated later failures and mislabelled a
     /// second model's result as the next skill. `--model a,b` is the trigger.
+    /// A truncated answer is logged as `truncated`, not `network_error`:
+    /// before, the client turned it into a plain error and the executor
+    /// filed every one of them under the network.
+    #[test]
+    fn truncated_response_is_a_truncated_parse_class_not_a_network_error() {
+        struct Truncating;
+        impl LlmReviewer for Truncating {
+            fn review(&self, _: &str, model: &str, _: &str) -> anyhow::Result<LlmResponse> {
+                Err(crate::skill_output::TruncatedResponse {
+                    model: model.to_owned(),
+                    detail: "finish_reason=length".to_owned(),
+                }
+                .into())
+            }
+        }
+        let skill = sample_skill("correctness", None, Severity::High);
+        let cell = CellSpec {
+            skill,
+            model: "test-model".to_owned(),
+            file_path: "a.rs".to_owned(),
+            file_sha256: "sha".to_owned(),
+            code: "fn main() {}".to_owned(),
+            focus: None,
+            context: None,
+        };
+        let budget = BudgetTracker::new(1_000_000, 100);
+        let r = execute_cell(&cell, &Truncating, &budget);
+        assert_eq!(r.exit_status, ExitStatus::Error);
+        assert_eq!(r.parse_error_class, Some(ParseErrorClass::Truncated));
+        assert_eq!(
+            r.failure_reason, None,
+            "a truncation is not a network failure"
+        );
+    }
+
     #[test]
     fn expand_matrix_is_skills_times_models_not_one_to_one() {
         let skills = vec![
