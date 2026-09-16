@@ -39,6 +39,15 @@ pub fn wrap_skill_instructions(skill_prompt: &str) -> String {
     format!("<skill_instructions>\n{safe}\n</skill_instructions>")
 }
 
+/// Wrap derived facts about the file (signatures, types, callers, docs,
+/// prior verdicts) in `<review_context>...</review_context>`. The sections
+/// inside are already sandbox-tagged by `review::render_context_sections`;
+/// the outer tag is defanged again so nothing inside can close it early.
+pub fn wrap_review_context(context: &str) -> String {
+    let safe = defang_sandbox_tags(context);
+    format!("<review_context>\n{safe}\n</review_context>")
+}
+
 /// How a focused (diff-first) view is laid out, stated in the metadata line
 /// rather than inside the code fence: the base system prompt tells the model
 /// never to follow text inside `<code_to_review>`, so the explanation of the

@@ -43,7 +43,12 @@ pub use crate::finding::LlmFinding;
 /// context, then file metadata, then the code payload itself.
 use crate::prompt_sanitize::{defang_sandbox_tags, pick_fence_for, sanitize_fence_lang};
 
-pub fn build_review_prompt(req: &ReviewRequest) -> String {
+/// The context sections of a review prompt: framework docs, hydration
+/// (called signatures, types, callers), injected context and historical
+/// verdicts, each in its own sandbox tag. Shared by the legacy single-prompt
+/// review and the skill axes, so both see the same facts about the file.
+/// Empty when the request carries none of them.
+pub fn render_context_sections(req: &ReviewRequest) -> String {
     let mut prompt = String::new();
 
     if let Some(docs) = &req.framework_docs
@@ -118,6 +123,11 @@ pub fn build_review_prompt(req: &ReviewRequest) -> String {
         prompt.push_str("</historical_findings>\n\n");
     }
 
+    prompt
+}
+
+pub fn build_review_prompt(req: &ReviewRequest) -> String {
+    let mut prompt = render_context_sections(req);
     if let Some(ref notice) = req.truncation_notice {
         prompt.push_str(&format!(
             "<truncation_notice>\nThis is a partial view of the file ({}). \

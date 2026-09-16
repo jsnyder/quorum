@@ -252,3 +252,63 @@ fn parallel_path_sends_a_focused_view_per_file() {
         "both files must be reviewed: {bodies:?}"
     );
 }
+
+/// The axes receive what the pipeline knows about the file: here the
+/// changed function calls a helper defined further down, and its signature
+/// must reach every axis inside `<review_context>`, ahead of the code.
+#[test]
+fn axes_receive_the_file_context_before_the_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    let mut src =
+        String::from("fn changed(text: &str) -> i32 {\n    helper_target(text).unwrap()\n}\n\n");
+    for i in 0..40 {
+        src.push_str(&format!("fn filler_{i}() -> u32 {{\n    {i}\n}}\n\n"));
+    }
+    src.push_str("fn helper_target(s: &str) -> Option<i32> {\n    s.parse().ok()\n}\n");
+    let subject_path = tmp.path().join("src").join("subject.rs");
+    std::fs::write(&subject_path, src).unwrap();
+    let diff_path = tmp.path().join("change.patch");
+    std::fs::write(
+        &diff_path,
+        "diff --git a/src/subject.rs b/src/subject.rs\n--- a/src/subject.rs\n+++ b/src/subject.rs\n@@ -1,3 +1,3 @@\n fn changed(text: &str) -> i32 {\n-    helper_target(text).unwrap_or(0)\n+    helper_target(text).unwrap()\n }\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let (_out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--diff-file")
+            .arg(&diff_path)
+            .arg(&subject_path)
+            .output()
+            .unwrap()
+    });
+    let bodies = user_message_per_request(&sent);
+    assert!(
+        !bodies.is_empty(),
+        "the binary must have called the LLM with a user message"
+    );
+    for body in bodies {
+        let ctx = body
+            .find("<review_context>")
+            .unwrap_or_else(|| panic!("no review_context:\n{body}"));
+        let code = body.find("<code_to_review>").expect("no code block");
+        assert!(ctx < code, "context must precede the code:\n{body}");
+        assert!(
+            body.contains("fn helper_target(s: &str) -> Option<i32>"),
+            "the callee signature must reach the axis:\n{body}"
+        );
+        assert!(
+            !body[ctx..code].contains("s.parse().ok()"),
+            "the context carries signatures, not the helper's body:\n{body}"
+        );
+    }
+}
