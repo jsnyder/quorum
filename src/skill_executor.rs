@@ -1049,12 +1049,12 @@ mod tests {
         let code = prompts[1]
             .find("<code_to_review>")
             .expect("code block present");
-        let skill_end = prompts[1]
-            .find("</skill_instructions>")
+        let skill_start = prompts[1]
+            .find("<skill_instructions>")
             .expect("skill block present");
         assert!(
-            skill_end < ctx && ctx < code,
-            "order must be skill, context, code:\n{}",
+            ctx < code && code < skill_start,
+            "order must be context, code, skill (file-stable prefix first):\n{}",
             prompts[1]
         );
         assert!(prompts[1].contains("- fn b()"));

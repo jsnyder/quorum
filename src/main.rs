@@ -3554,7 +3554,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .sum();
         let hidden_out_of_diff: usize = file_results.iter().map(|r| r.hidden_out_of_diff).sum();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
             engine_label,
@@ -3597,6 +3597,16 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 )
             } else {
                 String::new()
+            },
+            {
+                // Provider prompt-cache hits, so a reorder that is meant to
+                // make them happen can be seen to.
+                let cached: u64 = file_results.iter().map(|r| r.usage.cached_tokens).sum();
+                if cached > 0 {
+                    format!(", {cached} prompt tokens served from cache")
+                } else {
+                    String::new()
+                }
             }
         );
     }

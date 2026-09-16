@@ -4,6 +4,8 @@
 
 ### Added
 
+- **Axes prompts are ordered for provider prompt caching.** The user message for a skill axis now leads with the file-stable sections (`<review_context>`, `<code_to_review>`) and ends with the axis's `<skill_instructions>` and the output schema, so every axis reviewing a file sends an identical prefix after the shared system prompt. Before, the first user token already differed per axis, so on a first run every cell was a cache miss (`tokens_cache_read` is 0 on every first-run axes review in the log; only an identical re-run inside the provider's cache window hit, at nearly the whole prompt). The base system prompt now primes the read with what every axis looks for, so the code is not read cold before the axis instructions. Per file the axes already run sequentially, so the second call finds the prefix the first one wrote. The review summary line reports prompt tokens served from cache when the provider returns them.
+
 - **`quorum version` reports what it was built from** (#517). A stale install and a fresh one both printed `quorum 0.31.0`, so a bug already fixed upstream was indistinguishable from one still present, and the first question on every report -- "which build is that?" -- had no answer the binary could give.
 
   `build.rs` now bakes in the commit, its date, the build date, and whether the tree was dirty:

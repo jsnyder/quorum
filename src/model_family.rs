@@ -160,7 +160,13 @@ pub struct AssembledPrompt {
 /// Assemble the final prompt from its constituent parts.
 ///
 /// The assembly order is identical across families today (system =
-/// `base_system`, user = skill + code + schema). The key differentiator is
+/// `base_system`, user = code + skill + schema). The file-stable part
+/// (`<review_context>` and `<code_to_review>`) leads the user message and the
+/// axis-specific `<skill_instructions>` follow it, so every axis reviewing the
+/// same file sends an identical prefix and provider prompt caching can serve
+/// it; per file, the axes run sequentially, so the second call finds the
+/// prefix cached. The base system prompt primes the read with what every
+/// axis looks for, so the code is not read cold. The key differentiator is
 /// prompt *content* selection via [`select_prompt`], which picks per-family
 /// overrides. Structure divergence (e.g., OpenAI terminal-position system
 /// messages) is deferred to the transport layer.
@@ -176,9 +182,9 @@ pub fn assemble_prompt(
 
     let mut user_message =
         String::with_capacity(skill_prompt.len() + code_to_review.len() + output_schema.len() + 4);
-    user_message.push_str(skill_prompt);
-    user_message.push('\n');
     user_message.push_str(code_to_review);
+    user_message.push('\n');
+    user_message.push_str(skill_prompt);
     user_message.push('\n');
     user_message.push_str(output_schema);
 
