@@ -645,6 +645,13 @@ pub struct ReviewOpts {
     #[arg(long)]
     pub show_out_of_diff: bool,
 
+    /// Report functions whose cyclomatic complexity is at or above N
+    /// (0, the default, reports none: complexity is a number, not a defect,
+    /// and its corpus precision is flat and low; values below 3 flag nearly
+    /// every function)
+    #[arg(long, default_value_t = 0)]
+    pub complexity_threshold: u32,
+
     /// Override framework detection (e.g., --framework home-assistant)
     #[arg(long)]
     pub framework: Vec<String>,

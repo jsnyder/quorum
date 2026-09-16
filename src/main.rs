@@ -2663,6 +2663,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
 
     let pipeline_cfg = PipelineConfig {
         models,
+        complexity_threshold: opts.complexity_threshold,
         feedback: feedback_entries,
         feedback_store: Some(feedback_path.clone()),
         diff_ranges,
@@ -4071,6 +4072,7 @@ fn run_review_via_daemon(opts: &cli::ReviewOpts) -> i32 {
             "file_path": file_path.to_string_lossy(),
             "code": source,
             "models": daemon_models,
+            "complexity_threshold": opts.complexity_threshold,
         });
 
         match client.post(format!("{}/review", base)).json(&body).send() {
@@ -4162,6 +4164,9 @@ mod daemon_review_tests {
     /// not find it.
     #[derive(Debug, Default)]
     struct ServerLog {
+        /// Raw request text per accepted connection, so a test can assert on
+        /// what the client actually put on the wire.
+        requests: Vec<String>,
         /// Loop iterations that accepted a connection and ran to the end.
         ///
         /// Distinct from `responses_served` on purpose. An iteration can
@@ -4241,8 +4246,7 @@ mod daemon_review_tests {
                 };
 
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-                let mut request = [0_u8; 4096];
-                let _ = stream.read(&mut request);
+                log.requests.push(read_request(&mut stream));
                 if write_response(&mut stream, status, &body) {
                     log.responses_served += 1;
                 }
@@ -4260,6 +4264,34 @@ mod daemon_review_tests {
     /// Distinct from the old `server.join().unwrap()` in what it *cannot* do:
     /// a client that hung up early no longer reaches this as a panic, so a
     /// failure here means the scaffolding itself broke, not the client.
+    /// Read one HTTP request: headers, then the body up to Content-Length.
+    /// reqwest may write headers and body separately, so a single read can
+    /// return the headers alone.
+    fn read_request(stream: &mut TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            if let Some(split) = text.find("\r\n\r\n") {
+                let content_length = text[..split]
+                    .lines()
+                    .find_map(|l| {
+                        l.strip_prefix("Content-Length: ")
+                            .or(l.strip_prefix("content-length: "))
+                    })
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= split + 4 + content_length {
+                    return text;
+                }
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => return String::from_utf8_lossy(&buf).into_owned(),
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    }
+
     fn join_server(server: JoinHandle<ServerLog>) -> ServerLog {
         server.join().expect("mock daemon thread panicked")
     }
@@ -4338,6 +4370,35 @@ mod daemon_review_tests {
         let result = run_review_via_daemon(&review_opts(port, &[missing]));
         let _log = join_server(server);
         assert_eq!(result, 3);
+    }
+
+    /// The server side is tested in `http_server`; this pins the client
+    /// side of the same wire. With `#[serde(default)]` on the request, a
+    /// renamed or misspelled key is a silent no-op that looks like a clean
+    /// file, so the key the client sends is asserted by name.
+    #[test]
+    fn daemon_request_carries_complexity_threshold() {
+        let (port, server) =
+            daemon_server(vec![(200, "ok".to_owned()), (200, valid_response(&[]))]);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let args = [
+            "quorum",
+            "--daemon",
+            "--json",
+            "--daemon-port",
+            &port.to_string(),
+            "--complexity-threshold",
+            "10",
+            &file.path().to_string_lossy(),
+        ];
+        let opts = cli::ReviewOpts::try_parse_from(args).unwrap();
+        let result = run_review_via_daemon(&opts);
+        let log = join_server(server);
+        assert_eq!(result, 0, "stopped_early={:?}", log.stopped_early);
+        let review = &log.requests[1];
+        let body = &review[review.find("\r\n\r\n").expect("request has a body") + 4..];
+        let json: serde_json::Value = serde_json::from_str(body).expect("review body is JSON");
+        assert_eq!(json["complexity_threshold"], 10, "body: {body}");
     }
 
     #[test]
@@ -6630,7 +6691,8 @@ mod report_payload_tests {
     // ── #496: `report` must consume what `review --json` produces ─────────
 
     /// The payload is a real `quorum review --json` run, trimmed to two
-    /// findings. A hand-written fixture would have encoded my belief about the
+    /// findings. Finding text is as recorded at the time (the complexity
+    /// description has since been reworded); only the shape is the claim. A hand-written fixture would have encoded my belief about the
     /// shape, and a wrong belief about the shape is the bug (#496).
     const REVIEW_JSON: &str = include_str!("../tests/fixtures/report/review_json_output.json");
 

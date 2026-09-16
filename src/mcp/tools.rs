@@ -17,6 +17,10 @@ pub struct ReviewTool {
     /// Focus areas: security, performance, style, best-practices (comma-separated)
     #[serde(default)]
     pub focus: Option<String>,
+    /// Report functions at or above this cyclomatic complexity. Omit (0) to
+    /// leave complexity findings off, the same default as the CLI.
+    #[serde(rename = "complexityThreshold", default)]
+    pub complexity_threshold: u32,
 }
 
 /// Strict wire contract for `FeedbackTool.verdict` (issue #94).
@@ -366,8 +370,10 @@ mod tests {
 
     #[test]
     fn review_tool_accepts_all_declared_fields() {
-        let json = r#"{"code":"fn x(){}","filePath":"a.rs","focus":"security"}"#;
+        let json =
+            r#"{"code":"fn x(){}","filePath":"a.rs","focus":"security","complexityThreshold":10}"#;
         let tool: ReviewTool = serde_json::from_str(json).expect("declared fields must parse");
         assert_eq!(tool.focus.as_deref(), Some("security"));
+        assert_eq!(tool.complexity_threshold, 10);
     }
 }

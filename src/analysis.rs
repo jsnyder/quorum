@@ -9,7 +9,12 @@ pub fn analyze_complexity(
     lang: Language,
     threshold: u32,
 ) -> Vec<Finding> {
-    let threshold = threshold.max(1); // guard against 0
+    // 0 means off. Complexity is a number, not a defect: across 500 verdicts
+    // its precision is flat at 27-47% in every band and half the rest are
+    // wontfix, so it is not emitted unless asked for (--complexity-threshold).
+    if threshold == 0 {
+        return Vec::new();
+    }
     let mut findings = Vec::new();
 
     let func_kinds = match lang {
@@ -51,7 +56,7 @@ pub fn analyze_complexity(
                 findings.push(FindingBuilder::new()
                     .title(&format!("Function `{}` has cyclomatic complexity {}", name, cc))
                     .description(&format!(
-                        "Cyclomatic complexity of {} exceeds threshold of {}. Consider refactoring.",
+                        "Cyclomatic complexity of {} is at or above the threshold of {}. Consider refactoring.",
                         cc, threshold
                     ))
                     .severity(severity)
@@ -2503,6 +2508,15 @@ mod tests {
     /// `declarator`. Reading only the field made every C++ complexity finding
     /// report "Function `unknown`", which is what a live run against real ESP32
     /// firmware actually produced before this was wired to the shared resolver.
+    #[test]
+    fn complexity_threshold_zero_reports_nothing() {
+        // CC=5 would be reported at threshold 3; 0 means off, not "everything".
+        let source = "fn tangled(a: bool, b: bool) -> i32 {\n    if a { if b { return 1; } }\n    if a && b { return 2; }\n    for i in 0..10 { if i > 5 { break; } }\n    0\n}\n";
+        let tree = parse(source, Language::Rust).unwrap();
+        assert!(!analyze_complexity(&tree, source, Language::Rust, 3).is_empty());
+        assert!(analyze_complexity(&tree, source, Language::Rust, 0).is_empty());
+    }
+
     #[test]
     fn cpp_complexity_finding_names_the_function() {
         let source = "int tangled(int a, int b) {\n    if (a) { if (b) { return 1; } }\n    if (a && b) { return 2; }\n    for (int i = 0; i < 10; i++) { if (i > 5) break; }\n    while (a) { a--; }\n    return 0;\n}\n";

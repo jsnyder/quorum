@@ -35,6 +35,7 @@ cargo run -- review file.yaml --deep         # multi-turn agent loop
 cargo run -- review file.rs --diff-file d.patch  # change-scoped review: axes get a focused view (enclosing functions + hunks) unless a whole-file fallback applies (>60% kept, deletion-only, or file not in the diff); out-of-diff findings hidden
 cargo run -- review file.rs --diff-file d.patch --show-out-of-diff  # also show findings outside the diff (hidden by default)
 cargo run -- review src/*.rs --parallel 4        # parallel LLM calls (default: 4)
+cargo run -- review src/*.rs --complexity-threshold 10  # also report cyclomatic complexity >= 10 (off by default)
 cargo run -- feedback --file src/main.rs --finding "SQL injection" --verdict tp --reason "Fixed"
 cargo run -- report findings.json --pr 42     # post findings to GitHub PR
 cargo run -- review src/*.rs --github-pr 42   # review + post to PR in one step
@@ -82,7 +83,7 @@ The base_url validator (`src/llm_client.rs::validate_base_url`) requires HTTPS b
 
 | Language | Extensions | AST Analysis | Advises |
 |----------|-----------|-------------|--------|
-| Rust | .rs | complexity, unsafe, unwrap | clippy |
+| Rust | .rs | unsafe, unwrap; complexity with `--complexity-threshold N` | clippy |
 | Python | .py | secrets, eval, SQL injection, mutable defaults, open() encoding, bare except:pass | ruff |
 | TypeScript | .ts, .js, .mjs, .cjs | eval, innerHTML, secrets, any type, empty catch, sync-in-async, .length>=0 | eslint |
 | TSX/JSX | .tsx, .jsx | same as TypeScript | eslint |

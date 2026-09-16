@@ -50,10 +50,25 @@ fn review_clean_file_exits_zero() {
 fn review_complex_file_exits_nonzero() {
     let (_home, mut cmd) = quorum();
     cmd.arg("review")
+        .arg("--complexity-threshold")
+        .arg("10")
         .arg("tests/fixtures/rust/complex.rs")
         .assert()
         .code(predicate::gt(0))
         .stdout(predicate::str::contains("complexity"));
+}
+
+/// Complexity is opt-in: without the flag the same file is clean, and the
+/// exit code says so. Corpus precision on complexity is flat and low, and it
+/// was most of the in-diff noise on every PR review.
+#[test]
+fn review_complex_file_is_clean_without_the_threshold_flag() {
+    let (_home, mut cmd) = quorum();
+    cmd.arg("review")
+        .arg("tests/fixtures/rust/complex.rs")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("complexity").not());
 }
 
 #[test]
@@ -132,6 +147,8 @@ fn review_multiple_files() {
     // JSON output when piped; should contain complexity findings
     let (_home, mut cmd) = quorum();
     cmd.arg("review")
+        .arg("--complexity-threshold")
+        .arg("10")
         .arg("tests/fixtures/rust/clean.rs")
         .arg("tests/fixtures/rust/complex.rs")
         .assert()
@@ -211,6 +228,8 @@ fn diff_file_hides_out_of_diff_findings_unless_asked() {
     let output = cmd
         .arg("review")
         .arg("--json")
+        .arg("--complexity-threshold")
+        .arg("10")
         .arg("--diff-file")
         .arg(&diff)
         .arg(&lib)
@@ -236,6 +255,8 @@ fn diff_file_hides_out_of_diff_findings_unless_asked() {
     let output = cmd
         .arg("review")
         .arg("--json")
+        .arg("--complexity-threshold")
+        .arg("10")
         .arg("--diff-file")
         .arg(&diff)
         .arg("--show-out-of-diff")

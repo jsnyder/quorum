@@ -102,6 +102,7 @@ impl QuorumHandler {
             // Issue #104: thread the caller's focus directive into the
             // pipeline. Pre-fix, this field was dropped on the floor.
             focus: params.focus.clone(),
+            complexity_threshold: params.complexity_threshold,
             ..Default::default()
         })
     }
@@ -625,6 +626,7 @@ mod tests {
             code: "fn main() { let x = 42; }".into(),
             file_path: "test.rs".into(),
             focus: None,
+            complexity_threshold: 0,
         };
 
         let result = handler.handle_review(params).await.unwrap();
@@ -649,6 +651,7 @@ mod tests {
             code: "def run(code):\n    eval(code)\n".into(),
             file_path: "test.py".into(),
             focus: Some("security".into()),
+            complexity_threshold: 0,
         };
 
         let result = handler.handle_review(params).await.unwrap();
@@ -929,6 +932,7 @@ mod tests {
             code: "some code".into(),
             file_path: "file.xyz".into(),
             focus: None,
+            complexity_threshold: 0,
         };
 
         assert!(handler.handle_review(params).await.is_err());
@@ -1325,6 +1329,7 @@ mod tests {
             code: "fn main() {}".into(),
             file_path: "test.rs".into(),
             focus: None,
+            complexity_threshold: 0,
         };
         handler.handle_review(params).await.unwrap();
         assert_eq!(
@@ -1338,6 +1343,7 @@ mod tests {
             code: "fn main() {}".into(),
             file_path: "test.rs".into(),
             focus: None,
+            complexity_threshold: 0,
         };
         handler.handle_review(params2).await.unwrap();
         assert_eq!(cache.stats().hits, 1, "Second review should be a cache hit");
@@ -1375,6 +1381,7 @@ mod tests {
                 code: "fn main() {}".into(),
                 file_path: "test.rs".into(),
                 focus: None,
+                complexity_threshold: 0,
             })
             .expect("helper must succeed for a fresh tempdir handler");
         assert_eq!(
@@ -1420,6 +1427,7 @@ mod tests {
                 code: "fn main() {}".into(),
                 file_path: "a.rs".into(),
                 focus: None,
+                complexity_threshold: 0,
             })
             .unwrap();
         let cfg2 = h2
@@ -1427,6 +1435,7 @@ mod tests {
                 code: "fn main() {}".into(),
                 file_path: "b.rs".into(),
                 focus: None,
+                complexity_threshold: 0,
             })
             .unwrap();
         assert_eq!(cfg1.feedback_store, Some(p1));
@@ -1462,6 +1471,7 @@ mod tests {
                 code: "fn main() {}".into(),
                 file_path: "test.rs".into(),
                 focus: Some("security".into()),
+                complexity_threshold: 0,
             })
             .unwrap();
         assert_eq!(
@@ -1469,6 +1479,30 @@ mod tests {
             Some("security".into()),
             "focus must be threaded verbatim from ReviewTool to PipelineConfig"
         );
+    }
+
+    #[test]
+    fn build_pipeline_config_threads_complexity_threshold_from_review_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let handler = QuorumHandler {
+            config: Config {
+                base_url: "https://example.com".into(),
+                api_key: None,
+                model: "test".into(),
+            },
+            feedback_store: FeedbackStore::new(dir.path().join("cc.jsonl")),
+            llm_reviewer: None,
+            parse_cache: Arc::new(ParseCache::new(10)),
+        };
+        let cfg = handler
+            .build_pipeline_config_for_review(&ReviewTool {
+                code: "fn main() {}".into(),
+                file_path: "test.rs".into(),
+                focus: None,
+                complexity_threshold: 10,
+            })
+            .unwrap();
+        assert_eq!(cfg.complexity_threshold, 10);
     }
 
     #[test]
@@ -1489,6 +1523,7 @@ mod tests {
                 code: "fn main() {}".into(),
                 file_path: "test.rs".into(),
                 focus: None,
+                complexity_threshold: 0,
             })
             .unwrap();
         assert_eq!(cfg.focus, None);
@@ -1647,6 +1682,7 @@ mod tests {
             code: big,
             file_path: "test.rs".into(),
             focus: None,
+            complexity_threshold: 0,
         };
         let err = handler
             .handle_review(params)
@@ -1742,6 +1778,7 @@ mod tests {
             code: at_limit,
             file_path: "test.rs".into(),
             focus: None,
+            complexity_threshold: 0,
         };
         let result = handler.handle_review(params).await;
         if let Err(e) = &result {
