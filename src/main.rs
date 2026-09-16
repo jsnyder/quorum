@@ -1275,6 +1275,60 @@ struct ResolvedAxes {
 /// of them and none of the bugs. They remain available through `--axes`.
 const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security"];
 
+/// Diff-first input for the skill matrix. With a diff, the axes receive the
+/// focused view (the enclosing functions of every changed range, with
+/// absolute line numbers, then this file's hunks) instead of the whole
+/// file. Without a diff, or when the view would keep most of the file, or
+/// when the diff never mentions this file, the whole file goes as before.
+fn build_review_file(
+    file_path: &std::path::Path,
+    file_str: &str,
+    file_sha: String,
+    source: &str,
+    lang: Option<parser::Language>,
+    diff_text: Option<&str>,
+    diff_ranges: Option<&hydration::DiffRanges>,
+) -> quorum::skill_executor::ReviewFile {
+    use quorum::skill_executor::ReviewFile;
+    let whole = |sha: String| ReviewFile::whole(file_str.to_owned(), sha, source.to_owned());
+    let Some(diff_ranges) = diff_ranges else {
+        return whole(file_sha);
+    };
+    let Some(changed) = pipeline::diff_lines_for_file(file_path, diff_ranges) else {
+        return whole(file_sha);
+    };
+    if changed.is_empty() {
+        return whole(file_sha);
+    }
+    let spans = lang
+        .and_then(|l| {
+            parser::parse(source, l)
+                .ok()
+                .map(|t| hydration::function_spans(&t, l))
+        })
+        .unwrap_or_default();
+    let hunks = diff_text.and_then(|d| {
+        quorum::focus::hunks_for_file(d, &|p| pipeline::diff_names_file(file_path, p))
+    });
+    match quorum::focus::focus_source(source, &changed, &spans, hunks.as_deref()) {
+        Some(view) => {
+            tracing::info!(
+                file = %file_str,
+                kept = view.kept_lines,
+                total = view.total_lines,
+                "diff-first: sending focused view to the axes"
+            );
+            ReviewFile {
+                path: file_str.to_owned(),
+                sha256: file_sha,
+                code: view.text,
+                line_range: Some((view.first_line, view.last_line)),
+            }
+        }
+        None => whole(file_sha),
+    }
+}
+
 /// Bridges the binary-side `OpenAiClient` (which implements `pipeline::LlmReviewer`)
 /// to the lib-side `skill_executor::LlmReviewer` trait.
 struct SkillLlmAdapter(std::sync::Arc<llm_client::OpenAiClient>);
@@ -2014,7 +2068,11 @@ mod skill_integration_tests {
             max_calls_per_review: 10,
             audit_writer: None,
         };
-        let files = vec![("test.rs".into(), "abc123".into(), "fn main() {}".into())];
+        let files = vec![quorum::skill_executor::ReviewFile::whole(
+            "test.rs".into(),
+            "abc123".into(),
+            "fn main() {}".into(),
+        )];
         let results =
             skill_executor::execute_matrix(&resolved.skills, &files, &MockReviewer, &exec_cfg);
 
@@ -2304,9 +2362,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     }
 
     // Parse diff file if provided for change-scoped review
+    // The raw text is kept for the focused review input, which shows the
+    // model the hunks themselves; the ranges alone lose every deleted line.
+    let mut diff_text: Option<String> = None;
     let diff_ranges = if let Some(ref diff_path) = opts.diff_file {
         match std::fs::read_to_string(diff_path) {
             Ok(diff_content) => {
+                diff_text = Some(diff_content.clone());
                 let ranges = hydration::parse_unified_diff(&diff_content);
                 if !ranges.is_empty() {
                     eprintln!(
@@ -2330,6 +2392,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     } else {
         None
     };
+
+    let diff_text = std::sync::Arc::new(diff_text);
 
     // Create semaphore for parallel LLM concurrency control
     let semaphore = if opts.parallel > 1 {
@@ -2838,7 +2902,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             max_calls_per_review: 50,
                             audit_writer: skill_audit_writer.clone(),
                         };
-                        let files_input = vec![(file_str.clone(), file_sha, source.clone())];
+                        let files_input = vec![build_review_file(
+                            std::path::Path::new(&file_str),
+                            &file_str,
+                            file_sha,
+                            &source,
+                            lang,
+                            diff_text.as_deref(),
+                            pipeline_cfg.diff_ranges.as_ref(),
+                        )];
                         let cell_results = quorum::skill_executor::execute_matrix(
                             &ra.skills,
                             &files_input,
@@ -2976,6 +3048,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let file_path = file_path.clone();
             let pipeline_cfg = pipeline_cfg.clone();
             let suppress_rules = suppress_rules.clone();
+            let diff_text = diff_text.clone();
             let _show_suppressed = opts.show_suppressed;
             let deep = opts.deep;
             let llm_client = llm_client.clone();
@@ -3126,7 +3199,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     max_calls_per_review: 50,
                                     audit_writer: skill_audit_writer.clone(),
                                 };
-                                let files_input = vec![(file_str.clone(), file_sha, source.clone())];
+                                let files_input = vec![build_review_file(
+    std::path::Path::new(&file_str),
+    &file_str,
+    file_sha,
+    &source,
+    lang,
+    diff_text.as_deref(),
+    pipeline_cfg.diff_ranges.as_ref(),
+)];
                                 let cell_results = quorum::skill_executor::execute_matrix(
                                     &ra.skills, &files_input, &adapter, &exec_cfg,
                                 );

@@ -644,6 +644,28 @@ fn collect_import_refs_in_range(
     }
 }
 
+/// 1-based inclusive line spans of every function definition in the tree,
+/// in source order. Used by the diff-first focus view to expand a changed
+/// range to the function that contains it.
+pub fn function_spans(tree: &tree_sitter::Tree, lang: Language) -> Vec<(u32, u32)> {
+    fn walk(node: tree_sitter::Node, kinds: &[&str], out: &mut Vec<(u32, u32)>) {
+        if kinds.contains(&node.kind()) {
+            out.push((
+                node.start_position().row as u32 + 1,
+                node.end_position().row as u32 + 1,
+            ));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, kinds, out);
+        }
+    }
+    let kinds = function_def_kinds(lang);
+    let mut out = Vec::new();
+    walk(tree.root_node(), &kinds, &mut out);
+    out
+}
+
 /// Parse a unified diff to extract changed line ranges per file.
 /// Returns Vec<(file_path, Vec<(start_line, end_line)>)>
 pub fn parse_unified_diff(diff: &str) -> DiffRanges {

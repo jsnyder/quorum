@@ -68,6 +68,7 @@ pub mod analysis;
 pub mod ast_grep;
 
 // Code hydration: turning raw findings into rich, navigable findings.
+pub mod focus;
 pub mod hydration;
 
 // Finding merge / deduplication across sources.
