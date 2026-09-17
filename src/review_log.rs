@@ -19,6 +19,7 @@ use crate::storage::StorageHandle;
 /// `review_finding_ids` table. Carries the finding's title and originating
 /// file path so downstream analytics (stats, feedback joins) can display
 /// context without re-parsing the full review output.
+#[derive(Default)]
 pub struct FindingMeta {
     pub id: String,
     pub title: String,
@@ -27,6 +28,35 @@ pub struct FindingMeta {
     /// (#523). Carried here so the feedback recording path can resolve it and
     /// write an authoritative `FeedbackEntry.rule_id` instead of `None`.
     pub rule_id: Option<String>,
+    /// Whether the finding sat inside the diff, when a diff was given.
+    pub in_diff: Option<bool>,
+    /// The skill axis that produced it, its version and manifest hash, when
+    /// it came from the skill matrix. `quorum feedback` used to write these
+    /// as `None` on every row because nothing carried them this far.
+    pub skill_name: Option<String>,
+    pub skill_version: Option<String>,
+    pub manifest_sha256: Option<String>,
+    /// The finding's category, only when the producer stated one: a rule
+    /// finding's category is folded to Maintainability by construction, and
+    /// recording that would launder a placeholder into a real label (#499).
+    pub category: Option<String>,
+    /// The model that produced the finding (`Source::Llm`), else none. Not
+    /// the review's configured model: a rule finding has no model, and under
+    /// `--ensemble` the review row names only the first.
+    pub model: Option<String>,
+}
+
+/// What the review log knows about a finding, for attributing a verdict to
+/// what produced it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FindingAttribution {
+    pub rule_id: Option<String>,
+    pub model: Option<String>,
+    pub in_diff: Option<bool>,
+    pub skill_name: Option<String>,
+    pub skill_version: Option<String>,
+    pub manifest_sha256: Option<String>,
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -611,35 +641,36 @@ impl ReviewLog {
 
     // ── Finding-ID resolution ──────────────────────────────────────────
 
-    /// Resolve the rule that produced a finding, by the same match the id
-    /// resolution uses (#523).
-    ///
-    /// Returns `None` for legacy rows (schema < v4 stored `''`) and for
-    /// findings that came from the LLM rather than a rule. Callers must not
-    /// substitute a guess: an invented rule id would make `stats --by-rule`
-    /// confidently wrong, which is worse than the empty table it replaces.
-    pub fn resolve_rule_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
-        let fid = self.resolve_finding_id(file_path, finding_title)?;
-        self.rule_id_for(&fid)
-    }
-
-    /// Rule id recorded for an already-resolved finding id, if any.
-    ///
-    /// #553: split out so a caller that already holds the finding id does
-    /// not pay for a second title resolution.
-    pub fn rule_id_for(&self, finding_id: &str) -> Option<String> {
+    /// Everything the log recorded about a finding, so `quorum feedback` can
+    /// attribute a verdict without flags nobody passes. Empty strings
+    /// (legacy rows) read as `None`.
+    pub fn attribution_for(&self, finding_id: &str) -> Option<FindingAttribution> {
         let Backend::Sqlite(handle) = &self.backend else {
             return None;
         };
         let conn = handle.lock().ok()?;
-        let rule: String = conn
-            .query_row(
-                "SELECT rule_id FROM review_finding_ids WHERE finding_id = ?1 LIMIT 1",
-                rusqlite::params![finding_id],
-                |row| row.get(0),
-            )
-            .ok()?;
-        if rule.is_empty() { None } else { Some(rule) }
+        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
+        conn.query_row(
+            "SELECT rfi.rule_id, rfi.model, rfi.in_diff, rfi.skill_name, rfi.skill_version, rfi.manifest_sha256, rfi.category
+             FROM review_finding_ids rfi
+             JOIN reviews r ON r.run_id = rfi.run_id
+             WHERE rfi.finding_id = ?1
+             ORDER BY r.timestamp DESC
+             LIMIT 1",
+            rusqlite::params![finding_id],
+            |row| {
+                Ok(FindingAttribution {
+                    rule_id: non_empty(row.get::<_, String>(0)?),
+                    model: non_empty(row.get::<_, String>(1)?),
+                    in_diff: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
+                    skill_name: non_empty(row.get::<_, String>(3)?),
+                    skill_version: non_empty(row.get::<_, String>(4)?),
+                    manifest_sha256: non_empty(row.get::<_, String>(5)?),
+                    category: non_empty(row.get::<_, String>(6)?),
+                })
+            },
+        )
+        .ok()
     }
 
     pub fn resolve_finding_id(&self, file_path: &str, finding_title: &str) -> Option<String> {
@@ -915,13 +946,19 @@ impl ReviewLog {
 
         for fm in meta {
             tx.execute(
-                "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path, rule_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path, rule_id, in_diff, skill_name, skill_version, manifest_sha256, category, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     entry.run_id,
                     fm.id,
                     fm.title,
                     fm.file_path,
-                    fm.rule_id.clone().unwrap_or_default()
+                    fm.rule_id.clone().unwrap_or_default(),
+                    fm.in_diff,
+                    fm.skill_name.clone().unwrap_or_default(),
+                    fm.skill_version.clone().unwrap_or_default(),
+                    fm.manifest_sha256.clone().unwrap_or_default(),
+                    fm.category.clone().unwrap_or_default(),
+                    fm.model.clone().unwrap_or_default(),
                 ],
             )?;
         }
@@ -1966,6 +2003,56 @@ mod tests {
 
     /// Fixture builder for test `ReviewRecord`s. Reduces duplication
     /// across SQLite tests — callers override only what they need.
+    /// The log hands back what produced a finding, model included, and reads
+    /// legacy empty columns as None.
+    #[test]
+    fn attribution_for_joins_the_review_model_and_reads_empty_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = crate::storage::initialize(dir.path()).unwrap();
+        let log = ReviewLog::with_storage(handle);
+        let mut entry = test_review_record("run-attr");
+        entry.model = "gpt-5.6".to_owned();
+        let meta = vec![
+            FindingMeta {
+                id: "F-skill".to_owned(),
+                title: "Unchecked unwrap".to_owned(),
+                file_path: "src/a.rs".to_owned(),
+                rule_id: None,
+                in_diff: Some(true),
+                skill_name: Some("correctness".to_owned()),
+                skill_version: Some("1.0.0".to_owned()),
+                manifest_sha256: Some("abc".to_owned()),
+                category: Some("correctness".to_owned()),
+                model: Some("gpt-5.6".to_owned()),
+            },
+            FindingMeta {
+                id: "F-legacy".to_owned(),
+                title: "Old row".to_owned(),
+                file_path: "src/a.rs".to_owned(),
+                ..Default::default()
+            },
+        ];
+        log.record_with_meta(&entry, &meta).unwrap();
+
+        let a = log.attribution_for("F-skill").expect("recorded");
+        assert_eq!(a.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(a.in_diff, Some(true));
+        assert_eq!(a.skill_name.as_deref(), Some("correctness"));
+        assert_eq!(a.skill_version.as_deref(), Some("1.0.0"));
+        assert_eq!(a.manifest_sha256.as_deref(), Some("abc"));
+        assert_eq!(a.category.as_deref(), Some("correctness"));
+
+        let l = log.attribution_for("F-legacy").expect("recorded");
+        assert_eq!(l.in_diff, None);
+        assert_eq!(l.skill_name, None);
+        assert_eq!(l.category, None);
+        assert_eq!(
+            l.model, None,
+            "a row without a producing model gets none, whatever the review ran"
+        );
+        assert!(log.attribution_for("nope").is_none());
+    }
+
     fn test_review_record(run_id: &str) -> ReviewRecord {
         ReviewRecord {
             run_id: run_id.to_string(),
@@ -2467,12 +2554,14 @@ mod tests {
                 title: "SQL injection".into(),
                 file_path: "src/auth.rs".into(),
                 rule_id: None,
+                ..Default::default()
             },
             FindingMeta {
                 id: "F2".into(),
                 title: "XSS risk".into(),
                 file_path: "src/web.rs".into(),
                 rule_id: None,
+                ..Default::default()
             },
         ];
         log.record_with_meta(&record, &meta).unwrap();
@@ -2529,6 +2618,7 @@ mod tests {
             title: "Buffer overflow".into(),
             file_path: "src/lib.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
 
@@ -2542,42 +2632,6 @@ mod tests {
     /// #523: the rule must survive the round trip through the review log.
     /// Before this, `FeedbackEntry.rule_id` was `None` on all 5,521 rows and
     /// `stats --by-rule` returned [] by construction.
-    #[test]
-    fn resolve_rule_id_round_trips_through_the_review_log() {
-        let dir = TempDir::new().unwrap();
-        let log = sqlite_review_log(&dir);
-        let mut record = sample_record();
-        record.finding_ids = vec!["F1".into(), "F2".into()];
-        let meta = vec![
-            FindingMeta {
-                id: "F1".into(),
-                title: "string-byte-slice-broad: byte slicing panics".into(),
-                file_path: "src/a.rs".into(),
-                rule_id: Some("rust/string-byte-slice-broad".into()),
-            },
-            FindingMeta {
-                id: "F2".into(),
-                title: "An LLM finding with no rule".into(),
-                file_path: "src/a.rs".into(),
-                rule_id: None,
-            },
-        ];
-        log.record_with_meta(&record, &meta).unwrap();
-
-        assert_eq!(
-            log.resolve_rule_id("src/a.rs", "string-byte-slice-broad: byte slicing panics"),
-            Some("rust/string-byte-slice-broad".to_string()),
-        );
-        // A finding with no rule must resolve to None, never to a guess: an
-        // invented rule id makes --by-rule confidently wrong, which is worse
-        // than the empty table it replaces.
-        assert_eq!(
-            log.resolve_rule_id("src/a.rs", "An LLM finding with no rule"),
-            None
-        );
-        // And an unknown finding resolves to nothing at all.
-        assert_eq!(log.resolve_rule_id("src/a.rs", "never seen this"), None);
-    }
 
     #[test]
     fn resolve_finding_id_exact_match() {
@@ -2590,6 +2644,7 @@ mod tests {
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection risk");
@@ -2607,6 +2662,7 @@ mod tests {
             title: "SQL injection vulnerability in auth module".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
@@ -2624,6 +2680,7 @@ mod tests {
             title: "SQL injection".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/other.rs", "SQL injection");
@@ -2641,6 +2698,7 @@ mod tests {
             title: "SQL injection vulnerability".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result =
@@ -2670,6 +2728,7 @@ mod tests {
             title: "`predict_one` trusts inconsistent public `LogisticFit` field lengths".into(),
             file_path: "src/logistic.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id(
@@ -2705,6 +2764,7 @@ mod tests {
                 .into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "SQL injection");
@@ -2722,6 +2782,7 @@ mod tests {
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("./src/auth.rs", "SQL injection risk");
@@ -2739,6 +2800,7 @@ mod tests {
             title: "Function main has cyclomatic complexity 60".into(),
             file_path: "src/main.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id(
@@ -2759,6 +2821,7 @@ mod tests {
             title: "The missing validation of the input is a risk to the system".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
         let result = log.resolve_finding_id("src/auth.rs", "missing input validation");

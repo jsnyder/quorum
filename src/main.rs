@@ -3844,6 +3844,18 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         file_path: fr.file_path.clone(),
                         // #523: carried so `quorum feedback` can resolve it later.
                         rule_id: f.rule_id.clone(),
+                        in_diff: f.in_diff,
+                        skill_name: f.originating_skill.clone(),
+                        skill_version: f.skill_version.clone(),
+                        manifest_sha256: f.manifest_sha256.clone(),
+                        // Only a model states a category and a model; a rule
+                        // finding's category is a folded placeholder (#499).
+                        category: matches!(f.source, quorum::finding::Source::Llm(_))
+                            .then(|| f.category.to_string()),
+                        model: match &f.source {
+                            quorum::finding::Source::Llm(m) => Some(m.clone()),
+                            _ => None,
+                        },
                     })
             })
             .collect();
@@ -4669,7 +4681,11 @@ fn run_feedback_inner(
     // #553: resolve once. This used to resolve the title three times per
     // verdict (resolve_rule_id resolved it internally, then this block did
     // it again), each a full scan of review_finding_ids.
-    let (finding_id, rule_id) = {
+    // The resolved finding also carries what produced it (model, axis,
+    // in_diff, category); a flag still wins, since the person recording may
+    // know better, but the default is what the review recorded rather than
+    // nothing.
+    let (finding_id, attribution) = {
         let resolved = (|| {
             let quorum_home = quorum_home?;
             let handle = crate::storage::initialize(quorum_home).ok()?;
@@ -4677,14 +4693,16 @@ fn run_feedback_inner(
             let fid = finding_id_override
                 .clone()
                 .or_else(|| log.resolve_finding_id(file, finding));
-            let rid = fid.as_deref().and_then(|f| log.rule_id_for(f));
-            Some((fid, rid))
+            let attr = fid.as_deref().and_then(|f| log.attribution_for(f));
+            Some((fid, attr))
         })();
         match resolved {
             Some(pair) => pair,
             None => (finding_id_override, None),
         }
     };
+    let attribution = attribution.unwrap_or_default();
+    let rule_id = attribution.rule_id.clone();
 
     let entry = feedback::FeedbackEntry {
         file_path: file.to_string(),
@@ -4695,23 +4713,26 @@ fn run_feedback_inner(
         // category is worse than an absent one -- the precedent matcher can
         // skip a blank, but it cannot tell a laundered default from a real
         // Maintainability verdict.
-        finding_category: category
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default()
-            .to_string(),
+        // A given --category wins even when blank (#499: blank stays blank);
+        // only an absent flag inherits what the model stated.
+        finding_category: match category {
+            Some(c) => c.trim().to_string(),
+            None => attribution.category.clone().unwrap_or_default(),
+        },
         verdict: verdict.clone(),
         reason: reason.to_string(),
-        model: model.map(|s| s.to_string()),
+        model: model
+            .map(|s| s.to_string())
+            .or_else(|| attribution.model.clone()),
         timestamp: chrono::Utc::now(),
         provenance: provenance.unwrap_or(feedback::Provenance::Human),
         fp_kind,
         finding_id,
         rule_id,
-        in_diff,
-        skill_name: None,
-        skill_version: None,
-        manifest_sha256: None,
+        in_diff: in_diff.or(attribution.in_diff),
+        skill_name: attribution.skill_name.clone(),
+        skill_version: attribution.skill_version.clone(),
+        manifest_sha256: attribution.manifest_sha256.clone(),
     };
 
     let store = feedback::FeedbackStore::new(feedback_path.to_path_buf());
@@ -6456,6 +6477,7 @@ mod backfill_linkage_tests {
             title: "SQL injection risk".into(),
             file_path: "src/auth.rs".into(),
             rule_id: None,
+            ..Default::default()
         }];
         log.record_with_meta(&record, &meta).unwrap();
 
