@@ -843,10 +843,11 @@ pub struct FeedbackOpts {
     pub finding_id: Option<String>,
 
     /// Whether the finding was inside the diff (true), outside (false), or
-    /// unknown (omitted). Omitted inherits what the review recorded for the
-    /// resolved finding; pass it when you mean something else (a finding
-    /// outside the hunks that you fixed in-branch anyway). Flows through
-    /// both Human and External paths.
+    /// unknown (omitted). On the Human path, omitted inherits what the
+    /// review recorded for the resolved finding; pass it when you mean
+    /// something else (a finding outside the hunks that you fixed in-branch
+    /// anyway). The External path (--from-agent) records what the agent
+    /// supplied and inherits nothing.
     #[arg(long)]
     pub in_diff: Option<bool>,
 
