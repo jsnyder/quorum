@@ -19,7 +19,7 @@ embeddings = ["fastembed"]
 
 [dependencies]
 # Local embeddings (optional)
-fastembed = { version = "5", optional = true }
+fastembed = { version = "7", optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
