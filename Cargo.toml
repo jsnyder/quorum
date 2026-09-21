@@ -60,7 +60,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # ULID for unique review run IDs (enables exact joins across jsonl logs)
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 
 # File watching
 notify = "8"
