@@ -355,7 +355,7 @@ pub struct ReviewRecord {
 
 impl ReviewRecord {
     pub fn new_ulid() -> String {
-        Ulid::new().to_string()
+        Ulid::generate().to_string()
     }
 }
 

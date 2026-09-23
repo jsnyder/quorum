@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// 26 chars in Crockford base32 — short enough to display in CLI output,
 /// stable enough to dedup feedback against.
 pub fn new_finding_ulid() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }
 
 /// Collect the stable IDs of a slice of findings, in order.
@@ -472,6 +472,30 @@ impl FindingBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- ULID minting --
+
+    /// Pins what the ulid 3 port claims to preserve: a fresh id is a real
+    /// 26-char Crockford ULID stamped with the current time and carrying a
+    /// random component, so ids still sort against and never collide with
+    /// the ones already in reviews.jsonl / feedback.jsonl.
+    #[test]
+    fn new_finding_ulid_is_a_current_random_ulid() {
+        let a = new_finding_ulid();
+        let b = new_finding_ulid();
+        assert_eq!(a.len(), 26);
+        assert!(
+            a.bytes()
+                .all(|c| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&c)),
+            "not Crockford base32: {a}"
+        );
+        assert_ne!(a, b, "two ids in one millisecond must differ (random bits)");
+        let stamped = ulid::Ulid::from_string(&a).unwrap().datetime();
+        let skew = std::time::SystemTime::now()
+            .duration_since(stamped)
+            .unwrap_or_default();
+        assert!(skew.as_secs() < 5, "timestamp not current: {skew:?}");
+    }
 
     // -- Severity ordering --
 

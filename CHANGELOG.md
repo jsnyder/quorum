@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Major dependency bumps: ulid 3, fastembed 7; rust-mcp-sdk held at 0.9.** ulid 3 renamed `Ulid::new()` to `Ulid::generate()` (same body: current time plus 80 random bits); every id is minted through the new name and a test now pins that a fresh id is a current, random, 26-char Crockford ULID, so ids keep sorting against the ones already on disk. fastembed 7 changed its error type (one conversion in `embeddings.rs`) and its `InitOptions` alias, deprecated since 5.x, is now `TextInitOptions` in `embeddings.rs` and the two `compare_*` examples; the bge-small model, pooling and max length are unchanged, so stored vectors are still comparable. Under the held rust-mcp-sdk 0.9.0, the lockfile takes the in-range patch releases rust-mcp-macros 0.9.1, rust-mcp-transport 0.9.1 and rust-mcp-schema 0.10.3 (a `NotificationFromServer::method()` fix and `f64` elicitation bounds, neither used here). rust-mcp-sdk 2.0 was tried and reverted: rust-mcp-transport 2.0 hard-enables the schema crate's `latest` feature, which is the 2026-07-28 *draft* protocol (`ListToolsResult` gains `cache_scope`/`result_type`/`ttl_ms`, and the SDK advertises only that version), so taking it would move `quorum serve` onto an unreleased protocol revision. It stays at 0.9 until the SDK ships a stable schema selection.
+
 ### Fixed
 
 - **Review records were silently dropped on a database migrated by an intermediate build of #620.** That build stamped schema v6 with five attribution columns before `model` joined the same migration; on such a database every review since failed its finding-id insert with "table review_finding_ids has no column named model" (findings printed, nothing recorded, no linkage for `quorum feedback`). Schema v7 adds the column when it is missing and is a no-op on a correct v6 database. Reported from a live review on the day of the 0.32.0 release.
