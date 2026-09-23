@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-23
+
 ### Added
 
 - **Axes prompts are laid out for provider prompt caching.** The file-stable part of a skill-axis call (`<review_context>`, `<code_to_review>`) now lives in the system message after the base prompt; the user message is only the axis's `<skill_instructions>` and the output schema. Measured through the LiteLLM proxy against gpt-5.6, the provider serves a cache hit only when the system message repeats: an identical prefix inside the user message, or an identical earlier user message, got 0 cached tokens, while the same content as the system message got 3760 of 4247 on the second axis. Before, every first-run axes cell was a miss (`tokens_cache_read` is 0 on every first-run axes review in the log; only an identical re-run inside the provider's cache window hit, at the whole prompt). `expand_matrix` is now files-outer so every axis for one file is adjacent. The base prompt primes the read with what every axis looks for, so the code is not read cold before the axis instructions, and tells an axis that scopes itself out (testing-antipatterns on a non-test file) to report nothing. Since the instructions now follow the code, `defang_sandbox_tags` neutralises sandbox-tag openers as well as closers, so untrusted text cannot open a `<skill_instructions>` block that pairs with the real closer. The review summary line reports prompt tokens the provider says it cached.
@@ -39,6 +41,7 @@
 - **The skill axes now see the file context.** Hydration (signatures of called functions, type definitions, callers of changed code, scoped to the changed lines when a diff is given), framework docs, injected project context and historical verdicts were built only for the single-prompt review path, which the default axes replace; every axis reviewed the bare file. `pipeline::build_file_context` is public, `review::render_context_sections` is the shared renderer both paths use, and each axis receives the result in a `<review_context>` block ahead of the code, described in the base system prompt as reference data, not instructions. Nothing is added when there is nothing to say, so the prompt stays byte-identical to the context-less layout.
 
   Measured on the original #589 diff, three runs per configuration (gpt-5.6, two axes, diff-first input): without context 7.7 findings per run on average, with context 4.0, with the same ground-truth defects found at the same rate; input tokens rose from 55k to 60k, output tokens fell, and wall time fell. A wire test pins that a callee's signature reaches every axis before the code.
+
 - **Complexity findings are off by default.** `--complexity-threshold N` reports functions at or above cyclomatic complexity N; the default is 0, which reports none. Across the feedback corpus, complexity precision is flat at 27% to 47% in every band and half the remaining verdicts are wontfix: the number is right and nobody intends to refactor `main`. It was also most of the in-diff noise on every PR review this week (3 of 4 findings on #610, 3 of 4 on #611). The metric stays; it is a request now, not a default. The integration tests that exercise it pass the flag, and one pins that the same file is clean without it. The daemon request and the MCP `review` tool carry the threshold too (`complexity_threshold` / `complexityThreshold`).
 
 - **Diff-first review input for the axes.** With `--diff-file`, each axis used to receive the whole file (a 260 KB `main.rs` cost about 64k tokens per axis per review) and never the diff itself: the parser keeps only new-side line ranges, so deleted lines were invisible. The skill matrix now receives a focused view per file: the enclosing function of every changed range (or the range with 20 lines of context when no function contains it), every line prefixed with its absolute line number, omitted regions marked, and the file's unified-diff hunks after the code so the model sees the actual edit, deletions included. If the view would keep more than 60% of the file, or the diff never mentions the file, or the file appears only in deletion hunks (no new-side lines to focus on), the whole file goes as before. `focus::focus_source` and `focus::hunks_for_file` are pure and unit-tested; `tests/diff_first_input.rs` pins at the wire that the request carries the changed function and the hunks and omits an untouched function far from the change, and that a review without a diff still sends the whole file.
@@ -55,11 +58,17 @@
 
   The complexity finding was measured for the same treatment and left alone: precision is flat across every complexity bucket (27% to 47%) and the 10-14 range holds the most true positives, so raising the threshold would drop good findings without improving the ratio. Its noise is wontfix-shaped, not false-positive-shaped.
 
+- The default judge model is now `gpt-5-mini` (was `gpt-4.1-mini`). See #546 above for why; it is also 8x cheaper on input and 4x on output.
+
+- `all_bundled_rules_match_fixtures` asserted a fixture matched *some* rule, not its own (#536). #520 part 2 orphaned six fixtures by deleting six rules and only one went red -- the other five kept passing on neighbouring rules. It now checks each fixture against its own rule and rejects orphans; both failure modes were confirmed by construction before the fix was accepted.
+
+- **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
+
+  It now names the speculative provenance, asks for a concrete runtime failure, and makes fp the default that tp must be earned against. Measured on the same 187 findings, survivor precision went 12% -> 100% (`discarded-result`), 15% -> 100% (`nullish-coalescing-broad`), 33% -> 100% (`jinja-loop-variable-scoping`), with every constructed true positive still approved. The improvement is from the framing alone: a variant that additionally fed the judge each rule's recorded track record did no better.
+
 ### Fixed
 
 - **The calibrator trace writer released the wrong handle** (#549 follow-up). `write_calibrator_traces` moved its lock to the sidecar in #589 but left `file.unlock()` on the trace file, which was never locked. The sidecar lock was released only when the handle dropped, and an unlock failure could never surface. The unlock now targets the sidecar. `tests/no_lock_on_renamed_file.rs` gains a rule that every `unlock(` line must name the sidecar handle, so the lock side and the unlock side cannot drift apart again; the two test helpers that held the sidecar under the name `held` are renamed to satisfy it. Found by running Claude Code's built-in review on the original #589 diff during a review-tool comparison; neither CodeRabbit nor quorum reported it.
-
-### Fixed
 
 - **Inline PR comments have never worked** (#592). `post_review` recovered each finding's file path with `finding.evidence.first()`, behind a comment stating the review pipeline populated it. It does not: `evidence[0]` is the matched *source text*. `classify_posting_target` was therefore looking up diff ranges for "files" named things like `cyclomatic_complexity=21`, matching none, and routing every finding to the summary body. Both posting paths were affected, so the five correctness gaps #572 fixed in the inline path could never have fired in production.
 
@@ -67,47 +76,17 @@
 
   Found during #496's live acceptance, which is the only thing that could have found it: a mock server answers the same way whether the path is real or a fragment of code.
 
-
-### Fixed
-
 - **The PR posting path could not run end to end** (#496). Three bugs, each sufficient on its own. `quorum report` could not parse `quorum review --json`: it accepted a bare finding array or an object with a `files` key, and `review` emits a top-level array whose first element is `{"_meta": ...}`. The report workflow derived the PR number from the head SHA, which returns nothing for fork PRs, and passed the resulting empty string to `--pr`; the analyze job now records the number it already knows and the report job refuses to post without a valid one. And **every GitHub request was missing a `User-Agent`**, which GitHub rejects with 403 — so the path could never have worked against the real API regardless of the other two.
 
   The User-Agent bug is the reason #496 asked for a real posted review as its acceptance rather than a test: no unit test and no mock server could see it, because mock servers do not enforce the header. It took posting to an actual PR.
 
   Verified end to end: 25 findings generated by `review --json` and posted to a real PR by `report`.
 
-
-### Fixed
-
 - **Five correctness gaps in the GitHub PR posting path** (#572), in ~700 lines that had never run in CI (#496). Previous reviews were dismissed *before* the replacement was created, so any later failure left the PR with no active quorum review. Dismissal selected reviews by a public substring, so anyone able to submit a review containing it could have the bot's privileged token suppress their change request — it now requires a structurally valid marker **and** authorship by the authenticated identity, and dismisses nothing when identity cannot be established. An invalid token byte panicked the process instead of returning an error. The severity breakdown counted only body findings, so inline findings vanished from it. And a multiline comment could span lines the diff cannot anchor, which GitHub rejects — failing the whole review, since comments travel inside the create POST.
 
   A sixth surfaced while testing the fifth: `start_line` was emitted whenever `line_start != line_end`, but a comment's end is `anchor_line()` — so a finding with no cited lines posted `start_line == line`, which GitHub rejects outright.
 
   Three end-to-end tests now exercise create and dismiss together against a mock GitHub, which is what #496 was missing.
-
-### Security
-
-- **Untrusted model output could reach a log unredacted** (#574). Redaction is a chokepoint on the outbound path — `post_json` redacts every request body, so no LLM call can carry a secret out (#530). Logs are a different sink and nothing covered them: the judge logged a 200-char prefix of the raw response on two parse-failure paths, and #546 established that a model can be talked into echoing text straight out of the file it was shown. So a log line could carry a credential out of the source under review.
-
-  `redact::for_log` is now the one way to put that text in a log. It redacts **before** truncating — the other order can cut a secret in half and emit the surviving half, which is still a secret — and neutralises control characters so an attacker-shaped response cannot rewrite a terminal.
-
-  Three sites route through it: the judge's two response-parse warnings and the `raw_severity` field in `LlmFinding::into_finding`. A survey of all 37 `tracing` calls that interpolate a value found no others — notably `parse_llm_response`'s error does **not** embed the body, so the reviewer path was already clean. `tests/no_raw_model_output_in_logs.rs` scans `src/` and fails if a new site interpolates a raw response without the helper, and a behaviour test proves a secret in a malformed response never reaches the sink.
-
-- **Two credential shapes passed the redactor unredacted** (#578). `github_pat_...` — the fine-grained format GitHub now steers users toward; only the legacy `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` family was covered — and unquoted assignments like `PASSWORD=hunter2`, which the generic patterns missed because they required quotes. Unquoted is what `.env` files, `docker run -e`, CI variable blocks and shell exports all look like. Both reach the LLM through `post_json`, so this was live egress.
-
-  The unquoted pattern is deliberately narrow and every restriction was measured over 685 files of real Rust, Python, TypeScript, YAML and shell, because this file carries a scar from widening a pattern on intuition (`sk-` once turned `flask-debug-true` into `fla[REDACTED]`). Reusing the quoted forms' case-insensitive keyword anchor matched **508** sites — `token: String,`, `api_key: Option<String>,` — and would have corrupted source far worse. Restricting to SCREAMING_CASE keys with `=`, a six-character floor, no `.` in the value, and a whole-token match took that to **5 matches with no false positives**.
-
-  Two gaps are deliberate and tested as such: YAML's `password: hunter2` is out of scope (`:` is what `token: String,` uses), and a dotted value such as a JWT is excluded to spare `os.getenv` — the quoted patterns still cover its quoted form.
-
-- **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
-
-  Source, filename, and the `evidence`/`title` strings now go through `skill_prompt_defense::wrap_code_to_review`, the same wrapper the skills path already uses, so none of them can forge `</code_to_review>`.
-
-  **That is not what stops the attack.** Four prompt-level defences were each measured against the same payload and each failed completely: the sandbox tag alone, plus a "this is data" notice, plus a hardened system prompt, plus the criteria restated after the untrusted block — 8 of 8 verdicts flipped every time. What separates a safe judge from an unsafe one is the model, so the default judge model moves from `gpt-4.1-mini` (obeys) to `gpt-5-mini` (resists), which is also cheaper on both axes.
-
-  Mitigated rather than solved: resistance is an empirical property of today's models, not a structural guarantee. `eval/judge-injection/probe.py` re-runs the measurement and exits non-zero if a model obeys; run it before changing `DEFAULT_JUDGE_MODEL`. Full write-up, including the structural fix not taken: `docs/judge-injection-546.md`.
-
-### Fixed
 
 - **A judge verdict could be applied to a finding it never named** (#566). Correlation fell back to "first unused finding with this `rule_id`" whenever the response item's index was missing or already consumed. Findings from one rule all share that id and a batch usually holds several, so the fallback was a guess — and the response is untrusted (it is a model's output, and #546 showed that model can be influenced by the code under review). With `judge: required` dropping a rejected finding, a wrong guess deleted a finding nothing had judged.
 
@@ -141,15 +120,29 @@
 
 - **Reviews named components that never ran** (#531). `Reviewed 1 file(s) in 0.1s using gpt-5.6` on a run with no API key named what *would* have been used as what *was*; it now reads `AST-only`, keyed on token usage, which is evidence of execution rather than of configuration. `"enabled": ["clippy"]` and `clippy=on` became `installed_and_configured` and `clippy=configured`: `run_linter` has no production caller and never has, so nothing named there has ever run.
 
-### Changed
+### Security
 
-- The default judge model is now `gpt-5-mini` (was `gpt-4.1-mini`). See #546 above for why; it is also 8x cheaper on input and 4x on output.
+- **rustls 0.23.45** for RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted across encryption level boundaries), a lockfile-only bump (#622, #633).
 
-- `all_bundled_rules_match_fixtures` asserted a fixture matched *some* rule, not its own (#536). #520 part 2 orphaned six fixtures by deleting six rules and only one went red -- the other five kept passing on neighbouring rules. It now checks each fixture against its own rule and rejects orphans; both failure modes were confirmed by construction before the fix was accepted.
+- **Untrusted model output could reach a log unredacted** (#574). Redaction is a chokepoint on the outbound path — `post_json` redacts every request body, so no LLM call can carry a secret out (#530). Logs are a different sink and nothing covered them: the judge logged a 200-char prefix of the raw response on two parse-failure paths, and #546 established that a model can be talked into echoing text straight out of the file it was shown. So a log line could carry a credential out of the source under review.
 
-- **The judge prompt now states a bar instead of asking neutrally.** It asked the model to "determine if it is a true positive (tp), false positive (fp), or uncertain based on the surrounding code context" — which sets no threshold, and an LLM asked neutrally about a plausible finding says yes. On 15 `discarded-result` findings a human had already recorded as false, it approved 14, sometimes while explaining the false positive in its own `reason` field.
+  `redact::for_log` is now the one way to put that text in a log. It redacts **before** truncating — the other order can cut a secret in half and emit the surviving half, which is still a secret — and neutralises control characters so an attacker-shaped response cannot rewrite a terminal.
 
-  It now names the speculative provenance, asks for a concrete runtime failure, and makes fp the default that tp must be earned against. Measured on the same 187 findings, survivor precision went 12% -> 100% (`discarded-result`), 15% -> 100% (`nullish-coalescing-broad`), 33% -> 100% (`jinja-loop-variable-scoping`), with every constructed true positive still approved. The improvement is from the framing alone: a variant that additionally fed the judge each rule's recorded track record did no better.
+  Three sites route through it: the judge's two response-parse warnings and the `raw_severity` field in `LlmFinding::into_finding`. A survey of all 37 `tracing` calls that interpolate a value found no others — notably `parse_llm_response`'s error does **not** embed the body, so the reviewer path was already clean. `tests/no_raw_model_output_in_logs.rs` scans `src/` and fails if a new site interpolates a raw response without the helper, and a behaviour test proves a secret in a malformed response never reaches the sink.
+
+- **Two credential shapes passed the redactor unredacted** (#578). `github_pat_...` — the fine-grained format GitHub now steers users toward; only the legacy `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` family was covered — and unquoted assignments like `PASSWORD=hunter2`, which the generic patterns missed because they required quotes. Unquoted is what `.env` files, `docker run -e`, CI variable blocks and shell exports all look like. Both reach the LLM through `post_json`, so this was live egress.
+
+  The unquoted pattern is deliberately narrow and every restriction was measured over 685 files of real Rust, Python, TypeScript, YAML and shell, because this file carries a scar from widening a pattern on intuition (`sk-` once turned `flask-debug-true` into `fla[REDACTED]`). Reusing the quoted forms' case-insensitive keyword anchor matched **508** sites — `token: String,`, `api_key: Option<String>,` — and would have corrupted source far worse. Restricting to SCREAMING_CASE keys with `=`, a six-character floor, no `.` in the value, and a whole-token match took that to **5 matches with no false positives**.
+
+  Two gaps are deliberate and tested as such: YAML's `password: hunter2` is out of scope (`:` is what `token: String,` uses), and a dotted value such as a JWT is excluded to spare `os.getenv` — the quoted patterns still cover its quoted form.
+
+- **Reviewed source could talk the judge into deleting findings about itself** (#546). `build_judge_prompt` put the whole file in the user message next to the judging criteria behind a bare Markdown fence. Measured end-to-end: a file whose comments instruct the judge to answer `fp` turned 4 honest `tp` verdicts into `fp` — with the attacker's own reason string returned — and under `judge: required` a rejected finding is dropped. That is a suppression primitive.
+
+  Source, filename, and the `evidence`/`title` strings now go through `skill_prompt_defense::wrap_code_to_review`, the same wrapper the skills path already uses, so none of them can forge `</code_to_review>`.
+
+  **That is not what stops the attack.** Four prompt-level defences were each measured against the same payload and each failed completely: the sandbox tag alone, plus a "this is data" notice, plus a hardened system prompt, plus the criteria restated after the untrusted block — 8 of 8 verdicts flipped every time. What separates a safe judge from an unsafe one is the model, so the default judge model moves from `gpt-4.1-mini` (obeys) to `gpt-5-mini` (resists), which is also cheaper on both axes.
+
+  Mitigated rather than solved: resistance is an empirical property of today's models, not a structural guarantee. `eval/judge-injection/probe.py` re-runs the measurement and exits non-zero if a model obeys; run it before changing `DEFAULT_JUDGE_MODEL`. Full write-up, including the structural fix not taken: `docs/judge-injection-546.md`.
 
 ### Removed
 
