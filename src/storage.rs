@@ -51,7 +51,7 @@ impl std::error::Error for FutureSchemaVersion {}
 /// nothing could compare an on-disk version against "what this build knows".
 /// `run_migrations` needs exactly that comparison to reject a database written
 /// by a newer binary, so the constant is now real.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// Open (or create) the quorum SQLite database and run any pending
 /// migrations. Returns a shared connection handle ready for use.
@@ -255,6 +255,9 @@ fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     if version < 6 {
         migrate_v5_to_v6(conn).context("schema migration v5 -> v6 failed")?;
     }
+    if version < 7 {
+        migrate_v6_to_v7(conn).context("schema migration v6 -> v7 failed")?;
+    }
 
     Ok(())
 }
@@ -413,6 +416,34 @@ fn migrate_v5_to_v6(conn: &Connection) -> anyhow::Result<()> {
          ALTER TABLE review_finding_ids ADD COLUMN model TEXT NOT NULL DEFAULT '';",
     )?;
     tx.pragma_update(None, "user_version", 6)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v7: repair a v6 database written by an intermediate #620 build.
+///
+/// The first build of #620 stamped `user_version` 6 with five attribution
+/// columns; `model` was added to the same migration before merge. A
+/// database migrated by the intermediate build reports v6 without the
+/// column, and every review after that failed its finding-id insert with
+/// "table review_finding_ids has no column named model" (findings still
+/// printed, nothing recorded). Adding the column only when it is missing
+/// makes this safe on both shapes.
+fn migrate_v6_to_v7(conn: &Connection) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let has_model: bool = {
+        let mut stmt = tx.prepare("PRAGMA table_info(review_finding_ids)")?;
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        names.iter().any(|n| n == "model")
+    };
+    if !has_model {
+        tx.execute_batch(
+            "ALTER TABLE review_finding_ids ADD COLUMN model TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    tx.pragma_update(None, "user_version", 7)?;
     tx.commit()?;
     Ok(())
 }
@@ -1393,6 +1424,63 @@ mod tests {
                 String::new()
             )
         );
+    }
+
+    /// A database stamped v6 by the intermediate #620 build lacks `model`;
+    /// running the migrations must add it and make the insert work.
+    #[test]
+    fn migrate_v6_to_v7_adds_model_to_an_intermediate_v6_database() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate_v0_to_v1(&conn).unwrap();
+        migrate_v1_to_v2(&conn).unwrap();
+        migrate_v2_to_v3(&conn).unwrap();
+        migrate_v3_to_v4(&conn).unwrap();
+        migrate_v4_to_v5(&conn).unwrap();
+        // What the intermediate build wrote: five columns, version 6, no model.
+        conn.execute_batch(
+            "ALTER TABLE review_finding_ids ADD COLUMN in_diff INTEGER;
+             ALTER TABLE review_finding_ids ADD COLUMN skill_name TEXT NOT NULL DEFAULT '';
+             ALTER TABLE review_finding_ids ADD COLUMN skill_version TEXT NOT NULL DEFAULT '';
+             ALTER TABLE review_finding_ids ADD COLUMN manifest_sha256 TEXT NOT NULL DEFAULT '';
+             ALTER TABLE review_finding_ids ADD COLUMN category TEXT NOT NULL DEFAULT '';
+             PRAGMA user_version = 6;",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.execute(
+            "INSERT INTO reviews (run_id, timestamp, quorum_version, invoked_from, model, files_reviewed, tokens_in, tokens_out, duration_ms) VALUES ('r7', '2026-09-23T00:00:00Z', '0.32.0', 'tty', 'gpt-5.6', 1, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO review_finding_ids (run_id, finding_id, title, file_path, rule_id, model) VALUES ('r7', 'f7', 't', 'a.rs', '', 'gpt-5.6')",
+            [],
+        )
+        .expect("the model column must exist after the repair");
+    }
+
+    /// A correct v6 database (model already present) must migrate to v7
+    /// without tripping over a duplicate column.
+    #[test]
+    fn migrate_v6_to_v7_is_a_no_op_on_a_correct_v6_database() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate_v0_to_v1(&conn).unwrap();
+        migrate_v1_to_v2(&conn).unwrap();
+        migrate_v2_to_v3(&conn).unwrap();
+        migrate_v3_to_v4(&conn).unwrap();
+        migrate_v4_to_v5(&conn).unwrap();
+        migrate_v5_to_v6(&conn).unwrap();
+        migrate_v6_to_v7(&conn).unwrap();
+        assert_eq!(current_version(&conn).unwrap(), 7);
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('review_finding_ids') WHERE name = 'model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

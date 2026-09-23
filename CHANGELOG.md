@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Review records were silently dropped on a database migrated by an intermediate build of #620.** That build stamped schema v6 with five attribution columns before `model` joined the same migration; on such a database every review since failed its finding-id insert with "table review_finding_ids has no column named model" (findings printed, nothing recorded, no linkage for `quorum feedback`). Schema v7 adds the column when it is missing and is a no-op on a correct v6 database. Reported from a live review on the day of the 0.32.0 release.
+
 ## [0.32.0] - 2026-09-23
 
 ### Added
