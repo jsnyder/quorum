@@ -1226,7 +1226,7 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         }
     };
 
-    let run_id = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
+    let run_id = ulid::Ulid::generate().to_string();
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     let req = github_report::PostReviewRequest {
@@ -4045,7 +4045,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             }
         };
 
-        let run_id = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
+        let run_id = ulid::Ulid::generate().to_string();
         let version = env!("CARGO_PKG_VERSION").to_string();
 
         let req = github_report::PostReviewRequest {

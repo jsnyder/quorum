@@ -284,7 +284,7 @@ pub(crate) fn execute_cell(
     reviewer: &dyn LlmReviewer,
     budget: &BudgetTracker,
 ) -> CellResult {
-    let skill_run_id = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
+    let skill_run_id = ulid::Ulid::generate().to_string();
     let zero_usage = TokenUsage::default();
 
     // Step 1: budget check
@@ -519,7 +519,7 @@ pub fn execute_matrix(
 
     for cell in &cells {
         if budget.tokens_exceeded() {
-            let skill_run_id = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
+            let skill_run_id = ulid::Ulid::generate().to_string();
             let budget_result = CellResult {
                 skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
