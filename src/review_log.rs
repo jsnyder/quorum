@@ -355,7 +355,7 @@ pub struct ReviewRecord {
 
 impl ReviewRecord {
     pub fn new_ulid() -> String {
-        Ulid::new().to_string()
+        Ulid::from_datetime(std::time::SystemTime::now()).to_string()
     }
 }
 

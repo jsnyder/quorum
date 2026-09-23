@@ -712,7 +712,7 @@ impl FeedbackStore {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown.jsonl");
-            let claim_ulid = ulid::Ulid::new().to_string();
+            let claim_ulid = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
             let claimed = processing_dir.join(format!("{fname}.{claim_ulid}.jsonl"));
             match rename_or_tolerate_race(&file, &claimed) {
                 Ok(true) => { /* we exclusively own the file now */ }
@@ -770,7 +770,7 @@ impl FeedbackStore {
             }
 
             // STEP C: ARCHIVE. Move from processing/ to processed/.
-            let archive_ulid = ulid::Ulid::new().to_string();
+            let archive_ulid = ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string();
             let target = processed_dir.join(format!("{fname}.{archive_ulid}.jsonl"));
             match rename_or_tolerate_race(&claimed, &target) {
                 Ok(true) => report.drained_files += 1,

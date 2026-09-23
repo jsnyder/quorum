@@ -1,7 +1,7 @@
 //! A/B: hold findings constant, run the calibrator with RRF on vs off.
 //! Measures how often each mode suppresses, boosts, or diverges in action.
 use bm25::{Language, SearchEngineBuilder};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::path::PathBuf;
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -218,7 +218,7 @@ fn main() -> anyhow::Result<()> {
     let bm25 = SearchEngineBuilder::<u32>::with_corpus(Language::English, titles.clone()).build();
 
     println!("Loading fastembed + corpus vectors...");
-    let mut embedder = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::BGESmallENV15))?;
+    let mut embedder = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::BGESmallENV15))?;
     let corpus_vecs = embedder.embed(titles.clone(), None)?;
 
     let top_k = 10;

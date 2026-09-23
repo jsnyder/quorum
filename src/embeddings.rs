@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "embeddings")]
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 #[cfg(feature = "embeddings")]
 pub struct LocalEmbedder {
@@ -37,7 +37,7 @@ pub const DISABLE_ENV: &str = "QUORUM_DISABLE_EMBEDDINGS";
 /// How long to wait for model init before giving up and degrading (#565).
 ///
 /// fastembed drives the download through `ureq` with no connect, read, or
-/// overall deadline, and `InitOptions` exposes none, so a network stall parks
+/// overall deadline, and `TextInitOptions` exposes none, so a network stall parks
 /// the caller forever -- measured once at 90 minutes across six test processes
 /// before anyone noticed. The wait cannot be cancelled from here, but it can be
 /// abandoned: `FeedbackIndex::build_hybrid` already falls back to BM25-only
@@ -104,7 +104,7 @@ impl LocalEmbedder {
             anyhow::bail!("embedding model init already timed out in this process");
         }
 
-        let mut options = InitOptions::default();
+        let mut options = TextInitOptions::default();
         options.model_name = EmbeddingModel::BGESmallENV15;
         options.show_download_progress = false;
         options.cache_dir = quorum_cache_dir();
@@ -119,7 +119,7 @@ impl LocalEmbedder {
         });
         match rx.recv_timeout(deadline) {
             Ok(Ok(model)) => Ok(Self { model }),
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => Err(anyhow::Error::from(e)),
             Err(_) => {
                 INIT_TIMED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// 26 chars in Crockford base32 — short enough to display in CLI output,
 /// stable enough to dedup feedback against.
 pub fn new_finding_ulid() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::from_datetime(std::time::SystemTime::now()).to_string()
 }
 
 /// Collect the stable IDs of a slice of findings, in order.

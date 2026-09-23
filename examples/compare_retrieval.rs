@@ -3,7 +3,7 @@
 //!
 //! Run: cargo run --release --example compare_retrieval
 use bm25::{Language, SearchEngineBuilder};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -147,7 +147,7 @@ fn main() -> anyhow::Result<()> {
     let bm25_build_ms = t0.elapsed().as_millis();
 
     let t0 = Instant::now();
-    let mut embedder = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::BGESmallENV15))?;
+    let mut embedder = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::BGESmallENV15))?;
     let embedder_init_ms = t0.elapsed().as_millis();
 
     let t0 = Instant::now();
