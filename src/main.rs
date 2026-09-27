@@ -1371,6 +1371,81 @@ async fn axes_context_for_file(
 /// The enclosing functions of the changed lines (no context padding): the
 /// ranges inside which an outside-hunk finding is still about the change.
 /// Same inputs as `build_review_file`, so the parse is a cache lookup.
+/// What happens to a file's findings once every producer for that file has
+/// run (#639): hide the ones stamped outside the diff (a model finding
+/// inside a changed function is rescued), then apply the project's
+/// suppression rules to the hidden set and to the shown set, counting both.
+/// Returns the suppressed shown findings for `--show-suppressed`.
+///
+/// Four paths reach this point -- sequential and parallel, deep and not.
+/// Before, two of them did the hiding, one of them did not count its own
+/// suppressions, and the deep paths did neither.
+fn settle_file_findings(
+    result: &mut pipeline::FileReviewResult,
+    hide: bool,
+    source: &str,
+    lang: Option<parser::Language>,
+    parse_cache: &cache::ParseCache,
+    diff_ranges: Option<&hydration::DiffRanges>,
+    suppress_rules: &[suppress::SuppressionRule],
+) -> Vec<(finding::Finding, suppress::SuppressionRule)> {
+    let file_display = result.file_path.clone();
+    if hide {
+        let rescue = changed_function_ranges(
+            std::path::Path::new(&result.file_path),
+            source,
+            lang,
+            parse_cache,
+            diff_ranges,
+        );
+        // Hidden findings are recorded, so a project's suppression rules
+        // apply to them exactly as to the shown ones; otherwise a rule the
+        // project never wants to see would be written to the review record
+        // and become linkable.
+        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
+        let hidden_sup = suppress::apply_suppressions(hidden, suppress_rules, &file_display);
+        // A suppressed hidden finding still counts as suppressed in the summary.
+        result.suppressed += hidden_sup.suppressed.len();
+        result.hidden_out_of_diff.extend(hidden_sup.kept);
+    }
+    let sup = suppress::apply_suppressions(
+        std::mem::take(&mut result.findings),
+        suppress_rules,
+        &file_display,
+    );
+    if !sup.suppressed.is_empty() {
+        tracing::debug!(count = sup.suppressed.len(), file = %file_display, "project suppressions applied");
+    }
+    result.findings = sup.kept;
+    result.suppressed += sup.suppressed.len();
+    sup.suppressed
+}
+
+/// A deep review's findings as a file result: `agent_loop` returns bare
+/// findings with no usage and, until #639, no `in_diff` stamp.
+fn deep_file_result(
+    findings: Vec<finding::Finding>,
+    file_path: &std::path::Path,
+    file_display: &str,
+    diff_ranges: Option<&hydration::DiffRanges>,
+) -> pipeline::FileReviewResult {
+    let mut findings = findings;
+    if let Some(dr) = diff_ranges {
+        pipeline::classify_findings_for_file(&mut findings, file_path, dr);
+    }
+    pipeline::FileReviewResult {
+        file_path: file_display.to_owned(),
+        findings,
+        // No usage to record: `agent_loop` does not return any.
+        usage: Default::default(),
+        suppressed: 0,
+        hidden_out_of_diff: Vec::new(),
+        context_telemetry: None,
+        enrichment_metrics: Default::default(),
+        judge_metrics: Default::default(),
+    }
+}
+
 fn changed_function_ranges(
     file_path: &std::path::Path,
     source: &str,
@@ -3029,38 +3104,47 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     &agent_cfg,
                 ) {
                     Ok(findings) => {
-                        // Apply project-level suppressions
-                        let sup_result =
-                            suppress::apply_suppressions(findings, &suppress_rules, &file_display);
-                        if !sup_result.suppressed.is_empty() {
-                            tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
-                        }
+                        let mut result = deep_file_result(
+                            findings,
+                            file_path,
+                            &file_display,
+                            pipeline_cfg.diff_ranges.as_ref(),
+                        );
+                        let suppressed = settle_file_findings(
+                            &mut result,
+                            hide_out_of_diff,
+                            &source,
+                            lang,
+                            &parse_cache,
+                            pipeline_cfg.diff_ranges.as_ref(),
+                            &suppress_rules,
+                        );
                         if opts.show_suppressed {
-                            for (f, rule) in &sup_result.suppressed {
+                            for (f, rule) in &suppressed {
                                 eprint!("{}", suppress::format_suppressed_finding(f, rule));
                             }
                         }
-                        let findings = sup_result.kept;
-                        progress.finish_file(findings.len());
+                        progress.finish_file(result.findings.len());
                         if use_compact {
                             println!(
                                 "{}",
-                                output::format_compact_review(&file_display, &findings)
+                                output::format_compact_review(&file_display, &result.findings)
                             );
-                        } else if use_json {
-                            // collected below
-                        } else {
+                        } else if !use_json {
                             print!(
                                 "{}",
-                                output::format_review(&file_display, &findings, &style)
+                                output::format_review(&file_display, &result.findings, &style)
                             );
                         }
                         record_findings(
                             &mut all_findings,
                             &mut all_review_findings,
                             &file_display,
-                            findings,
+                            result.findings.clone(),
                         );
+                        // Before #639 this path never pushed a result, so
+                        // `--deep --json` on one file printed no findings.
+                        file_results.push(result);
                         deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
@@ -3240,43 +3324,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         result.suppressed += int_output.suppressed.len();
                     }
 
-                    // Apply project-level suppressions
-                    let file_display = result.file_path.clone();
-                    // Every path that classified findings for this file has run;
-                    // hide the ones stamped outside the diff before suppression.
-                    if hide_out_of_diff {
-                        let rescue = changed_function_ranges(
-                            std::path::Path::new(&result.file_path),
-                            &source,
-                            lang,
-                            &parse_cache,
-                            pipeline_cfg.diff_ranges.as_ref(),
-                        );
-                        // Hidden findings are recorded, so a project's suppression rules
-                        // apply to them exactly as to the shown ones; otherwise a rule
-                        // the project never wants to see would be written to the
-                        // review record and become linkable.
-                        let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
-                        let hidden_sup =
-                            suppress::apply_suppressions(hidden, &suppress_rules, &file_display);
-                        // A suppressed hidden finding still counts as suppressed in the summary.
-                        result.suppressed += hidden_sup.suppressed.len();
-                        result.hidden_out_of_diff.extend(hidden_sup.kept);
-                    }
-                    let sup_result = suppress::apply_suppressions(
-                        result.findings,
+                    // Every path that classified findings for this file has run.
+                    let suppressed = settle_file_findings(
+                        &mut result,
+                        hide_out_of_diff,
+                        &source,
+                        lang,
+                        &parse_cache,
+                        pipeline_cfg.diff_ranges.as_ref(),
                         &suppress_rules,
-                        &file_display,
                     );
-                    if !sup_result.suppressed.is_empty() {
-                        tracing::debug!(count = sup_result.suppressed.len(), file = %file_display, "project suppressions applied");
-                    }
                     if opts.show_suppressed {
-                        for (f, rule) in &sup_result.suppressed {
+                        for (f, rule) in &suppressed {
                             eprint!("{}", suppress::format_suppressed_finding(f, rule));
                         }
                     }
-                    result.findings = sup_result.kept;
                     progress.finish_file(result.findings.len());
                     if use_compact {
                         println!(
@@ -3354,6 +3416,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 };
                 let lang = parser::Language::from_path(&file_path);
                 let file_display = file_path.to_string_lossy().to_string();
+                let parse_cache = cache::ParseCache::new(128);
 
                 // Deep review path
                 if deep && let Some(ref client) = llm_client {
@@ -3374,25 +3437,24 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         &agent_cfg,
                     ) {
                         Ok(findings) => {
-                            let sup_result = suppress::apply_suppressions(
+                            let mut result = deep_file_result(
                                 findings,
-                                &suppress_rules,
+                                &file_path,
                                 &file_display,
+                                pipeline_cfg.diff_ranges.as_ref(),
                             );
-                            let result = pipeline::FileReviewResult {
-                                file_path: file_display,
-                                findings: sup_result.kept,
-                                // No usage to record: `agent_loop` does not
-                                // return any. See `deep_llm_ran` below.
-                                usage: Default::default(),
-                                suppressed: sup_result.suppressed.len(),
-                                hidden_out_of_diff: Vec::new(),
-                                context_telemetry: None,
-                                enrichment_metrics: Default::default(),
-                                judge_metrics: Default::default(),
-                            };
+                            let suppressed = settle_file_findings(
+                                &mut result,
+                                hide_out_of_diff,
+                                &source,
+                                lang,
+                                &parse_cache,
+                                pipeline_cfg.diff_ranges.as_ref(),
+                                &suppress_rules,
+                            );
+                            // See `deep_llm_ran` below.
                             deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return (idx, Ok((result, sup_result.suppressed)));
+                            return (idx, Ok((result, suppressed)));
                         }
                         Err(e) => {
                             eprintln!(
@@ -3411,7 +3473,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 } else {
                     llm_client.as_deref().map(|c| c as _)
                 };
-                let parse_cache = cache::ParseCache::new(128);
                 // `spawn_blocking` runs on Tokio's blocking pool (separate from
                 // runtime workers), so `Handle::block_on` here is sound per
                 // Tokio docs. We deliberately keep the parsing/AST CPU work
@@ -3564,37 +3625,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 result.suppressed += int_output.suppressed.len();
                         }
 
-                        // Every path that classified findings for this file has run;
-
-                        // hide the ones stamped outside the diff before suppression.
-
-                            if hide_out_of_diff {
-                                let rescue = changed_function_ranges(
-                                    std::path::Path::new(&result.file_path),
-                                    &source,
-                                    lang,
-                                    &parse_cache,
-                                    pipeline_cfg.diff_ranges.as_ref(),
-                                );
-                                // Hidden findings are recorded, so a project's suppression rules
-                                // apply to them exactly as to the shown ones; otherwise a rule
-                                // the project never wants to see would be written to the
-                                // review record and become linkable.
-                                let hidden = pipeline::hide_out_of_diff(&mut result.findings, &rescue);
-                                let hidden_sup = suppress::apply_suppressions(hidden, &suppress_rules, &file_display);
-                                // A suppressed hidden finding still counts as suppressed in the summary.
-                                result.suppressed += hidden_sup.suppressed.len();
-                                result.hidden_out_of_diff.extend(hidden_sup.kept);
-                            }
-
-                        let sup_result = suppress::apply_suppressions(
-                            result.findings,
+                        // Every path that classified findings for this file has run.
+                        let suppressed = settle_file_findings(
+                            &mut result,
+                            hide_out_of_diff,
+                            &source,
+                            lang,
+                            &parse_cache,
+                            pipeline_cfg.diff_ranges.as_ref(),
                             &suppress_rules,
-                            &file_display,
                         );
-                        result.findings = sup_result.kept;
-                        result.suppressed += sup_result.suppressed.len();
-                        (idx, Ok((result, sup_result.suppressed)))
+                        (idx, Ok((result, suppressed)))
                     }
                     Err(e) => (idx, Err(e)),
                 }

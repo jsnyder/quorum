@@ -687,3 +687,129 @@ fn named_axis_selections_expand_at_the_wire() {
         );
     }
 }
+
+/// #639: `--deep --diff-file` went straight from the agent loop to output,
+/// never stamping `in_diff` or hiding what fell outside the diff. The
+/// cassette's finding is on line 2, inside `untouched`; the diff changes
+/// `changed`, so the finding must be hidden and counted.
+#[test]
+fn deep_review_hides_findings_outside_the_diff() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn untouched(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n\npub fn changed(v: Option<u32>) -> u32 {\n    v.unwrap_or(0)\n}\n",
+    )
+    .unwrap();
+    let diff = proj.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -6,1 +6,1 @@\n-    v.unwrap_or(1)\n+    v.unwrap_or(0)\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--deep")
+            .arg("--diff-file")
+            .arg(&diff)
+            .arg(&lib)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("unwrap() on a fallible parse can panic"),
+        "a deep finding outside the diff was shown:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("1 outside the diff hidden"),
+        "the hidden finding is not counted:\n{stderr}"
+    );
+}
+
+/// The single-file (sequential) path dropped project suppressions from the
+/// summary count while the parallel path counted them; one helper now
+/// settles a file's findings on every path (#639).
+#[test]
+fn sequential_review_counts_project_suppressions_in_the_summary() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".quorum")).unwrap();
+    std::fs::write(
+        proj.path().join(".quorum").join("suppress.toml"),
+        "[[suppress]]\npattern = \"unsafe\"\nreason = \"raw pointer access is reviewed by hand\"\n",
+    )
+    .unwrap();
+    let lib = proj.path().join("src").join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn read(p: *const u32) -> u32 {\n    unsafe { *p }\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = support::quorum(home.path())
+        .arg("review")
+        .arg("--json")
+        .arg("--parallel")
+        .arg("1")
+        .arg(&lib)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 suppressed"),
+        "sequential path does not count the project suppression:\n{stderr}"
+    );
+}
+
+/// Before #639 the single-file deep path never produced a file result, so
+/// `--deep --json` printed `[]` while stderr counted a finding.
+#[test]
+fn deep_review_json_output_carries_its_findings() {
+    let proj = tempfile::tempdir().unwrap();
+    let lib = proj.path().join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn parse(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--deep")
+            .arg(&lib)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let files: serde_json::Value = serde_json::from_str(&stdout).expect("json output");
+    let titles: Vec<&str> = files
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|f| f["findings"].as_array().into_iter().flatten())
+        .filter_map(|f| f["title"].as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        ["unwrap() on a fallible parse can panic"],
+        "deep findings missing from JSON output:\n{stdout}"
+    );
+}
