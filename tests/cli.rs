@@ -639,3 +639,43 @@ fn feedback_on_a_rule_finding_inherits_no_model_or_category() {
         "a folded category is not a stated one: {row}"
     );
 }
+
+/// #631: named selections. `default` expands to the default set and
+/// `audit` to all six, at the wire: one call per axis.
+#[test]
+fn named_axis_selections_expand_at_the_wire() {
+    let proj = tempfile::tempdir().unwrap();
+    let lib = proj.path().join("lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
+    )
+    .unwrap();
+    for (selection, calls) in [
+        ("default", 3usize),
+        ("audit", 6),
+        ("default,performance", 4),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let (out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+            cmd.arg("review")
+                .arg("--json")
+                .arg("--skip-context7")
+                .arg("--axes")
+                .arg(selection)
+                .arg(&lib)
+                .output()
+                .unwrap()
+        });
+        assert!(
+            out.status.code().is_some_and(|c| c < 3),
+            "--axes {selection} was rejected: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            sent.len(),
+            calls,
+            "--axes {selection}: one call per axis expected"
+        );
+    }
+}

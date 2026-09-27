@@ -20,7 +20,8 @@ cargo run -- review src/*.rs --json          # JSON output (grouped by file)
 cargo run -- review src/*.rs --ensemble      # cross-model ensemble review
 cargo run -- review src/*.rs --model gpt-5.6 # override reviewer model (else QUORUM_MODEL)
 cargo run -- review src/*.rs --ensemble --model gpt-5.6,claude-opus-5  # override ensemble pool
-cargo run -- review src/*.rs --axes correctness,security  # multi-axis skill review (this pair is the default; add architecture, simplicity, performance, testing-antipatterns for an audit)
+cargo run -- review src/*.rs --axes default             # multi-axis skill review: correctness, security, testing-antipatterns (the default set; #631 measured the other three and left them opt-in)
+cargo run -- review src/*.rs --axes audit               # all six axes (adds architecture, simplicity, performance); names mix with axes: --axes default,performance
 cargo run -- review file.rs --mode plan      # review mode: code (default), plan, docs
 cargo run -- review file.rs --skip-context7  # skip Context7 framework enrichment
 cargo run -- review file.rs --framework home-assistant  # override framework detection
