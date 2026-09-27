@@ -1241,6 +1241,10 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
         run_id,
         commit_sha,
         api_base_url: None,
+        bot_login: github_report::actions_bot_login(
+            std::env::var("GITHUB_ACTIONS").ok().as_deref(),
+        )
+        .map(str::to_string),
     };
 
     eprint!(
@@ -4060,6 +4064,10 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             commit_sha,
             incomplete: Some(review_incomplete.clone()).filter(|i| i.axes_failed > 0),
             api_base_url: None,
+            bot_login: github_report::actions_bot_login(
+                std::env::var("GITHUB_ACTIONS").ok().as_deref(),
+            )
+            .map(str::to_string),
         };
 
         eprint!(
