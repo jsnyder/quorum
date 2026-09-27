@@ -158,6 +158,9 @@ pub struct ReviewFile {
     /// `pipeline::render_context_for_axes`), shown to every axis before the
     /// code. `None` when there is nothing to say.
     pub context: Option<String>,
+    /// Test code by path or by markers in the whole source (#631); decides
+    /// whether a `test_files_only` axis gets a cell for this file.
+    pub is_test: bool,
 }
 
 /// What the scaffold needs to say about a focused view.
@@ -171,14 +174,40 @@ pub struct FocusMeta {
 
 impl ReviewFile {
     pub fn whole(path: String, sha256: String, code: String) -> Self {
+        let is_test = Self::is_test_source(&path, &code);
         Self {
             path,
             sha256,
             code,
             focus: None,
             context: None,
+            is_test,
         }
     }
+
+    /// The manifest's own gate, evaluated before the call: a test path, or
+    /// test markers anywhere in the full source (a `#[cfg(test)]` module at
+    /// the bottom of a src file counts, which is where #612's vacuous test
+    /// lived).
+    pub fn is_test_source(path: &str, source: &str) -> bool {
+        crate::calibrate::is_test_file_path(path) || has_test_markers(source)
+    }
+}
+
+fn has_test_markers(source: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "#[test]",
+        "#[cfg(test)]",
+        "#[tokio::test]",
+        "def test_",
+        "@pytest",
+        "@Test",
+        "describe(",
+        "it(\"",
+        "test(\"",
+        "func Test",
+    ];
+    MARKERS.iter().any(|m| source.contains(m))
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +265,9 @@ pub fn expand_matrix(
     // provider's newest cache entry when the next one arrives.
     for f in files {
         for skill in skills {
+            if skill.manifest.test_files_only && !f.is_test {
+                continue;
+            }
             let models: Vec<String> = if let Some(ref preferred) = skill.manifest.preferred_model {
                 vec![preferred.clone()]
             } else if config.ensemble && !config.ensemble_pool.is_empty() {
@@ -800,6 +832,45 @@ mod tests {
         );
     }
 
+    /// #631: a `test_files_only` axis gets no cell for a non-test file --
+    /// no call and no audit row -- and a cell for a file that is test code
+    /// by path or by markers, including a `#[cfg(test)]` module inside a
+    /// src file.
+    #[test]
+    fn a_test_only_axis_is_skipped_for_non_test_files() {
+        let mut only_tests = sample_skill("testing-antipatterns", None, Severity::High);
+        only_tests.manifest.test_files_only = true;
+        let skills = vec![
+            sample_skill("correctness", None, Severity::Critical),
+            only_tests,
+        ];
+        let files = vec![
+            ReviewFile::whole("src/lib.rs".into(), "a".into(), "fn f() {}".into()),
+            ReviewFile::whole(
+                "src/lib.rs".into(),
+                "b".into(),
+                "fn f() {}\n#[cfg(test)]\nmod tests {}".into(),
+            ),
+            ReviewFile::whole("tests/cli.rs".into(), "c".into(), "fn helper() {}".into()),
+        ];
+        let cfg = default_config();
+        let cells = expand_matrix(&skills, &files, &cfg);
+        let per_file: Vec<(String, String)> = cells
+            .iter()
+            .map(|c| (c.file_sha256.clone(), c.skill.manifest.name.clone()))
+            .collect();
+        assert_eq!(
+            per_file,
+            [
+                ("a".to_string(), "correctness".to_string()),
+                ("b".to_string(), "correctness".to_string()),
+                ("b".to_string(), "testing-antipatterns".to_string()),
+                ("c".to_string(), "correctness".to_string()),
+                ("c".to_string(), "testing-antipatterns".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn expand_matrix_is_skills_times_models_not_one_to_one() {
         let skills = vec![
@@ -969,6 +1040,7 @@ mod tests {
                 axis: Axis::Security,
                 max_severity,
                 target_findings: None,
+                test_files_only: false,
                 capability: Capability {
                     mode: CapabilityMode::Pure,
                 },

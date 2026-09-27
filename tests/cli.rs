@@ -640,42 +640,50 @@ fn feedback_on_a_rule_finding_inherits_no_model_or_category() {
     );
 }
 
-/// #631: named selections. `default` expands to the default set and
-/// `audit` to all six, at the wire: one call per axis.
+/// #631: named selections at the wire, one call per axis, and the
+/// `test_files_only` gate: `testing-antipatterns` gets no call for a file
+/// with no test code, so a plain review of such a file is still two calls.
 #[test]
 fn named_axis_selections_expand_at_the_wire() {
     let proj = tempfile::tempdir().unwrap();
-    let lib = proj.path().join("lib.rs");
+    let plain = proj.path().join("lib.rs");
     std::fs::write(
-        &lib,
+        &plain,
         "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
     )
     .unwrap();
-    for (selection, calls) in [
-        ("default", 3usize),
-        ("audit", 6),
-        ("default,performance", 4),
-    ] {
+    let with_tests = proj.path().join("with_tests.rs");
+    std::fs::write(
+        &with_tests,
+        "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::changed(\"1\"), 1);\n    }\n}\n",
+    )
+    .unwrap();
+    let cases: [(&std::path::Path, Option<&str>, usize); 5] = [
+        (&plain, None, 2),
+        (&with_tests, None, 3),
+        (&with_tests, Some("default"), 3),
+        (&with_tests, Some("audit"), 6),
+        (&with_tests, Some("default,performance"), 4),
+    ];
+    for (file, selection, calls) in cases {
         let home = tempfile::tempdir().unwrap();
         let (out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
-            cmd.arg("review")
-                .arg("--json")
-                .arg("--skip-context7")
-                .arg("--axes")
-                .arg(selection)
-                .arg(&lib)
-                .output()
-                .unwrap()
+            cmd.arg("review").arg("--json").arg("--skip-context7");
+            if let Some(sel) = selection {
+                cmd.arg("--axes").arg(sel);
+            }
+            cmd.arg(file).output().unwrap()
         });
         assert!(
             out.status.code().is_some_and(|c| c < 3),
-            "--axes {selection} was rejected: {}",
+            "{file:?} --axes {selection:?} was rejected: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(
             sent.len(),
             calls,
-            "--axes {selection}: one call per axis expected"
+            "{} --axes {selection:?}: one call per applicable axis expected",
+            file.file_name().unwrap().to_string_lossy()
         );
     }
 }

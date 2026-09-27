@@ -1289,13 +1289,18 @@ struct ResolvedAxes {
 /// 40 of them and none of the bugs, and the default became two. That data
 /// described axes reviewing cold, whole files. Re-measured on 2026-09-27
 /// with context and diff-first input (#631), each opt-in axis alone on four
-/// inputs with known defects: `testing-antipatterns` was the only one with
-/// incremental recall (the vacuous complexity test on #612's first commit,
-/// which the two defaults gave 0 on) and costs ~1k output tokens per file
-/// set behind the shared cached prompt. `architecture`, `simplicity` and
-/// `performance` found no exact known bug the defaults missed; `simplicity`
-/// hallucinated four API suggestions. They remain available through
-/// `--axes`, or all six as `--axes audit`.
+/// inputs with known defects (three for `testing-antipatterns` and
+/// `performance`; their #638 cells died when the provider ran out of
+/// credits, #643): `testing-antipatterns` was the only one with incremental
+/// known-defect recall (the vacuous complexity test on #612's first commit,
+/// which the two defaults gave 0 on), for ~1-4k uncached input plus ~1k
+/// output tokens per file set behind the shared cached prompt, and 8-13 s
+/// on each file's critical path since axes run sequentially per file.
+/// `architecture`, `simplicity` and `performance` found no exact known bug
+/// the defaults missed; `simplicity` hallucinated four API suggestions.
+/// They remain available through `--axes`, or all six as `--axes audit`.
+/// `testing-antipatterns` is `test_files_only`, so a file with no test code
+/// gets no cell for it: no call, no audit row, no `zero_streak`.
 const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
 
 /// Every bundled axis, what `--axes audit` names.
@@ -1455,6 +1460,7 @@ fn build_review_file(
                     diff_follows: view.diff_follows,
                 }),
                 context,
+                is_test: ReviewFile::is_test_source(file_str, source),
             }
         }
         None => whole(file_sha),
@@ -1609,7 +1615,7 @@ fn resolve_axes(
                 .position(|n| n == axis)
                 .ok_or_else(|| {
                     format!(
-                        "unknown skill axis '{}'; available: [{}]",
+                        "unknown skill axis '{}'; available: [{}], or a set: default, audit",
                         axis,
                         available_names.join(", "),
                     )
@@ -1682,6 +1688,7 @@ mod axes_tests {
                 axis: crate::skill_manifest::Axis::Correctness,
                 max_severity: crate::finding::Severity::Critical,
                 target_findings: None,
+                test_files_only: false,
                 capability: crate::skill_manifest::Capability {
                     mode: crate::skill_manifest::CapabilityMode::Pure,
                 },
@@ -1783,6 +1790,23 @@ mod axes_tests {
         assert_eq!(names, &["correctness", "security", "testing-antipatterns"]);
     }
 
+    /// `audit` means every bundled axis. A seventh manifest in `skills/`
+    /// fails this until someone decides whether `audit` includes it.
+    #[test]
+    fn audit_names_every_embedded_skill() {
+        let mut shipped = quorum::skill_manifest::embedded_skill_names();
+        let mut audit: Vec<String> = AUDIT_AXES.iter().map(|s| s.to_string()).collect();
+        shipped.sort();
+        audit.sort();
+        assert_eq!(audit, shipped);
+        for name in CODE_MODE_MACRO_AXES {
+            assert!(
+                AUDIT_AXES.contains(name),
+                "default axis {name} missing from audit"
+            );
+        }
+    }
+
     /// #631: `default` and `audit` are names for sets, expanded in place and
     /// deduplicated against anything listed alongside them.
     #[test]
@@ -1809,7 +1833,17 @@ mod axes_tests {
             names(&["default"]),
             ["correctness", "security", "testing-antipatterns"]
         );
-        assert_eq!(names(&["Audit"]).len(), 6);
+        assert_eq!(
+            names(&["Audit"]),
+            [
+                "correctness",
+                "security",
+                "testing-antipatterns",
+                "architecture",
+                "simplicity",
+                "performance"
+            ]
+        );
         assert_eq!(
             names(&["security", "default"]),
             ["security", "correctness", "testing-antipatterns"],
@@ -2167,6 +2201,7 @@ mod skill_integration_tests {
                 axis: skill_manifest::Axis::Correctness,
                 max_severity: quorum::finding::Severity::Critical,
                 target_findings: None,
+                test_files_only: false,
                 capability: skill_manifest::Capability {
                     mode: skill_manifest::CapabilityMode::Pure,
                 },
