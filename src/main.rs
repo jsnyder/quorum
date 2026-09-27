@@ -1255,8 +1255,8 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
                 eprint!(" dismissed review {}...", dismissed);
             }
             eprintln!(
-                " done ({} inline, {} in summary)",
-                result.inline_count, result.body_count
+                " done ({} inline, {} in summary, {} already posted)",
+                result.inline_count, result.body_count, result.carried_count
             );
             0
         }
@@ -4073,8 +4073,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     eprint!(" dismissed review {}...", dismissed);
                 }
                 eprintln!(
-                    " done ({} inline, {} in summary)",
-                    result.inline_count, result.body_count
+                    " done ({} inline, {} in summary, {} already posted)",
+                    result.inline_count, result.body_count, result.carried_count
                 );
             }
             Err(e) => {
