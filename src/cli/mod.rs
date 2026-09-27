@@ -685,8 +685,11 @@ pub struct ReviewOpts {
     #[arg(long, default_value = "code")]
     pub mode: crate::review_mode::ReviewMode,
 
-    /// Comma-separated skill axes to run (e.g. correctness,security).
-    /// Overrides the default mode-based axis resolution.
+    /// Comma-separated skill axes to run (e.g. correctness,security), or a
+    /// named set: `default` (the code-mode set: correctness, security,
+    /// testing-antipatterns) or `audit` (all six). Names mix with axes:
+    /// `default,performance`. Overrides the mode-based axis resolution, so
+    /// `--mode plan --axes default` runs the code axes on prose.
     #[arg(long, value_delimiter = ',')]
     pub axes: Vec<String>,
 

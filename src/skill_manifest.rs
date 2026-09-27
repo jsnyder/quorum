@@ -122,6 +122,12 @@ pub struct SkillManifest {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_findings: Option<u32>,
+    /// The axis reviews only test code (#631). A file that is not a test
+    /// file by path or by markers gets no cell at all: no call, no audit
+    /// row, so `stats --skills` does not read the axis's designed silence
+    /// as the #491 blackout.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test_files_only: bool,
 
     pub capability: Capability,
     pub prompts: Prompts,
@@ -222,6 +228,18 @@ fn validate_manifest(manifest: &SkillManifest, path: &Path) -> anyhow::Result<()
         );
     }
 
+    // `--axes default` and `--axes audit` name sets (#631); a skill with
+    // either name could never be selected, so refuse it where the author
+    // can see why.
+    if RESERVED_AXIS_NAMES.contains(&manifest.name.to_ascii_lowercase().as_str()) {
+        bail!(
+            "skill name `{}` is reserved: `--axes {}` names a set of axes {}",
+            manifest.name,
+            manifest.name.to_ascii_lowercase(),
+            ctx()
+        );
+    }
+
     // Capability mode: only `pure` is supported in v1.
     if manifest.capability.mode != CapabilityMode::Pure {
         bail!(
@@ -262,6 +280,19 @@ fn is_valid_semver(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Embedded (compile-time) skill manifests
 // ---------------------------------------------------------------------------
+
+/// Names `--axes` interprets as sets rather than skills (#631).
+pub const RESERVED_AXIS_NAMES: &[&str] = &["default", "audit"];
+
+/// The `name` of every embedded skill manifest, so a caller listing "all
+/// bundled axes" can be checked against what is actually shipped.
+pub fn embedded_skill_names() -> Vec<String> {
+    EMBEDDED_SKILLS
+        .iter()
+        .filter_map(|(_, body)| toml::from_str::<toml::Value>(body).ok())
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .collect()
+}
 
 const EMBEDDED_SKILLS: &[(&str, &str)] = &[
     (
@@ -887,6 +918,64 @@ primary = "prompt"
         assert!(
             skills.is_empty(),
             "non-pure capability mode should be rejected as reserved"
+        );
+    }
+
+    /// #631: `default` and `audit` are set names inside `--axes`; a skill
+    /// carrying either would load and never be selectable.
+    #[test]
+    fn a_skill_named_after_an_axis_selection_is_rejected() {
+        let bundled = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        for name in ["default", "Audit"] {
+            let toml = format!(
+                r#"name = "{name}"
+version = "1.0.0"
+display_name = "Test"
+description = "Desc."
+axis = "security"
+max_severity = "high"
+
+[capability]
+mode = "pure"
+
+[prompts]
+primary = "prompt"
+"#
+            );
+            write_skill(user.path(), &format!("{name}.toml"), &toml);
+        }
+        let skills = load_skills_dirs_only(bundled.path(), user.path()).unwrap();
+        assert!(
+            skills.is_empty(),
+            "a reserved selection name loaded as a skill: {:?}",
+            skills.iter().map(|s| &s.manifest.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_files_only_parses_and_defaults_off() {
+        let base = r#"name = "x"
+version = "1.0.0"
+display_name = "Test"
+description = "Desc."
+axis = "security"
+max_severity = "high"
+
+[capability]
+mode = "pure"
+
+[prompts]
+primary = "prompt"
+"#;
+        let m: SkillManifest = toml::from_str(base).unwrap();
+        assert!(!m.test_files_only);
+        let m: SkillManifest = toml::from_str(&format!("test_files_only = true\n{base}")).unwrap();
+        assert!(m.test_files_only);
+        assert!(
+            embedded_skill_names().contains(&"testing-antipatterns".to_string()),
+            "{:?}",
+            embedded_skill_names()
         );
     }
 

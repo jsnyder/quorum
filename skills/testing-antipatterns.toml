@@ -5,6 +5,7 @@ description = "Test reliability, isolation, determinism, and common testing anti
 axis = "testing"
 max_severity = "high"
 target_findings = 8
+test_files_only = true
 
 [capability]
 mode = "pure"

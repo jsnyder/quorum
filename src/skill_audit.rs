@@ -696,6 +696,7 @@ mod tests {
                 axis: Axis::Security,
                 max_severity: crate::finding::Severity::Critical,
                 target_findings: None,
+                test_files_only: false,
                 capability: Capability {
                     mode: CapabilityMode::Pure,
                 },

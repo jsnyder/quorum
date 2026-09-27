@@ -1890,6 +1890,8 @@ pub fn is_test_file_path(path: &str) -> bool {
         || filename.ends_with(".test.jsx")
         || filename.ends_with(".spec.ts")
         || filename.ends_with(".spec.js")
+        || filename.ends_with(".spec.tsx")
+        || filename.ends_with(".spec.jsx")
         || filename.ends_with("_spec.rb")
 }
 
@@ -2623,6 +2625,14 @@ pub fn learn_logistic(samples: &[JoinedSample], k_folds: usize) -> Option<Logist
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #644 (CodeRabbit): `.spec.tsx` was not a test path while `.test.tsx` was.
+    #[test]
+    fn spec_tsx_and_jsx_are_test_paths() {
+        assert!(is_test_file_path("src/Widget.spec.tsx"));
+        assert!(is_test_file_path("src/Widget.spec.jsx"));
+        assert!(!is_test_file_path("src/Widget.tsx"));
+    }
 
     fn make_feedback(title: &str, verdict: &str, file_path: &str) -> serde_json::Value {
         serde_json::json!({

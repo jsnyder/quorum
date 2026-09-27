@@ -1281,13 +1281,50 @@ struct ResolvedAxes {
 }
 
 /// The default code-mode macro axes, applied when no `--axes` flag is given
-/// and the mode is `Code` with no legacy flags active.
+/// and the mode is `Code` with no legacy flags active. Also what
+/// `--axes default` names.
 ///
-/// Two axes, not six. On 2026-09-14 a six-axis review of a five-file diff
-/// cost 712k tokens and produced 66 findings; the four axes dropped here
-/// (architecture, simplicity, performance, testing-antipatterns) produced 40
-/// of them and none of the bugs. They remain available through `--axes`.
-const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security"];
+/// Three axes, not six. On 2026-09-14 a six-axis review of a five-file diff
+/// cost 712k tokens and produced 66 findings; the four opt-in axes produced
+/// 40 of them and none of the bugs, and the default became two. That data
+/// described axes reviewing cold, whole files. Re-measured on 2026-09-27
+/// with context and diff-first input (#631), each opt-in axis alone on four
+/// inputs with known defects (three for `testing-antipatterns` and
+/// `performance`; their #638 cells died when the provider ran out of
+/// credits, #643): `testing-antipatterns` was the only one with incremental
+/// known-defect recall (the vacuous complexity test on #612's first commit,
+/// which the two defaults gave 0 on), for ~1-4k uncached input plus ~1k
+/// output tokens per file set behind the shared cached prompt, and 8-13 s
+/// on each file's critical path since axes run sequentially per file.
+/// `architecture`, `simplicity` and `performance` found no exact known bug
+/// the defaults missed; `simplicity` hallucinated four API suggestions.
+/// They remain available through `--axes`, or all six as `--axes audit`.
+/// `testing-antipatterns` is `test_files_only`, so a file with no test code
+/// gets no cell for it: no call, no audit row, no `zero_streak`.
+const CODE_MODE_MACRO_AXES: &[&str] = &["correctness", "security", "testing-antipatterns"];
+
+/// Every bundled axis, what `--axes audit` names.
+const AUDIT_AXES: &[&str] = &[
+    "correctness",
+    "security",
+    "testing-antipatterns",
+    "architecture",
+    "simplicity",
+    "performance",
+];
+
+/// Expand the named selections in an `--axes` list (#631): `default` and
+/// `audit` stand for the sets above, in place, so `default,performance` is
+/// four axes. Unknown names pass through for the validation below to report.
+fn expand_axis_selections(axes: &[String]) -> Vec<String> {
+    axes.iter()
+        .flat_map(|a| match a.trim().to_ascii_lowercase().as_str() {
+            "default" => CODE_MODE_MACRO_AXES.iter().map(|s| s.to_string()).collect(),
+            "audit" => AUDIT_AXES.iter().map(|s| s.to_string()).collect(),
+            _ => vec![a.clone()],
+        })
+        .collect()
+}
 
 /// Everything the pipeline knows about a file, rendered for the skill axes:
 /// hydration (called signatures, types, callers scoped to the changed
@@ -1413,17 +1450,18 @@ fn build_review_file(
                 total = view.total_lines,
                 "diff-first: sending focused view to the axes"
             );
-            ReviewFile {
-                path: file_str.to_owned(),
-                sha256: file_sha,
-                code: view.text,
-                focus: Some(FocusMeta {
+            ReviewFile::focused(
+                file_str.to_owned(),
+                file_sha,
+                view.text,
+                FocusMeta {
                     line_range: (view.first_line, view.last_line),
                     regions: view.regions,
                     diff_follows: view.diff_follows,
-                }),
+                },
                 context,
-            }
+                source,
+            )
         }
         None => whole(file_sha),
     }
@@ -1530,7 +1568,8 @@ fn resolve_axes(
     // -----------------------------------------------------------------------
     let normalized: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
-        axes.iter()
+        expand_axis_selections(axes)
+            .iter()
             .map(|a| a.trim().to_ascii_lowercase())
             .filter(|a| !a.is_empty())
             .filter(|a| seen.insert(a.clone()))
@@ -1576,7 +1615,7 @@ fn resolve_axes(
                 .position(|n| n == axis)
                 .ok_or_else(|| {
                     format!(
-                        "unknown skill axis '{}'; available: [{}]",
+                        "unknown skill axis '{}'; available: [{}], or a set: default, audit",
                         axis,
                         available_names.join(", "),
                     )
@@ -1649,6 +1688,7 @@ mod axes_tests {
                 axis: crate::skill_manifest::Axis::Correctness,
                 max_severity: crate::finding::Severity::Critical,
                 target_findings: None,
+                test_files_only: false,
                 capability: crate::skill_manifest::Capability {
                     mode: crate::skill_manifest::CapabilityMode::Pure,
                 },
@@ -1737,7 +1777,7 @@ mod axes_tests {
             &skills,
         );
         let resolved = result.unwrap().unwrap();
-        assert_eq!(resolved.skills.len(), 2);
+        assert_eq!(resolved.skills.len(), 3);
         assert_eq!(
             resolved.source,
             crate::skill_audit::AxisSelectionSource::ModeMacro,
@@ -1747,7 +1787,80 @@ mod axes_tests {
             .iter()
             .map(|s| s.manifest.name.as_str())
             .collect();
-        assert_eq!(names, &["correctness", "security"]);
+        assert_eq!(names, &["correctness", "security", "testing-antipatterns"]);
+    }
+
+    /// `audit` means every bundled axis. A seventh manifest in `skills/`
+    /// fails this until someone decides whether `audit` includes it.
+    #[test]
+    fn audit_names_every_embedded_skill() {
+        let mut shipped = quorum::skill_manifest::embedded_skill_names();
+        let mut audit: Vec<String> = AUDIT_AXES.iter().map(|s| s.to_string()).collect();
+        shipped.sort();
+        audit.sort();
+        assert_eq!(audit, shipped);
+        for name in CODE_MODE_MACRO_AXES {
+            assert!(
+                AUDIT_AXES.contains(name),
+                "default axis {name} missing from audit"
+            );
+        }
+    }
+
+    /// #631: `default` and `audit` are names for sets, expanded in place and
+    /// deduplicated against anything listed alongside them.
+    #[test]
+    fn named_selections_expand_and_deduplicate() {
+        let skills = bundled_skills();
+        let names = |axes: &[&str]| -> Vec<String> {
+            let axes: Vec<String> = axes.iter().map(|s| s.to_string()).collect();
+            resolve_axes(
+                &axes,
+                crate::review_mode::ReviewMode::Code,
+                false,
+                false,
+                false,
+                &skills,
+            )
+            .unwrap()
+            .unwrap()
+            .skills
+            .iter()
+            .map(|s| s.manifest.name.clone())
+            .collect()
+        };
+        assert_eq!(
+            names(&["default"]),
+            ["correctness", "security", "testing-antipatterns"]
+        );
+        assert_eq!(
+            names(&["Audit"]),
+            [
+                "correctness",
+                "security",
+                "testing-antipatterns",
+                "architecture",
+                "simplicity",
+                "performance"
+            ]
+        );
+        assert_eq!(
+            names(&["security", "default"]),
+            ["security", "correctness", "testing-antipatterns"],
+            "listed first stays first; the expansion does not repeat it"
+        );
+        assert_eq!(names(&["default", "performance"]).len(), 4);
+        assert!(
+            resolve_axes(
+                &["defaults".into()],
+                crate::review_mode::ReviewMode::Code,
+                false,
+                false,
+                false,
+                &skills
+            )
+            .is_err()
+        );
     }
 
     // A4: deep_suppresses_default_axes
@@ -2088,6 +2201,7 @@ mod skill_integration_tests {
                 axis: skill_manifest::Axis::Correctness,
                 max_severity: quorum::finding::Severity::Critical,
                 target_findings: None,
+                test_files_only: false,
                 capability: skill_manifest::Capability {
                     mode: skill_manifest::CapabilityMode::Pure,
                 },
