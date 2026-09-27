@@ -216,7 +216,11 @@ impl ReviewFile {
     }
 }
 
-/// Markers must start a token: `it("` inside `commit("` is not a test.
+/// Markers must start a token: `it(` inside `commit(` is not a test. The
+/// JS call forms are matched without their quote so `it('...')` and
+/// ``it(`...`)`` count too. A marker inside a string or comment is a false
+/// positive that costs one call answering `[]`; the gate errs that way on
+/// purpose, since the other error hides a test review.
 fn has_test_markers(source: &str) -> bool {
     const MARKERS: &[&str] = &[
         "#[test]",
@@ -226,8 +230,8 @@ fn has_test_markers(source: &str) -> bool {
         "@pytest",
         "@Test",
         "describe(",
-        "it(\"",
-        "test(\"",
+        "it(",
+        "test(",
         "func Test",
     ];
     MARKERS.iter().any(|m| {
@@ -887,6 +891,11 @@ mod tests {
                 "d".into(),
                 "fn save() { repo.commit(\"msg\"); visit(\"x\"); }".into(),
             ),
+            ReviewFile::whole(
+                "src/Widget.jsx".into(),
+                "e".into(),
+                "it('renders', () => { render(<Widget />); });".into(),
+            ),
         ];
         let cfg = default_config();
         let cells = expand_matrix(&skills, &files, &cfg);
@@ -903,8 +912,10 @@ mod tests {
                 ("c".to_string(), "correctness".to_string()),
                 ("c".to_string(), "testing-antipatterns".to_string()),
                 ("d".to_string(), "correctness".to_string()),
+                ("e".to_string(), "correctness".to_string()),
+                ("e".to_string(), "testing-antipatterns".to_string()),
             ],
-            "`it(\"` inside `commit(\"` and `visit(\"` must not make src/git.rs a test file"
+            "`it(` inside `commit(`/`visit(` is not a test; a single-quoted `it('` is"
         );
     }
 
