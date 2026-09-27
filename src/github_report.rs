@@ -152,7 +152,8 @@ pub fn render_inline_comment(finding: &Finding, version: &str) -> String {
     let cat = finding.category.as_str();
     let source = source_label(&finding.source);
     let mut out = format!(
-        "**{}** {} — `{}`\n\n{}\n\n*quorum {} | {}*",
+        "{}\n**{}** {} — `{}`\n\n{}\n\n*quorum {} | {}*",
+        inline_fingerprint_marker(finding),
         icon,
         sanitize_for_github(&finding.title),
         cat,
@@ -162,6 +163,39 @@ pub fn render_inline_comment(finding: &Finding, version: &str) -> String {
     );
     truncate_utf8_safe(&mut out, GITHUB_BODY_LIMIT);
     out
+}
+
+const INLINE_MARKER_PREFIX: &str = "quorum-inline:v1 fp=";
+
+/// What makes an inline comment "the same finding" across pushes (#640):
+/// the title, not the line. GitHub keeps a live comment's `line` current as
+/// the file moves underneath it and nulls it once the code there changes,
+/// so the line is compared at listing time against what GitHub reports.
+///
+/// The path is not hashed in because the dedupe key carries it alongside
+/// the fingerprint; hashing it too would only be redundant.
+pub fn inline_fingerprint(finding: &Finding) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(sanitize_for_github(&finding.title).as_bytes());
+    hex::encode(&digest[..8])
+}
+
+fn inline_fingerprint_marker(finding: &Finding) -> String {
+    format!(
+        "<!-- {}{} -->",
+        INLINE_MARKER_PREFIX,
+        inline_fingerprint(finding)
+    )
+}
+
+/// The fingerprint a comment body carries, if it is shaped like ours.
+pub fn parse_inline_fingerprint(body: &str) -> Option<&str> {
+    body.lines().find_map(|line| {
+        let t = line.trim();
+        let inner = t.strip_prefix("<!-- ")?.strip_suffix(" -->")?;
+        let fp = inner.strip_prefix(INLINE_MARKER_PREFIX)?;
+        (fp.len() == 16 && fp.bytes().all(|b| b.is_ascii_hexdigit())).then_some(fp)
+    })
 }
 
 pub fn render_body_finding(finding: &Finding, version: &str) -> String {
@@ -237,6 +271,7 @@ pub fn render_review_body(
     body_findings: &[Finding],
     version: &str,
     incomplete: Option<&crate::finding::ReviewIncomplete>,
+    carried: usize,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(4096);
@@ -274,17 +309,36 @@ pub fn render_review_body(
         writeln!(out).unwrap();
     }
 
+    // #640: findings that already sit on the PR as live inline comments from
+    // an earlier push are not posted again; say so after the counts, or the
+    // review reads as if they were resolved.
+    let carried_line = |out: &mut String| {
+        if carried > 0 {
+            writeln!(
+                out,
+                "{} finding{} already posted inline on an earlier push and still open; not repeated here.\n",
+                carried,
+                if carried == 1 { "" } else { "s" }
+            )
+            .unwrap();
+        }
+    };
+
     if total == 0 {
         if incomplete.is_some_and(|i| i.axes_failed > 0) {
-            writeln!(out, "No findings from the axes that completed.").unwrap();
+            writeln!(out, "No findings from the axes that completed.\n").unwrap();
+        } else if carried == 0 {
+            writeln!(out, "No findings.\n").unwrap();
         } else {
-            writeln!(out, "No findings.").unwrap();
+            writeln!(out, "No new findings.\n").unwrap();
         }
+        carried_line(&mut out);
         return out;
     }
 
     let summary = format_summary_counts(inline_findings, body_findings);
     writeln!(out, "{}\n", summary).unwrap();
+    carried_line(&mut out);
 
     if body_findings.is_empty() {
         return out;
@@ -370,6 +424,11 @@ pub struct GitHubContext {
     pub owner: String,
     pub repo: String,
     pub token: String,
+    /// The login `token` acts as when `GET /user` cannot say (#640): set
+    /// only when the token is the runner's own `GITHUB_TOKEN` inside GitHub
+    /// Actions. A `--github-token` PAT or App token gets no fallback, so a
+    /// failed `/user` on it cannot be mistaken for `github-actions[bot]`.
+    pub bot_login: Option<String>,
 }
 
 #[derive(Debug)]
@@ -390,15 +449,36 @@ impl std::fmt::Display for GitHubContextError {
     }
 }
 
+/// Which token to use and, if it is the runner's own `GITHUB_TOKEN`, the
+/// login the platform guarantees for it. Split from the env reads so the
+/// decision is testable without `set_var` (#497). A `--github-token` flag
+/// wins and gets no fallback identity: a PAT or App token whose `/user`
+/// fails is unknown, not `github-actions[bot]`.
+fn select_token(
+    token_flag: Option<&str>,
+    env_token: Option<String>,
+    github_actions: Option<&str>,
+) -> Result<(String, Option<String>), GitHubContextError> {
+    match token_flag.filter(|s| !s.is_empty()) {
+        Some(flag) => Ok((flag.to_string(), None)),
+        None => Ok((
+            env_token
+                .filter(|s| !s.is_empty())
+                .ok_or(GitHubContextError::NoToken)?,
+            actions_bot_login(github_actions).map(str::to_string),
+        )),
+    }
+}
+
 pub fn resolve_github_context(
     token_flag: Option<&str>,
     repo_flag: Option<&str>,
 ) -> Result<GitHubContext, GitHubContextError> {
-    let token = token_flag
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok())
-        .filter(|s| !s.is_empty())
-        .ok_or(GitHubContextError::NoToken)?;
+    let (token, bot_login) = select_token(
+        token_flag,
+        std::env::var("GITHUB_TOKEN").ok(),
+        std::env::var("GITHUB_ACTIONS").ok().as_deref(),
+    )?;
 
     let (owner, repo) = if let Some(r) = repo_flag {
         parse_github_repo_url(r)
@@ -422,7 +502,12 @@ pub fn resolve_github_context(
             .ok_or_else(|| GitHubContextError::NoRepo(format!("cannot parse remote: {}", url)))?
     };
 
-    Ok(GitHubContext { owner, repo, token })
+    Ok(GitHubContext {
+        owner,
+        repo,
+        token,
+        bot_login,
+    })
 }
 
 // --- Task 5: Marker protocol and dismiss logic ---
@@ -541,12 +626,18 @@ pub struct PostReviewRequest {
     pub commit_sha: String,
     /// Override API base URL (for testing). Default: https://api.github.com
     pub api_base_url: Option<String>,
+    /// The login `token` acts as when `GET /user` cannot say (#640). Inside
+    /// GitHub Actions that is `github-actions[bot]`; see `actions_bot_login`.
+    pub bot_login: Option<String>,
 }
 
 pub struct PostReviewResult {
     pub review_id: u64,
     pub inline_count: usize,
     pub body_count: usize,
+    /// #640: findings already on the PR as live inline comments from an
+    /// earlier push, left in place rather than posted again.
+    pub carried_count: usize,
     pub dismissed_previous: Option<u64>,
 }
 
@@ -593,11 +684,23 @@ struct ReviewUser {
 /// #572: without this there is no way to tell our own review from one a
 /// contributor shaped to look like ours, and the marker alone is public.
 ///
-/// Returns `None` when identity cannot be established -- some installation
-/// tokens cannot read `/user`. Callers must treat that as "dismiss nothing".
-/// Stale reviews are untidy; dismissing another reviewer's change request is
-/// not, so this fails closed.
-async fn authenticated_login(client: &reqwest::Client, base: &str, token: &str) -> Option<String> {
+/// `GET /user` answers for a personal token. It does not for the token
+/// GitHub Actions hands a workflow (`403 Forbidden`, observed on every run
+/// of the report workflow through #638), so for that case the caller
+/// supplies what the platform already guarantees: `GITHUB_TOKEN` acts as
+/// `github-actions[bot]` (see `actions_bot_login`).
+///
+/// Returns `None` when neither answers. Callers treat that as "we do not
+/// know which comments are ours": dismiss nothing, carry nothing, post
+/// everything. Stale reviews and duplicate comments are untidy; dismissing
+/// another reviewer's change request or hiding a finding behind somebody
+/// else's comment is not, so this fails closed.
+async fn authenticated_login(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    fallback: Option<&str>,
+) -> Option<String> {
     let headers = github_client_headers(token).ok()?;
     let resp = client
         .get(format!("{}/user", base))
@@ -605,16 +708,122 @@ async fn authenticated_login(client: &reqwest::Client, base: &str, token: &str) 
         .send()
         .await
         .ok()?;
-    if !resp.status().is_success() {
-        eprintln!(
-            "Warning: cannot identify the authenticated user ({}); skipping dismissal \
-             rather than risk dismissing a review we did not write",
-            resp.status()
-        );
-        return None;
+    if resp.status().is_success() {
+        let body: serde_json::Value = resp.json().await.ok()?;
+        return body["login"].as_str().map(|s| s.to_string());
     }
-    let body: serde_json::Value = resp.json().await.ok()?;
-    body["login"].as_str().map(|s| s.to_string())
+    match fallback {
+        Some(login) => Some(login.to_string()),
+        None => {
+            eprintln!(
+                "Warning: cannot identify the authenticated user ({}); posting all findings \
+                 and dismissing nothing rather than act on a review we did not write",
+                resp.status()
+            );
+            None
+        }
+    }
+}
+
+/// The login `GITHUB_TOKEN` acts as inside GitHub Actions, given the value
+/// of the runner's `GITHUB_ACTIONS` variable. The runner sets it to `true`;
+/// anything else (unset, a stray value) means we are not in Actions and
+/// there is no fallback identity to claim.
+pub fn actions_bot_login(github_actions: Option<&str>) -> Option<&'static str> {
+    (github_actions == Some("true")).then_some("github-actions[bot]")
+}
+
+#[derive(Deserialize)]
+struct ListCommentEntry {
+    path: String,
+    /// Current line on the head commit; `None` once the code under the
+    /// comment changed ("outdated" in the UI). GitHub keeps this current as
+    /// the file moves; `original_line` is the creation-time value.
+    line: Option<u64>,
+    /// `RIGHT` for the head side. We only ever post `RIGHT`, but a comment
+    /// on a deleted line has `side: LEFT` and a valid `line` too, so
+    /// without this a stranger's LEFT comment at line N could shadow a
+    /// RIGHT finding at line N.
+    side: Option<String>,
+    body: Option<String>,
+    user: Option<ReviewUser>,
+}
+
+/// How many live inline comments we posted earlier on this PR carry each
+/// `(fingerprint, path, line)` (#640). A count rather than a set because
+/// two findings can share a key exactly (`analysis.rs` gives every
+/// `.unwrap()` the same title, and two on one line are two findings); each
+/// carried finding consumes one comment, so a comment somebody deleted
+/// does not cover a finding it no longer shows.
+///
+/// Any failure on the way -- listing, parse -- returns an empty map, so
+/// the caller posts everything: an extra copy is the known annoyance, a
+/// silently missing finding is not. That includes a failure on page 3 of
+/// 5: a partial map would hide exactly the findings on the unread pages.
+///
+/// Only comments authored by `me` count, for the reason #572 gave for
+/// dismissals: the marker is public. Rename behaviour is unverified against
+/// GitHub (`path` may stay the creation-time path); the mismatch direction
+/// is a re-post, never a suppression.
+async fn live_inline_fingerprints(
+    client: &reqwest::Client,
+    req: &PostReviewRequest,
+    me: &str,
+) -> std::collections::HashMap<(String, String, u64), usize> {
+    let mut out = std::collections::HashMap::new();
+    let base = api_base(req);
+    let Ok(headers) = github_client_headers(&req.token) else {
+        return out;
+    };
+    // ponytail: 10 pages of 100 covers any PR quorum has reviewed; beyond
+    // that the tail is re-posted, which is the pre-#640 behaviour.
+    for page in 1..=10u32 {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments?per_page=100&page={}",
+            base, req.owner, req.repo, req.pr_number, page
+        );
+        let resp = match client.get(&url).headers(headers.clone()).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                eprintln!(
+                    "Warning: list review comments returned {}: posting all findings",
+                    r.status()
+                );
+                return std::collections::HashMap::new();
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to list review comments: {}: posting all findings",
+                    e
+                );
+                return std::collections::HashMap::new();
+            }
+        };
+        let entries: Vec<ListCommentEntry> = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to parse review comments: {}: posting all findings",
+                    e
+                );
+                return std::collections::HashMap::new();
+            }
+        };
+        let n = entries.len();
+        for c in entries {
+            if let (Some(line), Some(body), Some(user)) = (c.line, c.body, c.user)
+                && user.login == me
+                && c.side.as_deref() == Some("RIGHT")
+                && let Some(fp) = parse_inline_fingerprint(&body)
+            {
+                *out.entry((fp.to_string(), c.path, line)).or_insert(0) += 1;
+            }
+        }
+        if n < 100 {
+            break;
+        }
+    }
+    out
 }
 
 #[derive(Serialize)]
@@ -671,6 +880,7 @@ fn github_client_headers(token: &str) -> Result<reqwest::header::HeaderMap, GitH
 async fn dismiss_previous_reviews(
     client: &reqwest::Client,
     req: &PostReviewRequest,
+    me: &str,
     keep: u64,
 ) -> Option<u64> {
     let base = api_base(req);
@@ -706,9 +916,6 @@ async fn dismiss_previous_reviews(
             return None;
         }
     };
-
-    // #572: fail closed. No identity, no dismissals.
-    let me = authenticated_login(client, base, &req.token).await?;
 
     let mut dismissed_id = None;
     for review in &reviews {
@@ -821,13 +1028,46 @@ pub async fn post_review(
     // carry rendered text, not severities.
     let mut inline_findings = Vec::new();
     let mut body_findings = Vec::new();
+    let mut inline_candidates = Vec::new();
 
     for review_finding in &req.findings {
         let file_path = review_finding.file_path.as_str();
         let finding = &review_finding.finding;
-        let target = classify_posting_target(finding, file_path, &diff_ranges);
-        match target {
-            PostingTarget::Inline => {
+        match classify_posting_target(finding, file_path, &diff_ranges) {
+            PostingTarget::Inline => inline_candidates.push((file_path, finding)),
+            PostingTarget::Body => body_findings.push(finding.clone()),
+        }
+    }
+
+    // #640: what is already on the PR from an earlier push. Two calls we
+    // skip when there is nothing inline to compare against.
+    let base = api_base(req);
+    let me = if inline_candidates.is_empty() {
+        None
+    } else {
+        authenticated_login(client, base, &req.token, req.bot_login.as_deref()).await
+    };
+    let mut already_posted = match &me {
+        Some(me) => live_inline_fingerprints(client, req, me).await,
+        None => std::collections::HashMap::new(),
+    };
+    let mut carried = 0usize;
+
+    for (file_path, finding) in inline_candidates {
+        {
+            {
+                let key = (
+                    inline_fingerprint(finding),
+                    file_path.to_string(),
+                    finding.anchor_line() as u64,
+                );
+                if let Some(n) = already_posted.get_mut(&key)
+                    && *n > 0
+                {
+                    *n -= 1;
+                    carried += 1;
+                    continue;
+                }
                 let body = render_inline_comment(finding, &req.version);
                 inline_comments.push(ReviewComment {
                     path: file_path.to_string(),
@@ -855,9 +1095,6 @@ pub async fn post_review(
                 });
                 inline_findings.push(finding.clone());
             }
-            PostingTarget::Body => {
-                body_findings.push(finding.clone());
-            }
         }
     }
 
@@ -867,6 +1104,7 @@ pub async fn post_review(
         &body_findings,
         &req.version,
         req.incomplete.as_ref(),
+        carried,
     );
 
     let create_req = CreateReviewRequest {
@@ -901,12 +1139,21 @@ pub async fn post_review(
     // The replacement is live, so the old one can go. Best-effort by design:
     // a failure here leaves two reviews visible, which is strictly better than
     // the previous ordering's failure mode of leaving none.
-    let dismissed_previous = dismiss_previous_reviews(client, req, review.id).await;
+    let me = match me {
+        Some(me) => Some(me),
+        None => authenticated_login(client, base, &req.token, req.bot_login.as_deref()).await,
+    };
+    // #572: fail closed. No identity, no dismissals.
+    let dismissed_previous = match &me {
+        Some(me) => dismiss_previous_reviews(client, req, me, review.id).await,
+        None => None,
+    };
 
     Ok(PostReviewResult {
         review_id: review.id,
         inline_count: create_req.comments.len(),
         body_count: body_findings.len(),
+        carried_count: carried,
         dismissed_previous,
     })
 }
@@ -1015,6 +1262,7 @@ mod tests {
             &[],
             "0.27.0",
             Some(&incomplete),
+            0,
         );
         assert!(body.contains("Review incomplete:"), "{body}");
         assert!(body.contains("1 of 2 skill axes failed"), "{body}");
@@ -1044,6 +1292,7 @@ mod tests {
             &[],
             "0.27.0",
             Some(&incomplete),
+            0,
         );
         assert_eq!(body.matches("(not_json)").count(), 20, "{body}");
         assert!(body.contains("- and 480 more"), "{body}");
@@ -1073,6 +1322,7 @@ mod tests {
             &[],
             "0.27.0",
             Some(&incomplete),
+            0,
         );
         let listed = body.matches("(network_error)").count();
         assert!(
@@ -1090,7 +1340,14 @@ mod tests {
 
     #[test]
     fn render_review_body_clean() {
-        let body = render_review_body("<!-- quorum-review-marker:v1 -->", &[], &[], "0.27.0", None);
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.27.0",
+            None,
+            0,
+        );
         assert!(body.contains("quorum-review-marker"));
         assert!(body.contains("No findings."));
     }
@@ -1147,6 +1404,7 @@ mod tests {
             &[f],
             "0.27.0",
             None,
+            0,
         );
         assert!(body.contains("## Quorum Review"));
         assert!(body.contains("3 findings"));
@@ -1198,6 +1456,7 @@ mod tests {
             &findings,
             "0.27.0",
             None,
+            0,
         );
         assert!(body.len() <= 60_000);
         assert!(body.contains("additional findings omitted"));
@@ -1566,6 +1825,7 @@ mod integration_tests {
             run_id: "01TEST".into(),
             commit_sha: "abc123".into(),
             api_base_url: Some(base_url),
+            bot_login: None,
         };
 
         let result = post_review(&client, &req).await.unwrap();
@@ -1854,6 +2114,7 @@ mod integration_tests {
             run_id: "01RUN".into(),
             commit_sha: "deadbeef".into(),
             api_base_url: Some(base.to_string()),
+            bot_login: None,
         }
     }
 
@@ -2084,6 +2345,357 @@ mod integration_tests {
         assert!(
             dismissals(&server).await.is_empty(),
             "dismissed a review without knowing who we are"
+        );
+    }
+
+    // -- #640: unchanged findings are carried, not re-posted --
+
+    /// Mount a review-comment listing on `server`: one live comment per
+    /// `(author, path, line, body)`.
+    async fn mount_comments(
+        server: &wiremock::MockServer,
+        comments: &[(&str, &str, Option<u64>, String)],
+    ) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let list: Vec<serde_json::Value> = comments
+            .iter()
+            .enumerate()
+            .map(|(i, (who, p, line, body))| {
+                serde_json::json!({
+                    "id": 500 + i,
+                    "path": p,
+                    "line": line,
+                    "side": "RIGHT",
+                    "body": body,
+                    "user": {"login": who},
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(list))
+            .mount(server)
+            .await;
+    }
+
+    async fn posted_review(server: &wiremock::MockServer) -> serde_json::Value {
+        let posted = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.method == wiremock::http::Method::POST)
+            .expect("a create-review POST was sent");
+        serde_json::from_slice(&posted.body).unwrap()
+    }
+
+    /// The seven-copies case from #615: the same rule finding at the same
+    /// line, already sitting on the PR from the previous push.
+    #[tokio::test]
+    async fn a_finding_already_posted_inline_at_that_line_is_carried_not_reposted() {
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        mount_comments(&server, &[("quorum-bot", "a.rs", Some(7), previous)]).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+
+        assert_eq!(
+            (result.inline_count, result.body_count, result.carried_count),
+            (0, 0, 1),
+            "an unchanged finding was posted again"
+        );
+        let body = posted_review(&server).await;
+        assert_eq!(body["comments"].as_array().map(Vec::len), Some(0));
+        assert!(
+            body["body"]
+                .as_str()
+                .unwrap()
+                .contains("1 finding already posted inline on an earlier push"),
+            "body does not account for the carried finding:\n{}",
+            body["body"]
+        );
+    }
+
+    /// GitHub nulls `line` once the code under a comment changes. That is the
+    /// signal the finding may be about different code now, so it posts again.
+    #[tokio::test]
+    async fn an_outdated_comment_does_not_carry_the_finding() {
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        mount_comments(&server, &[("quorum-bot", "a.rs", None, previous)]).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!(
+            (result.inline_count, result.carried_count),
+            (1, 0),
+            "a finding whose comment went stale was not re-posted"
+        );
+    }
+
+    /// Same reasoning as #572's dismissal rule: the fingerprint is public, so
+    /// a comment somebody else wrote in our shape must not hide our finding.
+    #[tokio::test]
+    async fn only_our_own_comments_carry_findings() {
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        mount_comments(&server, &[("someone-else", "a.rs", Some(7), previous)]).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!(
+            (result.inline_count, result.carried_count),
+            (1, 0),
+            "a stranger's comment suppressed our finding"
+        );
+    }
+
+    /// No comment listing mounted: the mock answers 404. Anything that goes
+    /// wrong on the way to "what is already there" means post everything, as
+    /// before #640; silence is the failure mode to avoid.
+    #[tokio::test]
+    async fn a_failed_comment_listing_posts_everything() {
+        let f = finding_spanning(7, 7);
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!((result.inline_count, result.carried_count), (1, 0));
+    }
+    /// The bot's own token: `GET /user` answers 403 in GitHub Actions
+    /// (observed on every report-workflow run). Without the fallback the
+    /// carry never fires where it is needed and the fix is inert; #572's
+    /// dismissal has been inert for the same reason.
+    #[tokio::test]
+    async fn in_actions_the_token_is_github_actions_bot_even_when_user_is_forbidden() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/widget/pulls/7/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 999})))
+            .mount(&server)
+            .await;
+        mount_comments(
+            &server,
+            &[("github-actions[bot]", "a.rs", Some(7), previous)],
+        )
+        .await;
+
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+        req.bot_login = actions_bot_login(Some("true")).map(str::to_string);
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!(
+            (result.inline_count, result.carried_count),
+            (0, 1),
+            "the Actions token did not recognise its own comment"
+        );
+    }
+
+    /// CodeRabbit on #642: a `--github-token` PAT inside Actions must not
+    /// inherit the bot identity when its `/user` fails.
+    #[test]
+    fn an_explicit_token_flag_gets_no_actions_fallback_identity() {
+        let (token, login) = select_token(Some("ghp_pat"), Some("ghs_runner".into()), Some("true"))
+            .expect("flag wins");
+        assert_eq!((token.as_str(), login), ("ghp_pat", None));
+        let (token, login) =
+            select_token(None, Some("ghs_runner".into()), Some("true")).expect("env token");
+        assert_eq!(
+            (token.as_str(), login.as_deref()),
+            ("ghs_runner", Some("github-actions[bot]"))
+        );
+        assert!(select_token(None, None, Some("true")).is_err());
+        assert!(select_token(Some(""), None, None).is_err());
+    }
+
+    #[test]
+    fn actions_bot_login_only_claims_identity_when_the_runner_says_so() {
+        assert_eq!(actions_bot_login(Some("true")), Some("github-actions[bot]"));
+        assert_eq!(actions_bot_login(Some("false")), None);
+        assert_eq!(actions_bot_login(None), None);
+    }
+
+    /// A comment on a deleted line (`side: LEFT`) has a valid `line` too.
+    /// Only head-side comments can stand in for a head-side finding.
+    #[tokio::test]
+    async fn a_left_side_comment_does_not_carry_a_right_side_finding() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/comments"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 1, "path": "a.rs", "line": 7, "side": "LEFT",
+                    "body": previous, "user": {"login": "quorum-bot"},
+                }])),
+            )
+            .mount(&server)
+            .await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!((result.inline_count, result.carried_count), (1, 0));
+    }
+
+    /// Page 1 is full and carries a match; page 2 fails. A partial listing
+    /// would carry the finding on page 1 and re-post whatever was on the
+    /// unread pages -- or worse, the reverse. Any failure means the whole
+    /// listing is discarded and everything is posted.
+    #[tokio::test]
+    async fn a_failure_on_a_later_page_discards_the_whole_listing() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        let mut page1: Vec<serde_json::Value> = (0..99)
+            .map(|i| {
+                serde_json::json!({"id": i, "path": "z.rs", "line": 1, "side": "RIGHT",
+                "body": "unrelated", "user": {"login": "someone"}})
+            })
+            .collect();
+        page1.push(
+            serde_json::json!({"id": 99, "path": "a.rs", "line": 7, "side": "RIGHT",
+            "body": previous, "user": {"login": "quorum-bot"}}),
+        );
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/comments"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page1))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/pulls/7/comments"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!(
+            (result.inline_count, result.carried_count),
+            (1, 0),
+            "a partial listing was trusted"
+        );
+    }
+
+    /// Two findings with the same title on the same line are two findings.
+    /// One live comment covers one of them; the other posts.
+    #[tokio::test]
+    async fn one_live_comment_carries_one_of_two_identical_findings() {
+        let f = finding_spanning(7, 7);
+        let previous = render_inline_comment(&f, "0.30.0");
+        let server = mock_github(200, "quorum-bot", serde_json::json!([])).await;
+        mount_comments(&server, &[("quorum-bot", "a.rs", Some(7), previous)]).await;
+        let mut req = review_req(&server.uri(), vec![at("a.rs", f.clone()), at("a.rs", f)]);
+        req.diff_text = diff_touching_a_rs();
+
+        let result = post_review(&reqwest::Client::new(), &req)
+            .await
+            .expect("create succeeds");
+        assert_eq!((result.inline_count, result.carried_count), (1, 1));
+    }
+
+    #[test]
+    fn inline_fingerprint_round_trips_through_the_rendered_comment() {
+        let f = finding_spanning(7, 7);
+        let rendered = render_inline_comment(&f, "0.31.0");
+        assert_eq!(
+            parse_inline_fingerprint(&rendered),
+            Some(inline_fingerprint(&f).as_str())
+        );
+        assert!(
+            rendered.starts_with("<!-- quorum-inline:v1 fp="),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_inline_fingerprint_rejects_malformed_markers() {
+        assert_eq!(
+            parse_inline_fingerprint("<!-- quorum-inline:v1 fp=deadbeef -->"),
+            None
+        );
+        assert_eq!(
+            parse_inline_fingerprint("<!-- quorum-inline:v1 fp=zzzzzzzzzzzzzzzz -->"),
+            None
+        );
+        assert_eq!(
+            parse_inline_fingerprint("<!-- quorum-review-marker:v1 run_id=X sha=Y version=Z -->"),
+            None
+        );
+        assert_eq!(
+            parse_inline_fingerprint("prose\n<!-- quorum-inline:v1 fp=0123456789abcdef -->\nmore"),
+            Some("0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn carried_findings_are_reported_after_the_counts_and_when_nothing_is_new() {
+        let marker = "<!-- quorum-review-marker:v1 -->";
+        let none_new = render_review_body(marker, &[], &[], "0.31.0", None, 2);
+        assert!(none_new.contains("No new findings."), "{none_new}");
+        assert!(!none_new.contains("No findings."), "{none_new}");
+        assert!(
+            none_new.contains("2 findings already posted inline on an earlier push"),
+            "{none_new}"
+        );
+
+        let f = finding_spanning(7, 7);
+        let some_new = render_review_body(marker, std::slice::from_ref(&f), &[], "0.31.0", None, 1);
+        let counts = some_new
+            .find("1 findings (")
+            .expect("summary counts present");
+        let carried = some_new
+            .find("1 finding already posted")
+            .expect("carried line present");
+        assert!(
+            counts < carried,
+            "carried line precedes the counts:\n{some_new}"
         );
     }
 }
