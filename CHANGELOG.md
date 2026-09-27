@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The repository carries its own `.quorum/suppress.toml`.** The recurring "adding a required field to a pub struct breaks struct-literal construction downstream" finding (three PRs this month; one `fp` and two `wontfix` on record, and the calibrator learns only from `fp`) needs a fact about how this repository is consumed, not about the code: the lib target has no out-of-tree consumers. Two substring rules with reasons suppress that shape on reviews of quorum itself; a test pins that the file parses, that the three recorded titles match, and that an unrelated struct finding does not. First concrete input to the repo-defined rules design (#632).
+
 ### Changed
 
 - **`testing-antipatterns` joins the default axis set; `--axes default` and `--axes audit` name the sets** (#631). The two-axis default from #608 was decided on data gathered while the opt-in axes reviewed cold, whole files. Re-measured with context and diff-first input, each opt-in axis alone against four inputs with known defects (three for `testing-antipatterns` and `performance`: their #638 cells did not complete when the provider ran out of credits, #643). `testing-antipatterns` was the only axis with incremental known-defect recall, finding the test that could pass on the wrong finding in #612's first commit, which the two defaults gave nothing on. `architecture`, `simplicity` and `performance` found no exact known bug the defaults missed, and `simplicity` suggested four APIs that do not exist in the pinned dependency; they stay opt-in.

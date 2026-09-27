@@ -1,0 +1,24 @@
+# Project suppression rules for reviews of quorum itself (`quorum review`
+# reads this from the project root). Each rule is a case-insensitive
+# substring of the finding title, optionally narrowed by category or file.
+#
+# These are the fp shapes that recur across PRs and that a reviewer cannot
+# learn from the code alone: they need to know how this repository is
+# consumed. Feedback verdicts exist for each; the calibrator suppresses only
+# on repeated `fp` rows, and two of the three precedents were recorded as
+# `wontfix`, which it ignores.
+#
+# Suppressed findings are still recorded with the review and shown with
+# `--show-suppressed`.
+
+# "Adding a required field to a pub struct breaks struct-literal construction
+# in downstream crates." quorum's lib target is consumed only by its own bin
+# and tests, all in this tree and updated in the same change; there is no
+# downstream literal to break. Seen on #612, #618 and a 2026-09-16 review.
+[[suppress]]
+pattern = "struct literal"
+reason = "the lib crate has no out-of-tree consumers; every struct literal is updated in the same change"
+
+[[suppress]]
+pattern = "struct construction"
+reason = "the lib crate has no out-of-tree consumers; every struct literal is updated in the same change"
