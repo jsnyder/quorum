@@ -727,8 +727,18 @@ fn deep_review_hides_findings_outside_the_diff() {
     });
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // JSON omits a file with nothing shown, so presence of the file result is
+    // pinned by `deep_review_json_output_carries_its_findings`; here the
+    // hidden count on stderr is what proves the finding was seen.
+    let files: serde_json::Value = serde_json::from_str(&stdout).expect("json output");
+    let shown: Vec<&serde_json::Value> = files
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|f| f["findings"].as_array().into_iter().flatten())
+        .collect();
     assert!(
-        !stdout.contains("unwrap() on a fallible parse can panic"),
+        shown.is_empty(),
         "a deep finding outside the diff was shown:\n{stdout}\n{stderr}"
     );
     assert!(

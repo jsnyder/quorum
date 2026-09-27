@@ -1363,14 +1363,6 @@ async fn axes_context_for_file(
     }
 }
 
-/// Diff-first input for the skill matrix. With a diff, the axes receive the
-/// focused view (the enclosing functions of every changed range, with
-/// absolute line numbers, then this file's hunks) instead of the whole
-/// file. Without a diff, or when the view would keep most of the file, or
-/// when the diff never mentions this file, the whole file goes as before.
-/// The enclosing functions of the changed lines (no context padding): the
-/// ranges inside which an outside-hunk finding is still about the change.
-/// Same inputs as `build_review_file`, so the parse is a cache lookup.
 /// What happens to a file's findings once every producer for that file has
 /// run (#639): hide the ones stamped outside the diff (a model finding
 /// inside a changed function is rescued), then apply the project's
@@ -1382,22 +1374,19 @@ async fn axes_context_for_file(
 /// suppressions, and the deep paths did neither.
 fn settle_file_findings(
     result: &mut pipeline::FileReviewResult,
-    hide: bool,
+    file_path: &std::path::Path,
     source: &str,
     lang: Option<parser::Language>,
     parse_cache: &cache::ParseCache,
-    diff_ranges: Option<&hydration::DiffRanges>,
+    hide_outside: Option<&hydration::DiffRanges>,
     suppress_rules: &[suppress::SuppressionRule],
 ) -> Vec<(finding::Finding, suppress::SuppressionRule)> {
     let file_display = result.file_path.clone();
-    if hide {
-        let rescue = changed_function_ranges(
-            std::path::Path::new(&result.file_path),
-            source,
-            lang,
-            parse_cache,
-            diff_ranges,
-        );
+    // `Some` when findings outside this diff are to be hidden (`--diff-file`
+    // without `--show-out-of-diff`).
+    if let Some(diff_ranges) = hide_outside {
+        let rescue =
+            changed_function_ranges(file_path, source, lang, parse_cache, Some(diff_ranges));
         // Hidden findings are recorded, so a project's suppression rules
         // apply to them exactly as to the shown ones; otherwise a rule the
         // project never wants to see would be written to the review record
@@ -1446,6 +1435,9 @@ fn deep_file_result(
     }
 }
 
+/// The enclosing functions of the changed lines (no context padding): the
+/// ranges inside which an outside-hunk finding is still about the change.
+/// Same inputs as `build_review_file`, so the parse is a cache lookup.
 fn changed_function_ranges(
     file_path: &std::path::Path,
     source: &str,
@@ -1475,6 +1467,11 @@ fn changed_function_ranges(
     quorum::focus::kept_ranges(&changed, &spans, 0, source.lines().count() as u32)
 }
 
+/// Diff-first input for the skill matrix. With a diff, the axes receive the
+/// focused view (the enclosing functions of every changed range, with
+/// absolute line numbers, then this file's hunks) instead of the whole
+/// file. Without a diff, or when the view would keep most of the file, or
+/// when the diff never mentions this file, the whole file goes as before.
 #[allow(clippy::too_many_arguments)]
 fn build_review_file(
     file_path: &std::path::Path,
@@ -3112,11 +3109,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         );
                         let suppressed = settle_file_findings(
                             &mut result,
-                            hide_out_of_diff,
+                            file_path,
                             &source,
                             lang,
                             &parse_cache,
-                            pipeline_cfg.diff_ranges.as_ref(),
+                            hide_out_of_diff
+                                .then_some(pipeline_cfg.diff_ranges.as_ref())
+                                .flatten(),
                             &suppress_rules,
                         );
                         if opts.show_suppressed {
@@ -3327,11 +3326,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                     // Every path that classified findings for this file has run.
                     let suppressed = settle_file_findings(
                         &mut result,
-                        hide_out_of_diff,
+                        file_path,
                         &source,
                         lang,
                         &parse_cache,
-                        pipeline_cfg.diff_ranges.as_ref(),
+                        hide_out_of_diff
+                            .then_some(pipeline_cfg.diff_ranges.as_ref())
+                            .flatten(),
                         &suppress_rules,
                     );
                     if opts.show_suppressed {
@@ -3382,7 +3383,6 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let pipeline_cfg = pipeline_cfg.clone();
             let suppress_rules = suppress_rules.clone();
             let diff_text = diff_text.clone();
-            let _show_suppressed = opts.show_suppressed;
             let deep = opts.deep;
             let llm_client = llm_client.clone();
             let resolved_axes = resolved_axes_arc.clone();
@@ -3445,11 +3445,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             );
                             let suppressed = settle_file_findings(
                                 &mut result,
-                                hide_out_of_diff,
+                                &file_path,
                                 &source,
                                 lang,
                                 &parse_cache,
-                                pipeline_cfg.diff_ranges.as_ref(),
+                                hide_out_of_diff
+                                    .then_some(pipeline_cfg.diff_ranges.as_ref())
+                                    .flatten(),
                                 &suppress_rules,
                             );
                             // See `deep_llm_ran` below.
@@ -3628,11 +3630,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         // Every path that classified findings for this file has run.
                         let suppressed = settle_file_findings(
                             &mut result,
-                            hide_out_of_diff,
+                            &file_path,
                             &source,
                             lang,
                             &parse_cache,
-                            pipeline_cfg.diff_ranges.as_ref(),
+                            hide_out_of_diff
+                                .then_some(pipeline_cfg.diff_ranges.as_ref())
+                                .flatten(),
                             &suppress_rules,
                         );
                         (idx, Ok((result, suppressed)))
