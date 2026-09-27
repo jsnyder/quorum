@@ -1289,9 +1289,7 @@ struct ResolvedAxes {
 /// 40 of them and none of the bugs, and the default became two. That data
 /// described axes reviewing cold, whole files. Re-measured on 2026-09-27
 /// with context and diff-first input (#631), each opt-in axis alone on four
-/// inputs with known defects (three for `testing-antipatterns` and
-/// `performance`; their #638 cells died when the provider ran out of
-/// credits, #643): `testing-antipatterns` was the only one with incremental
+/// inputs with known defects: `testing-antipatterns` was the only one with incremental
 /// known-defect recall (the vacuous complexity test on #612's first commit,
 /// which the two defaults gave 0 on), for ~1-4k uncached input plus ~1k
 /// output tokens per file set behind the shared cached prompt, and 8-13 s
