@@ -32,9 +32,20 @@ fn hide_out_of_diff_is_called_only_from_the_settle_helper() {
         calls[0] > helper && calls[0] < next_fn,
         "the one hide_out_of_diff call is outside settle_file_findings"
     );
-    let suppress_calls = src.matches("suppress::apply_suppressions(").count();
+    let suppress_calls: Vec<usize> = src
+        .match_indices("suppress::apply_suppressions(")
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(
-        suppress_calls, 2,
-        "apply_suppressions has {suppress_calls} call sites in src/main.rs; both belong in settle_file_findings"
+        suppress_calls.len(),
+        2,
+        "apply_suppressions has {} call sites in src/main.rs; both belong in settle_file_findings",
+        suppress_calls.len()
     );
+    for at in suppress_calls {
+        assert!(
+            at > helper && at < next_fn,
+            "an apply_suppressions call sits outside settle_file_findings"
+        );
+    }
 }

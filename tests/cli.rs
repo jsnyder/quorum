@@ -745,6 +745,26 @@ fn deep_review_hides_findings_outside_the_diff() {
         stderr.contains("1 outside the diff hidden"),
         "the hidden finding is not counted:\n{stderr}"
     );
+
+    // And the toggle restores it on the deep path too.
+    let home = tempfile::tempdir().unwrap();
+    let (out, _sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("--deep")
+            .arg("--diff-file")
+            .arg(&diff)
+            .arg("--show-out-of-diff")
+            .arg(&lib)
+            .output()
+            .unwrap()
+    });
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("unwrap() on a fallible parse can panic"),
+        "--show-out-of-diff did not restore the deep finding:\n{stdout}"
+    );
 }
 
 /// The single-file (sequential) path dropped project suppressions from the
