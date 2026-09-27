@@ -424,6 +424,11 @@ pub struct GitHubContext {
     pub owner: String,
     pub repo: String,
     pub token: String,
+    /// The login `token` acts as when `GET /user` cannot say (#640): set
+    /// only when the token is the runner's own `GITHUB_TOKEN` inside GitHub
+    /// Actions. A `--github-token` PAT or App token gets no fallback, so a
+    /// failed `/user` on it cannot be mistaken for `github-actions[bot]`.
+    pub bot_login: Option<String>,
 }
 
 #[derive(Debug)]
@@ -444,15 +449,36 @@ impl std::fmt::Display for GitHubContextError {
     }
 }
 
+/// Which token to use and, if it is the runner's own `GITHUB_TOKEN`, the
+/// login the platform guarantees for it. Split from the env reads so the
+/// decision is testable without `set_var` (#497). A `--github-token` flag
+/// wins and gets no fallback identity: a PAT or App token whose `/user`
+/// fails is unknown, not `github-actions[bot]`.
+fn select_token(
+    token_flag: Option<&str>,
+    env_token: Option<String>,
+    github_actions: Option<&str>,
+) -> Result<(String, Option<String>), GitHubContextError> {
+    match token_flag.filter(|s| !s.is_empty()) {
+        Some(flag) => Ok((flag.to_string(), None)),
+        None => Ok((
+            env_token
+                .filter(|s| !s.is_empty())
+                .ok_or(GitHubContextError::NoToken)?,
+            actions_bot_login(github_actions).map(str::to_string),
+        )),
+    }
+}
+
 pub fn resolve_github_context(
     token_flag: Option<&str>,
     repo_flag: Option<&str>,
 ) -> Result<GitHubContext, GitHubContextError> {
-    let token = token_flag
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok())
-        .filter(|s| !s.is_empty())
-        .ok_or(GitHubContextError::NoToken)?;
+    let (token, bot_login) = select_token(
+        token_flag,
+        std::env::var("GITHUB_TOKEN").ok(),
+        std::env::var("GITHUB_ACTIONS").ok().as_deref(),
+    )?;
 
     let (owner, repo) = if let Some(r) = repo_flag {
         parse_github_repo_url(r)
@@ -476,7 +502,12 @@ pub fn resolve_github_context(
             .ok_or_else(|| GitHubContextError::NoRepo(format!("cannot parse remote: {}", url)))?
     };
 
-    Ok(GitHubContext { owner, repo, token })
+    Ok(GitHubContext {
+        owner,
+        repo,
+        token,
+        bot_login,
+    })
 }
 
 // --- Task 5: Marker protocol and dismiss logic ---
@@ -2492,6 +2523,23 @@ mod integration_tests {
             (0, 1),
             "the Actions token did not recognise its own comment"
         );
+    }
+
+    /// CodeRabbit on #642: a `--github-token` PAT inside Actions must not
+    /// inherit the bot identity when its `/user` fails.
+    #[test]
+    fn an_explicit_token_flag_gets_no_actions_fallback_identity() {
+        let (token, login) = select_token(Some("ghp_pat"), Some("ghs_runner".into()), Some("true"))
+            .expect("flag wins");
+        assert_eq!((token.as_str(), login), ("ghp_pat", None));
+        let (token, login) =
+            select_token(None, Some("ghs_runner".into()), Some("true")).expect("env token");
+        assert_eq!(
+            (token.as_str(), login.as_deref()),
+            ("ghs_runner", Some("github-actions[bot]"))
+        );
+        assert!(select_token(None, None, Some("true")).is_err());
+        assert!(select_token(Some(""), None, None).is_err());
     }
 
     #[test]
