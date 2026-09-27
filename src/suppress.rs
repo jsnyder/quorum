@@ -504,3 +504,42 @@ pattern = "TLS"
         assert_eq!(rules[0].pattern, "TLS");
     }
 }
+
+/// The repository's own `.quorum/suppress.toml` is a claim about which
+/// findings quorum should stop raising on itself; this pins that it parses
+/// and that the titles it was written for actually match.
+#[cfg(test)]
+mod repo_rules {
+    use super::*;
+
+    #[test]
+    fn the_repo_suppression_file_parses_and_matches_its_targets() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".quorum/suppress.toml");
+        let rules = load_project_suppressions(&path);
+        assert!(!rules.is_empty(), "no rules loaded from {}", path.display());
+        assert!(
+            rules.iter().all(|r| r.reason.is_some()),
+            "every rule states its reason"
+        );
+
+        let seen = [
+            "New required CellSpec field breaks downstream struct construction",
+            "New required fields break public struct literal construction",
+            "Adding a public field breaks existing ReviewTool struct literals",
+        ];
+        for title in seen {
+            let f = crate::finding::FindingBuilder::new().title(title).build();
+            assert!(
+                rules.iter().any(|r| rule_matches(r, &f, "src/x.rs")),
+                "recorded fp title does not match any repo rule: {title}"
+            );
+        }
+        let real = crate::finding::FindingBuilder::new()
+            .title("Struct field is read before initialisation")
+            .build();
+        assert!(
+            !rules.iter().any(|r| rule_matches(r, &real, "src/x.rs")),
+            "a rule is broad enough to hide an unrelated struct finding"
+        );
+    }
+}
