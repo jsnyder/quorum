@@ -185,6 +185,28 @@ impl ReviewFile {
         }
     }
 
+    /// A focused view of `source` (see `focus::focus_source`). `is_test` is
+    /// decided from the whole source, not the view: the `#[cfg(test)]` line
+    /// may sit outside the kept regions.
+    pub fn focused(
+        path: String,
+        sha256: String,
+        view: String,
+        focus: FocusMeta,
+        context: Option<String>,
+        source: &str,
+    ) -> Self {
+        let is_test = Self::is_test_source(&path, source);
+        Self {
+            path,
+            sha256,
+            code: view,
+            focus: Some(focus),
+            context,
+            is_test,
+        }
+    }
+
     /// The manifest's own gate, evaluated before the call: a test path, or
     /// test markers anywhere in the full source (a `#[cfg(test)]` module at
     /// the bottom of a src file counts, which is where #612's vacuous test
@@ -194,6 +216,7 @@ impl ReviewFile {
     }
 }
 
+/// Markers must start a token: `it("` inside `commit("` is not a test.
 fn has_test_markers(source: &str) -> bool {
     const MARKERS: &[&str] = &[
         "#[test]",
@@ -207,7 +230,14 @@ fn has_test_markers(source: &str) -> bool {
         "test(\"",
         "func Test",
     ];
-    MARKERS.iter().any(|m| source.contains(m))
+    MARKERS.iter().any(|m| {
+        source.match_indices(m).any(|(i, _)| {
+            source[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        })
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -852,6 +882,11 @@ mod tests {
                 "fn f() {}\n#[cfg(test)]\nmod tests {}".into(),
             ),
             ReviewFile::whole("tests/cli.rs".into(), "c".into(), "fn helper() {}".into()),
+            ReviewFile::whole(
+                "src/git.rs".into(),
+                "d".into(),
+                "fn save() { repo.commit(\"msg\"); visit(\"x\"); }".into(),
+            ),
         ];
         let cfg = default_config();
         let cells = expand_matrix(&skills, &files, &cfg);
@@ -867,7 +902,9 @@ mod tests {
                 ("b".to_string(), "testing-antipatterns".to_string()),
                 ("c".to_string(), "correctness".to_string()),
                 ("c".to_string(), "testing-antipatterns".to_string()),
-            ]
+                ("d".to_string(), "correctness".to_string()),
+            ],
+            "`it(\"` inside `commit(\"` and `visit(\"` must not make src/git.rs a test file"
         );
     }
 

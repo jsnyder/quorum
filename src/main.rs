@@ -1450,18 +1450,18 @@ fn build_review_file(
                 total = view.total_lines,
                 "diff-first: sending focused view to the axes"
             );
-            ReviewFile {
-                path: file_str.to_owned(),
-                sha256: file_sha,
-                code: view.text,
-                focus: Some(FocusMeta {
+            ReviewFile::focused(
+                file_str.to_owned(),
+                file_sha,
+                view.text,
+                FocusMeta {
                     line_range: (view.first_line, view.last_line),
                     regions: view.regions,
                     diff_follows: view.diff_follows,
-                }),
+                },
                 context,
-                is_test: ReviewFile::is_test_source(file_str, source),
-            }
+                source,
+            )
         }
         None => whole(file_sha),
     }
