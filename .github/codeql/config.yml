@@ -1,0 +1,7 @@
+# The per-axis eval corpus is deliberately vulnerable: it exists so quorum's
+# own reviewers can be scored against planted defects (eval/axes/README.md).
+# None of it is compiled into the binary. The older cross-tool corpus is the
+# same kind of material.
+paths-ignore:
+  - eval/axes/corpus
+  - eval/corpus
