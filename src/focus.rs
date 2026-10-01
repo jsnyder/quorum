@@ -84,6 +84,26 @@ pub fn kept_ranges(
     merged
 }
 
+/// `N| line` -- the one line format every numbered view uses, so the base
+/// prompt can describe it once.
+fn push_numbered(text: &mut String, n: u32, line: &str, width: usize) {
+    text.push_str(&format!("{:>width$}| {}\n", n, line));
+}
+
+/// The whole of `source` with every line prefixed by its absolute number
+/// (#652). Without this the model counts lines itself from inside a fenced
+/// block and anchors findings a few lines early; the focused view has
+/// always been numbered, so this makes the two inputs agree.
+pub fn number_lines(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let width = lines.len().max(1).to_string().len();
+    let mut text = String::with_capacity(source.len() + lines.len() * (width + 2));
+    for (i, line) in lines.iter().enumerate() {
+        push_numbered(&mut text, i as u32 + 1, line, width);
+    }
+    text
+}
+
 /// Render the focused view, or `None` when the view would keep more than
 /// [`MAX_KEPT_FRACTION`] of the file (send the whole file instead) or when
 /// nothing is changed.
@@ -115,7 +135,7 @@ pub fn focus_source(
             ));
         }
         for n in s..=e {
-            text.push_str(&format!("{:>width$}| {}\n", n, lines[(n - 1) as usize]));
+            push_numbered(&mut text, n, lines[(n - 1) as usize], width);
         }
         cursor = e + 1;
     }
@@ -382,5 +402,20 @@ mod tests {
     fn kept_ranges_does_not_overflow_near_u32_max() {
         let r = kept_ranges(&[(u32::MAX - 1, u32::MAX)], &[], 20, u32::MAX);
         assert_eq!(r, vec![(u32::MAX - 21, u32::MAX)]);
+    }
+}
+
+#[cfg(test)]
+mod number_lines_tests {
+    use super::number_lines;
+
+    #[test]
+    fn numbers_every_line_with_a_width_for_the_total() {
+        assert_eq!(number_lines("a\nb\nc\n"), "1| a\n2| b\n3| c\n");
+        let ten = (0..10).map(|_| "x\n").collect::<String>();
+        let out = number_lines(&ten);
+        assert!(out.starts_with(" 1| x\n"), "{out}");
+        assert!(out.ends_with("10| x\n"), "{out}");
+        assert_eq!(number_lines(""), "");
     }
 }

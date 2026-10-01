@@ -82,7 +82,21 @@ pub fn wrap_code_to_review(
         "filename": filename,
         "sha256": sha256,
         "line_range": [line_start, line_end],
+        "numbered_lines": true,
     });
+    // A focused view arrives numbered by `focus_source`; a whole file is
+    // numbered here, so every caller of this wrapper (the axes, the judge)
+    // gets the same `N| ` form and the flag above is true by construction
+    // (#652). Without it the model counts lines itself from inside the
+    // fence and anchors findings a few lines early.
+    let numbered;
+    let code: &str = match view {
+        Some(_) => code,
+        None => {
+            numbered = crate::focus::number_lines(code);
+            &numbered
+        }
+    };
     if let Some(v) = view {
         metadata["view"] = serde_json::json!({
             "kind": "focused",

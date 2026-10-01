@@ -103,3 +103,99 @@ fn axes_reviewing_one_file_share_the_system_message() {
         "summary line must surface cached tokens:\n{stderr}"
     );
 }
+
+/// #652: a whole file reaches the axes with every line prefixed by its
+/// absolute number, the same way a focused view does, and the metadata says
+/// so. Without the numbers the model counts for itself and anchored every
+/// finding 2-4 lines early on the first per-axis eval run.
+#[test]
+fn whole_file_input_is_line_numbered() {
+    let proj = tempfile::tempdir().unwrap();
+    let subject = proj.path().join("lib.rs");
+    std::fs::write(
+        &subject,
+        "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (_out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness")
+            .arg(&subject)
+            .output()
+            .unwrap()
+    });
+    let system = messages(&sent[0], "system");
+    // The base prompt mentions the tag in prose; the real block is the last.
+    let code = system
+        .rsplit("<code_to_review>")
+        .next()
+        .expect("code block present");
+    assert!(
+        code.contains(
+            "\n1| pub fn changed(text: &str) -> i32 {\n2|     text.parse::<i32>().unwrap()\n3| }\n"
+        ),
+        "whole-file code is not line-numbered:\n{code}"
+    );
+    assert!(
+        code.contains("\"numbered_lines\":true"),
+        "metadata does not declare the numbering:\n{code}"
+    );
+}
+
+/// #652: the numbering must happen exactly once. A focused view arrives
+/// numbered from `focus_source`; wrapping it again would produce
+/// `1|  12| ...` and bring back the drift on the `--diff-file` path.
+#[test]
+fn focused_view_is_numbered_once_with_absolute_lines() {
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("src")).unwrap();
+    let subject = proj.path().join("src").join("lib.rs");
+    let mut source = String::new();
+    for i in 0..30 {
+        source.push_str(&format!("pub fn pad{i}() -> u32 {{ {i} }}\n"));
+    }
+    source.push_str("pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n");
+    std::fs::write(&subject, &source).unwrap();
+    let diff = proj.path().join("c.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -32,1 +32,1 @@\n-    text.parse::<i32>().unwrap_or(0)\n+    text.parse::<i32>().unwrap()\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (_out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness")
+            .arg("--diff-file")
+            .arg(&diff)
+            .arg(&subject)
+            .output()
+            .unwrap()
+    });
+    let system = messages(&sent[0], "system");
+    let code = system.rsplit("<code_to_review>").next().unwrap();
+    // The fixture must actually produce a focused view, or this test is
+    // checking whole-file numbering a second time.
+    assert!(
+        code.contains("\"kind\":\"focused\""),
+        "the diff did not produce a focused view:\n{code}"
+    );
+    assert!(
+        code.contains("\n32|     text.parse::<i32>().unwrap()\n"),
+        "focused view lacks the absolute line prefix:\n{code}"
+    );
+    assert!(
+        !code.contains("| 32| "),
+        "focused view was numbered twice:\n{code}"
+    );
+}
