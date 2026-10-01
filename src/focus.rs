@@ -84,9 +84,6 @@ pub fn kept_ranges(
     merged
 }
 
-/// Render the focused view, or `None` when the view would keep more than
-/// [`MAX_KEPT_FRACTION`] of the file (send the whole file instead) or when
-/// nothing is changed.
 /// `N| line` -- the one line format every numbered view uses, so the base
 /// prompt can describe it once.
 fn push_numbered(text: &mut String, n: u32, line: &str, width: usize) {
@@ -107,6 +104,9 @@ pub fn number_lines(source: &str) -> String {
     text
 }
 
+/// Render the focused view, or `None` when the view would keep more than
+/// [`MAX_KEPT_FRACTION`] of the file (send the whole file instead) or when
+/// nothing is changed.
 pub fn focus_source(
     source: &str,
     changed: &[(u32, u32)],

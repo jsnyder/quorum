@@ -19,7 +19,10 @@ static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // Twilio keys
         (Regex::new(r"(?:AC|SK)[a-z0-9]{32}").unwrap(), "[REDACTED]"),
         // Bearer tokens (JWT-like)
-        (Regex::new(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
+        // The optional `12| ` group is a line-number prefix (#652): when the
+        // token sits on the line after `Bearer`, numbered input would put
+        // the prefix between them and the token would escape the class.
+        (Regex::new(r"Bearer\s+(?:\d+\|\s*)?[A-Za-z0-9\-._~+/]+=*").unwrap(), "Bearer [REDACTED]"),
         // Generic secret assignments: KEY="value", PASSWORD='value'
         // Only matches quoted string literals — two patterns for double and single quotes.
         //
@@ -192,6 +195,15 @@ mod tests {
                 "must not redact inside a larger word: {input}"
             );
         }
+    }
+
+    /// #652: numbered input can put a `12| ` prefix between `Bearer` and a
+    /// token on the following line; the prefix must not shield the token.
+    #[test]
+    fn bearer_token_on_the_next_numbered_line_is_still_redacted() {
+        let out = redact_secrets("11| Authorization: Bearer\n12| eyJhbGciOiJIUzI1NiJ9.abc.def");
+        assert!(!out.contains("eyJhbGci"), "{out}");
+        assert!(out.contains("Bearer [REDACTED]"), "{out}");
     }
 
     #[test]

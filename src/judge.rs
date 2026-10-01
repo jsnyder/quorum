@@ -992,6 +992,20 @@ mod tests {
         &rest[start..=end]
     }
 
+    /// #652: the judge's code block is numbered like the axes', and the
+    /// metadata flag it carries is therefore true, not a claim about
+    /// input that was raw.
+    #[test]
+    fn judge_prompt_code_is_line_numbered() {
+        let src = "fn a() {}\nfn b() {}\n";
+        let prompt = build_judge_prompt(src, "a.rs", &SourceDigest::of(src), &[]);
+        assert!(
+            prompt.contains("\n1| fn a() {}\n2| fn b() {}\n"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("\"numbered_lines\":true"), "{prompt}");
+    }
+
     #[test]
     fn build_judge_prompt_escapes_special_characters() {
         let findings = vec![(

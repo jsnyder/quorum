@@ -386,18 +386,8 @@ pub(crate) fn execute_cell(
         regions: f.regions,
         diff_follows: f.diff_follows,
     });
-    // A focused view arrives numbered; a whole file is numbered here so the
-    // model never has to count lines itself (#652).
-    let numbered;
-    let code: &str = match cell.focus {
-        Some(_) => &cell.code,
-        None => {
-            numbered = crate::focus::number_lines(&cell.code);
-            &numbered
-        }
-    };
     let wrapped_code = wrap_code_to_review(
-        code,
+        &cell.code,
         &cell.file_path,
         &cell.file_sha256,
         line_start,
