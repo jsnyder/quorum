@@ -36,6 +36,19 @@ def test_hit_decoy_noise_and_duplicate_are_told_apart():
     assert s["planted"] == 2 and s["emitted"] == 4
 
 
+def test_redacted_entries_are_neither_hit_nor_noise():
+    gt = GT + [{"id": "x1", "type": "redacted", "title": "secret", "line_start": 70, "line_end": 70}]
+    s = run_axes.score_file([finding(70)], gt)
+    assert s["planted"] == 2 and s["hits"] == [] and s["noise"] == []
+
+
+def test_a_span_covering_the_defect_hits_unless_it_is_very_wide():
+    covering = {"title": "x", "line_start": 20, "line_end": 31}  # anchor 20, span reaches r2 at 30
+    assert [h["id"] for h in run_axes.score_file([covering], GT)["hits"]] == ["r2"]
+    wide = {"title": "x", "line_start": 20, "line_end": 70}  # 51 lines: anchor only, so no hit
+    assert run_axes.score_file([wide], GT)["hits"] == []
+
+
 def test_tolerance_is_two_lines_each_side():
     assert len(run_axes.score_file([finding(32)], GT)["hits"]) == 1
     assert len(run_axes.score_file([finding(33)], GT)["hits"]) == 0
@@ -74,7 +87,7 @@ def test_every_corpus_file_has_well_formed_ground_truth():
         reals = [g for g in gt if g["type"] == "real"]
         assert reals, f"{path} plants nothing"
         for g in gt:
-            assert g["type"] in ("real", "decoy"), g
+            assert g["type"] in ("real", "decoy", "redacted"), g
             assert g["id"] not in seen, f"duplicate id {g['id']}"
             seen.add(g["id"])
             assert 1 <= g["line_start"] <= g["line_end"] <= n, f"{g['id']} out of range for {path.name} ({n} lines)"

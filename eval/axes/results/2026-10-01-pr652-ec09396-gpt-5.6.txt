@@ -1,0 +1,15 @@
+axes eval -- model gpt-5.6
+
+axis                   files planted hits recall  emitted precision decoys noise dups  out-of-lane  errors  secs
+correctness                2       6    5   0.83        8      0.62      0     1    2    20/12          0    139
+security                   3      10   10   1.00       11      0.91      1     0    0    13/11          0    126
+testing-antipatterns       2      11   11   1.00       12      0.92      1     0    0     0/12          0     31
+architecture               2       5    4   0.80        6      0.67      0     0    2    20/12          0    123
+simplicity                 2       8    7   0.88        8      0.88      0     0    1     7/12          0     73
+performance                3       9    9   1.00        9      1.00      0     0    0     9/11          0     91
+
+correctness missed: corr-rs-003 [logic] above uses >= but is documented as strictly above
+security fell for decoys: sec-ts-d01 [ssrf] -> "Allowed-host proxy can be redirected to an arbitrary SSRF destination"
+testing-antipatterns fell for decoys: test-py-d02 [shared-state] -> "Persistence test only validates direct SQLite operations"
+architecture missed: arch-rs-002 [coupling] Handler reaches through Database into its internal conn mutex and writes raw SQL, bypassing the repository API
+simplicity missed: simp-rs-003 [yagni] Storage trait + StorageFactory with one implementation and a match with only a wildcard arm

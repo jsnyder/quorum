@@ -7,14 +7,17 @@ axis's domain, each anchored to a line range in the sibling
 is one the axis's own prompt says not to report. The runner reviews every
 file with every axis and scores:
 
-  in-lane   the axis on its own corpus -- recall of planted defects,
+  in-lane   the axis on its own corpus -- recall of planted defects
+            (a `redacted` entry is a secret the egress redaction strips
+            before the model sees it, and is not scored),
             precision of what it emitted, decoys it fell for
   out-of-lane  the axis on the other axes' corpora -- findings emitted
             where the prompt says the subject belongs to another axis
 
 A finding hits a planted defect when its anchor line falls inside the
-defect's range (with a small tolerance) and no other finding has already
-claimed it. Everything else the axis emitted on its own corpus is noise.
+defect's range (with a small tolerance), or its line span (if not too
+wide) overlaps the range, and no other finding has already claimed it.
+Everything else the axis emitted on its own corpus is noise.
 
 Usage:
   eval/axes/run_axes.py [--model M] [--axes a,b] [--quorum PATH] [--out DIR]
@@ -40,6 +43,11 @@ RESULTS = HERE / "results"
 AXES = ["correctness", "security", "testing-antipatterns", "architecture", "simplicity", "performance"]
 SOURCE_SUFFIXES = (".rs", ".py", ".ts", ".tsx", ".js", ".go")
 LINE_TOLERANCE = 2
+# A finding's [line_start, line_end] may cover the defect without the anchor
+# sitting on it (the model often anchors at the enclosing function). Overlap
+# counts, up to this span; wider spans match by anchor only, so a finding
+# that covers half the file cannot claim whatever is unclaimed.
+MAX_OVERLAP_SPAN = 40
 
 
 def corpus_files() -> list[tuple[str, Path, list[dict]]]:
@@ -79,6 +87,11 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
     """
     reals = [g for g in ground_truth if g.get("type") == "real"]
     decoys = [g for g in ground_truth if g.get("type") == "decoy"]
+    # `redacted`: a planted secret the redaction chokepoint strips before the
+    # model sees the file (CLAUDE.md: the tool's own review is unreliable
+    # where its input is transformed). A finding landing there is neither a
+    # hit nor noise.
+    redacted = [g for g in ground_truth if g.get("type") == "redacted"]
     claimed: set[str] = set()
     hits, decoy_hits, noise, duplicates = [], [], [], []
     for f in findings:
@@ -88,7 +101,13 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
             continue
 
         def within(g: dict) -> bool:
-            return g["line_start"] - LINE_TOLERANCE <= line <= g["line_end"] + LINE_TOLERANCE
+            lo, hi = g["line_start"] - LINE_TOLERANCE, g["line_end"] + LINE_TOLERANCE
+            if lo <= line <= hi:
+                return True
+            ls, le = f.get("line_start"), f.get("line_end")
+            if not (isinstance(ls, int) and isinstance(le, int) and le >= ls):
+                return False
+            return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
 
         real = next((g for g in reals if within(g)), None)
         if real is not None:
@@ -101,6 +120,8 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
         decoy = next((g for g in decoys if within(g)), None)
         if decoy is not None:
             decoy_hits.append({"id": decoy["id"], "kind": decoy.get("kind"), "title": f.get("title")})
+            continue
+        if any(within(g) for g in redacted):
             continue
         noise.append(f)
     missed = [{"id": g["id"], "kind": g.get("kind"), "title": g["title"]} for g in reals if g["id"] not in claimed]
