@@ -1,0 +1,17 @@
+axes eval -- model claude-opus-5
+
+axis                   files planted hits recall  emitted precision decoys noise dups  out-of-lane  errors  secs
+correctness                2       6    5   0.83        9      0.56      2     1    1    42/12          0    221
+security                   3      10    9   0.90       12      0.75      1     1    0    11/11          0    122
+testing-antipatterns       2      11    9   0.82       10      0.90      0     0    1     0/12          0     41
+architecture               2       5    4   0.80        7      0.57      0     1    2    29/12          0    175
+simplicity                 2       8    7   0.88        8      0.88      0     0    1    25/12          0    116
+performance                3       9    9   1.00       10      0.90      0     0    1    11/11          0    109
+
+correctness missed: corr-rs-003 [logic] above uses >= but is documented as strictly above
+correctness fell for decoys: corr-py-d02 [error-handling] -> "load_amount raises InvalidOperation on malformed input"; corr-rs-d01 [edge-case] -> "percentile() silently accepts out-of-range p and NaN samples"
+security missed: sec-py-003 [injection] convert builds a shell command from user input with shell=True (command injection)
+security fell for decoys: sec-ts-d01 [ssrf] -> "URL parsing of user input can throw unhandled in /proxy-safe"
+testing-antipatterns missed: test-rs-002 [order-dependency] len_counts_the_previous_test_insert depends on insert_then_get having run first; test-rs-006 [brittle] eviction_error_message exact-matches a long human-readable error string
+architecture missed: arch-rs-002 [coupling] Handler reaches through Database into its internal conn mutex and writes raw SQL, bypassing the repository API
+simplicity missed: simp-rs-003 [yagni] Storage trait + StorageFactory with one implementation and a match with only a wildcard arm

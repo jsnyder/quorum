@@ -1,0 +1,2564 @@
+{
+ "model": "claude-opus-5",
+ "started": "2026-10-01T16:44:12.783194+00:00",
+ "quorum": "/Users/jsnyder/.cargo/bin/quorum",
+ "runs": [
+  {
+   "axis": "correctness",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [
+    {
+     "title": "split_evenly loses remainder cents; shares don't sum to total",
+     "line_start": 22,
+     "line_end": 25,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "monthly_totals accepts month == 12, causing IndexError",
+     "line_start": 42,
+     "line_end": 45,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "apply_discount truncates instead of rounding to nearest cent",
+     "line_start": 29,
+     "line_end": 31,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "load_amount raises InvalidOperation on malformed input",
+     "line_start": 49,
+     "line_end": 53,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 11.4,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 11.3s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [
+    {
+     "title": "mean() returns NaN instead of None when window is empty",
+     "line_start": 21,
+     "line_end": 25,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "last_n panics on underflow when n exceeds window length",
+     "line_start": 28,
+     "line_end": 31,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "above() uses >= instead of > despite documenting 'strictly above'",
+     "line_start": 33,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "push with cap == 0 grows the window unbounded",
+     "line_start": 14,
+     "line_end": 19,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "percentile(0.0) returns the minimum element rather than handling rank 0 correctly",
+     "line_start": 38,
+     "line_end": 46,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 16.7,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 16.7s using claude-opus-5: 5 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.4s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [
+    {
+     "title": "Async route handlers throw unhandled rejections (no express.json(), invalid URL)",
+     "line_start": 9,
+     "line_end": 46,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "verify() throws instead of returning false on malformed or differing-length hashes",
+     "line_start": 49,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Allowlist check only validates hostname, not scheme or credentials",
+     "line_start": 17,
+     "line_end": 23,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Binary upstream responses corrupted by text decoding",
+     "line_start": 11,
+     "line_end": 22,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 17.0,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 17.0s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [
+    {
+     "title": "yaml.load() called without a Loader raises TypeError on PyYAML >= 6",
+     "line_start": 39,
+     "line_end": 41,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Uploaded filename is used unsanitized, so absolute or empty names break storage",
+     "line_start": 16,
+     "line_end": 19,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Download path check breaks when UPLOAD_DIR contains a symlink component",
+     "line_start": 24,
+     "line_end": 27,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Convert produces double-extension output and 500s on conversion failure",
+     "line_start": 33,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Search treats user input as LIKE pattern, so % and _ are wildcards",
+     "line_start": 46,
+     "line_end": 49,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 20.3,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 20.2s using claude-opus-5: 8 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "Tests share mutable global cache, making `len_counts_the_previous_test_insert` order- and parallelism-dependent",
+     "line_start": 8,
+     "line_end": 30,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "`capacity_is_respected` asserts a tautology and never exercises the cache",
+     "line_start": 50,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "`get_missing_does_not_panic` contains no assertion",
+     "line_start": 56,
+     "line_end": 60,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "`entries_expire` relies on wall-clock sleep and can fail spuriously",
+     "line_start": 32,
+     "line_end": 38,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "`eviction_error_message` asserts on the exact human-readable error string",
+     "line_start": 61,
+     "line_end": 70,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 20.6,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 20.5s using claude-opus-5: 6 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "test_bad_qty_rejected always passes: `assert False` is caught by its own `except Exception`",
+     "line_start": 57,
+     "line_end": 62,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "test_fetch_is_called asserts only on the mock it configured",
+     "line_start": 38,
+     "line_end": 41,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Shared fixed /tmp database makes test order-dependent and non-idempotent",
+     "line_start": 48,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "test_fetch_orders_hits_staging depends on live network and required env var",
+     "line_start": 25,
+     "line_end": 28,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "test_persist_orders exercises sqlite rather than the persistence code under test",
+     "line_start": 44,
+     "line_end": 45,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "test_order_is_recent uses wall-clock time, making the assertion timing-sensitive",
+     "line_start": 20,
+     "line_end": 22,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 22.6,
+    "stderr_tail": "x: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 22.5s using claude-opus-5: 11 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "`execute()` row count returned as invoice id",
+     "line_start": 43,
+     "line_end": 53,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Database failure on customer lookup reported as 404 NOT_FOUND",
+     "line_start": 35,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Unvalidated amount_cents allows negative invoices and float rounding loss",
+     "line_start": 42,
+     "line_end": 42,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "US tax applied regardless of EU/nexus overlap and default VAT fallback silently guesses 0.2",
+     "line_start": 36,
+     "line_end": 41,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 16.2,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 16.1s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [
+    {
+     "title": "invoice_pdf overflows the page for invoices with many line items",
+     "line_start": 89,
+     "line_end": 95,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "email_invoice sends HTML body with no MIME/RFC-822 headers",
+     "line_start": 80,
+     "line_end": 82,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "issue_invoice commits before emailing, so email failure leaves no retry path",
+     "line_start": 73,
+     "line_end": 78,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "revenue_for compares a full date against a month column",
+     "line_start": 98,
+     "line_end": 100,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 21.2,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 21.2s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [
+    {
+     "title": "largest() raises IndexError on empty list",
+     "line_start": 12,
+     "line_end": 17,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.8,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.8s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [
+    {
+     "title": "StorageFactory::create silently ignores the `kind` argument",
+     "line_start": 56,
+     "line_end": 60,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "trim_ws does not treat carriage return (and other whitespace) as whitespace",
+     "line_start": 6,
+     "line_end": 17,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "DiskStorage::write discards all I/O errors",
+     "line_start": 45,
+     "line_end": 51,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 17.1,
+    "stderr_tail": "RUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 17.1s using claude-opus-5: 3 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "Blocking std::thread::sleep inside async fn stalls the shared Tokio runtime",
+     "line_start": 16,
+     "line_end": 17,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "HTTP error status is not checked before parsing the body",
+     "line_start": 15,
+     "line_end": 15,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Missing firmware line silently yields an empty string instead of an error",
+     "line_start": 18,
+     "line_end": 22,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 17.2,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 17.2s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [
+    {
+     "title": "render_csv produces malformed CSV: fields are never quoted",
+     "line_start": 66,
+     "line_end": 70,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "moved() emits duplicate SKUs when a SKU appears on multiple lines",
+     "line_start": 76,
+     "line_end": 85,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "totals() can overflow u32 when summing quantities",
+     "line_start": 33,
+     "line_end": 44,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 12.9,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 12.8s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [
+    {
+     "title": "monthly_cost raises KeyError when config lacks 'plan' or 'storage_rate'",
+     "line_start": 38,
+     "line_end": 44,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "render's negative-cost 'no plan' branch is effectively unreachable",
+     "line_start": 56,
+     "line_end": 66,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "usage_for_tenants silently omits tenants with no usage row",
+     "line_start": 27,
+     "line_end": 35,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 17.9,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 17.9s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.0,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.9s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.5,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.4s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [
+    {
+     "title": "TLS certificate verification disabled for all environments",
+     "line_start": 14,
+     "line_end": 17,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Passwords hashed with unsalted MD5",
+     "line_start": 32,
+     "line_end": 34,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Bearer token written to logs in plaintext",
+     "line_start": 21,
+     "line_end": 21,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "keys_match leaks key length via early return",
+     "line_start": 44,
+     "line_end": 53,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 11.9,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 11.8s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [
+    {
+     "title": "SQL injection in /login email lookup",
+     "line_start": 38,
+     "line_end": 38,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "SSRF: /proxy fetches any attacker-supplied URL",
+     "line_start": 9,
+     "line_end": 13,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Session token generated from Math.random()",
+     "line_start": 25,
+     "line_end": 31,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Open redirect via unvalidated `next` parameter after login",
+     "line_start": 45,
+     "line_end": 46,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "timingSafeEqual on unequal-length buffers throws, and verify() crashes on malformed hashes",
+     "line_start": 49,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "/proxy-safe allowlist checks hostname only, permitting non-HTTP schemes and credential/port abuse",
+     "line_start": 16,
+     "line_end": 23,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "CSRF cookie set without SameSite/Secure attributes",
+     "line_start": 44,
+     "line_end": 44,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Session token is generated but never persisted or bound to the authenticated user",
+     "line_start": 43,
+     "line_end": 43,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 33.3,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 33.2s using claude-opus-5: 8 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [
+    {
+     "title": "Command injection via unsanitized filename in shell=True subprocess",
+     "line_start": 31,
+     "line_end": 36,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Unsafe YAML deserialization of request body (yaml.load without SafeLoader)",
+     "line_start": 39,
+     "line_end": 41,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Path traversal / arbitrary file write via unsanitized upload filename",
+     "line_start": 14,
+     "line_end": 41,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Hardcoded AWS secret access key in source",
+     "line_start": 11,
+     "line_end": 11,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 16.5,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 16.4s using claude-opus-5: 7 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.8,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.7s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "Test writes to predictable shared path /tmp/orders-test.db",
+     "line_start": 51,
+     "line_end": 56,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.0,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.0s using claude-opus-5: 6 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "Missing authorization on GET /invoices/:id allows IDOR across customers",
+     "line_start": 57,
+     "line_end": 64,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "create_invoice accepts unvalidated amount_cents from the request body",
+     "line_start": 29,
+     "line_end": 43,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Database error type returned directly to client leaks internal details",
+     "line_start": 60,
+     "line_end": 62,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 10.5,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.5s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [
+    {
+     "title": "Passwords hashed with unsalted single-round SHA-256",
+     "line_start": 65,
+     "line_end": 67,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "HTML invoice built by string interpolation of attacker-controlled fields (HTML/email injection)",
+     "line_start": 34,
+     "line_end": 42,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Invoice and reset emails sent over unauthenticated, unencrypted SMTP with raw sendmail payloads",
+     "line_start": 80,
+     "line_end": 86,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "invoice_pdf writes to a caller-supplied path with no containment check",
+     "line_start": 89,
+     "line_end": 96,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "No authorization check on invoice retrieval or revenue reporting",
+     "line_start": 98,
+     "line_end": 111,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Password comparison uses non-constant-time equality",
+     "line_start": 59,
+     "line_end": 63,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "register performs no validation or uniqueness check on email and password",
+     "line_start": 53,
+     "line_end": 57,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 28.6,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 28.5s using claude-opus-5: 7 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.2s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [
+    {
+     "title": "DiskStorage joins caller-supplied key into filesystem path without validation",
+     "line_start": 45,
+     "line_end": 51,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 6.2,
+    "stderr_tail": "ORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.2s using claude-opus-5: 1 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "Unvalidated device_id interpolated into fleet API URL (path traversal / SSRF)",
+     "line_start": 13,
+     "line_end": 15,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.1,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.1s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [
+    {
+     "title": "CSV formula injection and broken quoting in render_csv",
+     "line_start": 63,
+     "line_end": 72,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.2s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.5,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.4s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [],
+   "meta": {
+    "exit": 2,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 3 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "Test depends on state left by a previous test",
+     "line_start": 26,
+     "line_end": 30,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Global mutable cache shared across tests with no reset/teardown",
+     "line_start": 8,
+     "line_end": 23,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "`capacity_is_respected` is tautological and exercises nothing",
+     "line_start": 49,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Expiry test uses thread::sleep for synchronization",
+     "line_start": 32,
+     "line_end": 38,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Exact-string assertion on error message is brittle",
+     "line_start": 62,
+     "line_end": 71,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "`get_missing_does_not_panic` has no assertion",
+     "line_start": 56,
+     "line_end": 60,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 18.9,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 18.8s using claude-opus-5: 7 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "Test hits real staging service and requires env var",
+     "line_start": 25,
+     "line_end": 28,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Shared fixed-path SQLite file causes cross-run/order dependence",
+     "line_start": 43,
+     "line_end": 51,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Tautological test exercises only a Mock",
+     "line_start": 37,
+     "line_end": 40,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "try/except assert False swallows any exception type",
+     "line_start": 54,
+     "line_end": 59,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Age assertion depends on wall-clock timing",
+     "line_start": 19,
+     "line_end": 21,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 18.1,
+    "stderr_tail": "x: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 18.1s using claude-opus-5: 10 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "bled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.1,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.0s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [
+    {
+     "title": "abstraction: mixed int-cents and Decimal money representations in one module",
+     "line_start": 48,
+     "line_end": 53,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: monthly_totals takes raw tuples instead of the module's Entry type",
+     "line_start": 41,
+     "line_end": 47,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 9.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.2s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [
+    {
+     "title": "boundary: config parsing lives in the window-statistics module",
+     "line_start": 48,
+     "line_end": 59,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 20.5,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 20.5s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [
+    {
+     "title": "boundary: TLS verification policy hardcoded in client constructor",
+     "line_start": 11,
+     "line_end": 18,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: password hashing and key comparison colocated as free functions with transport client",
+     "line_start": 32,
+     "line_end": 53,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.5,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.5s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [
+    {
+     "title": "layering: route handlers build raw SQL directly against the db module",
+     "line_start": 1,
+     "line_end": 55,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: two near-duplicate proxy endpoints with divergent trust policy",
+     "line_start": 9,
+     "line_end": 24,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: two competing token-generation primitives with no shared contract",
+     "line_start": 26,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: redirect destination taken from request with no central policy",
+     "line_start": 45,
+     "line_end": 46,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 24.0,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 23.9s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [
+    {
+     "title": "boundary: configuration and secrets hardcoded in the route module",
+     "line_start": 10,
+     "line_end": 11,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "coupling: route reaches into the DB layer via a local import and raw SQL",
+     "line_start": 43,
+     "line_end": 48,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "layering: HTTP handlers contain storage, process, and parsing logic directly",
+     "line_start": 14,
+     "line_end": 40,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: external `convert` binary invoked as an inline shell string with no adapter",
+     "line_start": 31,
+     "line_end": 34,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: settings import endpoint exposes raw parsed structure with no schema boundary",
+     "line_start": 37,
+     "line_end": 40,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 15.6,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 15.6s using claude-opus-5: 8 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "coupling: tests share global mutable cache state, creating ordering dependencies between test cases",
+     "line_start": 8,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: wall-clock sleeping test bypasses the injectable Clock seam",
+     "line_start": 32,
+     "line_end": 47,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 10.7,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.7s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "boundary: unit test suite reaches live staging environment and ambient env config",
+     "line_start": 25,
+     "line_end": 28,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: test writes to a fixed global /tmp path instead of an isolated fixture",
+     "line_start": 39,
+     "line_end": 52,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: test asserts against a mock, not against production code",
+     "line_start": 34,
+     "line_end": 37,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: duplicate assertions on the same behavior with differing rigor",
+     "line_start": 55,
+     "line_end": 66,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 18.0,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 18.0s using claude-opus-5: 9 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "abstraction: handler reaches through Database into raw connection and SQL",
+     "line_start": 43,
+     "line_end": 52,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "layering: HTTP handler embeds tax business rules",
+     "line_start": 33,
+     "line_end": 42,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: get_invoice leaks rusqlite::Error as the HTTP error type",
+     "line_start": 56,
+     "line_end": 63,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 12.6,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 12.5s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [
+    {
+     "title": "god-object: PortalService bundles auth, billing, email, PDF, and reporting",
+     "line_start": 44,
+     "line_end": 100,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "layering: domain object InvoiceDraft renders presentation HTML",
+     "line_start": 34,
+     "line_end": 41,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "coupling: application service depends directly on smtplib, stripe, and reportlab concretes",
+     "line_start": 69,
+     "line_end": 95,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: InvoiceRepository exists but PortalService bypasses it with raw queries",
+     "line_start": 59,
+     "line_end": 111,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: password hashing policy buried as a private helper with a local import",
+     "line_start": 64,
+     "line_end": 67,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 21.6,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 21.5s using claude-opus-5: 5 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [
+    {
+     "title": "boundary: dead feature-flag branch couples module to an unreachable v2 path",
+     "line_start": 6,
+     "line_end": 52,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 10.1,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.1s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [
+    {
+     "title": "abstraction: Storage trait and factory are speculative generality with one implementation",
+     "line_start": 1,
+     "line_end": 61,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 14.4,
+    "stderr_tail": "RUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 14.4s using claude-opus-5: 1 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "coupling: hardcoded fleet API host embedded in fetch logic",
+     "line_start": 14,
+     "line_end": 14,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: module mixes HTTP transport, parsing, and filesystem persistence",
+     "line_start": 13,
+     "line_end": 45,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: rate-limiting policy leaks into the single-fetch primitive",
+     "line_start": 16,
+     "line_end": 17,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: audit-log digest computation embedded in the refresh loop",
+     "line_start": 52,
+     "line_end": 63,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 16.2,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 16.1s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [
+    {
+     "title": "abstraction: sum_quantities takes ownership for a read-only operation",
+     "line_start": 42,
+     "line_end": 44,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: shortfalls computes an unused audit total as a side concern",
+     "line_start": 56,
+     "line_end": 58,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: CSV escaping logic is ad hoc and leaks formatting rules",
+     "line_start": 65,
+     "line_end": 71,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 8.9,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.8s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [
+    {
+     "title": "coupling: business logic reaches directly into filesystem config and DB connection",
+     "line_start": 10,
+     "line_end": 44,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: rendering layer encodes a domain rule via a sentinel value",
+     "line_start": 56,
+     "line_end": 64,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: raw config dict keys leak pricing schema into callers",
+     "line_start": 40,
+     "line_end": 64,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 14.1,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 14.1s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [
+    {
+     "title": "stdlib: replace balance loop with sum() generator expression",
+     "line_start": 15,
+     "line_end": 19,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace find_entry loop with next() and a generator",
+     "line_start": 34,
+     "line_end": 38,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 4.7,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.7s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [
+    {
+     "title": "stdlib: replace manual `remove(0)` ring buffer with `VecDeque::pop_front`",
+     "line_start": 14,
+     "line_end": 19,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: `mean` can be one expression using the existing empty check",
+     "line_start": 22,
+     "line_end": 25,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 6.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.3s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [
+    {
+     "title": "stdlib: hand-rolled constant-time compare in keys_match \u2014 use subtle::ConstantTimeEq (or ring::constant_time::verify_slices_are_equal)",
+     "line_start": 43,
+     "line_end": 53,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 6.7,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.6s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [
+    {
+     "title": "stdlib: replace hand-rolled hex loop in newSessionToken with crypto.randomBytes(16).toString(\"hex\")",
+     "line_start": 26,
+     "line_end": 32,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: /proxy duplicates /proxy-safe without the host check",
+     "line_start": 9,
+     "line_end": 24,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.3s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [
+    {
+     "title": "stdlib: replace shell-string subprocess.run with argument list",
+     "line_start": 35,
+     "line_end": 35,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 4.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.3s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "yagni: `capacity_is_respected` asserts only on its own local \u2014 delete or rewrite",
+     "line_start": 50,
+     "line_end": 55,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: shared static Mutex<Option<Cache>> lazy-init helper \u2014 construct the cache in each test",
+     "line_start": 8,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: `eviction_error_message` duplicates `eviction_is_reported` with a brittle string compare",
+     "line_start": 62,
+     "line_end": 79,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: `entries_expire` sleep-based test is superseded by `entries_expire_with_fake_clock`",
+     "line_start": 32,
+     "line_end": 38,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 13.9,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 13.8s using claude-opus-5: 5 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "delete: test_fetch_is_called asserts only on a mock, no production code exercised",
+     "line_start": 36,
+     "line_end": 39,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: redundant test_bad_qty_rejected, superseded by test_bad_qty_raises",
+     "line_start": 58,
+     "line_end": 64,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: parse_order called twice in test_parse_order_round_trip",
+     "line_start": 12,
+     "line_end": 15,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 8.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.3s using claude-opus-5: 8 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.7,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.7s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [
+    {
+     "title": "delete: InvoiceRepository duplicates query access already provided by PortalService's session",
+     "line_start": 103,
+     "line_end": 111,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: move `import hashlib` to module top instead of inside _hash",
+     "line_start": 65,
+     "line_end": 67,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: authenticate's if/return/return collapses to one expression",
+     "line_start": 58,
+     "line_end": 62,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 10.2,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.2s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [
+    {
+     "title": "stdlib: replace largest() with built-in max()",
+     "line_start": 11,
+     "line_end": 17,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace clone_record() with copy.deepcopy()",
+     "line_start": 20,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "yagni: delete the ENABLE_V2_PATH flag and _ingest_v2 \u2014 nothing sets the env var",
+     "line_start": 6,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 10.1,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.0s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [
+    {
+     "title": "stdlib: replace hand-rolled trim_ws with str::trim",
+     "line_start": 6,
+     "line_end": 18,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace has_prefix with str::starts_with",
+     "line_start": 21,
+     "line_end": 32,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "yagni: delete Storage trait and StorageFactory, use DiskStorage directly",
+     "line_start": 34,
+     "line_end": 60,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: collapse is_config if/else to the predicate itself",
+     "line_start": 63,
+     "line_end": 69,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: remove dead legacy_human_bytes",
+     "line_start": 86,
+     "line_end": 96,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 13.4,
+    "stderr_tail": "RUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 13.4s using claude-opus-5: 5 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "delete: 5,000,000-iteration hash loop in refresh_all \u2014 hash the firmware once",
+     "line_start": 52,
+     "line_end": 61,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "native: use tokio::time::sleep instead of std::thread::sleep in async fetch_manifest",
+     "line_start": 16,
+     "line_end": 17,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace full-file read in cache_schema_version with BufReader::lines().next()",
+     "line_start": 30,
+     "line_end": 33,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 10.0,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.9s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [
+    {
+     "title": "delete: unused `_grand_total` and the `sum_quantities` helper it is the only caller of",
+     "line_start": 41,
+     "line_end": 58,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace the nested scan in `duplicate_skus` with a HashMap count / HashSet",
+     "line_start": 21,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: build the CSV with `push_str`/`writeln!` instead of `csv = csv + &escaped + \"\\n\"`",
+     "line_start": 65,
+     "line_end": 70,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: hoist `pickers.max(1)` into a local in `assign_to_pickers`",
+     "line_start": 89,
+     "line_end": 93,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 15.7,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 15.7s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [
+    {
+     "title": "shrink: hoist load_config() out of the monthly_cost loop into a single call",
+     "line_start": 38,
+     "line_end": 44,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: replace manual loop in active_tenants with a list comprehension and a set membership test",
+     "line_start": 46,
+     "line_end": 53,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.8,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.7s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 3.1,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 3.1s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "correctness",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/correctness/window.rs",
+   "findings": [
+    {
+     "title": "complexity: push uses Vec::remove(0) making the sliding window O(n) per sample; use VecDeque",
+     "line_start": 14,
+     "line_end": 19,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "allocation: percentile clones the whole window and fully sorts on each call; use select_nth_unstable_by",
+     "line_start": 42,
+     "line_end": 44,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.1,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.0s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.8,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.7s using claude-opus-5: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/proxy.ts",
+   "findings": [
+    {
+     "title": "complexity: scryptSync blocks the event loop during login",
+     "line_start": 48,
+     "line_end": 52,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: proxy buffers entire upstream body into memory instead of streaming",
+     "line_start": 11,
+     "line_end": 23,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.6,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.5s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/security/upload.py",
+   "findings": [],
+   "meta": {
+    "exit": 2,
+    "secs": 2.7,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.7s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "io: real sleep in `entries_expire` wastes 60ms per run; use the fake clock",
+     "line_start": 32,
+     "line_end": 38,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 5.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.3s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "testing-antipatterns",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "io: live network call in unit test slows and destabilizes suite",
+     "line_start": 24,
+     "line_end": 27,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: shared /tmp SQLite file accumulates rows and serializes runs",
+     "line_start": 45,
+     "line_end": 50,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.4s using claude-opus-5: 7 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "io: blocking rusqlite execute held across async lock on the request path",
+     "line_start": 43,
+     "line_end": 52,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 6.4,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.3s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "architecture",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/architecture/service.py",
+   "findings": [
+    {
+     "title": "complexity: revenue_for loads full Invoice rows to sum; use a SQL SUM aggregate",
+     "line_start": 98,
+     "line_end": 100,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: SMTP connection opened per email inside request path; reuse a connection/queue",
+     "line_start": 73,
+     "line_end": 86,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.9,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.9s using claude-opus-5: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.3,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.2s using claude-opus-5: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "simplicity",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/simplicity/util.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.5,
+    "stderr_tail": "ORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.5s using claude-opus-5: 0 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "io: std::thread::sleep blocks the shared Tokio runtime worker during rate-limit pacing",
+     "line_start": 16,
+     "line_end": 17,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: 5,000,000-iteration digest loop per manifest blocks the async handler",
+     "line_start": 52,
+     "line_end": 61,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: cache_schema_version reads the entire multi-gigabyte cache file to get the first line",
+     "line_start": 30,
+     "line_end": 33,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: manifests fetched strictly sequentially instead of concurrently",
+     "line_start": 49,
+     "line_end": 51,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 14.7,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 14.6s using claude-opus-5: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/inventory.rs",
+   "findings": [
+    {
+     "title": "complexity: duplicate_skus is O(n^2) with an O(n) contains scan inside; use a HashMap count",
+     "line_start": 21,
+     "line_end": 31,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "clone: shortfalls deep-copies the entire feed just to sum quantities; take a slice",
+     "line_start": 56,
+     "line_end": 58,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "allocation: render_csv rebuilds the whole CSV string per row; push_str into a reserved String",
+     "line_start": 63,
+     "line_end": 71,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 12.8,
+    "stderr_tail": "ex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 12.8s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "/Users/jsnyder/Sources/github.com/jsnyder/quorum/.worktrees/axes-eval/eval/axes/corpus/performance/reports.py",
+   "findings": [
+    {
+     "title": "io: load_config() re-reads and parses the config file on every usage row; hoist it out of the loop",
+     "line_start": 38,
+     "line_end": 44,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: usage_for_tenants issues one query per tenant; use a single IN-clause query",
+     "line_start": 25,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: active_tenants is O(n*m) via list membership; convert churned to a set",
+     "line_start": 47,
+     "line_end": 53,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.6,
+    "stderr_tail": "dex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.5s using claude-opus-5: 3 finding(s)",
+    "rule_findings": 0
+   }
+  }
+ ],
+ "finished": "2026-10-01T16:57:43.137772+00:00"
+}

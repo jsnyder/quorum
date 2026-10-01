@@ -1,0 +1,6 @@
+[
+  {"id": "perf-py-001", "type": "real", "kind": "io", "title": "usage_for_tenants runs one query per tenant (N+1) instead of a single IN query", "category": "performance", "severity": "medium", "line_start": 29, "line_end": 36},
+  {"id": "perf-py-002", "type": "real", "kind": "cache", "title": "monthly_cost re-reads and re-parses the config file on every iteration", "category": "performance", "severity": "medium", "line_start": 43, "line_end": 46},
+  {"id": "perf-py-003", "type": "real", "kind": "complexity", "title": "active_tenants does a linear membership test on a list inside a loop; a set makes it O(n)", "category": "performance", "severity": "low", "line_start": 52, "line_end": 56},
+  {"id": "perf-py-d01", "type": "decoy", "kind": "cache", "title": "render re-reads config on the rare negative-cost error path, documented as cold", "category": "performance", "line_start": 63, "line_end": 69}
+]

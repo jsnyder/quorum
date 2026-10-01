@@ -1,0 +1,50 @@
+[
+  {
+    "id": "corr-rs-001",
+    "type": "real",
+    "kind": "edge-case",
+    "title": "mean divides by zero on an empty window and returns Some(NaN), contradicting its contract",
+    "category": "correctness",
+    "severity": "medium",
+    "line_start": 22,
+    "line_end": 25
+  },
+  {
+    "id": "corr-rs-002",
+    "type": "real",
+    "kind": "edge-case",
+    "title": "last_n underflows (panics) when n exceeds the number of samples",
+    "category": "correctness",
+    "severity": "high",
+    "line_start": 28,
+    "line_end": 31
+  },
+  {
+    "id": "corr-rs-003",
+    "type": "real",
+    "kind": "logic",
+    "title": "above uses >= but is documented as strictly above",
+    "category": "correctness",
+    "severity": "low",
+    "line_start": 34,
+    "line_end": 36
+  },
+  {
+    "id": "corr-rs-d01",
+    "type": "decoy",
+    "kind": "edge-case",
+    "title": "percentile guards the empty case and clamps the rank; correct",
+    "category": "correctness",
+    "line_start": 39,
+    "line_end": 48
+  },
+  {
+    "id": "corr-rs-d02",
+    "type": "decoy",
+    "kind": "error-handling",
+    "title": "parse_line logs and returns None on a bad value; documented, not swallowed",
+    "category": "correctness",
+    "line_start": 51,
+    "line_end": 61
+  }
+]

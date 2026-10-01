@@ -1,0 +1,6 @@
+[
+  {"id": "perf-async-001", "type": "real", "kind": "blocking", "title": "std::thread::sleep inside an async fn blocks the executor thread; use tokio::time::sleep", "category": "performance", "severity": "medium", "line_start": 15, "line_end": 16},
+  {"id": "perf-async-002", "type": "real", "kind": "io", "title": "cache_schema_version reads the entire (possibly multi-GB) file to get the first line", "category": "performance", "severity": "medium", "line_start": 29, "line_end": 32},
+  {"id": "perf-async-003", "type": "real", "kind": "blocking", "title": "refresh_all runs a CPU-heavy 5M-iteration loop per manifest on the async executor; spawn_blocking or drop it", "category": "performance", "severity": "medium", "line_start": 54, "line_end": 62},
+  {"id": "perf-async-d01", "type": "decoy", "kind": "io", "title": "write_cache uses unbuffered fs::write for a one-shot few-KB write at shutdown, documented as cold", "category": "performance", "line_start": 36, "line_end": 45}
+]

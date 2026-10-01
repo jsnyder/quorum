@@ -1,0 +1,31 @@
+[
+  {
+    "id": "arch-py-001",
+    "type": "real",
+    "kind": "layering",
+    "title": "InvoiceDraft, a domain model, renders HTML (presentation) via to_html",
+    "category": "architecture",
+    "severity": "medium",
+    "line_start": 33,
+    "line_end": 41
+  },
+  {
+    "id": "arch-py-002",
+    "type": "real",
+    "kind": "god-object",
+    "title": "PortalService owns auth, billing, email, PDF rendering and reporting in one class",
+    "category": "architecture",
+    "severity": "medium",
+    "line_start": 44,
+    "line_end": 101
+  },
+  {
+    "id": "arch-py-d01",
+    "type": "decoy",
+    "kind": "boundary",
+    "title": "InvoiceRepository is a small, single-purpose persistence class; well-structured",
+    "category": "architecture",
+    "line_start": 104,
+    "line_end": 111
+  }
+]

@@ -1,0 +1,41 @@
+[
+  {
+    "id": "arch-rs-001",
+    "type": "real",
+    "kind": "layering",
+    "title": "Tax calculation (business logic) lives inside the HTTP handler instead of a domain/service layer",
+    "category": "architecture",
+    "severity": "medium",
+    "line_start": 33,
+    "line_end": 44
+  },
+  {
+    "id": "arch-rs-002",
+    "type": "real",
+    "kind": "coupling",
+    "title": "Handler reaches through Database into its internal conn mutex and writes raw SQL, bypassing the repository API",
+    "category": "architecture",
+    "severity": "medium",
+    "line_start": 45,
+    "line_end": 54
+  },
+  {
+    "id": "arch-rs-003",
+    "type": "real",
+    "kind": "abstraction",
+    "title": "get_invoice leaks rusqlite::Error through the public HTTP handler signature",
+    "category": "architecture",
+    "severity": "low",
+    "line_start": 58,
+    "line_end": 64
+  },
+  {
+    "id": "arch-rs-d01",
+    "type": "decoy",
+    "kind": "layering",
+    "title": "health handler reads config directly; documented as intentionally co-located",
+    "category": "architecture",
+    "line_start": 66,
+    "line_end": 74
+  }
+]

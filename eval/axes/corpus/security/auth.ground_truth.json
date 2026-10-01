@@ -1,0 +1,7 @@
+[
+  {"id": "sec-rs-001", "type": "real", "kind": "crypto", "title": "danger_accept_invalid_certs(true) disables TLS verification for every environment", "category": "security", "severity": "high", "line_start": 13, "line_end": 17},
+  {"id": "sec-rs-002", "type": "real", "kind": "secrets", "title": "Bearer token written to the log at info level", "category": "security", "severity": "high", "line_start": 21, "line_end": 21},
+  {"id": "sec-rs-003", "type": "real", "kind": "crypto", "title": "Passwords hashed with unsalted MD5", "category": "security", "severity": "critical", "line_start": 33, "line_end": 35},
+  {"id": "sec-rs-d01", "type": "decoy", "kind": "crypto", "title": "SHA-256 content fingerprint for dedup is not a security use; fine", "category": "security", "line_start": 38, "line_end": 42},
+  {"id": "sec-rs-d02", "type": "decoy", "kind": "crypto", "title": "keys_match is a correct constant-time compare; not custom crypto", "category": "security", "line_start": 45, "line_end": 54}
+]
