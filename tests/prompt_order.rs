@@ -103,3 +103,44 @@ fn axes_reviewing_one_file_share_the_system_message() {
         "summary line must surface cached tokens:\n{stderr}"
     );
 }
+
+/// #652: a whole file reaches the axes with every line prefixed by its
+/// absolute number, the same way a focused view does, and the metadata says
+/// so. Without the numbers the model counts for itself and anchored every
+/// finding 2-4 lines early on the first per-axis eval run.
+#[test]
+fn whole_file_input_is_line_numbered() {
+    let proj = tempfile::tempdir().unwrap();
+    let subject = proj.path().join("lib.rs");
+    std::fs::write(
+        &subject,
+        "pub fn changed(text: &str) -> i32 {\n    text.parse::<i32>().unwrap()\n}\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let (_out, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--skip-context7")
+            .arg("--axes")
+            .arg("correctness")
+            .arg(&subject)
+            .output()
+            .unwrap()
+    });
+    let system = messages(&sent[0], "system");
+    // The base prompt mentions the tag in prose; the real block is the last.
+    let code = system
+        .rsplit("<code_to_review>")
+        .next()
+        .expect("code block present");
+    assert!(
+        code.contains(
+            "\n1| pub fn changed(text: &str) -> i32 {\n2|     text.parse::<i32>().unwrap()\n3| }\n"
+        ),
+        "whole-file code is not line-numbered:\n{code}"
+    );
+    assert!(
+        code.contains("\"numbered_lines\":true"),
+        "metadata does not declare the numbering:\n{code}"
+    );
+}

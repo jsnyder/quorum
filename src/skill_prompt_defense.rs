@@ -82,6 +82,7 @@ pub fn wrap_code_to_review(
         "filename": filename,
         "sha256": sha256,
         "line_range": [line_start, line_end],
+        "numbered_lines": true,
     });
     if let Some(v) = view {
         metadata["view"] = serde_json::json!({
