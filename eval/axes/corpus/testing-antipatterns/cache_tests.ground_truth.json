@@ -1,0 +1,10 @@
+[
+  {"id": "test-rs-001", "type": "real", "kind": "shared-state", "title": "Tests share a static mutable Cache; insert_then_get mutates what others read", "category": "testing", "severity": "high", "line_start": 8, "line_end": 23},
+  {"id": "test-rs-002", "type": "real", "kind": "order-dependency", "title": "len_counts_the_previous_test_insert depends on insert_then_get having run first", "category": "testing", "severity": "high", "line_start": 26, "line_end": 30},
+  {"id": "test-rs-003", "type": "real", "kind": "nondeterminism", "title": "entries_expire uses thread::sleep as synchronisation; flaky under load", "category": "testing", "severity": "medium", "line_start": 33, "line_end": 38},
+  {"id": "test-rs-004", "type": "real", "kind": "tautology", "title": "capacity_is_respected asserts the local constant against itself; cannot fail", "category": "testing", "severity": "high", "line_start": 51, "line_end": 56},
+  {"id": "test-rs-005", "type": "real", "kind": "tautology", "title": "get_missing_does_not_panic has no assertion", "category": "testing", "severity": "medium", "line_start": 58, "line_end": 62},
+  {"id": "test-rs-006", "type": "real", "kind": "brittle", "title": "eviction_error_message exact-matches a long human-readable error string", "category": "testing", "severity": "low", "line_start": 64, "line_end": 73},
+  {"id": "test-rs-d01", "type": "decoy", "kind": "nondeterminism", "title": "entries_expire_with_fake_clock uses an injected clock; deterministic", "category": "testing", "line_start": 40, "line_end": 49},
+  {"id": "test-rs-d02", "type": "decoy", "kind": "brittle", "title": "eviction_is_reported matches on the error variant, not the message; fine", "category": "testing", "line_start": 75, "line_end": 81}
+]

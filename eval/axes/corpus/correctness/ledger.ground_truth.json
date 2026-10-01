@@ -1,0 +1,7 @@
+[
+  {"id": "corr-py-001", "type": "real", "kind": "logic", "title": "split_evenly drops the remainder; shares do not sum to cents when parts does not divide evenly", "category": "correctness", "severity": "high", "line_start": 22, "line_end": 25},
+  {"id": "corr-py-002", "type": "real", "kind": "logic", "title": "apply_discount truncates with int() instead of rounding to the nearest cent as documented", "category": "correctness", "severity": "medium", "line_start": 28, "line_end": 30},
+  {"id": "corr-py-003", "type": "real", "kind": "off-by-one", "title": "monthly_totals accepts month == 12 and indexes past the 12-element list", "category": "correctness", "severity": "high", "line_start": 41, "line_end": 47},
+  {"id": "corr-py-d01", "type": "decoy", "kind": "edge-case", "title": "find_entry returns None when absent, as documented", "category": "correctness", "line_start": 33, "line_end": 38},
+  {"id": "corr-py-d02", "type": "decoy", "kind": "error-handling", "title": "load_amount's empty-string sentinel is documented; Decimal raises on garbage, which is the intended behaviour", "category": "correctness", "line_start": 50, "line_end": 54}
+]

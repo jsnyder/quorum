@@ -1,0 +1,10 @@
+[
+  {"id": "test-py-001", "type": "real", "kind": "nondeterminism", "title": "test_order_is_recent depends on wall-clock time.time()", "category": "testing", "severity": "medium", "line_start": 19, "line_end": 21},
+  {"id": "test-py-002", "type": "real", "kind": "external-dependency", "title": "test_fetch_orders_hits_staging calls a real staging server with a real token", "category": "testing", "severity": "high", "line_start": 24, "line_end": 27},
+  {"id": "test-py-003", "type": "real", "kind": "tautology", "title": "test_fetch_is_called mocks the system under test and asserts the mock's return value", "category": "testing", "severity": "high", "line_start": 37, "line_end": 40},
+  {"id": "test-py-004", "type": "real", "kind": "shared-state", "title": "test_persist_orders_shared_file uses a fixed /tmp path with no teardown; rows accumulate across runs", "category": "testing", "severity": "medium", "line_start": 51, "line_end": 56},
+  {"id": "test-py-005", "type": "real", "kind": "tautology", "title": "test_bad_qty_rejected swallows every exception including the AssertionError from `assert False`; cannot fail", "category": "testing", "severity": "high", "line_start": 59, "line_end": 64},
+  {"id": "test-py-d01", "type": "decoy", "kind": "external-dependency", "title": "test_fetch_orders_parses_response patches the transport; isolated", "category": "testing", "line_start": 30, "line_end": 34},
+  {"id": "test-py-d02", "type": "decoy", "kind": "shared-state", "title": "test_persist_orders uses tmp_path; isolated", "category": "testing", "line_start": 43, "line_end": 48},
+  {"id": "test-py-d03", "type": "decoy", "kind": "tautology", "title": "test_bad_qty_raises uses pytest.raises; correct", "category": "testing", "line_start": 67, "line_end": 69}
+]

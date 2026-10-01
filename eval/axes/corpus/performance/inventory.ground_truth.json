@@ -1,0 +1,7 @@
+[
+  {"id": "perf-rs-001", "type": "real", "kind": "complexity", "title": "duplicate_skus is O(n^2) with a linear contains check; a HashSet pass is O(n)", "category": "performance", "severity": "medium", "line_start": 22, "line_end": 31},
+  {"id": "perf-rs-002", "type": "real", "kind": "clone", "title": "shortfalls copies the whole feed (lines.to_vec()) to call a helper that only reads", "category": "performance", "severity": "medium", "line_start": 59, "line_end": 61},
+  {"id": "perf-rs-003", "type": "real", "kind": "alloc", "title": "render_csv allocates a new String per row and rebuilds csv by concatenation (quadratic) instead of writing into one buffer", "category": "performance", "severity": "medium", "line_start": 66, "line_end": 74},
+  {"id": "perf-rs-d01", "type": "decoy", "kind": "complexity", "title": "moved() nested loop over two few-dozen-element inputs, documented as intentional", "category": "performance", "line_start": 78, "line_end": 88},
+  {"id": "perf-rs-d02", "type": "decoy", "kind": "clone", "title": "assign_to_pickers clones orders because each bucket needs owned mutable copies", "category": "performance", "line_start": 92, "line_end": 98}
+]

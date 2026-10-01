@@ -1,0 +1,8 @@
+[
+  {"id": "sec-py-001", "type": "real", "kind": "secrets", "title": "Hardcoded AWS secret access key in source", "category": "security", "severity": "critical", "line_start": 11, "line_end": 11},
+  {"id": "sec-py-002", "type": "real", "kind": "path-traversal", "title": "upload joins the user-supplied filename into UPLOAD_DIR without sanitising; ../ escapes the root", "category": "security", "severity": "high", "line_start": 15, "line_end": 19},
+  {"id": "sec-py-003", "type": "real", "kind": "injection", "title": "convert builds a shell command from user input with shell=True (command injection)", "category": "security", "severity": "critical", "line_start": 32, "line_end": 36},
+  {"id": "sec-py-004", "type": "real", "kind": "deserialization", "title": "yaml.load on request data without SafeLoader executes arbitrary tags", "category": "security", "severity": "high", "line_start": 39, "line_end": 42},
+  {"id": "sec-py-d01", "type": "decoy", "kind": "path-traversal", "title": "download canonicalises and checks the prefix before serving; safe", "category": "security", "line_start": 22, "line_end": 28},
+  {"id": "sec-py-d02", "type": "decoy", "kind": "injection", "title": "search uses a parameterised query; the LIKE wildcard is data, not SQL", "category": "security", "line_start": 45, "line_end": 50}
+]

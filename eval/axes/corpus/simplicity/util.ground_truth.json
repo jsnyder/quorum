@@ -1,0 +1,61 @@
+[
+  {
+    "id": "simp-rs-001",
+    "type": "real",
+    "kind": "stdlib",
+    "title": "trim_ws hand-rolls str::trim",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 6,
+    "line_end": 17
+  },
+  {
+    "id": "simp-rs-002",
+    "type": "real",
+    "kind": "stdlib",
+    "title": "has_prefix hand-rolls str::starts_with",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 20,
+    "line_end": 32
+  },
+  {
+    "id": "simp-rs-003",
+    "type": "real",
+    "kind": "yagni",
+    "title": "Storage trait + StorageFactory with one implementation and a match with only a wildcard arm",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 34,
+    "line_end": 62
+  },
+  {
+    "id": "simp-rs-004",
+    "type": "real",
+    "kind": "shrink",
+    "title": "is_config: `if cond { true } else { false }` is just `cond`",
+    "category": "simplicity",
+    "severity": "info",
+    "line_start": 65,
+    "line_end": 71
+  },
+  {
+    "id": "simp-rs-005",
+    "type": "real",
+    "kind": "delete",
+    "title": "legacy_human_bytes is dead code with no callers, kept behind #[allow(dead_code)]",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 91,
+    "line_end": 101
+  },
+  {
+    "id": "simp-rs-d01",
+    "type": "decoy",
+    "kind": "shrink",
+    "title": "validate_name is input validation at a trust boundary; the prompt says never flag validation",
+    "category": "simplicity",
+    "line_start": 73,
+    "line_end": 89
+  }
+]

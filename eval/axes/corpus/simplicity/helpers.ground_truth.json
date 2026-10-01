@@ -1,0 +1,41 @@
+[
+  {
+    "id": "simp-py-001",
+    "type": "real",
+    "kind": "stdlib",
+    "title": "largest hand-rolls max()",
+    "category": "simplicity",
+    "severity": "info",
+    "line_start": 11,
+    "line_end": 17
+  },
+  {
+    "id": "simp-py-002",
+    "type": "real",
+    "kind": "stdlib",
+    "title": "clone_record reimplements copy.deepcopy, which is already imported",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 20,
+    "line_end": 30
+  },
+  {
+    "id": "simp-py-003",
+    "type": "real",
+    "kind": "yagni",
+    "title": "ENABLE_V2_PATH is never set anywhere; the v2 branch and _ingest_v2 are dead",
+    "category": "simplicity",
+    "severity": "low",
+    "line_start": 6,
+    "line_end": 8
+  },
+  {
+    "id": "simp-py-d01",
+    "type": "decoy",
+    "kind": "shrink",
+    "title": "parse_port's explicit error handling is validation, documented as deliberate",
+    "category": "simplicity",
+    "line_start": 56,
+    "line_end": 65
+  }
+]

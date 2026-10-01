@@ -1,0 +1,8 @@
+[
+  {"id": "sec-ts-001", "type": "real", "kind": "ssrf", "title": "/proxy fetches a user-controlled URL with no allowlist (SSRF)", "category": "security", "severity": "high", "line_start": 9, "line_end": 13},
+  {"id": "sec-ts-002", "type": "real", "kind": "crypto", "title": "Session token generated with Math.random()", "category": "security", "severity": "high", "line_start": 26, "line_end": 32},
+  {"id": "sec-ts-003", "type": "real", "kind": "injection", "title": "Login query interpolates the email into SQL (SQL injection)", "category": "security", "severity": "critical", "line_start": 40, "line_end": 40},
+  {"id": "sec-ts-004", "type": "real", "kind": "open-redirect", "title": "Post-login redirect to an unvalidated user-supplied `next` (open redirect)", "category": "security", "severity": "medium", "line_start": 47, "line_end": 48},
+  {"id": "sec-ts-d01", "type": "decoy", "kind": "ssrf", "title": "/proxy-safe checks the hostname against an allowlist; safe", "category": "security", "line_start": 16, "line_end": 24},
+  {"id": "sec-ts-d02", "type": "decoy", "kind": "crypto", "title": "CSRF token uses crypto.randomBytes; verify uses scrypt and timingSafeEqual; safe", "category": "security", "line_start": 34, "line_end": 36}
+]
