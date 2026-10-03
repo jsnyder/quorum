@@ -16,8 +16,11 @@ file with every axis and scores:
 
 A finding hits a planted defect when its anchor line falls inside the
 defect's range (with a small tolerance), or its line span (if not too
-wide) overlaps the range, and no other finding has already claimed it.
-Everything else the axis emitted on its own corpus is noise.
+wide) overlaps the range; among several candidates an unclaimed one is
+preferred, and a finding whose only candidates are claimed is a duplicate.
+Everything else the axis emitted on its own corpus is noise. Out of lane,
+a finding on another axis's planted defect or decoy is a lane violation:
+the same issue reported under the wrong axis.
 
 Usage:
   eval/axes/run_axes.py [--model M] [--axes a,b] [--quorum PATH] [--out DIR]
@@ -109,9 +112,14 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
                 return False
             return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
 
-        real = next((g for g in reals if within(g)), None)
-        if real is not None:
-            if real["id"] in claimed:
+        # Every planted defect this finding could be about; prefer one nobody
+        # has claimed. Two defects three lines apart share a tolerance window,
+        # and a finding on the second must not be swallowed as a duplicate of
+        # the first.
+        matching = [g for g in reals if within(g)]
+        if matching:
+            real = next((g for g in matching if g["id"] not in claimed), None)
+            if real is None:
                 duplicates.append(f)
             else:
                 claimed.add(real["id"])
@@ -147,8 +155,14 @@ def run_quorum(quorum: str, file: Path, axis: str, model: str | None, home: Path
         cmd += ["--model", model]
     t0 = time.monotonic()
     p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    # A cell that died on the wire (provider timeout, 429) says nothing
+    # about the prompt; one retry keeps a transient from zeroing a file.
+    retried = False
+    if "network_error" in p.stderr or p.returncode == 3:
+        retried = True
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
     secs = round(time.monotonic() - t0, 1)
-    meta = {"exit": p.returncode, "secs": secs, "stderr_tail": p.stderr.strip()[-300:]}
+    meta = {"exit": p.returncode, "secs": secs, "retried": retried, "stderr_tail": p.stderr.strip()[-300:]}
     if p.returncode == 3:
         return [], {**meta, "error": "tool error"}
     try:
@@ -185,6 +199,7 @@ def aggregate(raw: dict) -> dict:
         decoy_hits = sum(len(r["score"]["decoy_hits"]) for r in inlane)
         duplicates = sum(r["score"]["duplicates"] for r in inlane)
         errors = [r for r in inlane + outlane if r["meta"].get("error")]
+        violations = sum(len(r["score"]["hits"]) + len(r["score"]["decoy_hits"]) for r in outlane)
         table[axis] = {
             "files": len(inlane),
             "planted": planted,
@@ -196,6 +211,10 @@ def aggregate(raw: dict) -> dict:
             "noise": noise,
             "duplicates": duplicates,
             "out_of_lane_findings": sum(r["score"]["emitted"] for r in outlane),
+            # Out-of-lane findings that land on another axis's planted defect
+            # or decoy: the same issue reported under the wrong axis. The rest
+            # of the out-of-lane output may be real defects nobody planted.
+            "lane_violations": violations,
             "out_of_lane_files": len(outlane),
             "errors": len(errors),
             "secs": round(sum(r["meta"].get("secs", 0) for r in inlane + outlane), 1),
@@ -207,13 +226,13 @@ def aggregate(raw: dict) -> dict:
 
 def render(table: dict, model: str) -> str:
     lines = [f"axes eval -- model {model}", ""]
-    lines.append(f"{'axis':22s} files planted hits recall  emitted precision decoys noise dups  out-of-lane  errors  secs")
+    lines.append(f"{'axis':22s} files planted hits recall  emitted precision decoys noise dups  out-of-lane(violations)  errors  secs")
     for axis, t in table.items():
         rec = "-" if t["recall"] is None else f"{t['recall']:.2f}"
         prec = "-" if t["precision"] is None else f"{t['precision']:.2f}"
         lines.append(
             f"{axis:22s} {t['files']:5d} {t['planted']:7d} {t['hits']:4d} {rec:>6s}  {t['emitted_in_lane']:7d} {prec:>9s} {t['decoy_hits']:6d} {t['noise']:5d} {t['duplicates']:4d}  "
-            f"{t['out_of_lane_findings']:4d}/{t['out_of_lane_files']:<3d}    {t['errors']:6d}  {t['secs']:5.0f}"
+            f"{t['out_of_lane_findings']:4d}/{t['out_of_lane_files']:<3d} ({t['lane_violations']:3d})     {t['errors']:6d}  {t['secs']:5.0f}"
         )
     lines.append("")
     for axis, t in table.items():
