@@ -49,6 +49,27 @@ def test_a_span_covering_the_defect_hits_unless_it_is_very_wide():
     assert run_axes.score_file([wide], GT)["hits"] == []
 
 
+def test_a_finding_near_two_defects_claims_the_unclaimed_one():
+    gt = [
+        {"id": "a", "type": "real", "kind": "k", "title": "a", "line_start": 28, "line_end": 31},
+        {"id": "b", "type": "real", "kind": "k", "title": "b", "line_start": 34, "line_end": 36},
+    ]
+    # 33 is inside a's tolerance window (26..33) and b's (32..38); a is claimed first.
+    s = run_axes.score_file([finding(28), finding(33)], gt)
+    assert [h["id"] for h in s["hits"]] == ["a", "b"]
+    assert s["duplicates"] == 0
+
+
+def test_lane_violations_count_only_findings_on_the_other_axis_plants():
+    raw = {"runs": [
+        {"axis": "security", "corpus_axis": "performance", "meta": {"secs": 1},
+         "score": {"planted": 3, "hits": [{"id": "p"}], "missed": [], "duplicates": 0,
+                   "decoy_hits": [{"id": "d"}], "noise": [{"line": 1}, {"line": 2}], "emitted": 4}},
+    ]}
+    t = run_axes.aggregate(raw)["security"]
+    assert (t["out_of_lane_findings"], t["lane_violations"]) == (4, 2)
+
+
 def test_tolerance_is_two_lines_each_side():
     assert len(run_axes.score_file([finding(32)], GT)["hits"]) == 1
     assert len(run_axes.score_file([finding(33)], GT)["hits"]) == 0
@@ -75,6 +96,7 @@ def test_aggregate_separates_in_lane_from_out_of_lane():
     assert (t["planted"], t["hits"], t["recall"]) == (2, 1, 0.5)
     assert (t["emitted_in_lane"], t["precision"], t["noise"]) == (2, 0.5, 1)
     assert (t["out_of_lane_findings"], t["out_of_lane_files"], t["errors"]) == (4, 1, 1)
+    assert t["lane_violations"] == 1
     assert run_axes.aggregate(raw)["performance"]["recall"] is None
 
 
@@ -93,3 +115,27 @@ def test_every_corpus_file_has_well_formed_ground_truth():
             assert 1 <= g["line_start"] <= g["line_end"] <= n, f"{g['id']} out of range for {path.name} ({n} lines)"
             if g["type"] == "real":
                 assert g["category"], g["id"]
+
+
+def test_a_network_error_cell_is_retried_once(monkeypatch, tmp_path):
+    calls = []
+
+    class P:
+        def __init__(self, rc, out, err):
+            self.returncode, self.stdout, self.stderr = rc, out, err
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return P(1, "[]", "Warning: 1 of 1 skill axes failed on x.rs: security/m (network_error)")
+        return P(0, '[{"file": "x.rs", "findings": [{"title": "t", "line_start": 1, "line_end": 1, "originating_skill": "security"}]}]', "")
+
+    monkeypatch.setattr(run_axes.subprocess, "run", fake_run)
+    findings, meta = run_axes.run_quorum("quorum", tmp_path / "x.rs", "security", None, tmp_path)
+    assert len(calls) == 2 and meta["retried"] is True
+    assert [f["title"] for f in findings] == ["t"] and "error" not in meta
+
+
+def test_results_re_score_regardless_of_the_checkout_they_were_recorded_in():
+    assert run_axes.corpus_key("/old/worktree/eval/axes/corpus/security/auth.rs") == "security/auth.rs"
+    assert run_axes.corpus_key("security/auth.rs") == "security/auth.rs"
