@@ -70,6 +70,13 @@ def corpus_files() -> list[tuple[str, Path, list[dict]]]:
     return out
 
 
+def corpus_key(path: str | Path) -> str:
+    """`<axis>/<file>`: how a raw result names its file, so results recorded
+    under one checkout re-score under another."""
+    p = Path(path)
+    return f"{p.parent.name}/{p.name}"
+
+
 def anchor_line(finding: dict) -> int | None:
     cited = finding.get("cited_lines")
     if isinstance(cited, dict) and isinstance(cited.get("start"), int):
@@ -255,9 +262,9 @@ def main() -> int:
 
     if args.score:
         raw = json.loads(args.score.read_text())
-        gt_by_file = {str(f): gt for _, f, gt in corpus_files()}
+        gt_by_file = {corpus_key(f): gt for _, f, gt in corpus_files()}
         for r in raw["runs"]:
-            r["score"] = score_file(r["findings"], gt_by_file[r["file"]])
+            r["score"] = score_file(r["findings"], gt_by_file[corpus_key(r["file"])])
         table = aggregate(raw)
         print(render(table, raw["model"]))
         return 0
@@ -280,7 +287,7 @@ def main() -> int:
                 raw["runs"].append({
                     "axis": axis,
                     "corpus_axis": corpus_axis,
-                    "file": str(f),
+                    "file": corpus_key(f),
                     "findings": findings,
                     "meta": meta,
                     "score": score_file(findings, gt),

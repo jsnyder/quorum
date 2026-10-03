@@ -134,3 +134,8 @@ def test_a_network_error_cell_is_retried_once(monkeypatch, tmp_path):
     findings, meta = run_axes.run_quorum("quorum", tmp_path / "x.rs", "security", None, tmp_path)
     assert len(calls) == 2 and meta["retried"] is True
     assert [f["title"] for f in findings] == ["t"] and "error" not in meta
+
+
+def test_results_re_score_regardless_of_the_checkout_they_were_recorded_in():
+    assert run_axes.corpus_key("/old/worktree/eval/axes/corpus/security/auth.rs") == "security/auth.rs"
+    assert run_axes.corpus_key("security/auth.rs") == "security/auth.rs"

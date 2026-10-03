@@ -1,0 +1,14 @@
+axes eval -- model claude-opus-5
+
+axis                   files planted hits recall  emitted precision decoys noise dups  out-of-lane(violations)  errors  secs
+correctness                2       6    6   1.00        9      0.67      0     1    2    41/12  ( 28)          0    217
+security                   3      10   10   1.00       16      0.62      2     2    1    14/11  (  8)          0    136
+testing-antipatterns       2      11   10   0.91       11      0.91      0     0    1     0/12  (  0)          0     38
+architecture               2       5    4   0.80        8      0.50      0     0    4    32/12  ( 24)          0    204
+simplicity                 2       8    8   1.00        8      1.00      0     0    0    27/12  ( 22)          0    121
+performance                3       9    8   0.89       10      0.80      0     1    1    10/11  (  8)          0     95
+
+security fell for decoys: sec-rs-d01 [crypto] -> "keys_match leaks key length via early return"; sec-ts-d01 [ssrf] -> "/proxy-safe allowlist checks hostname only, permitting non-HTTP schemes and credential/port abuse"
+testing-antipatterns missed: test-rs-006 [brittle] eviction_error_message exact-matches a long human-readable error string
+architecture missed: arch-rs-003 [abstraction] get_invoice leaks rusqlite::Error through the public HTTP handler signature
+performance missed: perf-py-003 [complexity] active_tenants does a linear membership test on a list inside a loop; a set makes it O(n)
