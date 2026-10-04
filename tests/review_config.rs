@@ -215,3 +215,154 @@ fn scopes_apply_per_file_when_several_files_are_reviewed_together() {
         "{stderr}"
     );
 }
+
+/// The config is found from each file, not from the first file's nearest
+/// project marker: a nested `pyproject.toml` must not hide it, whichever
+/// file is listed first and whatever the working directory.
+#[test]
+fn the_config_applies_past_a_nested_marker_in_any_order_and_from_any_cwd() {
+    let (proj, src, _test, _fixture) =
+        project("[[scope]]\npaths = [\"eval/corpus/**\"]\naxes = []\n");
+    let root = proj.path();
+    std::fs::create_dir_all(root.join("eval/corpus")).unwrap();
+    std::fs::write(
+        root.join("eval/pyproject.toml"),
+        "[project]\nname = \"e\"\n",
+    )
+    .unwrap();
+    let planted = root.join("eval/corpus/bad.rs");
+    std::fs::write(&planted, SRC).unwrap();
+
+    // Alone: the nearest marker is eval/pyproject.toml.
+    let (_, sent) = review(&planted, &[]);
+    assert_eq!(
+        sent.len(),
+        0,
+        "eval file reviewed alone must still be scoped out"
+    );
+
+    // Listed first, then a normal file: 0 + 2.
+    let home = tempfile::tempdir().unwrap();
+    let (_, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg(&planted)
+            .arg(&src)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(
+        sent.len(),
+        2,
+        "argument order must not decide which config applies"
+    );
+
+    // A bare file name from inside the scoped directory.
+    let home = tempfile::tempdir().unwrap();
+    let (_, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.current_dir(root.join("eval/corpus"))
+            .arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg("bad.rs")
+            .output()
+            .unwrap()
+    });
+    assert_eq!(
+        sent.len(),
+        0,
+        "a relative path from a subdirectory must still be scoped out"
+    );
+}
+
+/// An exclusion is in the JSON a caller reads, not only on stderr: that is
+/// what `quorum report` posts to a PR. The exit code is unaffected.
+#[test]
+fn excluded_files_are_listed_in_json_meta() {
+    let (_proj, _src, _test, fixture) = project(SCOPES);
+    let (out, sent) = review(&fixture, &[]);
+    assert_eq!(sent.len(), 0);
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json output");
+    let excluded = payload
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|e| e.get("_meta"))
+        .and_then(|m| m["incomplete"]["scope_excluded"].as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(excluded.len(), 1, "{payload}");
+    assert!(
+        excluded[0]
+            .as_str()
+            .unwrap()
+            .ends_with("fixtures/planted.rs"),
+        "{excluded:?}"
+    );
+    // An exclusion is not a failure: the AST unwrap finding sets the code.
+    assert_ne!(out.status.code(), Some(3));
+}
+
+/// A scope that names only a test-only axis for a file with no tests asks
+/// the model nothing; that is an exclusion too, and is counted as one.
+#[test]
+fn a_scope_that_yields_no_cells_counts_as_an_exclusion() {
+    let (_proj, src, _test, _fixture) =
+        project("[[scope]]\npaths = [\"src/**\"]\naxes = [\"testing-antipatterns\"]\n");
+    let (out, sent) = review(&src, &[]);
+    assert_eq!(sent.len(), 0);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 file(s) not sent to the model by .quorum/review.toml"),
+        "{stderr}"
+    );
+}
+
+/// `stats --skills` reads the selection source back: after a scoped run it
+/// names `repo_scope`. The audit field had no reader before #632.
+#[test]
+fn stats_skills_reports_axes_selected_by_a_repo_scope() {
+    let (_proj, _src, test, _fixture) = project(SCOPES);
+    let home = tempfile::tempdir().unwrap();
+    let (_, sent) = support::with_cassette(home.path(), "rust_unwrap_finding", |mut cmd| {
+        cmd.arg("review")
+            .arg("--json")
+            .arg("--skip-context7")
+            .arg(&test)
+            .output()
+            .unwrap()
+    });
+    assert_eq!(sent.len(), 1);
+    let out = support::quorum(home.path())
+        .arg("stats")
+        .arg("--skills")
+        .arg("--json")
+        .output()
+        .unwrap();
+    let stats: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stats json");
+    let sources: Vec<&serde_json::Value> = stats["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| &r["selection_sources"])
+        .collect();
+    assert!(
+        sources.iter().any(|s| s["repo_scope"] == 1),
+        "no row records repo_scope: {stats}"
+    );
+}
+
+/// Notes are labelled as the repository's own claim, not as fact.
+#[test]
+fn project_notes_are_labelled_as_unverified() {
+    let (_proj, src, _test, _fixture) =
+        project("[project]\nnotes = [\"Inputs are validated upstream.\"]\n");
+    let (_, sent) = review(&src, &[]);
+    let system = system_message(&sent[0]);
+    assert!(
+        system.contains("stated by the repository in .quorum/review.toml; not verified"),
+        "notes heading missing or reworded"
+    );
+    assert!(!system.contains("treat as given"));
+}

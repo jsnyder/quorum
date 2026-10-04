@@ -283,7 +283,7 @@ pub fn format_json_grouped_with_meta(
 ) -> anyhow::Result<String> {
     use serde_json::{Value, json};
     let mut out: Vec<Value> = Vec::new();
-    let incomplete = incomplete.filter(|i| i.axes_failed > 0);
+    let incomplete = incomplete.filter(|i| i.axes_failed > 0 || !i.scope_excluded.is_empty());
     if !enabled.is_empty() || !hints.is_empty() || incomplete.is_some() {
         let enabled_names: Vec<&str> = enabled.iter().map(|k| k.name()).collect();
         let unconfigured: Vec<Value> = hints
@@ -632,12 +632,28 @@ mod tests {
     }
 
     #[test]
+    fn json_meta_carries_files_excluded_by_the_repo_config() {
+        let results = vec![];
+        let incomplete = quorum::finding::ReviewIncomplete {
+            scope_excluded: vec!["fixtures/x.rs".into()],
+            ..Default::default()
+        };
+        let out = format_json_grouped_with_meta(&results, &[], &[], Some(&incomplete)).unwrap();
+        let arr: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            arr[0]["_meta"]["incomplete"]["scope_excluded"][0], "fixtures/x.rs",
+            "{out}"
+        );
+    }
+
+    #[test]
     fn json_meta_carries_incomplete_when_an_axis_failed() {
         let results: Vec<crate::pipeline::FileReviewResult> = vec![];
         let incomplete = quorum::finding::ReviewIncomplete {
             axes_failed: 1,
             axes_total: 2,
             cells: vec!["a.rs: correctness/m (truncated)".to_owned()],
+            ..Default::default()
         };
         let out = format_json_grouped_with_meta(&results, &[], &[], Some(&incomplete)).unwrap();
         let arr: serde_json::Value = serde_json::from_str(&out).unwrap();

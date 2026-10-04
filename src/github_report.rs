@@ -309,6 +309,31 @@ pub fn render_review_body(
         writeln!(out).unwrap();
     }
 
+    // #632: files the repository's own `.quorum/review.toml` kept from the
+    // model. On a fork PR that file is the contributor's, so the review
+    // itself says which files it did not read, ahead of the counts.
+    if let Some(i) = incomplete.filter(|i| !i.scope_excluded.is_empty()) {
+        const MAX_FILES_LISTED: usize = 20;
+        writeln!(
+            out,
+            "**Not sent to the model:** {} file(s) were excluded from model review by this repository's `.quorum/review.toml`; only static rules ran on them.\n",
+            i.scope_excluded.len()
+        )
+        .unwrap();
+        for path in i.scope_excluded.iter().take(MAX_FILES_LISTED) {
+            writeln!(out, "- `{}`", sanitize_for_github(path)).unwrap();
+        }
+        if i.scope_excluded.len() > MAX_FILES_LISTED {
+            writeln!(
+                out,
+                "- and {} more",
+                i.scope_excluded.len() - MAX_FILES_LISTED
+            )
+            .unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
     // #640: findings that already sit on the PR as live inline comments from
     // an earlier push are not posted again; say so after the counts, or the
     // review reads as if they were resolved.
@@ -1255,6 +1280,7 @@ mod tests {
             axes_failed: 1,
             axes_total: 2,
             cells: vec!["src/a.rs: security/gpt-5.6 (not_json)".to_owned()],
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",
@@ -1277,6 +1303,37 @@ mod tests {
         assert!(body.contains("No findings from the axes that completed."));
     }
 
+    /// #632: files the repository's config kept from the model are named
+    /// in the review itself, ahead of "No findings.", capped.
+    #[test]
+    fn render_review_body_names_files_excluded_by_the_repo_config() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            scope_excluded: (0..25).map(|i| format!("src/f{i}.rs")).collect(),
+            ..Default::default()
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.33.0",
+            Some(&incomplete),
+            0,
+        );
+        let notice = body
+            .find("**Not sent to the model:** 25 file(s)")
+            .expect("notice present");
+        assert!(notice < body.find("No findings.").unwrap(), "{body}");
+        assert!(
+            body.contains("- `src/f0.rs`") && body.contains("- and 5 more"),
+            "{body}"
+        );
+        assert!(!body.contains("src/f24.rs"), "list not capped:\n{body}");
+        assert!(
+            !body.contains("Review incomplete"),
+            "an exclusion is not a failed axis:\n{body}"
+        );
+    }
+
     #[test]
     fn render_review_body_caps_the_incomplete_cell_list() {
         let incomplete = crate::finding::ReviewIncomplete {
@@ -1285,6 +1342,7 @@ mod tests {
             cells: (0..500)
                 .map(|i| format!("src/f{i}.rs: security/m (not_json)"))
                 .collect(),
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",
@@ -1315,6 +1373,7 @@ mod tests {
             axes_failed: 20,
             axes_total: 20,
             cells: vec![long; 20],
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",

@@ -1,5 +1,5 @@
 # What quorum should know and do when it reviews quorum (#632).
-# Scopes pick the axes per path (the longest matching glob wins; --axes on the
+# Scopes pick the axes per path (the last matching scope wins; --axes on the
 # command line outranks all of them). Notes are facts no single file shows.
 # Suppressions here and in suppress.toml both apply.
 

@@ -73,3 +73,25 @@ Run `eval/axes/run_axes.py` unchanged before and after: scopes must not change i
 - A scope that silently excludes a path hides review. Mitigation: the summary line says `N file(s) not reviewed by repo scope`, the JSON `_meta` lists them, and the exit code is unaffected.
 - Longest-glob precedence can surprise (`src/**` vs `src/**/tests.rs`). Mitigation: `quorum review --explain-scope <file>` prints which scope matched and why; cheap, and the test for it is the consumer the flag needs.
 - Project notes are prompt text under the repo's control, which is also the attacker's control on a fork PR. They go through `defang_sandbox_tags` like every other injected block and are capped at 2 KiB.
+
+## What was built (PR #660), and what changed from this plan
+
+Built: `[project] notes`, `[[scope]]`, `[[suppress]]`; `AxisSelectionSource::RepoScope` with a reader in `stats --skills`; excluded files in the summary line, JSON `_meta` and the PR review body; this repository's own `review.toml`.
+
+Changed after review:
+
+- **Precedence is last-match-wins, not longest glob.** Glob length is not specificity (`src/**/mod.rs` outranks `src/auth/**` by two characters). This also removes the need for `--explain-scope` as a mitigation.
+- **The config is found per file**, nearest ancestor with a `.quorum/review.toml`, stopping at the `.git` root. The plan's "project root" came from the first file's nearest project marker, which lost the config under `eval/` (it has its own `pyproject.toml`) and for the whole run when such a file was listed first.
+- **The module is bin-side**, not lib: it reuses `suppress::SuppressionRule`, which is bin-side.
+- **Notes are labelled as the repository's unverified statement** and are neutralised and capped in `notes_block` itself.
+- **Globs and axis names are validated at startup** regardless of `--axes`.
+
+Deferred, not built:
+
+- Per-scope extra instructions for an axis.
+- Scopes and notes on the legacy single-prompt path (`--deep`, `--ensemble`, `--daemon`), in `--mode plan|docs`, and in the MCP `review` tool. The plan said notes would render on the legacy path; they do not.
+- `--explain-scope`.
+- Test 6 (single-definition guard for the reserved-name table): the tables stayed where they were, so there is nothing new to guard.
+- Reading `.quorum/` config from the base branch on fork PRs (filed separately).
+- The before/after `eval/axes` measurement: the corpus is reviewed with `--axes`, which outranks scopes, so the run is unaffected by construction.
+

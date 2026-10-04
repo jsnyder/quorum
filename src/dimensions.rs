@@ -815,7 +815,6 @@ pub struct SkillAuditRow {
     /// `explicit_axes`, `repo_scope`, ...). Written to the audit log since
     /// the skills framework landed and read by nothing until #632 gave a
     /// repository a way to pick axes per path: this is where that shows.
-    #[serde(default)]
     pub selection_sources: BTreeMap<String, u32>,
     pub low_sample: bool,
 }

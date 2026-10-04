@@ -253,18 +253,20 @@ Feedback drives AST pattern development -- 20 ast-grep rules were mined from 1,6
 
 ## Repo Review Config
 
-`.quorum/review.toml` in the project root tells quorum what to review where, and what the project already knows about itself:
+`.quorum/review.toml` tells quorum what to review where, and what the project already knows about itself. Each file is governed by the nearest directory above it that has one, searching no further up than the repository root (the directory holding `.git`):
 
 ```toml
-# Facts no single file shows. Every axis reads these before the code.
+# Facts no single file shows. Every axis reads these before the code,
+# labelled as the repository's own statement, not as verified fact.
 [project]
 notes = [
   "Binary crate; the lib target has no out-of-tree consumers.",
   "fixtures/ holds deliberately broken inputs.",
 ]
 
-# Which axes run on which paths. The longest matching glob wins; a tie goes
-# to the later scope. `*` stays inside one directory, `**` crosses them.
+# Which axes run on which paths. The LAST matching scope wins (the rule
+# .gitignore and CODEOWNERS use): general scopes first, exceptions after.
+# `*` stays inside one directory, `**` crosses them.
 [[scope]]
 paths = ["tests/**"]
 axes = ["testing-antipatterns", "correctness"]
@@ -283,7 +285,11 @@ pattern = "struct literal"
 reason = "every literal is in-tree"
 ```
 
-`--axes` on the command line outranks every scope. A file no scope names gets the default set. The summary line reports how many files a scope kept from the model, and a scope naming an axis that does not exist fails the run before any file is reviewed. Notes are capped at 2 KiB.
+`--axes` on the command line outranks every scope. A file no scope names gets the default set. A scope naming an axis that does not exist, or a path that is not a valid glob, fails the run (exit 3) before any file is reviewed. Notes are capped at 2 KiB: a note that does not fit is truncated and marked, and the block says when later notes were left out.
+
+**An excluded file is never silent.** A file a scope leaves with nothing to ask the model (`axes = []`, or only a test-only axis on a file with no tests) is counted in the summary line, listed under `_meta.incomplete.scope_excluded` in `--json`, and named in the PR review body ("Not sent to the model"). The exit code is unaffected.
+
+Limits of this first version: scopes and notes apply to the default axes path of `quorum review` in code mode. `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs` and the MCP `review` tool do not consult the file yet; `[[suppress]]` rules apply wherever findings are settled. The file is read from the checkout under review, so on a pull request from a fork it is contributor-controlled: review changes to `.quorum/` like changes to CI config.
 
 ## Project-Level Suppression
 

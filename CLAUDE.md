@@ -178,7 +178,15 @@ writing). There is no record mode in the harness on purpose.
 
 ## Repo review config (#632)
 
-`.quorum/review.toml` at the project root, loaded once per run by `review_config::load`: `[[scope]] paths/axes` picks the axes per file (longest matching glob; `--axes` outranks scopes; `axes = []` skips the model and is counted in the summary line), `[project] notes` are rendered ahead of each file's `<review_context>` (2 KiB cap, sandbox tags defanged), and `[[suppress]]` rules are concatenated with `.quorum/suppress.toml`. Scopes apply only when axes resolve and no `--axes` was given, so `--deep`, `--ensemble` and `--daemon` do not consult them yet. This repository's own file scopes the eval corpora and fixtures to no model review and the trust-boundary files to `audit`.
+`.quorum/review.toml`, found per file by `review_config::find_config_root` (nearest ancestor that has one, stopping at the directory holding `.git`) and cached per directory in `RepoScopes` (`src/main.rs`). Not found via `find_project_root`: that stops at the first `Cargo.toml`/`pyproject.toml`, which lost the config for everything under `eval/`.
+
+- `[[scope]] paths/axes` picks the axes per file. The **last** matching scope wins. `--axes` outranks scopes. An unknown axis or an invalid glob is exit 3 before any file is reviewed, checked even when `--axes` is given.
+- A file a scope leaves with no cells (`axes = []`, or only a `test_files_only` axis on a non-test file) is recorded by path and shown in three places: the stderr summary line, `_meta.incomplete.scope_excluded` in JSON, and "Not sent to the model" in the PR review body (`ReviewIncomplete.scope_excluded`). No context is built for such a file.
+- `[project] notes` are rendered ahead of each file's `<review_context>` under a heading that says they are the repository's statement and not verified. `ReviewConfig::notes_block` is the one place they are neutralised (control characters, sandbox tags) and capped at 2 KiB.
+- `[[suppress]]` rules are prepended to the `.quorum/suppress.toml` rules per file, at every `settle_file_findings` site.
+- `stats --skills` prints an "Axes selected by" line when any run was not `mode_macro` (`AxisSelectionSource::RepoScope`).
+
+Not consulted yet: `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs`, the MCP `review` tool. This repository's own file scopes the eval corpora and fixtures to no model review and the trust-boundary files to `audit`.
 
 ## Feedback
 
