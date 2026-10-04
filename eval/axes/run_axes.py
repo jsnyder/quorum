@@ -16,8 +16,13 @@ file with every axis and scores:
 
 A finding hits a planted defect when its anchor line falls inside the
 defect's range (with a small tolerance), or its line span (if not too
-wide) overlaps the range, and no other finding has already claimed it.
-Everything else the axis emitted on its own corpus is noise.
+wide) overlaps the range; among several candidates an unclaimed one is
+chosen by maximum matching so the result does not depend on the order
+the model listed findings in; a finding whose candidates are all taken is
+a duplicate.
+Everything else the axis emitted on its own corpus is noise. Out of lane,
+a finding on another axis's planted defect or decoy is a lane violation:
+the same issue reported under the wrong axis.
 
 Usage:
   eval/axes/run_axes.py [--model M] [--axes a,b] [--quorum PATH] [--out DIR]
@@ -67,6 +72,13 @@ def corpus_files() -> list[tuple[str, Path, list[dict]]]:
     return out
 
 
+def corpus_key(path: str | Path) -> str:
+    """`<axis>/<file>`: how a raw result names its file, so results recorded
+    under one checkout re-score under another."""
+    p = Path(path)
+    return f"{p.parent.name}/{p.name}"
+
+
 def anchor_line(finding: dict) -> int | None:
     cited = finding.get("cited_lines")
     if isinstance(cited, dict) and isinstance(cited.get("start"), int):
@@ -92,38 +104,59 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
     # where its input is transformed). A finding landing there is neither a
     # hit nor noise.
     redacted = [g for g in ground_truth if g.get("type") == "redacted"]
-    claimed: set[str] = set()
-    hits, decoy_hits, noise, duplicates = [], [], [], []
-    for f in findings:
+
+    def within(f: dict, g: dict) -> bool:
         line = anchor_line(f)
         if line is None:
+            return False
+        lo, hi = g["line_start"] - LINE_TOLERANCE, g["line_end"] + LINE_TOLERANCE
+        if lo <= line <= hi:
+            return True
+        ls, le = f.get("line_start"), f.get("line_end")
+        if not (isinstance(ls, int) and isinstance(le, int) and le >= ls):
+            return False
+        return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
+
+    # Maximum matching of findings to planted defects (Kuhn's augmenting
+    # paths): two defects a few lines apart share a tolerance window, and
+    # the assignment must not depend on the order the model listed them in.
+    candidates = [[k for k, g in enumerate(reals) if within(f, g)] for f in findings]
+    owner: dict[int, int] = {}  # defect index -> finding index
+
+    def assign(fi: int, seen: set[int]) -> bool:
+        for k in candidates[fi]:
+            if k in seen:
+                continue
+            seen.add(k)
+            if k not in owner or assign(owner[k], seen):
+                owner[k] = fi
+                return True
+        return False
+
+    for fi in range(len(findings)):
+        assign(fi, set())
+    matched = {fi: k for k, fi in owner.items()}
+
+    hits, decoy_hits, noise, duplicates = [], [], [], []
+    for fi, f in enumerate(findings):
+        if fi in matched:
+            g = reals[matched[fi]]
+            hits.append({"id": g["id"], "kind": g.get("kind"), "title": f.get("title")})
+            continue
+        if candidates[fi]:
+            duplicates.append(f)
+            continue
+        if anchor_line(f) is None:
             noise.append(f)
             continue
-
-        def within(g: dict) -> bool:
-            lo, hi = g["line_start"] - LINE_TOLERANCE, g["line_end"] + LINE_TOLERANCE
-            if lo <= line <= hi:
-                return True
-            ls, le = f.get("line_start"), f.get("line_end")
-            if not (isinstance(ls, int) and isinstance(le, int) and le >= ls):
-                return False
-            return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
-
-        real = next((g for g in reals if within(g)), None)
-        if real is not None:
-            if real["id"] in claimed:
-                duplicates.append(f)
-            else:
-                claimed.add(real["id"])
-                hits.append({"id": real["id"], "kind": real.get("kind"), "title": f.get("title")})
-            continue
-        decoy = next((g for g in decoys if within(g)), None)
+        decoy = next((g for g in decoys if within(f, g)), None)
         if decoy is not None:
             decoy_hits.append({"id": decoy["id"], "kind": decoy.get("kind"), "title": f.get("title")})
             continue
-        if any(within(g) for g in redacted):
+        if any(within(f, g) for g in redacted):
             continue
         noise.append(f)
+    claimed = {reals[k]["id"] for k in owner}
     missed = [{"id": g["id"], "kind": g.get("kind"), "title": g["title"]} for g in reals if g["id"] not in claimed]
     return {
         "planted": len(reals),
@@ -146,9 +179,23 @@ def run_quorum(quorum: str, file: Path, axis: str, model: str | None, home: Path
     if model:
         cmd += ["--model", model]
     t0 = time.monotonic()
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    retried = False
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+        # A cell that died on the wire (provider timeout, 429) says nothing
+        # about the prompt; one retry keeps a transient from zeroing a file.
+        # Exit 3 is a permanent tool failure (config, client, axis resolution)
+        # and is not retried.
+        if "network_error" in p.stderr:
+            retried = True
+            p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        # A hung cell is a per-file error record, not the end of the run:
+        # every earlier cell's result would otherwise be lost.
+        secs = round(time.monotonic() - t0, 1)
+        return [], {"exit": None, "secs": secs, "retried": retried, "stderr_tail": "", "error": "timeout"}
     secs = round(time.monotonic() - t0, 1)
-    meta = {"exit": p.returncode, "secs": secs, "stderr_tail": p.stderr.strip()[-300:]}
+    meta = {"exit": p.returncode, "secs": secs, "retried": retried, "stderr_tail": p.stderr.strip()[-300:]}
     if p.returncode == 3:
         return [], {**meta, "error": "tool error"}
     try:
@@ -185,6 +232,7 @@ def aggregate(raw: dict) -> dict:
         decoy_hits = sum(len(r["score"]["decoy_hits"]) for r in inlane)
         duplicates = sum(r["score"]["duplicates"] for r in inlane)
         errors = [r for r in inlane + outlane if r["meta"].get("error")]
+        violations = sum(len(r["score"]["hits"]) + len(r["score"]["decoy_hits"]) for r in outlane)
         table[axis] = {
             "files": len(inlane),
             "planted": planted,
@@ -196,6 +244,10 @@ def aggregate(raw: dict) -> dict:
             "noise": noise,
             "duplicates": duplicates,
             "out_of_lane_findings": sum(r["score"]["emitted"] for r in outlane),
+            # Out-of-lane findings that land on another axis's planted defect
+            # or decoy: the same issue reported under the wrong axis. The rest
+            # of the out-of-lane output may be real defects nobody planted.
+            "lane_violations": violations,
             "out_of_lane_files": len(outlane),
             "errors": len(errors),
             "secs": round(sum(r["meta"].get("secs", 0) for r in inlane + outlane), 1),
@@ -207,13 +259,13 @@ def aggregate(raw: dict) -> dict:
 
 def render(table: dict, model: str) -> str:
     lines = [f"axes eval -- model {model}", ""]
-    lines.append(f"{'axis':22s} files planted hits recall  emitted precision decoys noise dups  out-of-lane  errors  secs")
+    lines.append(f"{'axis':22s} files planted hits recall  emitted precision decoys noise dups  out-of-lane(violations)  errors  secs")
     for axis, t in table.items():
         rec = "-" if t["recall"] is None else f"{t['recall']:.2f}"
         prec = "-" if t["precision"] is None else f"{t['precision']:.2f}"
         lines.append(
             f"{axis:22s} {t['files']:5d} {t['planted']:7d} {t['hits']:4d} {rec:>6s}  {t['emitted_in_lane']:7d} {prec:>9s} {t['decoy_hits']:6d} {t['noise']:5d} {t['duplicates']:4d}  "
-            f"{t['out_of_lane_findings']:4d}/{t['out_of_lane_files']:<3d}    {t['errors']:6d}  {t['secs']:5.0f}"
+            f"{t['out_of_lane_findings']:4d}/{t['out_of_lane_files']:<3d} ({t['lane_violations']:3d})     {t['errors']:6d}  {t['secs']:5.0f}"
         )
     lines.append("")
     for axis, t in table.items():
@@ -236,9 +288,9 @@ def main() -> int:
 
     if args.score:
         raw = json.loads(args.score.read_text())
-        gt_by_file = {str(f): gt for _, f, gt in corpus_files()}
+        gt_by_file = {corpus_key(f): gt for _, f, gt in corpus_files()}
         for r in raw["runs"]:
-            r["score"] = score_file(r["findings"], gt_by_file[r["file"]])
+            r["score"] = score_file(r["findings"], gt_by_file[corpus_key(r["file"])])
         table = aggregate(raw)
         print(render(table, raw["model"]))
         return 0
@@ -261,7 +313,7 @@ def main() -> int:
                 raw["runs"].append({
                     "axis": axis,
                     "corpus_axis": corpus_axis,
-                    "file": str(f),
+                    "file": corpus_key(f),
                     "findings": findings,
                     "meta": meta,
                     "score": score_file(findings, gt),
