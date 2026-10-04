@@ -179,15 +179,21 @@ def run_quorum(quorum: str, file: Path, axis: str, model: str | None, home: Path
     if model:
         cmd += ["--model", model]
     t0 = time.monotonic()
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
-    # A cell that died on the wire (provider timeout, 429) says nothing
-    # about the prompt; one retry keeps a transient from zeroing a file.
-    # Exit 3 is a permanent tool failure (config, client, axis resolution)
-    # and is not retried.
     retried = False
-    if "network_error" in p.stderr:
-        retried = True
+    try:
         p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+        # A cell that died on the wire (provider timeout, 429) says nothing
+        # about the prompt; one retry keeps a transient from zeroing a file.
+        # Exit 3 is a permanent tool failure (config, client, axis resolution)
+        # and is not retried.
+        if "network_error" in p.stderr:
+            retried = True
+            p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        # A hung cell is a per-file error record, not the end of the run:
+        # every earlier cell's result would otherwise be lost.
+        secs = round(time.monotonic() - t0, 1)
+        return [], {"exit": None, "secs": secs, "retried": retried, "stderr_tail": "", "error": "timeout"}
     secs = round(time.monotonic() - t0, 1)
     meta = {"exit": p.returncode, "secs": secs, "retried": retried, "stderr_tail": p.stderr.strip()[-300:]}
     if p.returncode == 3:

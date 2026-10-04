@@ -162,3 +162,12 @@ def test_a_network_error_cell_is_retried_once(monkeypatch, tmp_path):
 def test_results_re_score_regardless_of_the_checkout_they_were_recorded_in():
     assert run_axes.corpus_key("/old/worktree/eval/axes/corpus/security/auth.rs") == "security/auth.rs"
     assert run_axes.corpus_key("security/auth.rs") == "security/auth.rs"
+
+
+def test_a_hung_cell_is_a_per_file_error_not_a_crash(monkeypatch, tmp_path):
+    def hang(cmd, **kw):
+        raise run_axes.subprocess.TimeoutExpired(cmd, kw.get("timeout", 600))
+
+    monkeypatch.setattr(run_axes.subprocess, "run", hang)
+    findings, meta = run_axes.run_quorum("quorum", tmp_path / "x.rs", "security", None, tmp_path)
+    assert findings == [] and meta["error"] == "timeout"
