@@ -921,6 +921,59 @@ primary = "prompt"
         );
     }
 
+    /// #656: every non-testing bundled axis opens each prompt variant with a
+    /// lane gate, once, ahead of the trailing "Do NOT report" list. The gate
+    /// is what keeps an axis from reporting another axis's defects under its
+    /// own name; a prompt edit that drops it would be invisible to every
+    /// other test.
+    #[test]
+    fn every_non_testing_axis_variant_opens_with_one_lane_gate() {
+        for (file, body) in EMBEDDED_SKILLS {
+            let m: SkillManifest = toml::from_str(body).unwrap();
+            if m.axis == Axis::Testing {
+                continue;
+            }
+            let variants = [
+                ("primary", Some(m.prompts.primary.as_str())),
+                (
+                    "anthropic",
+                    m.prompts
+                        .anthropic
+                        .as_ref()
+                        .and_then(|p| p.override_prompt.as_deref()),
+                ),
+                (
+                    "openai",
+                    m.prompts
+                        .openai
+                        .as_ref()
+                        .and_then(|p| p.override_prompt.as_deref()),
+                ),
+                (
+                    "google",
+                    m.prompts
+                        .google
+                        .as_ref()
+                        .and_then(|p| p.override_prompt.as_deref()),
+                ),
+            ];
+            for (name, text) in variants {
+                let text = text.unwrap_or_else(|| panic!("{file}: {name} variant missing"));
+                assert_eq!(
+                    text.matches("LANE GATE:").count(),
+                    1,
+                    "{file}: {name} variant must carry exactly one lane gate"
+                );
+                let gate = text.find("LANE GATE:").unwrap();
+                let fence = text.find("Do NOT report").unwrap_or(usize::MAX);
+                assert!(
+                    gate < fence,
+                    "{file}: {name} gate must precede the Do NOT report list"
+                );
+            }
+        }
+    }
+
     /// #631: `default` and `audit` are set names inside `--axes`; a skill
     /// carrying either would load and never be selectable.
     #[test]
@@ -1499,7 +1552,7 @@ primary = "prompt"
         let content = include_str!("../skills/correctness.toml");
         let manifest: SkillManifest = toml::from_str(content).unwrap();
         assert_eq!(manifest.name, "correctness");
-        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.version, "1.1.0");
         assert_eq!(manifest.display_name, "Correctness");
         assert_eq!(manifest.axis, Axis::Correctness);
         assert_eq!(manifest.max_severity, Severity::Critical);
@@ -1517,7 +1570,7 @@ primary = "prompt"
         let content = include_str!("../skills/security.toml");
         let manifest: SkillManifest = toml::from_str(content).unwrap();
         assert_eq!(manifest.name, "security");
-        assert_eq!(manifest.version, "1.0.0");
+        assert_eq!(manifest.version, "1.1.0");
         assert_eq!(manifest.display_name, "Security");
         assert_eq!(manifest.axis, Axis::Security);
         assert_eq!(manifest.max_severity, Severity::Critical);
