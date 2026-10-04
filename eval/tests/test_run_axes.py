@@ -49,6 +49,29 @@ def test_a_span_covering_the_defect_hits_unless_it_is_very_wide():
     assert run_axes.score_file([wide], GT)["hits"] == []
 
 
+def test_matching_does_not_depend_on_finding_order():
+    gt = [
+        {"id": "a", "type": "real", "kind": "k", "title": "a", "line_start": 28, "line_end": 31},
+        {"id": "b", "type": "real", "kind": "k", "title": "b", "line_start": 34, "line_end": 36},
+    ]
+    # 33 could be either (26..33 and 32..38); 28 can only be `a`. Listed
+    # ambiguous-first, greedy would give 33 -> a and strand 28.
+    s = run_axes.score_file([finding(33), finding(28)], gt)
+    assert sorted(h["id"] for h in s["hits"]) == ["a", "b"]
+    assert s["duplicates"] == 0
+
+
+def test_exit_3_is_not_retried(monkeypatch, tmp_path):
+    calls = []
+
+    class P:
+        returncode, stdout, stderr = 3, "", "error: cannot load config"
+
+    monkeypatch.setattr(run_axes.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or P())
+    _, meta = run_axes.run_quorum("quorum", tmp_path / "x.rs", "security", None, tmp_path)
+    assert len(calls) == 1 and meta["retried"] is False and meta["error"] == "tool error"
+
+
 def test_a_finding_near_two_defects_claims_the_unclaimed_one():
     gt = [
         {"id": "a", "type": "real", "kind": "k", "title": "a", "line_start": 28, "line_end": 31},

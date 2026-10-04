@@ -17,7 +17,9 @@ file with every axis and scores:
 A finding hits a planted defect when its anchor line falls inside the
 defect's range (with a small tolerance), or its line span (if not too
 wide) overlaps the range; among several candidates an unclaimed one is
-preferred, and a finding whose only candidates are claimed is a duplicate.
+chosen by maximum matching so the result does not depend on the order
+the model listed findings in; a finding whose candidates are all taken is
+a duplicate.
 Everything else the axis emitted on its own corpus is noise. Out of lane,
 a finding on another axis's planted defect or decoy is a lane violation:
 the same issue reported under the wrong axis.
@@ -102,43 +104,59 @@ def score_file(findings: list[dict], ground_truth: list[dict]) -> dict:
     # where its input is transformed). A finding landing there is neither a
     # hit nor noise.
     redacted = [g for g in ground_truth if g.get("type") == "redacted"]
-    claimed: set[str] = set()
-    hits, decoy_hits, noise, duplicates = [], [], [], []
-    for f in findings:
+
+    def within(f: dict, g: dict) -> bool:
         line = anchor_line(f)
         if line is None:
+            return False
+        lo, hi = g["line_start"] - LINE_TOLERANCE, g["line_end"] + LINE_TOLERANCE
+        if lo <= line <= hi:
+            return True
+        ls, le = f.get("line_start"), f.get("line_end")
+        if not (isinstance(ls, int) and isinstance(le, int) and le >= ls):
+            return False
+        return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
+
+    # Maximum matching of findings to planted defects (Kuhn's augmenting
+    # paths): two defects a few lines apart share a tolerance window, and
+    # the assignment must not depend on the order the model listed them in.
+    candidates = [[k for k, g in enumerate(reals) if within(f, g)] for f in findings]
+    owner: dict[int, int] = {}  # defect index -> finding index
+
+    def assign(fi: int, seen: set[int]) -> bool:
+        for k in candidates[fi]:
+            if k in seen:
+                continue
+            seen.add(k)
+            if k not in owner or assign(owner[k], seen):
+                owner[k] = fi
+                return True
+        return False
+
+    for fi in range(len(findings)):
+        assign(fi, set())
+    matched = {fi: k for k, fi in owner.items()}
+
+    hits, decoy_hits, noise, duplicates = [], [], [], []
+    for fi, f in enumerate(findings):
+        if fi in matched:
+            g = reals[matched[fi]]
+            hits.append({"id": g["id"], "kind": g.get("kind"), "title": f.get("title")})
+            continue
+        if candidates[fi]:
+            duplicates.append(f)
+            continue
+        if anchor_line(f) is None:
             noise.append(f)
             continue
-
-        def within(g: dict) -> bool:
-            lo, hi = g["line_start"] - LINE_TOLERANCE, g["line_end"] + LINE_TOLERANCE
-            if lo <= line <= hi:
-                return True
-            ls, le = f.get("line_start"), f.get("line_end")
-            if not (isinstance(ls, int) and isinstance(le, int) and le >= ls):
-                return False
-            return le - ls + 1 <= MAX_OVERLAP_SPAN and ls <= hi and le >= lo
-
-        # Every planted defect this finding could be about; prefer one nobody
-        # has claimed. Two defects three lines apart share a tolerance window,
-        # and a finding on the second must not be swallowed as a duplicate of
-        # the first.
-        matching = [g for g in reals if within(g)]
-        if matching:
-            real = next((g for g in matching if g["id"] not in claimed), None)
-            if real is None:
-                duplicates.append(f)
-            else:
-                claimed.add(real["id"])
-                hits.append({"id": real["id"], "kind": real.get("kind"), "title": f.get("title")})
-            continue
-        decoy = next((g for g in decoys if within(g)), None)
+        decoy = next((g for g in decoys if within(f, g)), None)
         if decoy is not None:
             decoy_hits.append({"id": decoy["id"], "kind": decoy.get("kind"), "title": f.get("title")})
             continue
-        if any(within(g) for g in redacted):
+        if any(within(f, g) for g in redacted):
             continue
         noise.append(f)
+    claimed = {reals[k]["id"] for k in owner}
     missed = [{"id": g["id"], "kind": g.get("kind"), "title": g["title"]} for g in reals if g["id"] not in claimed]
     return {
         "planted": len(reals),
@@ -164,8 +182,10 @@ def run_quorum(quorum: str, file: Path, axis: str, model: str | None, home: Path
     p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
     # A cell that died on the wire (provider timeout, 429) says nothing
     # about the prompt; one retry keeps a transient from zeroing a file.
+    # Exit 3 is a permanent tool failure (config, client, axis resolution)
+    # and is not retried.
     retried = False
-    if "network_error" in p.stderr or p.returncode == 3:
+    if "network_error" in p.stderr:
         retried = True
         p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
     secs = round(time.monotonic() - t0, 1)
