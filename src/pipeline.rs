@@ -283,6 +283,11 @@ pub struct PipelineConfig {
     /// `judge_enabled` is true, an `OpenAiJudge` is constructed per file.
     /// When `None`, judge runs in cache-only mode (existing behavior).
     pub judge_client: Option<std::sync::Arc<crate::llm_client::OpenAiClient>>,
+    /// Files the judge must not be sent, by path and source (#632: a file a
+    /// repository scope keeps from the model is kept from the judge too).
+    /// Checked here rather than at each caller so no path can forget it.
+    #[allow(clippy::type_complexity)]
+    pub judge_skip: Option<std::sync::Arc<dyn Fn(&Path, &str) -> bool + Send + Sync>>,
 }
 
 impl Default for PipelineConfig {
@@ -310,6 +315,7 @@ impl Default for PipelineConfig {
             judge_enabled: false,
             judge_model: "gpt-4.1-mini".into(),
             judge_client: None,
+            judge_skip: None,
         }
     }
 }
@@ -835,7 +841,12 @@ pub async fn review_file(
     // Source 2b: Judge speculative AST findings (if enabled).
     // Only runs on ast-grep findings (index 1+), not local AST (index 0).
     let mut judge_metrics = JudgeMetrics::default();
-    if ast.is_some() && !rule_metadata.is_empty() && !pipeline_config.judge_enabled {
+    let judge_enabled = pipeline_config.judge_enabled
+        && !pipeline_config
+            .judge_skip
+            .as_ref()
+            .is_some_and(|skip| skip(file_path, source));
+    if ast.is_some() && !rule_metadata.is_empty() && !judge_enabled {
         // No judge this run, but `judge: required` still means required
         // (#520). Withhold the unjudged findings and count them, so the
         // summary line can say so instead of the reviewer just going quiet.
@@ -844,7 +855,7 @@ pub async fn review_file(
                 crate::judge::enforce_judge_required(source_findings, &rule_metadata);
         }
     }
-    if ast.is_some() && pipeline_config.judge_enabled && !rule_metadata.is_empty() {
+    if ast.is_some() && judge_enabled && !rule_metadata.is_empty() {
         {
             let _span = tracing::info_span!("phase.judge", file = %file_str).entered();
             let home_dir = std::env::var("HOME")

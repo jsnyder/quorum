@@ -1312,7 +1312,8 @@ impl RepoScopes {
         let mut cache = self.configs.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = cache
             .entry(root.clone())
-            .or_insert_with(|| std::sync::Arc::new(review_config::load(&root)))
+            // `validate` has already turned a load error into exit 3.
+            .or_insert_with(|| std::sync::Arc::new(review_config::load(&root).unwrap_or_default()))
             .clone();
         Some((root, cfg))
     }
@@ -1328,10 +1329,19 @@ impl RepoScopes {
             let Some((root, cfg)) = self.config_for(file) else {
                 continue;
             };
-            if !seen.insert(root) {
+            if !seen.insert(root.clone()) {
                 continue;
             }
+            review_config::load(&root)?;
             cfg.validate_globs()?;
+            if !self.apply && !cfg.scopes.is_empty() {
+                // Said once per config: otherwise a file the repository
+                // excluded is reviewed without a word.
+                eprintln!(
+                    "Note: the [[scope]] table in {} is not applied to this run (--axes, --deep, --ensemble, --daemon and --mode plan|docs bypass it); files it excludes are reviewed.",
+                    root.join(".quorum/review.toml").display()
+                );
+            }
             if !self.available.is_empty() {
                 validate_repo_scopes(&cfg, &self.available)?;
             }
@@ -1374,6 +1384,20 @@ impl RepoScopes {
         })
     }
 
+    /// True when a scope leaves `file` with nothing to ask the model: an
+    /// empty axes list, or only test-only axes on a file that is not a test.
+    /// Known before the pipeline runs so that nothing else (the judge) sends
+    /// the file either.
+    fn asks_nothing(&self, file: &std::path::Path, source: &str) -> bool {
+        self.skills_for(file).is_some_and(|skills| {
+            let is_test =
+                quorum::skill_executor::ReviewFile::is_test_source(&file.to_string_lossy(), source);
+            skills
+                .iter()
+                .all(|s| s.manifest.test_files_only && !is_test)
+        })
+    }
+
     /// The suppression rules for `file`: its config's `[[suppress]]` table,
     /// then the run's `.quorum/suppress.toml` rules.
     fn suppress_rules_for(
@@ -1383,7 +1407,9 @@ impl RepoScopes {
     ) -> Vec<suppress::SuppressionRule> {
         let mut rules = self
             .config_for(file)
-            .map(|(_, c)| c.suppress.clone())
+            .and_then(|(root, c)| {
+                Some(c.suppress_for(&review_config::relative_to_root(file, &root)?))
+            })
             .unwrap_or_default();
         rules.extend_from_slice(base);
         rules
@@ -1403,6 +1429,7 @@ impl RepoScopes {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         v.sort();
+        v.dedup();
         v
     }
 }
@@ -3071,7 +3098,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     }
 
-    let pipeline_cfg = PipelineConfig {
+    let mut pipeline_cfg = PipelineConfig {
         models,
         complexity_threshold: opts.complexity_threshold,
         feedback: feedback_entries,
@@ -3120,6 +3147,12 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         available_skills.clone(),
         resolved_axes.is_some() && opts.axes.is_empty(),
     ));
+    pipeline_cfg.judge_skip = Some({
+        let scopes = repo_scopes.clone();
+        std::sync::Arc::new(move |file: &std::path::Path, source: &str| {
+            scopes.asks_nothing(file, source)
+        })
+    });
     if let Err(e) = repo_scopes.validate(&opts.files) {
         eprintln!("error: {e}");
         return 3;
@@ -3780,12 +3813,13 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 let cell_results = quorum::skill_executor::execute_matrix(
                                     file_skills, &files_input, &adapter, &exec_cfg,
                                 );
-                        // A scope that leaves the file with nothing to ask the
-                        // model -- an empty list, or only a test-only axis on a
-                        // file with no tests -- is said out loud (#632).
-                        if scoped.is_some() && cell_results.is_empty() {
-                            repo_scopes.note_excluded(&file_str);
-                        }
+                                // A scope that leaves the file with nothing
+                                // to ask the model -- an empty list, or only
+                                // a test-only axis on a file with no tests --
+                                // is said out loud (#632).
+                                if scoped.is_some() && cell_results.is_empty() {
+                                    repo_scopes.note_excluded(&file_str);
+                                }
 
                                 drop(_exec_span);
 
@@ -7277,6 +7311,11 @@ mod report_payload_tests {
         assert_eq!(got.cells, vec!["a.rs: security/m (not_json)".to_owned()]);
         assert!(parse_incomplete_meta(REVIEW_JSON).is_none());
         assert!(parse_incomplete_meta("not json").is_none());
+
+        // #632: a review saved with only exclusions carries them to `report`.
+        let excluded = r#"[{"_meta":{"incomplete":{"axes_failed":0,"axes_total":0,"cells":[],"scope_excluded":["fixtures/x.rs"]}}}]"#;
+        let got = parse_incomplete_meta(excluded).expect("present");
+        assert_eq!(got.scope_excluded, vec!["fixtures/x.rs".to_owned()]);
     }
 
     /// #592: the group's `file` is the only place the path exists, and

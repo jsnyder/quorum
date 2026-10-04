@@ -253,7 +253,7 @@ Feedback drives AST pattern development -- 20 ast-grep rules were mined from 1,6
 
 ## Repo Review Config
 
-`.quorum/review.toml` tells quorum what to review where, and what the project already knows about itself. Each file is governed by the nearest directory above it that has one, searching no further up than the repository root (the directory holding `.git`):
+`.quorum/review.toml` tells quorum what to review where, and what the project already knows about itself. Each file is governed by the nearest directory above it that has one, inside the file's git repository (nothing above the directory holding `.git` is read, and a file outside a repository has no config):
 
 ```toml
 # Facts no single file shows. Every axis reads these before the code,
@@ -279,17 +279,18 @@ axes = "audit"            # all six axes; "default" is the other set name
 paths = ["fixtures/**", "vendor/**"]
 axes = []                 # nothing goes to the model; AST rules still run
 
-# Same rules as .quorum/suppress.toml below; both files apply.
+# Same fields as .quorum/suppress.toml below; both files apply. Here a
+# `file` glob is relative to this config's directory, like `paths` above.
 [[suppress]]
 pattern = "struct literal"
 reason = "every literal is in-tree"
 ```
 
-`--axes` on the command line outranks every scope. A file no scope names gets the default set. A scope naming an axis that does not exist, or a path that is not a valid glob, fails the run (exit 3) before any file is reviewed. Notes are capped at 2 KiB: a note that does not fit is truncated and marked, and the block says when later notes were left out.
+`--axes` on the command line outranks every scope. A file no scope names gets the default set. A config that does not parse, has a key quorum does not know (`[[scopes]]` for `[[scope]]`), names an axis that does not exist, or has a path that is not a valid glob fails the run (exit 3) before any file is reviewed: read as an empty config, its exclusions would be dropped without a word. Notes are capped at 2 KiB: a note that does not fit is truncated and marked, and the block says when later notes were left out.
 
-**An excluded file is never silent.** A file a scope leaves with nothing to ask the model (`axes = []`, or only a test-only axis on a file with no tests) is counted in the summary line, listed under `_meta.incomplete.scope_excluded` in `--json`, and named in the PR review body ("Not sent to the model"). The exit code is unaffected.
+**An exclusion is reported, and so is ignoring one.** A file a scope leaves with nothing to ask the model (`axes = []`, or only a test-only axis on a file with no tests) is not sent to the axes or to `--judge`. It is counted in the summary line, listed under `_meta.incomplete.scope_excluded` in `--json`, and named in the PR review body ("Not sent to the model"); the exit code is unaffected. When a run bypasses the scopes (`--axes` and the modes listed below), the files they exclude are reviewed, and a note on stderr says the `[[scope]]` table was not applied.
 
-Limits of this first version: scopes and notes apply to the default axes path of `quorum review` in code mode. `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs` and the MCP `review` tool do not consult the file yet; `[[suppress]]` rules apply wherever findings are settled. The file is read from the checkout under review, so on a pull request from a fork it is contributor-controlled: review changes to `.quorum/` like changes to CI config.
+Limits of this first version: scopes and notes apply to the default axes path of `quorum review` in code mode. `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs` and the MCP `review` tool do not consult the file yet; `[[suppress]]` rules apply wherever findings are settled. Paths are resolved through symlinks before matching, so a symlinked directory is matched by where it points, and one pointing outside the repository has no config. The file is read from the checkout under review, so on a pull request from a fork it is contributor-controlled: review changes to `.quorum/` like changes to CI config.
 
 ## Project-Level Suppression
 

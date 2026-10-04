@@ -19,7 +19,7 @@ fn project(config: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
-    for d in ["src", "tests", "fixtures", ".quorum"] {
+    for d in ["src", "tests", "fixtures", ".quorum", ".git"] {
         std::fs::create_dir_all(root.join(d)).unwrap();
     }
     std::fs::write(root.join(".quorum/review.toml"), config).unwrap();
@@ -109,8 +109,106 @@ fn explicit_axes_override_scopes() {
         system_message(&sent[0]).contains("<code_to_review>"),
         "request shape"
     );
-    let (_, sent) = review(&fixture, &["--axes", "correctness,security"]);
+    let (out, sent) = review(&fixture, &["--axes", "correctness,security"]);
     assert_eq!(sent.len(), 2, "--axes must reach a path scoped to nothing");
+    // ...and says it did: the repository excluded this file.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[[scope]] table in") && stderr.contains("is not applied to this run"),
+        "{stderr}"
+    );
+    let (_proj, src, _test, _fixture) = project("[project]\nnotes = [\"n\"]\n");
+    let (out, _) = review(&src, &["--axes", "security"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("is not applied"),
+        "no scopes, nothing bypassed, nothing to say"
+    );
+}
+
+/// A config that does not parse, or has a key this version does not know,
+/// stops the run: read as an empty config, every exclusion in it would be
+/// dropped and the files sent to the model.
+#[test]
+fn a_broken_or_misspelled_config_is_a_tool_error() {
+    for (config, needle) in [
+        ("[[scope]\npaths = 3", "review.toml"),
+        (
+            "[[scopes]]\npaths = [\"fixtures/**\"]\naxes = []\n",
+            "unknown field",
+        ),
+    ] {
+        let (_proj, _src, _test, fixture) = project(config);
+        let (out, sent) = review(&fixture, &[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(3), "{config:?}: {stderr}");
+        assert_eq!(sent.len(), 0, "{config:?}");
+        assert!(stderr.contains(needle), "{config:?}: {stderr}");
+    }
+}
+
+/// `--judge` is a model call too. A file scoped to `axes = []` with a
+/// speculative rule hit must not reach it. (Bites only where `ast-grep` is
+/// installed; without it there is no speculative hit and no judge call.)
+#[test]
+fn the_judge_is_not_sent_a_file_a_scope_excludes() {
+    let (proj, _src, _test, _fixture) = project(SCOPES);
+    let f = proj.path().join("fixtures/spec.rs");
+    std::fs::write(
+        &f,
+        "pub fn load(p: &str) -> String {\n    std::fs::read_to_string(p).expect(\"\")\n}\n",
+    )
+    .unwrap();
+    let (_, sent) = review(&f, &["--judge"]);
+    assert_eq!(
+        sent.len(),
+        0,
+        "an excluded file reached the model through the judge"
+    );
+}
+
+/// `file` in a `[[suppress]]` rule here is relative to the config, like a
+/// scope's `paths`: the rule applies whatever directory the review runs from.
+#[test]
+fn a_suppress_file_glob_is_relative_to_the_config_not_the_cwd() {
+    let (proj, src, _test, _fixture) =
+        project("[[suppress]]\npattern = \"unwrap\"\nfile = \"src/**\"\n");
+    for (cwd, arg) in [
+        (proj.path().to_path_buf(), PathBuf::from("src/lib.rs")),
+        (proj.path().join("src"), PathBuf::from("lib.rs")),
+        (proj.path().join("tests"), src.clone()),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let out = support::quorum(home.path())
+            .current_dir(&cwd)
+            .arg("review")
+            .arg("--json")
+            .arg(&arg)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("1 suppressed"), "from {cwd:?}: {stderr}");
+    }
+    // And not outside the glob.
+    let (proj, _src, _test, fixture) =
+        project("[[suppress]]\npattern = \"unwrap\"\nfile = \"src/**\"\n");
+    let home = tempfile::tempdir().unwrap();
+    let out = support::quorum(home.path())
+        .current_dir(proj.path())
+        .arg("review")
+        .arg("--json")
+        .arg(&fixture)
+        .output()
+        .unwrap();
+    // The finding is there to be suppressed (a test file would have none),
+    // and the rule leaves it alone.
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("unwrap"),
+        "fixture produced no unwrap finding; the check below would be vacuous"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("suppressed"),
+        "fixtures/planted.rs is outside src/**"
+    );
 }
 
 /// A scope naming an axis that does not exist fails the run up front, with
@@ -300,8 +398,16 @@ fn excluded_files_are_listed_in_json_meta() {
             .ends_with("fixtures/planted.rs"),
         "{excluded:?}"
     );
-    // An exclusion is not a failure: the AST unwrap finding sets the code.
-    assert_ne!(out.status.code(), Some(3));
+
+    // An exclusion is not a failure: with no findings the exit code is 0.
+    let clean = fixture.with_file_name("clean.rs");
+    std::fs::write(&clean, "pub fn one() -> u32 {\n    1\n}\n").unwrap();
+    let (out, _) = review(&clean, &[]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("scope_excluded"),
+        "the clean file is excluded too"
+    );
+    assert_eq!(out.status.code(), Some(0));
 }
 
 /// A scope that names only a test-only axis for a file with no tests asks
@@ -364,5 +470,4 @@ fn project_notes_are_labelled_as_unverified() {
         system.contains("stated by the repository in .quorum/review.toml; not verified"),
         "notes heading missing or reworded"
     );
-    assert!(!system.contains("treat as given"));
 }

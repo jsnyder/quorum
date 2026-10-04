@@ -81,10 +81,12 @@ Built: `[project] notes`, `[[scope]]`, `[[suppress]]`; `AxisSelectionSource::Rep
 Changed after review:
 
 - **Precedence is last-match-wins, not longest glob.** Glob length is not specificity (`src/**/mod.rs` outranks `src/auth/**` by two characters). This also removes the need for `--explain-scope` as a mitigation.
-- **The config is found per file**, nearest ancestor with a `.quorum/review.toml`, stopping at the `.git` root. The plan's "project root" came from the first file's nearest project marker, which lost the config under `eval/` (it has its own `pyproject.toml`) and for the whole run when such a file was listed first.
+- **The config is found per file**, nearest ancestor with a `.quorum/review.toml` inside the file's git repository; no repository, no config. The plan's "project root" came from the first file's nearest project marker, which lost the config under `eval/` (it has its own `pyproject.toml`) and for the whole run when such a file was listed first.
 - **The module is bin-side**, not lib: it reuses `suppress::SuppressionRule`, which is bin-side.
 - **Notes are labelled as the repository's unverified statement** and are neutralised and capped in `notes_block` itself.
-- **Globs and axis names are validated at startup** regardless of `--axes`.
+- **The file is strict**: parse errors, unknown keys, unknown axes and invalid globs are exit 3 at startup regardless of `--axes`. The plan's "parse error = warning + empty" would drop exclusions on a typo.
+- **An excluded file is kept from the judge too**, and a run that bypasses the scopes says so.
+- **`[[suppress]] file` globs are relative to the config**, not to the working directory as in `suppress.toml` (#662).
 
 Deferred, not built:
 
@@ -92,6 +94,6 @@ Deferred, not built:
 - Scopes and notes on the legacy single-prompt path (`--deep`, `--ensemble`, `--daemon`), in `--mode plan|docs`, and in the MCP `review` tool. The plan said notes would render on the legacy path; they do not.
 - `--explain-scope`.
 - Test 6 (single-definition guard for the reserved-name table): the tables stayed where they were, so there is nothing new to guard.
-- Reading `.quorum/` config from the base branch on fork PRs (filed separately).
+- Reading `.quorum/` config from the base branch on fork PRs (filed as #661).
 - The before/after `eval/axes` measurement: the corpus is reviewed with `--axes`, which outranks scopes, so the run is unaffected by construction.
 
