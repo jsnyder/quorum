@@ -1,0 +1,1936 @@
+{
+ "model": "gpt-5.6",
+ "started": "2026-10-04T18:27:26.836626+00:00",
+ "quorum": "fix/656-axis-lane-fence @ a93b7cd (debug build)",
+ "runs": [
+  {
+   "axis": "correctness",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [
+    {
+     "title": "Even split drops remainder cents",
+     "line_start": 24,
+     "line_end": 25,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Discount calculation truncates instead of rounding to nearest cent",
+     "line_start": 30,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Month index 12 passes validation and crashes",
+     "line_start": 45,
+     "line_end": 46,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Zero parts causes division by zero",
+     "line_start": 24,
+     "line_end": 24,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 11.0,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.7s using gpt-5.6: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [
+    {
+     "title": "Pushing into a zero-capacity window panics",
+     "line_start": 15,
+     "line_end": 18,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "mean returns Some(NaN) for an empty window",
+     "line_start": 22,
+     "line_end": 24,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "last_n panics when n exceeds the number of samples",
+     "line_start": 28,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "above includes values equal to the threshold",
+     "line_start": 33,
+     "line_end": 35,
+     "severity": "low",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.5,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.4s using gpt-5.6: 4 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [
+    {
+     "title": "whoami treats HTTP error responses as successful results",
+     "line_start": 22,
+     "line_end": 28,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.1,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.0s using gpt-5.6: 1 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [
+    {
+     "title": "Login handler always fails because the request body is never parsed",
+     "line_start": 38,
+     "line_end": 39,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Malformed stored password hashes make verification throw instead of fail",
+     "line_start": 52,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 6.2,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.2s using gpt-5.6: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [
+    {
+     "title": "Settings import always fails with current PyYAML",
+     "line_start": 41,
+     "line_end": 41,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 7.0,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.9s using gpt-5.6: 4 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.0,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.9s using gpt-5.6: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.6,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.5s using gpt-5.6: 5 finding(s)",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "INSERT result is mistaken for the new invoice ID",
+     "line_start": 44,
+     "line_end": 54,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Floating-point tax calculation loses precision for valid i64 amounts",
+     "line_start": 43,
+     "line_end": 43,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Database failures while loading a customer are reported as not found",
+     "line_start": 35,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 12.3,
+    "retried": false,
+    "stderr_tail": "ackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 12.2s using gpt-5.6: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [
+    {
+     "title": "Invoice issuance is committed before email delivery succeeds",
+     "line_start": 75,
+     "line_end": 77,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Long invoices are rendered past the PDF page boundary",
+     "line_start": 92,
+     "line_end": 95,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Draft issuance date is discarded when creating the invoice",
+     "line_start": 73,
+     "line_end": 74,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 9.8,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.7s using gpt-5.6: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [
+    {
+     "title": "clone_record does not deeply copy nested lists",
+     "line_start": 20,
+     "line_end": 30,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 5.7,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.7s using gpt-5.6: 2 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [
+    {
+     "title": "Cache writes silently discard filesystem failures",
+     "line_start": 49,
+     "line_end": 50,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Cache reads misreport all I/O failures as missing values",
+     "line_start": 46,
+     "line_end": 47,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.6,
+    "retried": false,
+    "stderr_tail": "via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.5s using gpt-5.6: 2 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "HTTP error responses are treated as successful manifests",
+     "line_start": 14,
+     "line_end": 14,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Missing firmware field silently becomes an empty value",
+     "line_start": 17,
+     "line_end": 21,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.4,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.4s using gpt-5.6: 2 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [
+    {
+     "title": "Stock is not consumed across multiple orders",
+     "line_start": 52,
+     "line_end": 56,
+     "severity": "high",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "CSV fields are not correctly escaped",
+     "line_start": 69,
+     "line_end": 71,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    },
+    {
+     "title": "Per-SKU quantity totals can overflow u32",
+     "line_start": 37,
+     "line_end": 37,
+     "severity": "medium",
+     "category": "correctness",
+     "originating_skill": "correctness"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 7.7,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.6s using gpt-5.6: 3 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "correctness",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 3.5,
+    "retried": false,
+    "stderr_tail": "backIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 3.5s using gpt-5.6: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.8,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.8s using gpt-5.6: 0 finding(s), 1211 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [
+    {
+     "title": "Malformed configuration values expose full input lines in logs",
+     "line_start": 53,
+     "line_end": 56,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 4.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.8s using gpt-5.6: 1 finding(s), 1391 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [
+    {
+     "title": "TLS certificate verification is disabled for all API requests",
+     "line_start": 14,
+     "line_end": 16,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Bearer token is exposed in application logs",
+     "line_start": 20,
+     "line_end": 21,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Passwords are stored using fast, unsalted MD5 hashes",
+     "line_start": 32,
+     "line_end": 35,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 7.1,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.1s using gpt-5.6: 3 finding(s), 1256 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [
+    {
+     "title": "SQL injection enables authentication bypass",
+     "line_start": 39,
+     "line_end": 41,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Unauthenticated proxy permits server-side request forgery",
+     "line_start": 9,
+     "line_end": 12,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Session tokens are generated with a non-cryptographic PRNG",
+     "line_start": 26,
+     "line_end": 31,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Proxying attacker-controlled HTML creates same-origin XSS",
+     "line_start": 10,
+     "line_end": 12,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Unvalidated post-login redirect permits phishing redirects",
+     "line_start": 47,
+     "line_end": 48,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 19.8,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 19.8s using gpt-5.6: 5 finding(s), 1331 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [
+    {
+     "title": "Shell command injection through conversion parameters",
+     "line_start": 33,
+     "line_end": 35,
+     "severity": "critical",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Upload filename permits arbitrary file writes via path traversal",
+     "line_start": 16,
+     "line_end": 18,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Untrusted YAML is loaded with an unsafe deserializer",
+     "line_start": 41,
+     "line_end": 42,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 13.7,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 13.6s using gpt-5.6: 6 finding(s), 1124 prompt tokens reported cached by the provider",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.2,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.2s using gpt-5.6: 1 finding(s), 1547 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "Predictable shared database path permits local symlink attacks",
+     "line_start": 51,
+     "line_end": 55,
+     "severity": "low",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.3,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.2s using gpt-5.6: 6 finding(s), 1375 prompt tokens reported cached by the provider",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "Invoice lookup lacks object-level authorization",
+     "line_start": 58,
+     "line_end": 63,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Invoice creation accepts unauthorized customer IDs and unvalidated amounts",
+     "line_start": 29,
+     "line_end": 53,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 8.7,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.6s using gpt-5.6: 2 finding(s), 1567 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [
+    {
+     "title": "Passwords are stored using unsalted SHA-256",
+     "line_start": 65,
+     "line_end": 67,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Sensitive email is transmitted without establishing TLS",
+     "line_start": 81,
+     "line_end": 87,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Unescaped customer data permits HTML injection in invoices",
+     "line_start": 33,
+     "line_end": 40,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 11.9,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 11.8s using gpt-5.6: 3 finding(s), 2873 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 3.2,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 3.1s using gpt-5.6: 1 finding(s), 1358 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [
+    {
+     "title": "Unsanitized storage keys allow path traversal outside the cache root",
+     "line_start": 46,
+     "line_end": 50,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 5.4,
+    "retried": false,
+    "stderr_tail": "+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.3s using gpt-5.6: 1 finding(s), 1 speculative withheld (run with --judge to evaluate them), 1923 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "Unbounded response body enables memory and CPU denial of service",
+     "line_start": 14,
+     "line_end": 60,
+     "severity": "high",
+     "category": "security",
+     "originating_skill": "security"
+    },
+    {
+     "title": "Unvalidated device ID permits same-origin URL path and query manipulation",
+     "line_start": 12,
+     "line_end": 14,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 13.5,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 13.5s using gpt-5.6: 2 finding(s), 1514 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [
+    {
+     "title": "Untrusted stock fields allow CSV and spreadsheet formula injection",
+     "line_start": 69,
+     "line_end": 71,
+     "severity": "medium",
+     "category": "security",
+     "originating_skill": "security"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.6s using gpt-5.6: 1 finding(s), 1824 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "security",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.8s using gpt-5.6: 0 finding(s), 1400 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [],
+   "meta": {
+    "exit": 2,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 3 finding(s)",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "Tests depend on shared mutable cache and execution order",
+     "line_start": 20,
+     "line_end": 30,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Capacity test asserts only its own constant",
+     "line_start": 53,
+     "line_end": 55,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Expiry test relies on real time and sleeping",
+     "line_start": 35,
+     "line_end": 38,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Eviction test is coupled to exact error wording",
+     "line_start": 68,
+     "line_end": 72,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 10.2,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.2s using gpt-5.6: 5 finding(s), 1547 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [
+    {
+     "title": "Test calls a real staging service",
+     "line_start": 24,
+     "line_end": 27,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Shared database file leaks mutable state between runs",
+     "line_start": 51,
+     "line_end": 56,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Broad exception handler makes rejection test always pass",
+     "line_start": 59,
+     "line_end": 64,
+     "severity": "high",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Mock-only test verifies no production behavior",
+     "line_start": 37,
+     "line_end": 40,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Persistence test only tests SQLite directly",
+     "line_start": 43,
+     "line_end": 48,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    },
+    {
+     "title": "Test depends on wall-clock timing",
+     "line_start": 19,
+     "line_end": 21,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "testing-antipatterns"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 14.1,
+    "retried": false,
+    "stderr_tail": "abled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 14.1s using gpt-5.6: 11 finding(s), 1375 prompt tokens reported cached by the provider",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.2s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 1 finding(s)",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "bled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s), 1 speculative withheld (run with --judge to evaluate them)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "testing-antipatterns",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.2,
+    "retried": false,
+    "stderr_tail": "FeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.1s AST-only: 0 finding(s)",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.2,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.2s using gpt-5.6: 0 finding(s), 1211 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [
+    {
+     "title": "layering: Configuration parsing is misplaced in the sliding-window statistics module",
+     "line_start": 50,
+     "line_end": 61,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 5.4,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.3s using gpt-5.6: 1 finding(s), 1391 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [
+    {
+     "title": "layering: Token API client module owns unrelated content fingerprinting",
+     "line_start": 5,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.5,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.5s using gpt-5.6: 1 finding(s), 1256 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [
+    {
+     "title": "layering: Login route couples HTTP transport to persistence and credential verification",
+     "line_start": 38,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: Module starts the server as an import-time side effect",
+     "line_start": 57,
+     "line_end": 57,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.0,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.9s using gpt-5.6: 2 finding(s), 1331 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [
+    {
+     "title": "layering: HTTP endpoint is coupled directly to database infrastructure",
+     "line_start": 45,
+     "line_end": 50,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 5.4,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.4s using gpt-5.6: 4 finding(s), 1124 prompt tokens reported cached by the provider",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.0,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.0s using gpt-5.6: 1 finding(s), 1547 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.7,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.6s using gpt-5.6: 5 finding(s), 1375 prompt tokens reported cached by the provider",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "coupling: Handler bypasses the database abstraction",
+     "line_start": 44,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: Public HTTP handler exposes a rusqlite error",
+     "line_start": 58,
+     "line_end": 63,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "layering: HTTP handler owns domain tax policy",
+     "line_start": 33,
+     "line_end": 43,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 6.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.6s using gpt-5.6: 3 finding(s), 1567 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [
+    {
+     "title": "layering: InvoiceDraft embeds HTML presentation concerns",
+     "line_start": 24,
+     "line_end": 41,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "god-object: PortalService combines unrelated application and infrastructure responsibilities",
+     "line_start": 44,
+     "line_end": 101,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "boundary: Billing API exposes Stripe's concrete Charge type",
+     "line_start": 70,
+     "line_end": 71,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 8.3,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.3s using gpt-5.6: 3 finding(s), 2873 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 2.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.5s using gpt-5.6: 1 finding(s), 1358 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [
+    {
+     "title": "layering: Generic utility module owns cache persistence",
+     "line_start": 34,
+     "line_end": 62,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    },
+    {
+     "title": "abstraction: Public factory and trait expose a nonexistent backend choice",
+     "line_start": 34,
+     "line_end": 62,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "architecture"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.7,
+    "retried": false,
+    "stderr_tail": "+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.6s using gpt-5.6: 2 finding(s), 1 speculative withheld (run with --judge to evaluate them), 1923 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 5.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.5s using gpt-5.6: 0 finding(s), 1514 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.8s using gpt-5.6: 0 finding(s), 1824 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "architecture",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.2,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.2s using gpt-5.6: 0 finding(s), 1400 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [
+    {
+     "title": "shrink: replace the balance accumulation loop with sum()",
+     "line_start": 15,
+     "line_end": 19,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: replace the entry search loop with next()",
+     "line_start": 35,
+     "line_end": 38,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 6.8,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.7s using gpt-5.6: 2 finding(s), 1211 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.9s using gpt-5.6: 0 finding(s), 1391 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.4,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.3s using gpt-5.6: 0 finding(s), 1256 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.5,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.5s using gpt-5.6: 0 finding(s), 1331 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [],
+   "meta": {
+    "exit": 2,
+    "secs": 1.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.6s using gpt-5.6: 3 finding(s), 1124 prompt tokens reported cached by the provider",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [
+    {
+     "title": "stdlib: replace manual optional initialization with LazyLock",
+     "line_start": 8,
+     "line_end": 16,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 6.0,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.0s using gpt-5.6: 2 finding(s), 1547 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.7,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.6s using gpt-5.6: 5 finding(s), 1375 prompt tokens reported cached by the provider",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.1,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.1s using gpt-5.6: 0 finding(s), 1567 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 2.3,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.2s using gpt-5.6: 0 finding(s), 2873 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [
+    {
+     "title": "yagni: delete the unused V2 feature branch and keep the V1 ingest path",
+     "line_start": 6,
+     "line_end": 53,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace the manual largest-value loop with max",
+     "line_start": 11,
+     "line_end": 17,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 11.2,
+    "retried": false,
+    "stderr_tail": "sabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 11.1s using gpt-5.6: 3 finding(s), 1358 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [
+    {
+     "title": "yagni: remove the single-implementation Storage abstraction and factory",
+     "line_start": 34,
+     "line_end": 62,
+     "severity": "medium",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace has_prefix implementation with starts_with",
+     "line_start": 20,
+     "line_end": 32,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "delete: remove the unused legacy_human_bytes function",
+     "line_start": 91,
+     "line_end": 101,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "stdlib: replace manual whitespace scanning with trim_matches",
+     "line_start": 6,
+     "line_end": 17,
+     "severity": "low",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    },
+    {
+     "title": "shrink: return the config extension predicate directly",
+     "line_start": 65,
+     "line_end": 71,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 10.0,
+    "retried": false,
+    "stderr_tail": "Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 10.0s using gpt-5.6: 5 finding(s), 1 speculative withheld (run with --judge to evaluate them), 1923 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 5.0,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.0s using gpt-5.6: 0 finding(s), 1514 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [
+    {
+     "title": "shrink: remove redundant `.to_string()` after `replace`",
+     "line_start": 70,
+     "line_end": 70,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 3.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 3.6s using gpt-5.6: 1 finding(s), 1824 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "simplicity",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [
+    {
+     "title": "shrink: replace the active-tenant accumulation loop with a list comprehension",
+     "line_start": 51,
+     "line_end": 55,
+     "severity": "info",
+     "category": "maintainability",
+     "originating_skill": "simplicity"
+    }
+   ],
+   "meta": {
+    "exit": 0,
+    "secs": 3.4,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 3.3s using gpt-5.6: 1 finding(s), 1400 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "correctness",
+   "file": "correctness/ledger.py",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 0.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.9s using gpt-5.6: 0 finding(s), 1211 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "correctness",
+   "file": "correctness/window.rs",
+   "findings": [
+    {
+     "title": "complexity: Removing the oldest sample shifts the entire window",
+     "line_start": 15,
+     "line_end": 18,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.8s using gpt-5.6: 1 finding(s), 1391 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "security/auth.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.3,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.3s using gpt-5.6: 0 finding(s), 1256 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "security/proxy.ts",
+   "findings": [
+    {
+     "title": "io: Synchronous scrypt blocks the Node.js event loop",
+     "line_start": 51,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: Proxy responses are fully buffered before being sent",
+     "line_start": 11,
+     "line_end": 23,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 7.7,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 7.7s using gpt-5.6: 2 finding(s), 1331 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "security",
+   "file": "security/upload.py",
+   "findings": [
+    {
+     "title": "allocation: Search results are fully materialized twice",
+     "line_start": 49,
+     "line_end": 50,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 2,
+    "secs": 6.9,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 6.8s using gpt-5.6: 4 finding(s), 1124 prompt tokens reported cached by the provider",
+    "rule_findings": 3
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/cache_tests.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 1.0,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 0.9s using gpt-5.6: 1 finding(s), 1547 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "testing-antipatterns",
+   "file": "testing-antipatterns/test_api.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 1.4,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 1.3s using gpt-5.6: 5 finding(s), 1375 prompt tokens reported cached by the provider",
+    "rule_findings": 5
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "architecture",
+   "file": "architecture/handlers.rs",
+   "findings": [
+    {
+     "title": "io: synchronous SQLite write blocks the async executor",
+     "line_start": 44,
+     "line_end": 53,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 5.7,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 5.6s using gpt-5.6: 1 finding(s), 1567 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "architecture",
+   "file": "architecture/service.py",
+   "findings": [
+    {
+     "title": "allocation: Revenue calculation materializes every matching invoice",
+     "line_start": 100,
+     "line_end": 101,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 4.8,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.7s using gpt-5.6: 1 finding(s), 2873 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/helpers.py",
+   "findings": [],
+   "meta": {
+    "exit": 1,
+    "secs": 2.3,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 2.3s using gpt-5.6: 1 finding(s), 1358 prompt tokens reported cached by the provider",
+    "rule_findings": 1
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "simplicity",
+   "file": "simplicity/util.rs",
+   "findings": [],
+   "meta": {
+    "exit": 0,
+    "secs": 4.2,
+    "retried": false,
+    "stderr_tail": "+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 4.2s using gpt-5.6: 0 finding(s), 1 speculative withheld (run with --judge to evaluate them), 1923 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "performance/fetcher.rs",
+   "findings": [
+    {
+     "title": "io: Blocking sleep stalls a shared Tokio worker",
+     "line_start": 16,
+     "line_end": 16,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: Read only the schema line instead of loading a gigabyte-scale cache",
+     "line_start": 30,
+     "line_end": 32,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: Large checksum loop monopolizes the async executor",
+     "line_start": 53,
+     "line_end": 62,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 9.6,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 9.6s using gpt-5.6: 3 finding(s), 1514 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "performance/inventory.rs",
+   "findings": [
+    {
+     "title": "clone: Computing the grand total copies the entire stock feed",
+     "line_start": 43,
+     "line_end": 60,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: Duplicate detection performs quadratic-to-cubic work",
+     "line_start": 22,
+     "line_end": 29,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "allocation: CSV rendering creates multiple temporary strings per row",
+     "line_start": 65,
+     "line_end": 72,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 8.5,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.5s using gpt-5.6: 3 finding(s), 1824 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  },
+  {
+   "axis": "performance",
+   "corpus_axis": "performance",
+   "file": "performance/reports.py",
+   "findings": [
+    {
+     "title": "io: Per-tenant queries create an N+1 database access pattern",
+     "line_start": 29,
+     "line_end": 35,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: Configuration file is parsed once per usage row",
+     "line_start": 41,
+     "line_end": 45,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "complexity: List membership makes active-tenant filtering quadratic",
+     "line_start": 51,
+     "line_end": 54,
+     "severity": "medium",
+     "category": "performance",
+     "originating_skill": "performance"
+    },
+    {
+     "title": "io: Rendering repeatedly reloads configuration for negative costs",
+     "line_start": 61,
+     "line_end": 66,
+     "severity": "low",
+     "category": "performance",
+     "originating_skill": "performance"
+    }
+   ],
+   "meta": {
+    "exit": 1,
+    "secs": 8.1,
+    "retried": false,
+    "stderr_tail": "isabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nFeedbackIndex: embedding model unavailable (embeddings disabled via QUORUM_DISABLE_EMBEDDINGS), falling back to BM25+Jaccard\nReviewed 1 file(s) in 8.1s using gpt-5.6: 4 finding(s), 1400 prompt tokens reported cached by the provider",
+    "rule_findings": 0
+   }
+  }
+ ],
+ "finished": "2026-10-04T18:34:28.108534+00:00"
+}
