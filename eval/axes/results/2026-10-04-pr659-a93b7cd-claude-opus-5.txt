@@ -1,0 +1,13 @@
+axes eval -- model claude-opus-5
+
+axis                   files planted hits recall  emitted precision decoys noise dups  out-of-lane(violations)  errors  secs
+correctness                2       6    6   1.00        9      0.67      2     1    0    19/12  ( 12)          0    133
+security                   3      10   10   1.00       14      0.71      0     1    2    12/11  (  8)          0    126
+testing-antipatterns       2      11   11   1.00       12      0.92      1     0    0     0/12  (  0)          0     27
+architecture               2       5    5   1.00        7      0.71      0     0    2    19/12  ( 14)          0    152
+simplicity                 2       8    7   0.88        7      1.00      0     0    0    16/12  ( 14)          0     92
+performance                3       9    9   1.00       10      0.90      0     0    1     9/11  (  5)          0     84
+
+correctness fell for decoys: corr-py-d02 [error-handling] -> "load_amount raises InvalidOperation on malformed input instead of handling it"; corr-rs-d01 [edge-case] -> "percentile() silently accepts out-of-range p and mis-sorts NaN"
+testing-antipatterns fell for decoys: test-py-d02 [shared-state] -> "SQLite connection not closed in tmp_path test"
+simplicity missed: simp-py-002 [stdlib] clone_record reimplements copy.deepcopy, which is already imported
