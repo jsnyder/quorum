@@ -251,9 +251,43 @@ External-agent verdicts go through a stricter trust boundary: only `tp`/`fp`/`pa
 
 Feedback drives AST pattern development -- 20 ast-grep rules were mined from 1,666 confirmed true positives in the feedback store.
 
+## Repo Review Config
+
+`.quorum/review.toml` in the project root tells quorum what to review where, and what the project already knows about itself:
+
+```toml
+# Facts no single file shows. Every axis reads these before the code.
+[project]
+notes = [
+  "Binary crate; the lib target has no out-of-tree consumers.",
+  "fixtures/ holds deliberately broken inputs.",
+]
+
+# Which axes run on which paths. The longest matching glob wins; a tie goes
+# to the later scope. `*` stays inside one directory, `**` crosses them.
+[[scope]]
+paths = ["tests/**"]
+axes = ["testing-antipatterns", "correctness"]
+
+[[scope]]
+paths = ["src/auth/**", "src/crypto.rs"]
+axes = "audit"            # all six axes; "default" is the other set name
+
+[[scope]]
+paths = ["fixtures/**", "vendor/**"]
+axes = []                 # nothing goes to the model; AST rules still run
+
+# Same rules as .quorum/suppress.toml below; both files apply.
+[[suppress]]
+pattern = "struct literal"
+reason = "every literal is in-tree"
+```
+
+`--axes` on the command line outranks every scope. A file no scope names gets the default set. The summary line reports how many files a scope kept from the model, and a scope naming an axis that does not exist fails the run before any file is reviewed. Notes are capped at 2 KiB.
+
 ## Project-Level Suppression
 
-Suppress known findings per-project via `.quorum/suppress.toml`:
+Suppress known findings per-project via `.quorum/suppress.toml` (or a `[[suppress]]` table in `.quorum/review.toml`):
 
 ```toml
 [[suppress]]

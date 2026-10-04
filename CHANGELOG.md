@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`.quorum/review.toml`: a repository says which axes run where, what it already knows about itself, and what it does not want reported** (#632). Three sections, read once per run from the project root. `[[scope]]` maps path globs to axes (`"default"`, `"audit"`, a list, or `[]`): resolved per file, the longest matching glob wins and a tie goes to the later scope; `--axes` on the command line outranks every scope; `axes = []` keeps a file from the model while AST rules still run, and the summary line says how many files that was so an excluded file cannot read as a clean one. An axis name that does not exist fails the run before any file is reviewed. `[project] notes` are facts no single file shows ("binary crate; no out-of-tree consumers"); they are rendered ahead of the file's other context for every axis, capped at 2 KiB, with sandbox tags defanged since on a fork PR this is contributor-controlled text. `[[suppress]]` has the semantics of `.quorum/suppress.toml`, which keeps working; both apply. The audit row records `repo_scope` as the selection source when a scope chose the axes. This repository now carries its own `review.toml`: the eval corpora and fixtures are scoped to no model review, the trust-boundary files to the full set. Not in this slice: per-scope instructions for an axis, notes on the legacy single-prompt path (`--deep`, `--ensemble`, `--daemon`), nested `.quorum/` directories.
+
 ## [0.33.0] - 2026-10-02
 
 ### Added

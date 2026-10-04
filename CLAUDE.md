@@ -176,6 +176,10 @@ Cassettes live in `tests/fixtures/llm/` and are re-recorded by hand with
 `scripts/record-llm-cassette.sh` (which spends money, and redacts before
 writing). There is no record mode in the harness on purpose.
 
+## Repo review config (#632)
+
+`.quorum/review.toml` at the project root, loaded once per run by `review_config::load`: `[[scope]] paths/axes` picks the axes per file (longest matching glob; `--axes` outranks scopes; `axes = []` skips the model and is counted in the summary line), `[project] notes` are rendered ahead of each file's `<review_context>` (2 KiB cap, sandbox tags defanged), and `[[suppress]]` rules are concatenated with `.quorum/suppress.toml`. Scopes apply only when axes resolve and no `--axes` was given, so `--deep`, `--ensemble` and `--daemon` do not consult them yet. This repository's own file scopes the eval corpora and fixtures to no model review and the trust-boundary files to `audit`.
+
 ## Feedback
 
 **Every finding from a quorum review gets a verdict, recorded once, after triage is settled and before the branch merges.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Do not record at first sight: rows cannot be retracted (#514), and re-recording appends a second precedent at full weight rather than replacing the first. Seven wrong rows entered the corpus in one day from verdicts recorded before the discussion that changed the call. Triage each finding into the appropriate verdict with `--reason` explaining the call and an explicit `--category`; when `--category`, `--model` or `--in-diff` is omitted on the Human path, the verdict inherits what the review recorded for the resolved finding (model and category only for model findings; a rule finding inherits neither); the External path (`--from-agent`) records what the agent supplied and inherits nothing. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.

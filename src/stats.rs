@@ -1297,6 +1297,15 @@ pub fn format_skill_table(
     if fallbacks > 0 {
         out.push_str(&format!("  Model fallbacks: {fallbacks}\n"));
     }
+    // Shown only when something other than the mode default chose the axes
+    // (`--axes`, or a `.quorum/review.toml` scope), so plain runs stay quiet.
+    let sources = merge_histograms(rows.iter().map(|r| &r.selection_sources));
+    if sources.keys().any(|k| k != "mode_macro") {
+        out.push_str(&format!(
+            "  Axes selected by: {}\n",
+            join_histogram(&sources)
+        ));
+    }
 
     if rows.iter().any(|r| r.low_sample) {
         out.push_str(&format!(
@@ -1808,6 +1817,7 @@ mod tests {
             tokens_in: 0,
             tokens_out: 0,
             parse_error_classes: Default::default(),
+            selection_sources: Default::default(),
             failure_reasons: Default::default(),
             low_sample: runs < dimensions::MIN_SAMPLE,
         }
@@ -1830,6 +1840,28 @@ mod tests {
         assert!(
             out.contains("wrong_schema 213"),
             "parse error classes belong in the view: {out}"
+        );
+    }
+
+    /// #632: the table says how axes were selected only when something
+    /// other than the mode default chose them.
+    #[test]
+    fn skill_table_reports_selection_sources_only_when_not_all_default() {
+        let read = crate::skill_audit::AuditReadStats {
+            total_lines: 10,
+            parsed_ok: 10,
+            parse_errors: 0,
+        };
+        let mut plain = skill_row("correctness", 10, 5, 0);
+        plain.selection_sources.insert("mode_macro".into(), 10);
+        let out = format_skill_table(&[plain.clone()], &read, &Style::plain(), false);
+        assert!(!out.contains("Axes selected by"), "{out}");
+
+        plain.selection_sources.insert("repo_scope".into(), 3);
+        let out = format_skill_table(&[plain], &read, &Style::plain(), false);
+        assert!(
+            out.contains("Axes selected by:") && out.contains("repo_scope"),
+            "{out}"
         );
     }
 
