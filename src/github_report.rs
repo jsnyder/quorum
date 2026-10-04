@@ -265,6 +265,32 @@ fn format_summary_counts(inline_findings: &[Finding], body_findings: &[Finding])
     format!("{} findings{}{}", total, sev_summary, location)
 }
 
+/// Write `items` as a Markdown list while they fit a fixed count and byte
+/// budget, then count the rest. A PR touching hundreds of files can fail or
+/// exclude hundreds, and each line carries an unbounded path, while the
+/// review body has a size limit.
+fn write_capped_list(out: &mut String, items: impl ExactSizeIterator<Item = String>) {
+    use std::fmt::Write;
+    const MAX_LISTED: usize = 20;
+    const LIST_BYTES: usize = 4096;
+    let total = items.len();
+    let mut listed = 0usize;
+    let mut used = 0usize;
+    for item in items {
+        let line_len = item.len() + 3;
+        if listed >= MAX_LISTED || used + line_len > LIST_BYTES {
+            break;
+        }
+        writeln!(out, "- {item}").unwrap();
+        listed += 1;
+        used += line_len;
+    }
+    if total > listed {
+        writeln!(out, "- and {} more", total - listed).unwrap();
+    }
+    writeln!(out).unwrap();
+}
+
 pub fn render_review_body(
     marker: &str,
     inline_findings: &[Finding],
@@ -287,26 +313,34 @@ pub fn render_review_body(
             i.axes_failed, i.axes_total
         )
         .unwrap();
-        // A PR touching hundreds of files can fail hundreds of cells, and a
-        // label carries an unbounded path; the body has a size limit, so
-        // list cells while they fit a fixed byte budget and count the rest.
-        const MAX_CELLS_LISTED: usize = 20;
-        const CELL_LIST_BYTES: usize = 4096;
-        let mut listed = 0usize;
-        let mut used = 0usize;
-        for cell in &i.cells {
-            let line_len = cell.len() + 3;
-            if listed >= MAX_CELLS_LISTED || used + line_len > CELL_LIST_BYTES {
-                break;
-            }
-            writeln!(out, "- {cell}").unwrap();
-            listed += 1;
-            used += line_len;
-        }
-        if i.cells.len() > listed {
-            writeln!(out, "- and {} more", i.cells.len() - listed).unwrap();
-        }
-        writeln!(out).unwrap();
+        write_capped_list(&mut out, i.cells.iter().cloned());
+    }
+
+    // #632: files the repository's own `.quorum/review.toml` kept from the
+    // model. On a fork PR that file is the contributor's, so the review
+    // itself says which files it did not read, ahead of the counts.
+    if let Some(i) = incomplete.filter(|i| !i.scope_excluded.is_empty()) {
+        writeln!(
+            out,
+            "**Not sent to the model:** {} file(s) were excluded from model review by this repository's `.quorum/review.toml`; only static rules ran on them.\n",
+            i.scope_excluded.len()
+        )
+        .unwrap();
+        write_capped_list(
+            &mut out,
+            // A path is a contributor's to choose. In a code span nothing in
+            // it is Markdown (no mention, link or issue reference), provided
+            // it cannot close the span or break the line. Not
+            // `sanitize_for_github`: that neutralises `@name` by wrapping it
+            // in backticks, which inside a span closes it instead.
+            i.scope_excluded.iter().map(|p| {
+                let literal: String = p
+                    .chars()
+                    .map(|c| if c == '`' || c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("`{literal}`")
+            }),
+        );
     }
 
     // #640: findings that already sit on the PR as live inline comments from
@@ -1255,6 +1289,7 @@ mod tests {
             axes_failed: 1,
             axes_total: 2,
             cells: vec!["src/a.rs: security/gpt-5.6 (not_json)".to_owned()],
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",
@@ -1277,6 +1312,87 @@ mod tests {
         assert!(body.contains("No findings from the axes that completed."));
     }
 
+    /// #632: files the repository's config kept from the model are named
+    /// in the review itself, ahead of "No findings.", capped.
+    #[test]
+    fn render_review_body_names_files_excluded_by_the_repo_config() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            scope_excluded: (0..25).map(|i| format!("src/f{i}.rs")).collect(),
+            ..Default::default()
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.33.0",
+            Some(&incomplete),
+            0,
+        );
+        let notice = body
+            .find("**Not sent to the model:** 25 file(s)")
+            .expect("notice present");
+        assert!(notice < body.find("No findings.").unwrap(), "{body}");
+        assert!(
+            body.contains("- `src/f0.rs`\n") && body.contains("- and 5 more"),
+            "{body}"
+        );
+        assert!(!body.contains("src/f24.rs"), "list not capped:\n{body}");
+        assert!(
+            !body.contains("Review incomplete"),
+            "an exclusion is not a failed axis:\n{body}"
+        );
+    }
+
+    /// A path is contributor-chosen text: a scoped npm directory has an
+    /// `@name` in it, and nothing stops a file name holding a link, a
+    /// backtick or a newline. Each is one literal code span on one line.
+    #[test]
+    fn render_review_body_does_not_mention_users_named_in_excluded_paths() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            scope_excluded: vec![
+                "packages/@acme/ui/x.ts".into(),
+                "a`b/[report](https://example.invalid)\n- forged.rs".into(),
+            ],
+            ..Default::default()
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.33.0",
+            Some(&incomplete),
+            0,
+        );
+        assert!(body.contains("- `packages/@acme/ui/x.ts`\n"), "{body}");
+        assert!(
+            body.contains("- `a b/[report](https://example.invalid) - forged.rs`\n"),
+            "{body}"
+        );
+    }
+
+    /// Count is not the only bound: one very long path must not carry the
+    /// body past GitHub's limit.
+    #[test]
+    fn render_review_body_bounds_the_excluded_list_by_bytes() {
+        let incomplete = crate::finding::ReviewIncomplete {
+            scope_excluded: vec!["a.rs".into(), "x".repeat(100_000), "z.rs".into()],
+            ..Default::default()
+        };
+        let body = render_review_body(
+            "<!-- quorum-review-marker:v1 -->",
+            &[],
+            &[],
+            "0.33.0",
+            Some(&incomplete),
+            0,
+        );
+        assert!(body.len() < 8192, "body is {} bytes", body.len());
+        assert!(
+            body.contains("- `a.rs`\n") && body.contains("- and 2 more"),
+            "{body}"
+        );
+    }
+
     #[test]
     fn render_review_body_caps_the_incomplete_cell_list() {
         let incomplete = crate::finding::ReviewIncomplete {
@@ -1285,6 +1401,7 @@ mod tests {
             cells: (0..500)
                 .map(|i| format!("src/f{i}.rs: security/m (not_json)"))
                 .collect(),
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",
@@ -1315,6 +1432,7 @@ mod tests {
             axes_failed: 20,
             axes_total: 20,
             cells: vec![long; 20],
+            ..Default::default()
         };
         let body = render_review_body(
             "<!-- quorum-review-marker:v1 -->",

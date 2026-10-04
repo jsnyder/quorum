@@ -1,0 +1,29 @@
+# What quorum should know and do when it reviews quorum (#632).
+# Scopes pick the axes per path (the last matching scope wins; --axes on the
+# command line outranks all of them). Notes are facts no single file shows.
+# Suppressions here and in suppress.toml both apply.
+
+[project]
+notes = [
+  "quorum is a binary crate with a lib target consumed only by its own bin and tests, all in this tree and updated in the same change. Adding a required field or argument to a pub item breaks nothing downstream.",
+  "Tests must not mutate process environment (no set_var) or spawn the binary except through tests/support; both are enforced by guard tests.",
+  "Findings on redaction code see [REDACTED] in place of credential-shaped fixtures; do not report the placeholder itself as a defect.",
+]
+
+# Deliberately defective or vulnerable fixture code: planted so reviewers can
+# be scored against it. AST rules still run; nothing goes to the model unless
+# --axes is given (which is how eval/axes/run_axes.py reviews it).
+[[scope]]
+paths = ["eval/corpus/**", "eval/axes/corpus/**", "rules/**/tests/**", "tests/fixtures/**"]
+axes = []
+
+# The trust boundary: what leaves the process and what model output can do.
+[[scope]]
+paths = [
+  "src/llm_client.rs",
+  "src/redact.rs",
+  "src/prompt_sanitize.rs",
+  "src/skill_prompt_defense.rs",
+  "src/github_report.rs",
+]
+axes = "audit"

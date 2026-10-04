@@ -319,6 +319,8 @@ pub enum AxisSelectionSource {
     Default,
     AutoDiscovery,
     Legacy,
+    /// A `.quorum/review.toml` scope named the file (#632).
+    RepoScope,
 }
 
 /// Terminal exit status for a skill invocation.
@@ -953,6 +955,7 @@ mod tests {
             AxisSelectionSource::Default,
             AxisSelectionSource::AutoDiscovery,
             AxisSelectionSource::Legacy,
+            AxisSelectionSource::RepoScope,
         ];
         for variant in variants {
             let json = serde_json::to_string(&variant).unwrap();

@@ -115,6 +115,11 @@ pub struct ReviewIncomplete {
     /// One label per failed cell: `file: axis/model (class or reason)`.
     #[serde(default)]
     pub cells: Vec<String>,
+    /// Files the repository's `.quorum/review.toml` kept from the model
+    /// (#632). Not a failure, but the same kind of fact: something this
+    /// review did not do, which a reader of the JSON or the PR must see.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_excluded: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -69,6 +69,7 @@ mod pipeline;
 #[allow(dead_code)]
 mod progress;
 mod review;
+mod review_config;
 #[allow(dead_code)]
 mod review_log;
 #[allow(dead_code)]
@@ -1272,6 +1273,213 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
 // Axis resolution: maps (--axes, --mode, --deep/--daemon/--ensemble) to a
 // skill set or legacy fallback. Pure logic, no I/O.
 // ---------------------------------------------------------------------------
+
+/// `.quorum/review.toml`, looked up per reviewed file (#632).
+struct RepoScopes {
+    /// Loaded configs, by the directory that holds `.quorum/`.
+    configs: std::sync::Mutex<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            Result<std::sync::Arc<review_config::ReviewConfig>, String>,
+        >,
+    >,
+    available: Vec<crate::skill_manifest::LoadedSkill>,
+    /// False when `--axes` was given (it outranks every scope) or when the
+    /// run has no resolved axes at all (the legacy paths).
+    apply: bool,
+    /// Files a scope left with nothing to ask the model, for the summary
+    /// line, the JSON `_meta` and the PR review body.
+    excluded: std::sync::Mutex<Vec<String>>,
+}
+
+impl RepoScopes {
+    fn new(available: Vec<crate::skill_manifest::LoadedSkill>, apply: bool) -> Self {
+        Self {
+            configs: Default::default(),
+            available,
+            apply,
+            excluded: Default::default(),
+        }
+    }
+
+    /// The config governing `file`: the nearest ancestor with a
+    /// `.quorum/review.toml`. Loaded once per directory.
+    fn config_for(
+        &self,
+        file: &std::path::Path,
+    ) -> Option<(
+        std::path::PathBuf,
+        std::sync::Arc<review_config::ReviewConfig>,
+    )> {
+        let root = review_config::find_config_root(file)?;
+        // `validate` has already turned a load error into exit 3.
+        let cfg = self.load_cached(&root).ok()?;
+        Some((root, cfg))
+    }
+
+    /// One read per config, error included, so what `validate` checked is
+    /// what every later lookup uses.
+    fn load_cached(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<std::sync::Arc<review_config::ReviewConfig>, String> {
+        self.configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(root.to_path_buf())
+            .or_insert_with(|| review_config::load(root).map(std::sync::Arc::new))
+            .clone()
+    }
+
+    /// Every config the run will consult must be usable, checked before any
+    /// file is reviewed: a glob that is not one, or an axis that does not
+    /// exist, should stop the run rather than quietly review something else.
+    /// Checked whether or not `--axes` was given, so a typo is reported on
+    /// the first run that sees it.
+    fn validate(&self, files: &[std::path::PathBuf]) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for file in files {
+            let Some(root) = review_config::find_config_root(file) else {
+                continue;
+            };
+            if !seen.insert(root.clone()) {
+                continue;
+            }
+            let cfg = self.load_cached(&root)?;
+            if !self.apply && !cfg.scopes.is_empty() {
+                // Said once per config: otherwise a file the repository
+                // excluded is reviewed without a word.
+                eprintln!(
+                    "Note: the [[scope]] table in {} is not applied to this run (--axes, --deep, --ensemble, --daemon and --mode plan|docs bypass it); files it excludes are reviewed.",
+                    root.join(".quorum/review.toml").display()
+                );
+            }
+            if !self.available.is_empty() {
+                validate_repo_scopes(&cfg, &self.available)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The skills the last matching scope selects for `file`: `None` when
+    /// no scope names it or scopes do not apply to this run, and
+    /// `Some(empty)` when the scope says the file is not for the model.
+    fn skills_for(
+        &self,
+        file: &std::path::Path,
+    ) -> Option<Vec<crate::skill_manifest::LoadedSkill>> {
+        if !self.apply {
+            return None;
+        }
+        let (root, cfg) = self.config_for(file)?;
+        let rel = review_config::relative_to_root(file, &root)?;
+        let scope = cfg.scope_for(&rel)?;
+        tracing::info!(file = %rel, glob = %scope.glob, axes = ?scope.axes, "repo scope selected the axes");
+        // Validated at startup; if a name somehow fails here, fall back to
+        // the run's own set rather than to "review nothing".
+        resolve_scope_axes(&scope.axes, &self.available).ok()
+    }
+
+    /// `context` with the project notes ahead of it. `notes_block` has
+    /// already neutralised and capped them; the heading says whose claim
+    /// they are, since on a fork PR that is the contributor.
+    fn with_notes(&self, file: &std::path::Path, context: Option<String>) -> Option<String> {
+        let Some(notes) = self.config_for(file).and_then(|(_, c)| c.notes_block()) else {
+            return context;
+        };
+        let block = format!(
+            "Project notes (stated by the repository in .quorum/review.toml; not verified):\n{notes}"
+        );
+        Some(match context {
+            Some(c) => format!("{block}\n{c}"),
+            None => block,
+        })
+    }
+
+    /// True when a scope leaves `file` with nothing to ask the model: an
+    /// empty axes list, or only test-only axes on a file that is not a test.
+    /// Known before the pipeline runs so that nothing else (the judge) sends
+    /// the file either.
+    fn asks_nothing(&self, file: &std::path::Path, source: &str) -> bool {
+        self.skills_for(file).is_some_and(|skills| {
+            let is_test =
+                quorum::skill_executor::ReviewFile::is_test_source(&file.to_string_lossy(), source);
+            skills
+                .iter()
+                .all(|s| s.manifest.test_files_only && !is_test)
+        })
+    }
+
+    /// The suppression rules for `file`: its config's `[[suppress]]` table,
+    /// then the run's `.quorum/suppress.toml` rules.
+    fn suppress_rules_for(
+        &self,
+        file: &std::path::Path,
+        base: &[suppress::SuppressionRule],
+    ) -> Vec<suppress::SuppressionRule> {
+        let mut rules = self
+            .config_for(file)
+            .and_then(|(root, c)| {
+                Some(c.suppress_for(&review_config::relative_to_root(file, &root)?))
+            })
+            .unwrap_or_default();
+        rules.extend_from_slice(base);
+        rules
+    }
+
+    fn note_excluded(&self, file: &str) {
+        self.excluded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(file.to_owned());
+    }
+
+    fn excluded(&self) -> Vec<String> {
+        let mut v = self
+            .excluded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        v.sort();
+        v.dedup();
+        v
+    }
+}
+
+/// Axis names from a scope, resolved the way `--axes` resolves them: set
+/// names expanded, case-insensitive, deduplicated in first-seen order.
+fn resolve_scope_axes(
+    names: &[String],
+    available: &[crate::skill_manifest::LoadedSkill],
+) -> Result<Vec<crate::skill_manifest::LoadedSkill>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for name in expand_axis_selections(names) {
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let skill = available
+            .iter()
+            .find(|s| s.manifest.name.eq_ignore_ascii_case(&name))
+            .ok_or_else(|| format!("unknown skill axis '{name}'"))?;
+        out.push(skill.clone());
+    }
+    Ok(out)
+}
+
+/// Every scope's axes must resolve, checked once before any file is
+/// reviewed: a typo should fail the run, not quietly review with fewer axes.
+fn validate_repo_scopes(
+    cfg: &review_config::ReviewConfig,
+    available: &[crate::skill_manifest::LoadedSkill],
+) -> Result<(), String> {
+    for scope in &cfg.scopes {
+        resolve_scope_axes(&scope.axes.names(), available)
+            .map_err(|e| format!("{e} in .quorum/review.toml scope {:?}", scope.paths))?;
+    }
+    Ok(())
+}
 
 /// The resolved set of skill axes for a review invocation.
 #[derive(Debug)]
@@ -2902,7 +3110,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
         }
     }
 
-    let pipeline_cfg = PipelineConfig {
+    let mut pipeline_cfg = PipelineConfig {
         models,
         complexity_threshold: opts.complexity_threshold,
         feedback: feedback_entries,
@@ -2943,6 +3151,24 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
     };
     let suppress_path = project_root.join(".quorum/suppress.toml");
     let suppress_rules = suppress::load_project_suppressions(&suppress_path);
+    // #632: `.quorum/review.toml` -- per-path axes, project notes, and
+    // suppressions, found per file. Scopes narrow the default set; an
+    // explicit --axes outranks them, and the legacy paths (no resolved
+    // axes) do not consult them.
+    let repo_scopes = std::sync::Arc::new(RepoScopes::new(
+        available_skills.clone(),
+        resolved_axes.is_some() && opts.axes.is_empty(),
+    ));
+    pipeline_cfg.judge_skip = Some({
+        let scopes = repo_scopes.clone();
+        std::sync::Arc::new(move |file: &std::path::Path, source: &str| {
+            scopes.asks_nothing(file, source)
+        })
+    });
+    if let Err(e) = repo_scopes.validate(&opts.files) {
+        eprintln!("error: {e}");
+        return 3;
+    }
     if !suppress_rules.is_empty() {
         tracing::debug!(
             rules = suppress_rules.len(),
@@ -3114,7 +3340,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             hide_out_of_diff
                                 .then_some(pipeline_cfg.diff_ranges.as_ref())
                                 .flatten(),
-                            &suppress_rules,
+                            &repo_scopes.suppress_rules_for(file_path, &suppress_rules),
                         );
                         if opts.show_suppressed {
                             for (f, rule) in &suppressed {
@@ -3197,16 +3423,26 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             hex::encode(h.finalize())
                         };
 
+                        // #632: a repo scope naming this file decides its axes.
+                        let scoped = repo_scopes.skills_for(file_path);
+                        let (file_skills, selection_source) = match &scoped {
+                            Some(s) => (
+                                s.as_slice(),
+                                crate::skill_audit::AxisSelectionSource::RepoScope,
+                            ),
+                            None => (ra.skills.as_slice(), ra.source.clone()),
+                        };
+
                         let _exec_span = tracing::info_span!(
                             "phase.skill_executor",
-                            skills = ra.skills.len(),
+                            skills = file_skills.len(),
                             file = %file_str,
                         )
                         .entered();
 
                         let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
                             run_id: run_id.clone(),
-                            axis_selection_source: ra.source.clone(),
+                            axis_selection_source: selection_source,
                             global_models: pipeline_cfg.models.clone(),
                             ensemble_pool: vec![],
                             ensemble: false,
@@ -3214,16 +3450,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             max_calls_per_review: 50,
                             audit_writer: skill_audit_writer.clone(),
                         };
-                        let axes_fc = axes_context_for_file(
-                            file_path,
-                            &source,
-                            lang,
-                            &parse_cache,
-                            &pipeline_cfg,
-                        )
-                        .await;
+                        let axes_fc = if file_skills.is_empty() {
+                            None
+                        } else {
+                            axes_context_for_file(
+                                file_path,
+                                &source,
+                                lang,
+                                &parse_cache,
+                                &pipeline_cfg,
+                            )
+                            .await
+                        };
                         let axes_context =
                             axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                        let axes_context = repo_scopes.with_notes(file_path, axes_context);
                         if let Some(fc) = axes_fc {
                             // The axes path runs review_file AST-only, so these
                             // counters would otherwise read zero for every
@@ -3243,11 +3484,17 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             axes_context,
                         )];
                         let cell_results = quorum::skill_executor::execute_matrix(
-                            &ra.skills,
+                            file_skills,
                             &files_input,
                             adapter,
                             &exec_cfg,
                         );
+                        // A scope that leaves the file with nothing to ask the
+                        // model -- an empty list, or only a test-only axis on a
+                        // file with no tests -- is said out loud (#632).
+                        if scoped.is_some() && cell_results.is_empty() {
+                            repo_scopes.note_excluded(&file_str);
+                        }
 
                         drop(_exec_span);
 
@@ -3331,7 +3578,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         hide_out_of_diff
                             .then_some(pipeline_cfg.diff_ranges.as_ref())
                             .flatten(),
-                        &suppress_rules,
+                        &repo_scopes.suppress_rules_for(file_path, &suppress_rules),
                     );
                     if opts.show_suppressed {
                         for (f, rule) in &suppressed {
@@ -3391,6 +3638,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             let skill_cells_total = skill_cells_total.clone();
             let failed_cells = failed_cells.clone();
             let deep_llm_ran = deep_llm_ran.clone();
+            let repo_scopes = repo_scopes.clone();
 
             let handle = rt.spawn_blocking(move || {
                 if !file_path.exists() {
@@ -3450,7 +3698,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                 hide_out_of_diff
                                     .then_some(pipeline_cfg.diff_ranges.as_ref())
                                     .flatten(),
-                                &suppress_rules,
+                                &repo_scopes.suppress_rules_for(&file_path, &suppress_rules),
                             );
                             // See `deep_llm_ran` below.
                             deep_llm_ran.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3516,16 +3764,26 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     hex::encode(h.finalize())
                                 };
 
+                                // #632: a repo scope naming this file decides its axes.
+                                let scoped = repo_scopes.skills_for(&file_path);
+                                let (file_skills, selection_source) = match &scoped {
+                                    Some(s) => (
+                                        s.as_slice(),
+                                        crate::skill_audit::AxisSelectionSource::RepoScope,
+                                    ),
+                                    None => (ra.skills.as_slice(), ra.source.clone()),
+                                };
+
                                 let _exec_span = tracing::info_span!(
                                     "phase.skill_executor",
-                                    skills = ra.skills.len(),
+                                    skills = file_skills.len(),
                                     file = %file_str,
                                 ).entered();
 
                                 let adapter = SkillLlmAdapter(client.clone());
                                 let exec_cfg = quorum::skill_executor::SkillExecutorConfig {
                                     run_id: run_id.clone(),
-                                    axis_selection_source: ra.source.clone(),
+                                    axis_selection_source: selection_source,
                                     global_models: pipeline_cfg.models.clone(),
                                     ensemble_pool: vec![],
                                     ensemble: false,
@@ -3533,15 +3791,20 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     max_calls_per_review: 50,
                                     audit_writer: skill_audit_writer.clone(),
                                 };
-                                let axes_fc = handle.block_on(axes_context_for_file(
+                                let axes_fc = if file_skills.is_empty() {
+ None
+ } else {
+ handle.block_on(axes_context_for_file(
                                     &file_path,
                                     &source,
                                     lang,
                                     &parse_cache,
                                     &pipeline_cfg,
-                                ));
+                                ))
+ };
                                 let axes_context =
                                     axes_fc.as_ref().and_then(pipeline::render_context_for_axes);
+                                let axes_context = repo_scopes.with_notes(&file_path, axes_context);
                                 if let Some(fc) = axes_fc {
                                     result.enrichment_metrics = fc.enrichment_metrics;
                                     result.context_telemetry = fc.context_telemetry;
@@ -3560,8 +3823,15 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                                     axes_context,
                                 )];
                                 let cell_results = quorum::skill_executor::execute_matrix(
-                                    &ra.skills, &files_input, &adapter, &exec_cfg,
+                                    file_skills, &files_input, &adapter, &exec_cfg,
                                 );
+                                // A scope that leaves the file with nothing
+                                // to ask the model -- an empty list, or only
+                                // a test-only axis on a file with no tests --
+                                // is said out loud (#632).
+                                if scoped.is_some() && cell_results.is_empty() {
+                                    repo_scopes.note_excluded(&file_str);
+                                }
 
                                 drop(_exec_span);
 
@@ -3635,7 +3905,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                             hide_out_of_diff
                                 .then_some(pipeline_cfg.diff_ranges.as_ref())
                                 .flatten(),
-                            &suppress_rules,
+                            &repo_scopes.suppress_rules_for(&file_path, &suppress_rules),
                         );
                         (idx, Ok((result, suppressed)))
                     }
@@ -3724,6 +3994,7 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             cells.sort();
             cells
         },
+        scope_excluded: repo_scopes.excluded(),
     };
 
     // Aggregated end-of-run summary (one line, always printed to stderr).
@@ -3772,8 +4043,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             .iter()
             .map(|r| r.hidden_out_of_diff.len())
             .sum();
+        // #632: a scope with `axes = []` keeps a file from the model. Say so,
+        // or an excluded file reads as a clean one.
+        let scope_excluded_n = repo_scopes.excluded().len();
         eprintln!(
-            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}{}",
+            "Reviewed {} file(s) in {:.1}s {}: {} finding(s){}{}{}{}{}{}{}",
             file_results.len(),
             review_duration.as_secs_f64(),
             engine_label,
@@ -3783,7 +4057,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             } else {
                 String::new()
             },
-            if withheld_no_judge > 0 {
+            if withheld_no_judge > 0 && pipeline_cfg.judge_enabled {
+                // The judge was on and still did not see these: files a
+                // repo scope keeps from the model, or no judge client.
+                format!(", {withheld_no_judge} speculative withheld (not judged)")
+            } else if withheld_no_judge > 0 {
                 format!(
                     ", {withheld_no_judge} speculative withheld (run with --judge to evaluate them)"
                 )
@@ -3806,6 +4084,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                 format!(
                     ", {hidden_out_of_diff} outside the diff hidden (run with --show-out-of-diff to see them)"
                 )
+            } else {
+                String::new()
+            },
+            if scope_excluded_n > 0 {
+                format!(", {scope_excluded_n} file(s) not sent to the model by .quorum/review.toml")
             } else {
                 String::new()
             },
@@ -4216,7 +4499,8 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             version,
             run_id,
             commit_sha,
-            incomplete: Some(review_incomplete.clone()).filter(|i| i.axes_failed > 0),
+            incomplete: Some(review_incomplete.clone())
+                .filter(|i| i.axes_failed > 0 || !i.scope_excluded.is_empty()),
             api_base_url: None,
             bot_login: ctx.bot_login,
         };
@@ -7043,6 +7327,11 @@ mod report_payload_tests {
         assert_eq!(got.cells, vec!["a.rs: security/m (not_json)".to_owned()]);
         assert!(parse_incomplete_meta(REVIEW_JSON).is_none());
         assert!(parse_incomplete_meta("not json").is_none());
+
+        // #632: a review saved with only exclusions carries them to `report`.
+        let excluded = r#"[{"_meta":{"incomplete":{"axes_failed":0,"axes_total":0,"cells":[],"scope_excluded":["fixtures/x.rs"]}}}]"#;
+        let got = parse_incomplete_meta(excluded).expect("present");
+        assert_eq!(got.scope_excluded, vec!["fixtures/x.rs".to_owned()]);
     }
 
     /// #592: the group's `file` is the only place the path exists, and

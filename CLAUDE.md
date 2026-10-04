@@ -176,6 +176,20 @@ Cassettes live in `tests/fixtures/llm/` and are re-recorded by hand with
 `scripts/record-llm-cassette.sh` (which spends money, and redacts before
 writing). There is no record mode in the harness on purpose.
 
+## Repo review config (#632)
+
+`.quorum/review.toml`, found per file by `review_config::find_config_root`: the nearest ancestor that has one, inside the file's git repository (a file under no `.git` has no config, so the walk never reaches `/tmp` or `$HOME`). `RepoScopes` (`src/main.rs`) loads each config once. Not found via `find_project_root`: that stops at the first `Cargo.toml`/`pyproject.toml`, which lost the config for everything under `eval/`.
+
+- **Strict.** A file that does not parse, an unknown key (`deny_unknown_fields`), an unknown axis or an invalid glob is exit 3 before any file is reviewed (`RepoScopes::validate`), checked even when `--axes` is given. Lenient parsing would turn a typo into "no exclusions".
+- `[[scope]] paths/axes` picks the axes per file. The **last** matching scope wins. `--axes` outranks scopes.
+- A file a scope leaves with no cells (`axes = []`, or only a `test_files_only` axis on a non-test file) is recorded by path and shown in the stderr summary line, `_meta.incomplete.scope_excluded`, and "Not sent to the model" in the PR review body (`ReviewIncomplete.scope_excluded`). No context is built for it, and the judge is not sent it: `PipelineConfig.judge_skip` is checked inside `review_source`, so no caller can forget.
+- When scopes are bypassed (`--axes`, `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs`) and the config has any, `validate` prints one note on stderr.
+- `[project] notes` are rendered at the top of each file's `<review_context>` under a heading that says they are the repository's statement and not verified. `ReviewConfig::notes_block` is the one place they are neutralised (control characters, line separators, sandbox tags) and capped at 2 KiB.
+- `[[suppress]]` rules are decided per file by `ReviewConfig::suppress_for`, with `file` globs relative to the config's directory, and prepended to the `.quorum/suppress.toml` rules at every `settle_file_findings` site. `suppress.toml` itself is still located from the first file and matched against the path as typed (not fixed here: #662).
+- `stats --skills` prints an "Axes selected by" line when any run was not `mode_macro` (`AxisSelectionSource::RepoScope`).
+
+Not consulted yet (scopes and notes): `--deep`, `--ensemble`, `--daemon`, `--mode plan|docs`, the MCP `review` tool. On a fork PR the file is contributor-controlled (not fixed here: #661). This repository's own file scopes the eval corpora and fixtures to no model review and the trust-boundary files to `audit`.
+
 ## Feedback
 
 **Every finding from a quorum review gets a verdict, recorded once, after triage is settled and before the branch merges.** This is non-negotiable — the calibrator learns from feedback, and unrecorded findings are wasted signal. Do not record at first sight: rows cannot be retracted (#514), and re-recording appends a second precedent at full weight rather than replacing the first. Seven wrong rows entered the corpus in one day from verdicts recorded before the discussion that changed the call. Triage each finding into the appropriate verdict with `--reason` explaining the call and an explicit `--category`; when `--category`, `--model` or `--in-diff` is omitted on the Human path, the verdict inherits what the review recorded for the resolved finding (model and category only for model findings; a rule finding inherits neither); the External path (`--from-agent`) records what the agent supplied and inherits nothing. Batch recordings in parallel where possible. Use `--provenance post_fix` (1.5x weight) for true positives that were fixed in the same branch.

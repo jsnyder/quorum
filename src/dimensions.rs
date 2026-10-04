@@ -811,6 +811,11 @@ pub struct SkillAuditRow {
     /// that was logged 213 times and never read.
     pub parse_error_classes: BTreeMap<String, u32>,
     pub failure_reasons: BTreeMap<String, u32>,
+    /// How the axis came to run, per invocation (`mode_macro`,
+    /// `explicit_axes`, `repo_scope`, ...). Written to the audit log since
+    /// the skills framework landed and read by nothing until #632 gave a
+    /// repository a way to pick axes per path: this is where that shows.
+    pub selection_sources: BTreeMap<String, u32>,
     pub low_sample: bool,
 }
 
@@ -858,8 +863,17 @@ pub fn group_by_skill(records: &[SkillInvocationRecord]) -> Vec<SkillAuditRow> {
                 tokens_out: 0,
                 parse_error_classes: BTreeMap::new(),
                 failure_reasons: BTreeMap::new(),
+                selection_sources: BTreeMap::new(),
                 low_sample: (runs.len() as u32) < MIN_SAMPLE,
             };
+            for r in &runs {
+                // The serde name, so the histogram keys match the log.
+                let source = serde_json::to_value(&r.axis_selection_source)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".to_owned());
+                *row.selection_sources.entry(source).or_insert(0) += 1;
+            }
 
             let mut duration_total: u64 = 0;
             for r in &runs {
@@ -2178,6 +2192,21 @@ mod tests {
     fn zero_streak_resets_on_a_recent_finding() {
         let records = vec![inv("axis", 0, 0), inv("axis", 0, 1), inv("axis", 1, 2)];
         assert_eq!(group_by_skill(&records)[0].zero_streak, 0);
+    }
+
+    /// #632: the selection source finally has a reader. One run chosen by
+    /// the mode default and one by a repo scope show up as two keys.
+    #[test]
+    fn group_by_skill_counts_how_each_run_was_selected() {
+        use crate::skill_audit::AxisSelectionSource;
+        let mut scoped = inv("security", 1, 1);
+        scoped.axis_selection_source = AxisSelectionSource::RepoScope;
+        let rows = group_by_skill(&[inv("security", 1, 0), scoped]);
+        let sec = rows.iter().find(|r| r.skill == "security").unwrap();
+        assert_eq!(
+            sec.selection_sources,
+            BTreeMap::from([("default".to_string(), 1), ("repo_scope".to_string(), 1)])
+        );
     }
 
     #[test]
