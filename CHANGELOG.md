@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Every axis prompt opens with a lane gate** (#656). The "Do NOT report" noun list at the end of each prompt did not hold: on the per-axis corpus, `correctness` and `architecture` reported the other axes' planted defects under their own name 14 and 18 times across 12 files (gpt-5.6; 33 and 23 for claude-opus-5), which is the duplicate burden #509 and #630 describe. `testing-antipatterns`, whose prompt opens with a structural gate ("if this is not a test file, respond with []"), reported nothing out of lane. The other five prompts now open the same way: name the other reviewers in the run, decide the lane by the defect's primary consequence, and respond with `[]` when the file has nothing in this lane. Measured with `eval/axes/`: violations fall on every axis for claude-opus-5 (correctness 33 to 11, architecture 23 to 14, simplicity 21 to 12) and on four of five for gpt-5.6 (security 10 to 6, architecture 18 to 7, performance 7 to 4); gpt-5.6's correctness barely moves (14 to 13), since every vulnerability is also a bug and it keeps framing it as one. In-lane recall is unchanged.
+
 ## [0.33.0] - 2026-10-02
 
 ### Added
