@@ -328,10 +328,18 @@ pub fn render_review_body(
         .unwrap();
         write_capped_list(
             &mut out,
-            // Not in a code span: `sanitize_for_github` neutralises `@name`
-            // and `#N` by wrapping them in backticks, which inside an outer
-            // span would close it and leave the mention live.
-            i.scope_excluded.iter().map(|p| sanitize_for_github(p)),
+            // A path is a contributor's to choose. In a code span nothing in
+            // it is Markdown (no mention, link or issue reference), provided
+            // it cannot close the span or break the line. Not
+            // `sanitize_for_github`: that neutralises `@name` by wrapping it
+            // in backticks, which inside a span closes it instead.
+            i.scope_excluded.iter().map(|p| {
+                let literal: String = p
+                    .chars()
+                    .map(|c| if c == '`' || c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("`{literal}`")
+            }),
         );
     }
 
@@ -1325,7 +1333,7 @@ mod tests {
             .expect("notice present");
         assert!(notice < body.find("No findings.").unwrap(), "{body}");
         assert!(
-            body.contains("- src/f0.rs\n") && body.contains("- and 5 more"),
+            body.contains("- `src/f0.rs`\n") && body.contains("- and 5 more"),
             "{body}"
         );
         assert!(!body.contains("src/f24.rs"), "list not capped:\n{body}");
@@ -1335,13 +1343,16 @@ mod tests {
         );
     }
 
-    /// A scoped npm directory is a path with an `@name` in it. The list must
-    /// not turn it into a live mention (an outer code span did: the
-    /// sanitiser's own backticks closed it).
+    /// A path is contributor-chosen text: a scoped npm directory has an
+    /// `@name` in it, and nothing stops a file name holding a link, a
+    /// backtick or a newline. Each is one literal code span on one line.
     #[test]
     fn render_review_body_does_not_mention_users_named_in_excluded_paths() {
         let incomplete = crate::finding::ReviewIncomplete {
-            scope_excluded: vec!["packages/@acme/ui/x.ts".into()],
+            scope_excluded: vec![
+                "packages/@acme/ui/x.ts".into(),
+                "a`b/[report](https://example.invalid)\n- forged.rs".into(),
+            ],
             ..Default::default()
         };
         let body = render_review_body(
@@ -1352,7 +1363,11 @@ mod tests {
             Some(&incomplete),
             0,
         );
-        assert!(body.contains("- packages/`@acme`/ui/x.ts\n"), "{body}");
+        assert!(body.contains("- `packages/@acme/ui/x.ts`\n"), "{body}");
+        assert!(
+            body.contains("- `a b/[report](https://example.invalid) - forged.rs`\n"),
+            "{body}"
+        );
     }
 
     /// Count is not the only bound: one very long path must not carry the
@@ -1373,7 +1388,7 @@ mod tests {
         );
         assert!(body.len() < 8192, "body is {} bytes", body.len());
         assert!(
-            body.contains("- a.rs\n") && body.contains("- and 2 more"),
+            body.contains("- `a.rs`\n") && body.contains("- and 2 more"),
             "{body}"
         );
     }

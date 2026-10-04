@@ -147,22 +147,49 @@ fn a_broken_or_misspelled_config_is_a_tool_error() {
 }
 
 /// `--judge` is a model call too. A file scoped to `axes = []` with a
-/// speculative rule hit must not reach it. (Bites only where `ast-grep` is
-/// installed; without it there is no speculative hit and no judge call.)
+/// speculative rule hit must not reach it.
+///
+/// Speculative hits come from the bundled ast-grep rules, so this needs
+/// `ast-grep` in PATH; without it there is nothing to judge and the test
+/// says it skipped. Where it runs, the same file outside the scope is the
+/// control: it must reach the judge, or the zero below proves nothing.
 #[test]
 fn the_judge_is_not_sent_a_file_a_scope_excludes() {
+    if std::process::Command::new("ast-grep")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: ast-grep is not in PATH, so no rule hit reaches the judge");
+        return;
+    }
+    const SPECULATIVE: &str =
+        "pub fn load(p: &str) -> String {\n    std::fs::read_to_string(p).expect(\"\")\n}\n";
     let (proj, _src, _test, _fixture) = project(SCOPES);
+    let control = proj.path().join("src/spec.rs");
+    std::fs::write(&control, SPECULATIVE).unwrap();
+    let (_, without) = review(&control, &[]);
+    let (_, with) = review(&control, &["--judge"]);
+    assert!(
+        with.len() > without.len(),
+        "control: --judge sent nothing extra for a reviewed file ({} vs {})",
+        with.len(),
+        without.len()
+    );
+
     let f = proj.path().join("fixtures/spec.rs");
-    std::fs::write(
-        &f,
-        "pub fn load(p: &str) -> String {\n    std::fs::read_to_string(p).expect(\"\")\n}\n",
-    )
-    .unwrap();
-    let (_, sent) = review(&f, &["--judge"]);
+    std::fs::write(&f, SPECULATIVE).unwrap();
+    let (out, sent) = review(&f, &["--judge"]);
     assert_eq!(
         sent.len(),
         0,
         "an excluded file reached the model through the judge"
+    );
+    // The hint must not tell the user to pass the flag they passed.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("speculative withheld (not judged)"),
+        "{stderr}"
     );
 }
 

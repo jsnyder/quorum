@@ -1278,7 +1278,10 @@ async fn run_report(opts: cli::ReportOpts) -> i32 {
 struct RepoScopes {
     /// Loaded configs, by the directory that holds `.quorum/`.
     configs: std::sync::Mutex<
-        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<review_config::ReviewConfig>>,
+        std::collections::HashMap<
+            std::path::PathBuf,
+            Result<std::sync::Arc<review_config::ReviewConfig>, String>,
+        >,
     >,
     available: Vec<crate::skill_manifest::LoadedSkill>,
     /// False when `--axes` was given (it outranks every scope) or when the
@@ -1309,13 +1312,23 @@ impl RepoScopes {
         std::sync::Arc<review_config::ReviewConfig>,
     )> {
         let root = review_config::find_config_root(file)?;
-        let mut cache = self.configs.lock().unwrap_or_else(|e| e.into_inner());
-        let cfg = cache
-            .entry(root.clone())
-            // `validate` has already turned a load error into exit 3.
-            .or_insert_with(|| std::sync::Arc::new(review_config::load(&root).unwrap_or_default()))
-            .clone();
+        // `validate` has already turned a load error into exit 3.
+        let cfg = self.load_cached(&root).ok()?;
         Some((root, cfg))
+    }
+
+    /// One read per config, error included, so what `validate` checked is
+    /// what every later lookup uses.
+    fn load_cached(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<std::sync::Arc<review_config::ReviewConfig>, String> {
+        self.configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(root.to_path_buf())
+            .or_insert_with(|| review_config::load(root).map(std::sync::Arc::new))
+            .clone()
     }
 
     /// Every config the run will consult must be usable, checked before any
@@ -1326,14 +1339,13 @@ impl RepoScopes {
     fn validate(&self, files: &[std::path::PathBuf]) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
         for file in files {
-            let Some((root, cfg)) = self.config_for(file) else {
+            let Some(root) = review_config::find_config_root(file) else {
                 continue;
             };
             if !seen.insert(root.clone()) {
                 continue;
             }
-            review_config::load(&root)?;
-            cfg.validate_globs()?;
+            let cfg = self.load_cached(&root)?;
             if !self.apply && !cfg.scopes.is_empty() {
                 // Said once per config: otherwise a file the repository
                 // excluded is reviewed without a word.
@@ -4045,7 +4057,11 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
             } else {
                 String::new()
             },
-            if withheld_no_judge > 0 {
+            if withheld_no_judge > 0 && pipeline_cfg.judge_enabled {
+                // The judge was on and still did not see these: files a
+                // repo scope keeps from the model, or no judge client.
+                format!(", {withheld_no_judge} speculative withheld (not judged)")
+            } else if withheld_no_judge > 0 {
                 format!(
                     ", {withheld_no_judge} speculative withheld (run with --judge to evaluate them)"
                 )

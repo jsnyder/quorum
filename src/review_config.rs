@@ -107,11 +107,16 @@ pub fn parse(toml_str: &str) -> anyhow::Result<ReviewConfig> {
 }
 
 /// Load `<root>/.quorum/review.toml`. A missing file is an empty config;
-/// one that cannot be read or parsed is an error naming it.
+/// one that cannot be read or parsed, or has a glob that is not one, is an
+/// error naming it.
 pub fn load(root: &Path) -> Result<ReviewConfig, String> {
     let path = root.join(".quorum/review.toml");
     match std::fs::read_to_string(&path) {
-        Ok(contents) => parse(&contents).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(contents) => {
+            let cfg = parse(&contents).map_err(|e| format!("{}: {e}", path.display()))?;
+            cfg.validate_globs()?;
+            Ok(cfg)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReviewConfig::default()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -439,6 +444,8 @@ reason = "in-tree only"
         std::fs::write(&path, "[[scope]\npaths = 3").unwrap();
         let err = load(dir.path()).unwrap_err();
         assert!(err.contains("review.toml"), "{err}");
+        std::fs::write(&path, "[[scope]]\npaths = [\"src/[\"]\naxes = []\n").unwrap();
+        assert!(load(dir.path()).unwrap_err().contains("src/["));
         std::fs::write(&path, SAMPLE).unwrap();
         assert_eq!(load(dir.path()).unwrap().scopes.len(), 4);
     }
