@@ -1717,8 +1717,7 @@ fn build_review_file(
         .unwrap_or_default();
     // One resolver for every `+++ b/` line of the diff, not one project-root
     // walk per line.
-    let repo_root = pipeline::find_project_root(file_path);
-    let resolver = pipeline::ReviewPathResolver::new(file_str, &repo_root);
+    let resolver = pipeline::ReviewPathResolver::for_diff(file_str);
     let hunks = diff_text.and_then(|d| quorum::focus::hunks_for_file(d, &|p| resolver.matches(p)));
     match quorum::focus::focus_source(source, &changed, &spans, hunks.as_deref()) {
         Some(view) => {
@@ -2878,6 +2877,21 @@ async fn run_review(opts: cli::ReviewOpts) -> i32 {
                         "Diff-aware: scoping hydration to {} changed file(s)",
                         ranges.len()
                     );
+                    // Every finding in a file the diff never mentions counts as
+                    // outside it, so a path mismatch would hide a whole file.
+                    let absent: Vec<String> = opts
+                        .files
+                        .iter()
+                        .filter(|f| pipeline::diff_lines_for_file(f, &ranges).is_none())
+                        .map(|f| f.display().to_string())
+                        .collect();
+                    if !absent.is_empty() {
+                        eprintln!(
+                            "Note: {} reviewed file(s) not in the diff, every finding in them counts as outside it: {}",
+                            absent.len(),
+                            absent.join(", ")
+                        );
+                    }
                     Some(ranges)
                 } else {
                     None

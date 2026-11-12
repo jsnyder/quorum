@@ -1145,8 +1145,7 @@ pub async fn build_file_context(
         } else {
             let (changed_lines, path_resolved) =
                 if let Some(ref diff_ranges) = pipeline_config.diff_ranges {
-                    let repo_root = find_project_root(file_path);
-                    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+                    let resolver = ReviewPathResolver::for_diff(&file_str);
                     let lines: Vec<(u32, u32)> = diff_ranges
                         .iter()
                         .filter(|(path, _)| resolver.matches(path))
@@ -1435,6 +1434,23 @@ impl ReviewPathResolver {
         Self { review_rel }
     }
 
+    /// Resolver for matching against a diff's paths, which `git diff` writes
+    /// relative to the git root. Resolving against `find_project_root` instead
+    /// stopped at a nested `pyproject.toml`/`package.json`, so in a monorepo no
+    /// file ever matched and every finding was hidden as out-of-diff.
+    /// Outside a repository, falls back to the project root.
+    pub(crate) fn for_diff(review_path: &str) -> Self {
+        let path = Path::new(review_path);
+        let git_root = std::fs::canonicalize(path).ok().and_then(|abs| {
+            abs.ancestors()
+                .skip(1)
+                .find(|d| d.join(".git").exists())
+                .map(Path::to_path_buf)
+        });
+        let root = git_root.unwrap_or_else(|| find_project_root(path));
+        Self::new(review_path, &root)
+    }
+
     pub(crate) fn resolved(&self) -> bool {
         self.review_rel.is_some()
     }
@@ -1628,9 +1644,7 @@ pub fn diff_lines_for_file(
     file_path: &Path,
     diff_ranges: &hydration::DiffRanges,
 ) -> Option<Vec<(u32, u32)>> {
-    let file_str = file_path.to_string_lossy().to_string();
-    let repo_root = find_project_root(file_path);
-    let resolver = ReviewPathResolver::new(&file_str, &repo_root);
+    let resolver = ReviewPathResolver::for_diff(&file_path.to_string_lossy());
     let matching: Vec<&(String, Vec<(u32, u32)>)> = diff_ranges
         .iter()
         .filter(|(path, _)| resolver.matches(path))
@@ -3874,6 +3888,22 @@ mod tests {
             Some(false),
             "findings for a file not in the diff must be pre-existing"
         );
+    }
+
+    /// A file under a nested project (`sub/pyproject.toml`) must still match
+    /// the diff, whose paths are relative to the git root. Before the fix
+    /// the resolver stripped `sub/` and every finding was stamped out-of-diff.
+    #[test]
+    fn diff_lines_for_file_in_nested_project_matches_git_root_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub/app")).unwrap();
+        std::fs::write(tmp.path().join("sub/pyproject.toml"), "").unwrap();
+        let file = tmp.path().join("sub/app/x.py");
+        std::fs::write(&file, "").unwrap();
+
+        let diff_ranges: hydration::DiffRanges = vec![("sub/app/x.py".to_string(), vec![(3, 9)])];
+        assert_eq!(diff_lines_for_file(&file, &diff_ranges), Some(vec![(3, 9)]));
     }
 
     #[test]
