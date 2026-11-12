@@ -1441,14 +1441,14 @@ impl ReviewPathResolver {
     /// Outside a repository, falls back to the project root.
     pub(crate) fn for_diff(review_path: &str) -> Self {
         let path = Path::new(review_path);
-        let git_root = std::fs::canonicalize(path).ok().and_then(|abs| {
-            abs.ancestors()
-                .skip(1)
-                .find(|d| d.join(".git").exists())
-                .map(Path::to_path_buf)
-        });
-        let root = git_root.unwrap_or_else(|| find_project_root(path));
-        Self::new(review_path, &root)
+        // The absolute path, not `review_path`: a relative path is relative
+        // to the cwd, and `new` would join it onto the git root instead.
+        if let Ok(abs) = std::fs::canonicalize(path)
+            && let Some(root) = abs.ancestors().skip(1).find(|d| d.join(".git").exists())
+        {
+            return Self::new(&abs.to_string_lossy(), root);
+        }
+        Self::new(review_path, &find_project_root(path))
     }
 
     pub(crate) fn resolved(&self) -> bool {
@@ -3904,6 +3904,27 @@ mod tests {
 
         let diff_ranges: hydration::DiffRanges = vec![("sub/app/x.py".to_string(), vec![(3, 9)])];
         assert_eq!(diff_lines_for_file(&file, &diff_ranges), Some(vec![(3, 9)]));
+    }
+
+    /// Same layout, reviewed by a relative path from inside `sub/`: the path
+    /// is relative to the cwd, not to the git root, so `app/x.py` must not be
+    /// read as `<repo>/app/x.py`.
+    #[test]
+    fn diff_lines_for_file_relative_path_from_subdirectory() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub/app")).unwrap();
+        std::fs::write(tmp.path().join("sub/pyproject.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("sub/app/x.py"), "").unwrap();
+        let diff_ranges: hydration::DiffRanges = vec![("sub/app/x.py".to_string(), vec![(3, 9)])];
+
+        let saved_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path().join("sub")).unwrap();
+        let got = diff_lines_for_file(Path::new("app/x.py"), &diff_ranges);
+        std::env::set_current_dir(saved_dir).unwrap();
+
+        assert_eq!(got, Some(vec![(3, 9)]));
     }
 
     #[test]
