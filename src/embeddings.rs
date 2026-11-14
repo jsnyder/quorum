@@ -187,13 +187,13 @@ pub fn embed_cached(
     use std::collections::HashMap;
     let key = |t: &str| -> [u8; 32] { Sha256::digest(t.as_bytes()).into() };
     let mut cache: HashMap<[u8; 32], Vec<f32>> = read_vector_cache(path).unwrap_or_default();
-    let mut missing: Vec<String> = texts
+    // Corpus order, not sorted: sorting made the cold batch ~30 s slower.
+    let mut seen = std::collections::HashSet::new();
+    let missing: Vec<String> = texts
         .iter()
-        .filter(|t| !cache.contains_key(&key(t)))
+        .filter(|t| !cache.contains_key(&key(t)) && seen.insert(key(t)))
         .cloned()
         .collect();
-    missing.sort();
-    missing.dedup();
     let wrote_new = !missing.is_empty();
     if wrote_new {
         let fresh = embed(&missing)?;
@@ -246,8 +246,10 @@ fn read_vector_cache(
             .map(|r| {
                 let k: [u8; 32] = r[..32].try_into().expect("32-byte key");
                 let v = r[32..]
-                    .chunks_exact(4)
-                    .map(|f| f32::from_le_bytes(f.try_into().expect("4 bytes")))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|f| f32::from_le_bytes(*f))
                     .collect();
                 (k, v)
             })
