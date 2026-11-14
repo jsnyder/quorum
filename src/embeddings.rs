@@ -140,10 +140,17 @@ impl LocalEmbedder {
             .ok_or_else(|| anyhow::anyhow!("No embedding result"))
     }
 
-    /// `embed_batch` through the on-disk vector cache next to the model.
-    pub fn embed_batch_cached(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let path = quorum_cache_dir().join("feedback-vectors-bge-small-en-v1.5.bin");
-        embed_cached(&path, texts, |missing| self.embed_batch(missing))
+    /// `embed_batch` through the vector cache for the corpus stored at
+    /// `corpus`, kept beside it: one cache per corpus, so a test building an
+    /// index from a temp store cannot overwrite the real one.
+    pub fn embed_batch_cached(
+        &mut self,
+        corpus: &std::path::Path,
+        texts: &[String],
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        embed_cached(&vector_cache_path(corpus), texts, |missing| {
+            self.embed_batch(missing)
+        })
     }
 
     pub fn embed_batch(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -206,6 +213,14 @@ pub fn embed_cached(
         tracing::debug!(error = %e, "embedding cache not written");
     }
     Ok(out)
+}
+
+/// `~/.quorum/feedback.jsonl` -> `~/.quorum/feedback.jsonl.bge-small-en-v1.5.vectors`.
+#[cfg(feature = "embeddings")]
+pub fn vector_cache_path(corpus: &std::path::Path) -> PathBuf {
+    let mut name = corpus.file_name().unwrap_or_default().to_os_string();
+    name.push(".bge-small-en-v1.5.vectors");
+    corpus.with_file_name(name)
 }
 
 #[cfg(feature = "embeddings")]
@@ -282,6 +297,18 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn vector_cache_lives_beside_its_corpus() {
+        let a = vector_cache_path(std::path::Path::new("/tmp/x/fb.jsonl"));
+        let b = vector_cache_path(std::path::Path::new("/home/u/.quorum/feedback.jsonl"));
+        assert_eq!(
+            a,
+            std::path::Path::new("/tmp/x/fb.jsonl.bge-small-en-v1.5.vectors")
+        );
+        assert_ne!(a.parent(), b.parent(), "two corpora must not share a cache");
+    }
 
     #[cfg(feature = "embeddings")]
     #[test]
