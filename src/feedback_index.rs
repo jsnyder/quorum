@@ -93,7 +93,7 @@ impl FeedbackIndex {
                 let vectors = if texts.is_empty() {
                     vec![]
                 } else {
-                    match embedder.embed_batch(&texts) {
+                    match embedder.embed_batch_cached(&texts) {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!(
@@ -199,7 +199,7 @@ impl FeedbackIndex {
                     let vectors = if texts.is_empty() {
                         vec![]
                     } else {
-                        match embedder.embed_batch(&texts) {
+                        match embedder.embed_batch_cached(&texts) {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!(
