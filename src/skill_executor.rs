@@ -517,6 +517,10 @@ pub(crate) fn execute_cell(
                     }
                 }
                 Err(e) => {
+                    eprintln!(
+                        "{}",
+                        reviewer_failure_note(&cell.skill.manifest.name, &cell.model, &e)
+                    );
                     let (reason, class) = classify_reviewer_error(&e);
                     (vec![], class, 0, ExitStatus::Error, reason)
                 }
