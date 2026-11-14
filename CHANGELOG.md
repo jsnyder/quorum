@@ -12,6 +12,10 @@
 
   Measured with `eval/axes/` on the final prompts, both models, no errored cells, one scorer (`results/2026-10-04-pr659-*` against `2026-10-01-pr652-*`). Lane violations, before to after: gpt-5.6 correctness 14 to 10, security 10 to 9, architecture 19 to 5, simplicity 5 to 4, performance 7 to 4; claude-opus-5 correctness 33 to 12, architecture 23 to 14, simplicity 21 to 14, performance 7 to 5, security 7 to 8. In-lane recall is unchanged except where noted: `simplicity` loses the same planted item on both models (a hand-rolled `deepcopy` that is also buggy, which the gate's "a bug belongs to correctness" hands off whole), and `testing-antipatterns`, whose prompt did not change, moved by one or two findings either way, which is the run-to-run noise to read the rest against.
 
+### Fixed
+
+- **`--diff-file` hid every finding in a monorepo.** A diff's paths are relative to the git root, but each reviewed file was matched against them from the nearest `pyproject.toml`/`package.json`/`Cargo.toml`. In a repository with nested projects (`health-api/`, `pwa/`) no file ever matched, so every finding was stamped out-of-diff and hidden, and the axes saw whole files where they should have seen the focused view. One review of a 13-file change reported 0 in-diff and 51 hidden, among them the findings an independent review later reported as missed. All three diff-matching sites now go through `ReviewPathResolver::for_diff`, which resolves against the git root and falls back to the project root outside a repository. A reviewed file the diff does not mention is now named on stderr, because every finding in it counts as outside the diff.
+
 ## [0.33.0] - 2026-10-02
 
 ### Added

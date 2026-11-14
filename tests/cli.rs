@@ -276,6 +276,74 @@ fn diff_file_hides_out_of_diff_findings_unless_asked() {
     );
 }
 
+/// In a monorepo the diff's paths are relative to the git root, not to the
+/// nested project (`sub/Cargo.toml`). Before the fix nothing matched and
+/// every finding was hidden as out-of-diff without a word. A reviewed file
+/// that really is absent from the diff is named on stderr.
+#[test]
+fn diff_file_matches_nested_project_paths_and_names_files_not_in_diff() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    let sub = repo.path().join("sub");
+    std::fs::create_dir_all(sub.join("src")).unwrap();
+    std::fs::write(
+        sub.join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let lib = sub.join("src/lib.rs");
+    std::fs::write(
+        &lib,
+        "pub fn changed(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n",
+    )
+    .unwrap();
+    let other = sub.join("src/other.rs");
+    std::fs::write(
+        &other,
+        "pub fn f(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n",
+    )
+    .unwrap();
+    let diff = repo.path().join("change.patch");
+    std::fs::write(
+        &diff,
+        "diff --git a/sub/src/lib.rs b/sub/src/lib.rs\n--- a/sub/src/lib.rs\n+++ b/sub/src/lib.rs\n@@ -1,2 +1,3 @@\n pub fn changed(x: Option<u32>) -> u32 {\n+    x.unwrap()\n }\n",
+    )
+    .unwrap();
+
+    let (_home, mut cmd) = quorum();
+    let output = cmd
+        .arg("review")
+        .arg("--json")
+        .arg("--diff-file")
+        .arg(&diff)
+        .arg(&lib)
+        .arg(&other)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    let lib_titles: Vec<&str> = parsed
+        .iter()
+        .filter(|el| el["file"].as_str().is_some_and(|f| f.ends_with("lib.rs")))
+        .filter_map(|el| el["findings"].as_array())
+        .flatten()
+        .filter_map(|f| f["title"].as_str())
+        .collect();
+    assert!(
+        lib_titles.iter().any(|t| t.contains("unwrap")),
+        "the in-diff unwrap in sub/src/lib.rs must be shown: {lib_titles:?}\n{stderr}"
+    );
+    let note = stderr
+        .lines()
+        .find(|l| l.contains("not in the diff"))
+        .unwrap_or_else(|| panic!("no not-in-diff note:\n{stderr}"));
+    assert!(
+        note.contains("other.rs") && !note.contains("lib.rs"),
+        "{note}"
+    );
+}
+
 /// An outside-hunk model finding inside the changed function is shown by
 /// default; rule findings outside the hunk stay hidden, in the changed
 /// function or not. The `unwrap()` on line 2 is far enough from the hunk to
