@@ -236,7 +236,8 @@ fn read_vector_cache(
         return None;
     }
     let dim = u32::from_le_bytes(b[4..8].try_into().ok()?) as usize;
-    let rec = 32 + dim * 4;
+    // checked: `dim` comes from the file, and `dim * 4` can wrap on 32-bit.
+    let rec = dim.checked_mul(4)?.checked_add(32)?;
     let body = &b[8..];
     if dim == 0 || body.len() % rec != 0 {
         return None;
