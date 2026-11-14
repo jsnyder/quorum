@@ -428,6 +428,14 @@ pub(crate) fn execute_cell(
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
         Err(e) => {
             let classified = classify_reviewer_error(&e);
+            // The label alone ("network_error") also covers every HTTP 4xx;
+            // the provider's message is what says which.
+            tracing::warn!(
+                skill = %cell.skill.manifest.name,
+                model = %cell.model,
+                error = %crate::redact::for_log(&format!("{e:#}"), 300),
+                "reviewer call failed"
+            );
             return CellResult {
                 skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
