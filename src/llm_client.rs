@@ -283,12 +283,20 @@ const RESPONSES_API_MODELS: &[&str] = &[
     "gpt-5-codex",
 ];
 
+/// Output cap for a review call, sent explicitly so no provider default
+/// applies (LiteLLM's Anthropic default of 4096 truncated Fable's answers).
+/// It is an upper bound, not a spend: a model stops when its answer ends.
+const REVIEW_MAX_COMPLETION_TOKENS: u32 = 16_384;
+
 /// Returns `false` for reasoning models that reject the `temperature` parameter.
-/// OpenAI o-series and gpt-5.x models return HTTP 400 when temperature is included.
+/// OpenAI o-series and gpt-5 and later models return HTTP 400 when temperature is included.
 fn supports_temperature(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    if m.starts_with("gpt-5") {
-        return false;
+    if let Some(rest) = m.strip_prefix("gpt-") {
+        let major: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if major.parse::<u32>().is_ok_and(|n| n >= 5) {
+            return false;
+        }
     }
     // o1, o3, o4 prefixes — but not "ollama", "openai", "openrouter", etc.
     for prefix in &["o1", "o3", "o4"] {
@@ -1088,6 +1096,7 @@ impl OpenAiClient {
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
         }
+        body["max_completion_tokens"] = serde_json::json!(REVIEW_MAX_COMPLETION_TOKENS);
 
         let url = format!("{}/chat/completions", self.base_url);
         let req = self.post_json(&url, body);
@@ -1137,7 +1146,7 @@ impl OpenAiClient {
             "model": model,
             "instructions": system_prompt,
             "input": prompt,
-            "max_output_tokens": 16384,
+            "max_output_tokens": REVIEW_MAX_COMPLETION_TOKENS,
             "store": false
         });
         if supports_temperature(model) {
@@ -1225,6 +1234,7 @@ impl OpenAiClient {
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::Value::String(effort.clone());
         }
+        body["max_completion_tokens"] = serde_json::json!(REVIEW_MAX_COMPLETION_TOKENS);
 
         let url = format!("{}/chat/completions", self.base_url);
         let req = self.post_json(&url, body);
@@ -2684,6 +2694,34 @@ mod tests {
     /// default `Policy::limited(10)` the client would then follow a redirect
     /// to an address that was never validated -- carrying the bearer token --
     /// which is precisely what the #119/#167 guard exists to prevent.
+    /// Without an explicit limit each provider's default applies: LiteLLM's
+    /// Anthropic default (4096) truncated 6 of 26 claude-fable-5-2 axis calls
+    /// on one 13-file review.
+    #[tokio::test]
+    async fn chat_completion_sends_an_output_token_limit() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(mock_response_200())
+            .mount(&server)
+            .await;
+        let client = build_test_client(&server.uri());
+        client
+            .chat_completion("claude-fable-5-2", "p", "s")
+            .await
+            .unwrap();
+
+        let reqs = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(
+            body["max_completion_tokens"],
+            serde_json::json!(super::REVIEW_MAX_COMPLETION_TOKENS)
+        );
+    }
+
     #[tokio::test]
     async fn redirect_is_an_error_not_a_follow() {
         use wiremock::matchers::{method, path};
@@ -3258,6 +3296,11 @@ mod tests {
         assert!(!super::supports_temperature("gpt-5-nano"));
         assert!(!super::supports_temperature("gpt-5.1"));
         assert!(!super::supports_temperature("gpt-5.3-codex"));
+        // Later generations kept the restriction: gpt-6.1-sol returns 400
+        // "Only the default (1) value is supported".
+        assert!(!super::supports_temperature("gpt-6.1-sol"));
+        assert!(!super::supports_temperature("gpt-6-astra"));
+        assert!(!super::supports_temperature("gpt-10"));
         assert!(!super::supports_temperature("o1"));
         assert!(!super::supports_temperature("o1-mini"));
         assert!(!super::supports_temperature("o3"));

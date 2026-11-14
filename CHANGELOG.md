@@ -16,6 +16,8 @@
 
 - **`--diff-file` hid every finding in a monorepo.** A diff's paths are relative to the git root, but each reviewed file was matched against them from the nearest `pyproject.toml`/`package.json`/`Cargo.toml`. In a repository with nested projects (`health-api/`, `pwa/`) no file ever matched, so every finding was stamped out-of-diff and hidden, and the axes saw whole files where they should have seen the focused view. One review of a 13-file change reported 0 in-diff and 51 hidden, among them the findings an independent review later reported as missed. All three diff-matching sites now go through `ReviewPathResolver::for_diff`, which resolves against the git root and falls back to the project root outside a repository. A reviewed file the diff does not mention is now named on stderr, because every finding in it counts as outside the diff.
 
+- **gpt-6.x and Claude Fable reviews failed on most axes.** `temperature` was sent to every model not named `gpt-5*` or `o1`/`o3`/`o4`, and gpt-6.1 rejects it with a 400, so all 26 axis calls on a 13-file review failed. Every `gpt-N` with N >= 5 now omits it. The chat paths sent no output limit, so LiteLLM's Anthropic default of 4096 applied and truncated 6 of 26 claude-fable-5-2 answers. They now send `max_completion_tokens` = 16384, the cap the Responses API path already used. A failed reviewer call now prints the provider's message on stderr through `redact::for_log`. Before, a 400 surfaced only as `network_error`.
+
 ## [0.33.0] - 2026-10-02
 
 ### Added

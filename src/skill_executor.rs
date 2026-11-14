@@ -345,6 +345,16 @@ fn classify_reviewer_error(e: &anyhow::Error) -> (Option<FailureReason>, Option<
     }
 }
 
+/// One stderr line for a failed reviewer call, with the provider's message
+/// (redacted and capped by `redact::for_log`, since an error body can echo
+/// the request).
+fn reviewer_failure_note(skill: &str, model: &str, e: &anyhow::Error) -> String {
+    format!(
+        "Warning: {skill}/{model} reviewer call failed: {}",
+        crate::redact::for_log(&format!("{e:#}"), 300)
+    )
+}
+
 pub(crate) fn execute_cell(
     cell: &CellSpec,
     reviewer: &dyn LlmReviewer,
@@ -428,6 +438,13 @@ pub(crate) fn execute_cell(
         Ok(LlmResponse { content, usage }) => (content, usage.unwrap_or_default()),
         Err(e) => {
             let classified = classify_reviewer_error(&e);
+            // The label alone ("network_error") also covers every HTTP 4xx;
+            // the provider's message is what says which.
+            // stderr, not tracing: the trace subscriber only runs with --trace.
+            eprintln!(
+                "{}",
+                reviewer_failure_note(&cell.skill.manifest.name, &cell.model, &e)
+            );
             return CellResult {
                 skill_name: cell.skill.manifest.name.clone(),
                 skill_run_id,
@@ -500,6 +517,10 @@ pub(crate) fn execute_cell(
                     }
                 }
                 Err(e) => {
+                    eprintln!(
+                        "{}",
+                        reviewer_failure_note(&cell.skill.manifest.name, &cell.model, &e)
+                    );
                     let (reason, class) = classify_reviewer_error(&e);
                     (vec![], class, 0, ExitStatus::Error, reason)
                 }
@@ -779,6 +800,23 @@ fn build_invocation_record(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reviewer_failure_note_carries_the_provider_message_redacted() {
+        let e = anyhow::anyhow!(
+            "API Error (400): 'temperature' does not support 0.3 with this model; key sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+        );
+        let note = super::reviewer_failure_note("correctness", "gpt-6.1-sol", &e);
+        assert!(note.contains("correctness/gpt-6.1-sol"), "{note}");
+        assert!(
+            note.contains("'temperature' does not support 0.3"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "{note}"
+        );
+    }
+
     use super::*;
 
     /// Regression: cells expand to skills x models x files, so they do NOT
