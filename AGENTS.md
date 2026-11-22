@@ -81,3 +81,17 @@ S1883 Design and validate judge system architecture for quorum code review tool 
 
 Access 1280k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on jsnyder/quorum via `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five roles (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` + `docs/adr/` (created lazily). See `docs/agents/domain.md`.
