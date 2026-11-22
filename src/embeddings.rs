@@ -140,6 +140,19 @@ impl LocalEmbedder {
             .ok_or_else(|| anyhow::anyhow!("No embedding result"))
     }
 
+    /// `embed_batch` through the vector cache for the corpus stored at
+    /// `corpus`, kept beside it: one cache per corpus, so a test building an
+    /// index from a temp store cannot overwrite the real one.
+    pub fn embed_batch_cached(
+        &mut self,
+        corpus: &std::path::Path,
+        texts: &[String],
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        embed_cached(&vector_cache_path(corpus), texts, |missing| {
+            self.embed_batch(missing)
+        })
+    }
+
     pub fn embed_batch(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -154,6 +167,120 @@ impl LocalEmbedder {
         }
         Ok(results)
     }
+}
+
+/// Vectors for `texts`, reusing the ones stored at `path` by an earlier run and
+/// calling `embed` only for texts it has not seen. Re-embedding the whole
+/// feedback corpus was ~60 s of every review (6.6k entries, release build).
+///
+/// Keyed by the SHA-256 of each text, so an edited entry misses and a deleted
+/// one drops out: the file is rewritten with exactly `texts`' vectors and never
+/// outgrows the corpus. An unreadable or foreign file is an empty cache, and a
+/// failed write only costs the next run its hits.
+#[cfg(feature = "embeddings")]
+pub fn embed_cached(
+    path: &std::path::Path,
+    texts: &[String],
+    embed: impl FnOnce(&[String]) -> anyhow::Result<Vec<Vec<f32>>>,
+) -> anyhow::Result<Vec<Vec<f32>>> {
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    let key = |t: &str| -> [u8; 32] { Sha256::digest(t.as_bytes()).into() };
+    let mut cache: HashMap<[u8; 32], Vec<f32>> = read_vector_cache(path).unwrap_or_default();
+    // Corpus order, not sorted: sorting made the cold batch ~30 s slower.
+    let mut seen = std::collections::HashSet::new();
+    let missing: Vec<String> = texts
+        .iter()
+        .filter(|t| !cache.contains_key(&key(t)) && seen.insert(key(t)))
+        .cloned()
+        .collect();
+    let wrote_new = !missing.is_empty();
+    if wrote_new {
+        let fresh = embed(&missing)?;
+        anyhow::ensure!(
+            fresh.len() == missing.len(),
+            "embedding batch size mismatch"
+        );
+        cache.extend(missing.iter().map(|t| key(t)).zip(fresh));
+    }
+    let keys: Vec<[u8; 32]> = texts.iter().map(|t| key(t)).collect();
+    let out: Vec<Vec<f32>> = keys.iter().map(|k| cache[k].clone()).collect();
+    let unique: std::collections::HashSet<_> = keys.iter().collect();
+    // Rewrite only when something was added or a stored vector left the corpus.
+    if (wrote_new || cache.len() != unique.len())
+        && let Err(e) = write_vector_cache(path, keys.into_iter().zip(&out))
+    {
+        tracing::debug!(error = %e, "embedding cache not written");
+    }
+    Ok(out)
+}
+
+/// `~/.quorum/feedback.jsonl` -> `~/.quorum/feedback.jsonl.bge-small-en-v1.5.vectors`.
+#[cfg(feature = "embeddings")]
+pub fn vector_cache_path(corpus: &std::path::Path) -> PathBuf {
+    let mut name = corpus.file_name().unwrap_or_default().to_os_string();
+    name.push(".bge-small-en-v1.5.vectors");
+    corpus.with_file_name(name)
+}
+
+#[cfg(feature = "embeddings")]
+const VECTOR_CACHE_MAGIC: &[u8; 4] = b"QVC1";
+
+/// `QVC1`, u32 dim, then per vector: 32-byte key, `dim` little-endian f32.
+#[cfg(feature = "embeddings")]
+fn read_vector_cache(
+    path: &std::path::Path,
+) -> Option<std::collections::HashMap<[u8; 32], Vec<f32>>> {
+    let b = std::fs::read(path).ok()?;
+    if b.len() < 8 || &b[..4] != VECTOR_CACHE_MAGIC {
+        return None;
+    }
+    let dim = u32::from_le_bytes(b[4..8].try_into().ok()?) as usize;
+    // checked: `dim` comes from the file, and `dim * 4` can wrap on 32-bit.
+    let rec = dim.checked_mul(4)?.checked_add(32)?;
+    let body = &b[8..];
+    if dim == 0 || body.len() % rec != 0 {
+        return None;
+    }
+    Some(
+        body.chunks_exact(rec)
+            .map(|r| {
+                let k: [u8; 32] = r[..32].try_into().expect("32-byte key");
+                let v = r[32..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|f| f32::from_le_bytes(*f))
+                    .collect();
+                (k, v)
+            })
+            .collect(),
+    )
+}
+
+#[cfg(feature = "embeddings")]
+fn write_vector_cache<'a>(
+    path: &std::path::Path,
+    entries: impl Iterator<Item = ([u8; 32], &'a Vec<f32>)>,
+) -> std::io::Result<()> {
+    let mut buf = VECTOR_CACHE_MAGIC.to_vec();
+    let mut dim = None;
+    for (k, v) in entries {
+        if *dim.get_or_insert(v.len()) != v.len() {
+            return Err(std::io::Error::other("mixed vector dimensions"));
+        }
+        if buf.len() == 4 {
+            buf.extend((v.len() as u32).to_le_bytes());
+        }
+        buf.extend(k);
+        v.iter().for_each(|f| buf.extend(f.to_le_bytes()));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&tmp, &buf)?;
+    std::fs::rename(&tmp, path)
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -173,6 +300,62 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn vector_cache_lives_beside_its_corpus() {
+        let a = vector_cache_path(std::path::Path::new("/tmp/x/fb.jsonl"));
+        let b = vector_cache_path(std::path::Path::new("/home/u/.quorum/feedback.jsonl"));
+        assert_eq!(
+            a,
+            std::path::Path::new("/tmp/x/fb.jsonl.bge-small-en-v1.5.vectors")
+        );
+        assert_ne!(a.parent(), b.parent(), "two corpora must not share a cache");
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn embed_cached_embeds_only_unseen_texts_and_drops_removed_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v.bin");
+        fn fake(
+            calls: &std::cell::RefCell<Vec<String>>,
+        ) -> impl FnOnce(&[String]) -> anyhow::Result<Vec<Vec<f32>>> + '_ {
+            move |m| {
+                calls.borrow_mut().extend(m.iter().cloned());
+                Ok(m.iter().map(|t| vec![t.len() as f32, 1.0]).collect())
+            }
+        }
+        let s = |v: &[&str]| v.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+
+        let calls = std::cell::RefCell::new(vec![]);
+        let first = embed_cached(&path, &s(&["a", "bb", "a"]), fake(&calls)).unwrap();
+        assert_eq!(first, vec![vec![1.0, 1.0], vec![2.0, 1.0], vec![1.0, 1.0]]);
+        assert_eq!(*calls.borrow(), s(&["a", "bb"]), "duplicates embed once");
+
+        let calls = std::cell::RefCell::new(vec![]);
+        let second = embed_cached(&path, &s(&["bb", "ccc"]), fake(&calls)).unwrap();
+        assert_eq!(second, vec![vec![2.0, 1.0], vec![3.0, 1.0]]);
+        assert_eq!(
+            *calls.borrow(),
+            s(&["ccc"]),
+            "a cached text is not re-embedded"
+        );
+
+        // "a" was dropped from the file when it left the corpus.
+        let calls = std::cell::RefCell::new(vec![]);
+        embed_cached(&path, &s(&["a"]), fake(&calls)).unwrap();
+        assert_eq!(*calls.borrow(), s(&["a"]));
+
+        std::fs::write(&path, b"garbage").unwrap();
+        let calls = std::cell::RefCell::new(vec![]);
+        embed_cached(&path, &s(&["a"]), fake(&calls)).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            s(&["a"]),
+            "a corrupt file is an empty cache"
+        );
+    }
 
     #[test]
     fn cosine_identical_vectors() {

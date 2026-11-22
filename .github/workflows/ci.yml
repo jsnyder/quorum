@@ -31,6 +31,13 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: stable-${{ matrix.os }}
+      # The embedding tests load bge-small from HuggingFace into ~/.quorum/models;
+      # a failed download fell back to BM25 and failed
+      # default_build_uses_rrf_when_embeddings_available. Fetch it once.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.quorum/models
+          key: fastembed-bge-small-en-v1.5-${{ matrix.os }}
       - name: cargo test --workspace
         run: cargo test --workspace --locked
 
