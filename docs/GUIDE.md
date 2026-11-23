@@ -7,7 +7,9 @@
 ```bash
 git clone https://github.com/jsnyder/quorum.git
 cd quorum
-cargo install --path .
+# --locked: without it cargo ignores Cargo.lock and resolves newer fastembed/ort-sys,
+# whose prebuilt onnxruntime fails to link on Xcode 16 (___isPlatformVersionAtLeast)
+cargo install --path . --locked
 ```
 
 ### Verify

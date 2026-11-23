@@ -19,7 +19,9 @@ Findings are merged, deduplicated, and calibrated using your feedback history. E
 
 ### From source
 ```bash
-cargo install --path .
+# --locked: without it cargo ignores Cargo.lock and resolves newer fastembed/ort-sys,
+# whose prebuilt onnxruntime fails to link on Xcode 16 (___isPlatformVersionAtLeast)
+cargo install --path . --locked
 ```
 
 ### Pre-built binary
