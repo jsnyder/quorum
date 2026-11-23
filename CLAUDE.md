@@ -243,3 +243,17 @@ The `context7_resolved`, `context7_resolve_failed`, and `context7_query_failed` 
 `invoked_from` auto-detected from env vars (`CLAUDE_CODE`, `CODEX_CI`, `GEMINI_CLI`, `AGENT`, else tty/pipe) or overridden with `--caller <name>`.
 
 Dimensional views aggregate this log: `stats --by-repo`, `--by-caller`, `--by-file`, `--rolling N`. Two more views read the skills-framework audit logs instead: `stats --skills` rolls up `skill_invocations.jsonl` per axis (runs, findings emitted, zero-finding streak, parse-error classes) and `stats --integrator` rolls up `integrator_decisions.jsonl` (merge/suppress shares, severity clamp transitions). Both report the reader's own parse-error count, and treat a missing log as a fresh install rather than an error. `--by-file` ranks files by finding frequency from feedback (hotspot detection); `--top N` limits output rows. Sample-size gate at `MIN_SAMPLE=5`. Human output uses inline semigraphics (`█·` bars, `▁▂▃▄▅▆▇█` sparklines, ↑↓→ arrows) with ASCII fallback; compact mode is glyph-free single-line.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on jsnyder/quorum via `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five roles (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` + `docs/adr/` (created lazily). See `docs/agents/domain.md`.
