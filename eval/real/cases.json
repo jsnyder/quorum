@@ -1,0 +1,692 @@
+[
+ {
+  "id": "biome-12059-b683de6",
+  "repo": "biomejs/biome",
+  "pr": 12059,
+  "commit": "b683de6bfb51fe0d9a07ce3ecc840c17f11000cb",
+  "base": "d9267a5e5f46b8f768902e48007d76c0819771cf",
+  "defects": [
+   {
+    "path": "crates/biome_module_graph/src/db/type_inference/expressions.rs",
+    "start_line": 2819,
+    "line": 2819,
+    "url": "https://github.com/biomejs/biome/pull/12059#discussion_r4523322626",
+    "title": "Do not infer `number` for a conditional bigint operand.",
+    "bug": "Unary minus/bitwise-not on a conditional type resolving to bigint is inferred as number.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "correctness"
+   },
+   {
+    "path": "crates/biome_module_graph/src/db/type_inference/expressions.rs",
+    "start_line": 2585,
+    "line": 2585,
+    "url": "https://github.com/biomejs/biome/pull/12059#discussion_r4523322620",
+    "title": "Preserve conditional members in object rest types.",
+    "bug": "Object rest destructuring of a conditional-typed value yields an empty object type because the conditional is skipped.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   },
+   {
+    "path": "crates/biome_module_graph/src/db/type_inference/expressions.rs",
+    "start_line": 2331,
+    "line": 2331,
+    "url": "https://github.com/biomejs/biome/pull/12059#discussion_r4523322614",
+    "title": "Do not discard conditional union members when indexing.",
+    "bug": "Indexing a tuple union drops members that are conditional types, giving too narrow an element type.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   },
+   {
+    "path": "crates/biome_module_graph/src/db/type_inference/expressions.rs",
+    "start_line": 2195,
+    "line": 2195,
+    "url": "https://github.com/biomejs/biome/pull/12059#discussion_r4523322608",
+    "title": "Preserve nullish results from conditional types.",
+    "bug": "Optional chaining on a union with a conditional null member omits undefined from the result type.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   },
+   {
+    "path": "crates/biome_js_type_info/src/type_relation.rs",
+    "start_line": 13,
+    "line": 22,
+    "url": "https://github.com/biomejs/biome/pull/12059#discussion_r4523322591",
+    "title": "Your import breaks the build: three global IDs do not exist",
+    "bug": "Imports three global type IDs that do not exist in the generated ids module, breaking compilation.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "build"
+   }
+  ]
+ },
+ {
+  "id": "biome-12860-c5b5f57",
+  "repo": "biomejs/biome",
+  "pr": 12860,
+  "commit": "c5b5f571334799930cea7f9b659541e4c725974f",
+  "base": "a00eb5a2227eebd9b6b0ce0f847a9398eea62567",
+  "defects": [
+   {
+    "path": "crates/biome_css_formatter/src/utils/scss_list_layout.rs",
+    "start_line": 360,
+    "line": 363,
+    "url": "https://github.com/biomejs/biome/pull/12860#discussion_r4449238908",
+    "title": "Reject `TwValueThemeReference` here.",
+    "bug": "Tailwind theme-reference custom properties have no identifier text, so is_none_or accepts them and forces compound-list layout.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12798-14715ec",
+  "repo": "biomejs/biome",
+  "pr": 12798,
+  "commit": "14715ec98d86e3abede147fcc1177d598f8b5b03",
+  "base": "13a1ad1de8b57184c875bc43a0d9180311c07038",
+  "defects": [
+   {
+    "path": "crates/biome_frameworks/src/driver.rs",
+    "start_line": 152,
+    "line": 159,
+    "url": "https://github.com/biomejs/biome/pull/12798#discussion_r4431624085",
+    "title": "Mark the package incomplete when you drop an integration at the maximum depth.",
+    "bug": "Integrations dropped at max nesting depth are not recorded as incomplete, so consumers emit false positives.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12708-e701951",
+  "repo": "biomejs/biome",
+  "pr": 12708,
+  "commit": "e701951be59ccb8c6b05fc1617ad084897fa8cdc",
+  "base": "d81ca2b2c779829fa5d6af0c76d0e6a3000d44a5",
+  "defects": [
+   {
+    "path": "crates/biome_glob/src/editorconfig.rs",
+    "start_line": 315,
+    "line": 316,
+    "url": "https://github.com/biomejs/biome/pull/12708#discussion_r4416508978",
+    "title": "Keep a parent alternation when its only comma is nested.",
+    "bug": "For {{js,ts}} the outer braces are escaped because only the inner pair records a comma, so the glob matches wrong names.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12465-5e63720",
+  "repo": "biomejs/biome",
+  "pr": 12465,
+  "commit": "5e637206ad0e774c5c7c1158a27fdacedbbcb722",
+  "base": "40a82b0c5e11d825c3b3d42fc56950ca53d4b79a",
+  "defects": [
+   {
+    "path": "crates/biome_css_analyze/src/lint/nursery/use_logical_properties.rs",
+    "start_line": 766,
+    "line": 766,
+    "url": "https://github.com/biomejs/biome/pull/12465#discussion_r4402995076",
+    "title": "Treat legacy SCSS `if()` as dynamic.",
+    "bug": "Legacy SCSS if() is treated as static, so the shorthand-merge fix can change semantics when a branch yields null.",
+    "difficulty": "hard",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12465-fa59ebf",
+  "repo": "biomejs/biome",
+  "pr": 12465,
+  "commit": "fa59ebf525fa9c05231a78aa0410efb5364b6f28",
+  "base": "40a82b0c5e11d825c3b3d42fc56950ca53d4b79a",
+  "defects": [
+   {
+    "path": "crates/biome_css_analyze/src/lint/nursery/use_logical_properties.rs",
+    "start_line": 758,
+    "line": 760,
+    "url": "https://github.com/biomejs/biome/pull/12465#discussion_r4326651194",
+    "title": "\ud83c\udfaf Functional Correctness** | **\ud83d\udfe1 Minor** | **\u26a1 Quick win",
+    "bug": "CSS if() is treated as static though it can expand to multiple values, so the split autofix changes meaning.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12702-fbf0d0d",
+  "repo": "biomejs/biome",
+  "pr": 12702,
+  "commit": "fbf0d0da9ae304ba710dd6f725816ea47bddba18",
+  "base": "ade9845477b4914fb07d47c64fe0cb1b29aec9d5",
+  "defects": [
+   {
+    "path": "crates/biome_vue_semantic/src/semantic_model/references.rs",
+    "start_line": 766,
+    "line": 769,
+    "url": "https://github.com/biomejs/biome/pull/12702#discussion_r4392550460",
+    "title": "Exclude same-element slot parameters from default-value references.",
+    "bug": "A v-for default value resolves names against the same element's v-slot parameters, which are not in scope there.",
+    "difficulty": "hard",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "biome-12536-0650090",
+  "repo": "biomejs/biome",
+  "pr": 12536,
+  "commit": "0650090610a64f452db8233c3ec692611c2ee221",
+  "base": "e59a3242223c733fba2fc5bbd9785b230ec3d8f8",
+  "defects": [
+   {
+    "path": "crates/biome_js_syntax/src/parentheses/expression.rs",
+    "start_line": 760,
+    "line": 761,
+    "url": "https://github.com/biomejs/biome/pull/12536#discussion_r4348452182",
+    "title": "\ud83c\udfaf Functional Correctness** | **\ud83d\udfe1 Minor** | **\u26a1 Quick win",
+    "bug": "Parenthesis check stops at a type assertion, so the formatter drops required parens around an instantiation expression before +.",
+    "difficulty": "hard",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30412-4c5135e",
+  "repo": "mastra-ai/mastra",
+  "pr": 30412,
+  "commit": "4c5135e4e44b3fe9887425cd32f761e68ecefaf1",
+  "base": "dbbe40f04eb8434dc28aa449de82a038c5867297",
+  "defects": [
+   {
+    "path": "mastracode/sdk/src/plugins/manager.ts",
+    "start_line": 124,
+    "line": 124,
+    "url": "https://github.com/mastra-ai/mastra/pull/30412#discussion_r4574883181",
+    "title": "Isolate each plugin-error listener so one throw cannot abort reload or signal cleanup.",
+    "bug": "A throwing plugin-error listener aborts the loop and propagates, skipping reload notification and provider cleanup.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30401-33a95e4",
+  "repo": "mastra-ai/mastra",
+  "pr": 30401,
+  "commit": "33a95e497ca3cb49bc1547e57fe4461169d5e724",
+  "base": "7277766d6c967c475675d58ff2d0e5c6d7be7c84",
+  "defects": [
+   {
+    "path": "packages/core/src/processors/runner.ts",
+    "start_line": 2677,
+    "line": 2677,
+    "url": "https://github.com/mastra-ai/mastra/pull/30401#discussion_r4571637524",
+    "title": "Pass the latest committed mapping to each processor.",
+    "bug": "Each processor receives the original model-output mapping instead of the previous processor's committed one, undoing earlier edits.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "data-integrity"
+   },
+   {
+    "path": "packages/core/src/loop/shared/steps/tool-result-commit-core.ts",
+    "start_line": 130,
+    "line": 131,
+    "url": "https://github.com/mastra-ai/mastra/pull/30401#discussion_r4571637522",
+    "title": "Detect raw-result changes by content, not by object identity.",
+    "bug": "Result change detection uses object identity, so a processor that mutates the result in place leaves the stale mapping in use.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "data-integrity"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30384-47437cb",
+  "repo": "mastra-ai/mastra",
+  "pr": 30384,
+  "commit": "47437cbe16845184356ce4036c369232aefb6942",
+  "base": "37ddff38e5ff0766fb29837dcf6b4f92fb576e73",
+  "defects": [
+   {
+    "path": "packages/core/src/workflows/workflow.ts",
+    "start_line": 4647,
+    "line": 4647,
+    "url": "https://github.com/mastra-ai/mastra/pull/30384#discussion_r4570672323",
+    "title": "Release ownership on every pre-dispatch failure.",
+    "bug": "A failure between acquiring run ownership and starting execution never releases the lease, leaving renewal running.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "resource"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30374-f6f7da9",
+  "repo": "mastra-ai/mastra",
+  "pr": 30374,
+  "commit": "f6f7da9ae88c37a4dd7f1d9d850c21ab642817a5",
+  "base": "94fd1f0a5fb4a8b052cd845dcfbe3adbe74e7f31",
+  "defects": [
+   {
+    "path": "scripts/test-tiers/update.mjs",
+    "start_line": 377,
+    "line": 377,
+    "url": "https://github.com/mastra-ai/mastra/pull/30374#discussion_r4570186422",
+    "title": "Match the next green run on the same repository and pull request.",
+    "bug": "The next green run is matched only by workflow and branch name, so a fork run with the same branch name can be selected.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "correctness"
+   },
+   {
+    "path": "scripts/test-tiers/update.mjs",
+    "start_line": 345,
+    "line": 345,
+    "url": "https://github.com/mastra-ai/mastra/pull/30374#discussion_r4570186416",
+    "title": "Keep pull-request runs from a fork's `main` branch.",
+    "bug": "Filtering out head_branch main drops every run of PRs opened from a fork's main branch.",
+    "difficulty": "easy",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30344-446a96e",
+  "repo": "mastra-ai/mastra",
+  "pr": 30344,
+  "commit": "446a96eff5200529f5622f916a1cbc4678d1d061",
+  "base": "aaf9f394806835ee773b4d015aaae92ff83442ea",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/integrations/startup-summary.ts",
+    "start_line": 36,
+    "line": 36,
+    "url": "https://github.com/mastra-ai/mastra/pull/30344#discussion_r4567167677",
+    "title": "Do not report \u201cnone connected\u201d when a check failed.",
+    "bug": "Summary says none connected even when an integration check failed and its status is unknown.",
+    "difficulty": "easy",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30330-f0b2d11",
+  "repo": "mastra-ai/mastra",
+  "pr": 30330,
+  "commit": "f0b2d11db17396768b4c6d52a42f0c71c39a7981",
+  "base": "62161a09063104ca7fab49b5b6c49b4588b87577",
+  "defects": [
+   {
+    "path": "packages/core/src/agent/agent.ts",
+    "start_line": 8709,
+    "line": 8709,
+    "url": "https://github.com/mastra-ai/mastra/pull/30330#discussion_r4566919151",
+    "title": "Release the acquired lease if the snapshot read fails.",
+    "bug": "If loading the workflow snapshot throws, the acquired resume lease is never released, blocking recovery until expiry.",
+    "difficulty": "easy",
+    "needs_other_files": false,
+    "category": "resource"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30338-f16a60b",
+  "repo": "mastra-ai/mastra",
+  "pr": 30338,
+  "commit": "f16a60b8729e748aa471a6f1f899aa836255eba9",
+  "base": "99ec3bd582a79d85d4c0c09b50ed9ed0830c79d5",
+  "defects": [
+   {
+    "path": "mastracode/mastra-factory/src/index.ts",
+    "start_line": 50,
+    "line": 50,
+    "url": "https://github.com/mastra-ai/mastra/pull/30338#discussion_r4566892929",
+    "title": "Reject blank project names passed with `--name`.",
+    "bug": "A blank or whitespace --name bypasses validation and creates a whitespace directory or targets the current directory.",
+    "difficulty": "easy",
+    "needs_other_files": false,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30265-69a9c9a",
+  "repo": "mastra-ai/mastra",
+  "pr": 30265,
+  "commit": "69a9c9aa6f3fe411953d7859cb20028786aa0766",
+  "base": "ddb52d535d646870311766e6736efe17e7df5b65",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/integrations/gitlab/rules.ts",
+    "start_line": 661,
+    "line": 661,
+    "url": "https://github.com/mastra-ai/mastra/pull/30265#discussion_r4566151056",
+    "title": "Keep head updates unsettled until their card can record the head.",
+    "bug": "A merge-request head update with no card yet is reported settled, so discovery never retries recording that head.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "data-integrity"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30271-67668ba",
+  "repo": "mastra-ai/mastra",
+  "pr": 30271,
+  "commit": "67668baf9e5a877af4bd2f3f2c618b8b9b5028da",
+  "base": "fb3f16391fd6f03e7c36610b2fa7fdb5a4eaf5d0",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/integrations/incidentio/issue-reconciler.ts",
+    "start_line": 107,
+    "line": 114,
+    "url": "https://github.com/mastra-ai/mastra/pull/30271#discussion_r4558798626",
+    "title": "Keep follow-ups past the fifth page reachable across sweeps.",
+    "bug": "Each sweep restarts at page one with a five-page cap, so follow-ups beyond page five are never ingested.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30279-28ea4fa",
+  "repo": "mastra-ai/mastra",
+  "pr": 30279,
+  "commit": "28ea4fa70d1e20c136521d8fb19d41a8a8562c85",
+  "base": "a86a47c7ef92aa3a48b6663336235a43b7535aaa",
+  "defects": [
+   {
+    "path": "packages/core/src/workflows/workflow.ts",
+    "start_line": 5412,
+    "line": 5412,
+    "url": "https://github.com/mastra-ai/mastra/pull/30279#discussion_r4559679673",
+    "title": "Check the child run's own lease in standalone restart.",
+    "bug": "Standalone restart of a nested child run gets a no-op lease, so it can overlap a concurrent resume of the same run.",
+    "difficulty": "hard",
+    "needs_other_files": false,
+    "category": "concurrency"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30295-0c90f1e",
+  "repo": "mastra-ai/mastra",
+  "pr": 30295,
+  "commit": "0c90f1e6d7a13ead51863ac630c3e0567348d853",
+  "base": "6c148ca288b2adf8289bc4ba284925cc1f647c85",
+  "defects": [
+   {
+    "path": "mastracode/factory-ui/src/ui/pages/board/BoardContent.tsx",
+    "start_line": 390,
+    "line": 390,
+    "url": "https://github.com/mastra-ai/mastra/pull/30295#discussion_r4562538000",
+    "title": "Queued cards can lose their position when the board decision page is full.",
+    "bug": "Card queue position comes from a newest-50 decisions page, so older queued waiters get no position.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30299-b5ea678",
+  "repo": "mastra-ai/mastra",
+  "pr": 30299,
+  "commit": "b5ea6780be4b2a8e71e002867bb377a87396d879",
+  "base": "6c148ca288b2adf8289bc4ba284925cc1f647c85",
+  "defects": [
+   {
+    "path": "packages/playground-ui/src/domains/observability/lib/text-search-filter.ts",
+    "start_line": 15,
+    "line": 15,
+    "url": "https://github.com/mastra-ai/mastra/pull/30299#discussion_r4562990595",
+    "title": "Keep a changed search field editable when its value is empty.",
+    "bug": "A text-search chip with an empty value is dropped by a truthiness check before the user can type into it.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30269-c778a5b",
+  "repo": "mastra-ai/mastra",
+  "pr": 30269,
+  "commit": "c778a5ba43e86b108b180e41e76466b2724e1403",
+  "base": "6c148ca288b2adf8289bc4ba284925cc1f647c85",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/storage/domains/work-items/source-links.ts",
+    "start_line": 207,
+    "line": 207,
+    "url": "https://github.com/mastra-ai/mastra/pull/30269#discussion_r4562930724",
+    "title": "Include singleton cards in the board-before-source lock order.",
+    "bug": "Skipping the board lock for single-card groups inverts lock order against another path, causing deadlocks.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "concurrency"
+   },
+   {
+    "path": "mastracode/factory/src/storage/domains/work-items/base.ts",
+    "start_line": 2546,
+    "line": 2546,
+    "url": "https://github.com/mastra-ai/mastra/pull/30269#discussion_r4562930712",
+    "title": "Linked cards miss their own rule evaluation when the source was first observed unbound.",
+    "bug": "A stored ingress result with null itemId makes every later-linked card share the base identity, so its rules never run.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "data-integrity"
+   },
+   {
+    "path": "mastracode/factory/src/integrations/linear/rules.ts",
+    "start_line": 123,
+    "line": 123,
+    "url": "https://github.com/mastra-ai/mastra/pull/30269#discussion_r4562930690",
+    "title": "Guard the renamed-issue fallback when the card has no external source.",
+    "bug": "A renamed card without an external source looks up key undefined, matching every sourceless card and running rules on them.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "correctness"
+   },
+   {
+    "path": "mastracode/factory/src/integrations/github/rules.ts",
+    "start_line": 1088,
+    "line": 1088,
+    "url": "https://github.com/mastra-ai/mastra/pull/30269#discussion_r4562930674",
+    "title": "Give the authoring card's two `pullRequestOpened` evaluations distinct ingress identities.",
+    "bug": "Primary and companion pullRequestOpened evaluations get the same ingress id, so the companion is treated as a replay.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30269-057dcf6",
+  "repo": "mastra-ai/mastra",
+  "pr": 30269,
+  "commit": "057dcf636d498724fca32905e3f09adce2857e52",
+  "base": "6c148ca288b2adf8289bc4ba284925cc1f647c85",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/integrations/github/rules.ts",
+    "start_line": 1239,
+    "line": 1239,
+    "url": "https://github.com/mastra-ai/mastra/pull/30269#discussion_r4561421093",
+    "title": "Evaluate the companion's source-sharing cards too.",
+    "bug": "Merge evaluation only expands the issue's source, so cards linked to the PR's source never get evaluated.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30257-dc85d81",
+  "repo": "mastra-ai/mastra",
+  "pr": 30257,
+  "commit": "dc85d81b9ebacfde93535c50a8e1d1213b750d63",
+  "base": "9b456bbd04eaf1b5fb829f690b4a1fd0389a36aa",
+  "defects": [
+   {
+    "path": "mastracode/factory/src/storage/domains/source-control/base.ts",
+    "start_line": 839,
+    "line": 839,
+    "url": "https://github.com/mastra-ai/mastra/pull/30257#discussion_r4558420083",
+    "title": "Keep caching disabled until the subscription is ready.",
+    "bug": "Repository caching is enabled before the change subscription is ready, so announcements can be missed and the cache goes stale.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "concurrency"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30252-8ecd406",
+  "repo": "mastra-ai/mastra",
+  "pr": 30252,
+  "commit": "8ecd4068eff52374a424e46f10b0b68e9f35a8ce",
+  "base": "175b4b5194bd74d82a79c2567aec44ef0cfafa80",
+  "defects": [
+   {
+    "path": "mastracode/factory-ui/src/ui/domains/settings/components/IntakeRoutesSection.tsx",
+    "start_line": 244,
+    "line": 245,
+    "url": "https://github.com/mastra-ai/mastra/pull/30252#discussion_r4557894111",
+    "title": "Report skipped cards instead of unconditional success.",
+    "bug": "Bulk move reports success and discards the skipped count even when cards were skipped.",
+    "difficulty": "easy",
+    "needs_other_files": true,
+    "category": "correctness"
+   },
+   {
+    "path": "mastracode/factory-ui/src/ui/domains/settings/components/IntakeRoutesSection.tsx",
+    "start_line": 232,
+    "line": 233,
+    "url": "https://github.com/mastra-ai/mastra/pull/30252#discussion_r4557894102",
+    "title": "Discard stale reroute previews, and clear the warning when the latest preview is empty.",
+    "bug": "Concurrent reroute previews can finish out of order and show stale counts; an empty latest preview leaves the old warning.",
+    "difficulty": "medium",
+    "needs_other_files": false,
+    "category": "concurrency"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30245-99504b9",
+  "repo": "mastra-ai/mastra",
+  "pr": 30245,
+  "commit": "99504b9532dfa4f04d0aec4625860fbf33647237",
+  "base": "175b4b5194bd74d82a79c2567aec44ef0cfafa80",
+  "defects": [
+   {
+    "path": "packages/server/src/server/handlers/memory.ts",
+    "start_line": 1506,
+    "line": 1509,
+    "url": "https://github.com/mastra-ai/mastra/pull/30245#discussion_r4557918884",
+    "title": "Pass the request context to the handler's FGA check.",
+    "bug": "Handler-level FGA check omits the request context that route-level check passes, so providers can wrongly deny.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "security"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30246-de270ee",
+  "repo": "mastra-ai/mastra",
+  "pr": 30246,
+  "commit": "de270eeb283c2e4879db7f5666a69b9fce0c84ff",
+  "base": "175b4b5194bd74d82a79c2567aec44ef0cfafa80",
+  "defects": [
+   {
+    "path": "signals/github/src/index.ts",
+    "start_line": 1309,
+    "line": 1309,
+    "url": "https://github.com/mastra-ai/mastra/pull/30246#discussion_r4557250444",
+    "title": "Bound snapshot results without losing cursor progress.",
+    "bug": "The since-cursor comment query has no row limit and can exceed the output buffer, failing every poll forever.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "resource"
+   }
+  ]
+ },
+ {
+  "id": "mastra-30239-6403d01",
+  "repo": "mastra-ai/mastra",
+  "pr": 30239,
+  "commit": "6403d016658279254c238a59ea7373c0291ec63f",
+  "base": "5c87442ed78a91bb6afffdb07f6d2678341a9ab2",
+  "defects": [
+   {
+    "path": "packages/core/src/llm/model/mastra-gateway-provider-tools.ts",
+    "start_line": 52,
+    "line": 52,
+    "url": "https://github.com/mastra-ai/mastra/pull/30239#discussion_r4556411265",
+    "title": "Named `toolChoice` keeps the old tool name after the web search rename.",
+    "bug": "Renaming the web search tool leaves a named toolChoice pointing at a tool name absent from the tools list.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "litellm-51753-fbf03af",
+  "repo": "BerriAI/litellm",
+  "pr": 51753,
+  "commit": "fbf03af53d1e85d924f0fca8693382737da41582",
+  "base": "4e29aea11c8eb5fadd96c78de2bd9d10b0381727",
+  "defects": [
+   {
+    "path": "litellm/proxy/proxy_server.py",
+    "start_line": 19601,
+    "line": 19602,
+    "url": "https://github.com/BerriAI/litellm/pull/51753#discussion_r4573420830",
+    "title": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> **Cancelled waits consume budget**",
+    "bug": "Cancelling during the queue wait keeps the reserved input cost although no provider call was made.",
+    "difficulty": "medium",
+    "needs_other_files": true,
+    "category": "correctness"
+   }
+  ]
+ },
+ {
+  "id": "twenty-30325-ef760aa",
+  "repo": "twentyhq/twenty",
+  "pr": 30325,
+  "commit": "ef760aa7597c0ce994c0c1496f31732b12d5e5f0",
+  "base": "99326bacdd37b592a489c8e29a714b2e10e69d6f",
+  "defects": [
+   {
+    "path": "packages/twenty-server/src/database/commands/upgrade-version-command/2-59/2-59-instance-command-slow-1794588217126-add-is-internal-import-enabled-to-workspace.ts",
+    "start_line": 14,
+    "line": 24,
+    "url": "https://github.com/twentyhq/twenty/pull/30325#discussion_r4566112728",
+    "title": "*Resolved in [`39e30df`](https://github.com/twentyhq/twenty/commit/39e30dfedf276d86c4052b44417670aedf409fef)*",
+    "bug": "During rolling deploy, writes via old instances desync the new column from the old one if the flag flips early.",
+    "difficulty": "hard",
+    "needs_other_files": true,
+    "category": "data-integrity"
+   }
+  ]
+ }
+]
